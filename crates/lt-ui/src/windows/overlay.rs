@@ -108,7 +108,7 @@ fn row1(ui: &mut Ui, state: &mut AppState, compact: bool, _opa_pct: u32) {
         ui.set_min_height(22.0);
         // 拖动区：标题文本 + 空白拉伸
         let (drag_rect, _) = ui.allocate_exact_size(
-            Vec2::new(ui.available_width() - 5.0 * button_width(compact), 20.0),
+            Vec2::new(ui.available_width() - button_reserved(compact), 20.0),
             Sense::click_and_drag(),
         );
         ui.painter().text(
@@ -551,10 +551,10 @@ fn small_btn(label: String, fill: Color32, stroke_col: Color32, text_col: Color3
         .min_size(Vec2::new(0.0, 20.0))
 }
 
-/// 紧凑模式下按钮平均宽度估算（行1 拖动区让位计算用）
-fn button_width(compact: bool) -> f32 {
-    // 字幕/清空隐藏时少两个按钮位
-    if compact { 3.2 } else { 5.2 }
+/// 行1 按钮组预留宽度（拖动区让位；完整=7 按钮、紧凑=5 按钮，
+/// 每按钮≈46 逻辑 px：两字中文 24 + 内边距/描边/间距，留 10px 余量）
+fn button_reserved(compact: bool) -> f32 {
+    if compact { 240.0 } else { 332.0 }
 }
 
 /// 右下角尺寸手柄（原版 QSizeGrip 16×16：三条斜线 + 拖动）
