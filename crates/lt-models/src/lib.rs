@@ -1,5 +1,7 @@
 // lt-models: 模型注册表 / 缓存探测 / 双 hub 下载器 / 设置持久化
+pub mod cache;
 pub mod paths;
+pub mod registry;
 pub mod settings_io;
 
 /// 测试专用：LIVETRANSLATE_CONFIG_DIR 是进程级环境变量，所有用到它的
