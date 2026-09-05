@@ -1,10 +1,13 @@
 //! 管道装配（M2.6；原版 main.py 启动流等价）：
 //!
 //! 音频线程（wasapi 后端内部）→ 16k mono chunk 满丢旧队列
-//! → capture 线程（CaptureLoop：RMS/VAD 监视 + VAD 状态机 + 超时静音推进）
-//!     - Monitor 事件：直接经 EventLoopProxy 推 UI（每 chunk ≈31/s）
-//!     - Segment 事件：进满丢旧段队列（监视事件永不挤掉语音段）
-//! → ASR 线程：AsrManager.transcribe（独占）→ 段级三层过滤（空/纯标点 → 噪声 → 语言，
+//! → capture 线程（CaptureLoop：RMS/VAD 监视 + VAD 状态机 + 超时静音推进），
+//!   与原版 _capture_loop 一致、无中间分流线程：
+//!     - monitor 数据：capture 线程内经 EventLoopProxy 直接推 UI
+//!       （等价原版跨线程调 update_monitor，每 chunk ≈31/s）
+//!     - 语音段：capture 线程直接入满丢旧段队列（等价原版 _enqueue_asr）
+//! → ASR 线程：段队列空闲时做 RSS 回收（原版 _asr_loop queue.Empty 分支）；
+//!   AsrManager.transcribe（独占）→ 段级三层过滤（空/纯标点 → 噪声 → 语言，
 //!   对照原版 main.py `_process_segment`）→ AddMessage。
 //!
 //! 未就绪链路：模型未缓存 → 发 AsrUnavailable（M2.5 向导接管首启下载）。
@@ -12,15 +15,15 @@
 use lt_asr::{AsrManager, WorkerConfig};
 use lt_models::registry;
 use lt_pipeline::audio::wasapi_win::WasapiBackend;
-use lt_pipeline::{AudioBackend, BoundedDropQueue, CaptureEvent, CaptureLoop, SegmentSource, VadProcessor, VadSettings};
+use lt_pipeline::{AudioBackend, BoundedDropQueue, CaptureLoop, SegmentSource, VadProcessor, VadSettings};
 use lt_proto::{UiEvent, UiMsg};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use winit::event_loop::EventLoopProxy;
 
-/// 段队列容量（对齐原版 _asr_queue 上限量级）
-const SEGMENT_QUEUE_CAP: usize = 20;
+/// 段队列容量（对齐原版 _asr_queue maxsize=16，满丢最旧）
+const SEGMENT_QUEUE_CAP: usize = 16;
 
 pub struct Pipeline {
     backend: WasapiBackend,
@@ -62,44 +65,30 @@ impl Pipeline {
         );
         vad.update_settings(&vad_settings);
 
-        let segment_queue = Arc::new(BoundedDropQueue::new(SEGMENT_QUEUE_CAP));
-        // capture 线程事件出口：Monitor → 分流线程推 UI；Segment → 段队列
-        let (ev_tx, ev_rx) = crossbeam_channel::unbounded::<CaptureEvent>();
+        let segment_queue = Arc::new(BoundedDropQueue::<(SegmentSource, Vec<f32>)>::new(SEGMENT_QUEUE_CAP));
         let mut threads = Vec::new();
         {
             let stop = stop.clone();
             let paused = paused.clone();
+            let segment_queue = segment_queue.clone();
+            let proxy = proxy.clone();
             std::thread::Builder::new().name("lt-capture".into()).spawn(move || {
-                let loop_ = CaptureLoop { chunk_rx: chunk_queue, events: ev_tx, paused };
+                // 原版 _capture_loop：monitor 直接跨线程信号（此处经 proxy 发 UI 事件，
+                // vad 转换为 UI 侧 f32），段直接塞 _asr_queue 等价队列（满丢旧）
+                let loop_ = CaptureLoop {
+                    chunk_rx: chunk_queue,
+                    segment_tx: segment_queue,
+                    monitor: move |rms, vad, mic_rms| {
+                        let _ = proxy.send_event(UiMsg::Event(UiEvent::UpdateMonitor {
+                            rms,
+                            vad: vad as f32,
+                            mic_rms,
+                        }));
+                    },
+                    paused,
+                };
                 loop_.run(&mut vad, &stop);
             })?;
-        }
-
-        // ── 事件分流线程：Monitor→UI；Segment→段队列 ──
-        {
-            let stop = stop.clone();
-            let proxy = proxy.clone();
-            let segment_queue = segment_queue.clone();
-            threads.push(std::thread::Builder::new().name("lt-events".into()).spawn(move || {
-                while !stop.load(Ordering::Relaxed) {
-                    match ev_rx.recv_timeout(Duration::from_millis(500)) {
-                        Ok(CaptureEvent::Monitor { rms, vad, mic_rms }) => {
-                            let _ = proxy.send_event(UiMsg::Event(UiEvent::UpdateMonitor {
-                                rms,
-                                vad: vad as f32,
-                                mic_rms,
-                            }));
-                        }
-                        Ok(CaptureEvent::Segment { source, audio }) => {
-                            if matches!(source, SegmentSource::VadFlush) {
-                                segment_queue.push((audio, std::time::Instant::now()));
-                            }
-                        }
-                        Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
-                        Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
-                    }
-                }
-            })?);
         }
 
         // ── ASR 线程：Manager 独占 + 段处理 ──
@@ -188,7 +177,7 @@ fn resolve_funasr_entry(key: &str) -> (registry::ModelEntry, bool) {
 /// ASR 线程：模型就绪则循环识别；未缓存则发 AsrUnavailable 后待命
 fn run_asr_thread(
     settings: &lt_proto::Settings,
-    segment_queue: Arc<BoundedDropQueue<(Vec<f32>, std::time::Instant)>>,
+    segment_queue: Arc<BoundedDropQueue<(SegmentSource, Vec<f32>)>>,
     stop: Arc<AtomicBool>,
     proxy: EventLoopProxy<UiMsg>,
 ) {
@@ -245,9 +234,15 @@ fn run_asr_thread(
     }
 
     while !stop.load(Ordering::Relaxed) {
-        let Some((audio, _queued_at)) = segment_queue.pop_timeout(Duration::from_millis(500)) else {
+        // 取段：capture 线程直塞的 (source, audio)（source 目前仅 VadFlush，
+        // M6 interim 接入后再分流）
+        let Some((source, audio)) = segment_queue.pop_timeout(Duration::from_millis(500)) else {
+            // 空闲分支：RSS 回收仅在此做（原版 _asr_loop queue.Empty；
+            // worker 未启动时为无害 no-op）
+            manager.maybe_recycle_if_idle();
             continue;
         };
+        let _ = source;
         if audio.is_empty() {
             continue;
         }

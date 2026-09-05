@@ -4,7 +4,8 @@
 //! - 成功 → error_count/restart_count 清零
 //! - worker 回可恢复错误 → error_count+1；连续 ≥3 次或不可恢复 → 标记不可用
 //! - 进程退出/超时 → 自动重启（≤3 次）；耗尽 → 标记不可用
-//! - RSS 超出基线 +2048MB → 优雅回收（不占失败配额，E-06）
+//! - RSS 超出基线 +2048MB → 优雅回收（不占失败配额，E-06；仅在段队列空闲时
+//!   调用，对齐原版 _asr_loop queue.Empty 分支）
 //! - 引擎配置变更 → 替换 worker（generation 语义：旧实例关闭，计数清零）
 
 use crate::client::{AsrClientError, AsrWorkerClient};
@@ -129,7 +130,6 @@ impl AsrManager {
             Ok(res) => {
                 self.error_count = 0;
                 self.restart_count = 0;
-                self.maybe_recycle();
                 Ok(res)
             }
             Err(AsrClientError::Worker { message, recoverable }) => {
@@ -216,8 +216,10 @@ impl AsrManager {
         self.unavailable = true;
     }
 
-    /// RSS 回收（E-06；纯决策函数见 [`should_recycle`]）
-    fn maybe_recycle(&mut self) {
+    /// RSS 回收（E-06；纯决策函数见 [`should_recycle`]）。
+    /// 仅在段队列空闲时调用（原版 _asr_loop queue.Empty 分支；段间回收避免
+    /// 打断待处理音频的识别，reload gap 不耗音频）。
+    pub fn maybe_recycle_if_idle(&mut self) {
         let Some(client) = self.client.as_ref() else { return };
         let pid = client.pid();
         let Some(rss_mb) = sample_rss_mb(pid) else { return };
