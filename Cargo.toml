@@ -28,7 +28,7 @@ lt-ui = { path = "crates/lt-ui" }
 # ── GUI ──
 egui = "0.36"
 egui-winit = "0.36"
-egui-wgpu = "0.36"
+egui-wgpu = { version = "0.36", features = ["winit"] }
 winit = "0.30"
 
 # ── Win32 互操作 ──
@@ -76,6 +76,7 @@ uuid = { version = "1", features = ["v4"] }
 anyhow = "1"
 thiserror = "2"
 parking_lot = "0.12"
+pollster = "0.4"
 
 [profile.release]
 lto = "thin"

@@ -13,6 +13,7 @@ winit = { workspace = true }
 tray-icon = { workspace = true }
 muda = { workspace = true }
 anyhow = { workspace = true }
+pollster = { workspace = true }
 tracing = { workspace = true }
 parking_lot = { workspace = true }
 
