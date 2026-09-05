@@ -62,8 +62,7 @@ fn wizard_ui(ui: &mut Ui, state: &mut AppState) {
                 ui.disable(); // 原版下载中禁用 hub 下拉
             }
             ui.strong(lt_i18n::t("group_download_source"));
-            let hub_items =
-                [lt_i18n::t("hub_modelscope_full"), lt_i18n::t("hub_huggingface_full")];
+            let hub_items = [lt_i18n::t("hub_modelscope"), lt_i18n::t("hub_huggingface")];
             egui::ComboBox::from_id_salt("wizard_hub")
                 .selected_text(hub_items[w.hub_index].clone())
                 .show_ui(ui, |ui| {
