@@ -12,6 +12,7 @@
 use crate::state::{AppState, OverlayMessage, StartupFlow, TickKind, WinAction, WinId, push_log_line};
 use crate::tray::{self, Tray};
 use crate::windows;
+use crate::windows::subtitle::{MonoRect, clamp_to_screen, is_pos_visible};
 use egui::{Context, ViewportId};
 use egui_wgpu::winit::Painter;
 use lt_proto::UiMsg;
@@ -84,7 +85,9 @@ impl MultiWindowApp {
     /// 创建全部窗口并建立托盘（resumed 时调用一次）
     fn setup(&mut self, event_loop: &ActiveEventLoop) -> anyhow::Result<()> {
         self.create_window(event_loop, WinId::Overlay, (620, 500))?;
-        self.create_window(event_loop, WinId::Subtitle, (1000, 160))?;
+        // 字幕窗宽度取配置（原版 setFixedWidth(window_width)，高度自适应）
+        let sub_w = self.app_state.settings.subtitle_mode.window_width;
+        self.create_window(event_loop, WinId::Subtitle, (sub_w, 160))?;
         self.create_window(event_loop, WinId::Panel, (520, 650))?;
         self.create_window(event_loop, WinId::Log, (900, 500))?;
         // 启动流对话框（原版 QDialog：常规装饰窗口；可见性 = 启动流进行中）
@@ -133,6 +136,10 @@ impl MultiWindowApp {
         if id == WinId::Overlay {
             attrs = attrs.with_min_inner_size(winit::dpi::LogicalSize::new(480.0, 200.0));
         }
+        if id == WinId::Subtitle {
+            // 原版 setFixedWidth：宽度固定（高度自适应）→ 禁用户拖拽缩放
+            attrs = attrs.with_resizable(false);
+        }
         let visible = *self.app_state.visible.get(&id).unwrap_or(&true);
         attrs = attrs.with_visible(visible);
 
@@ -153,6 +160,17 @@ impl MultiWindowApp {
                     window.set_outer_position(winit::dpi::LogicalPosition::new(x as f64, y as f64));
                 }
             }
+        }
+        // 字幕窗恢复保存位置（原版 _setup_ui：window_x/y 多屏可见才用，否则 (100,100)）
+        if id == WinId::Subtitle {
+            let sm = &self.app_state.settings.subtitle_mode;
+            let monitors =
+                Self::monitor_rects(event_loop.available_monitors(), event_loop.primary_monitor());
+            let (x, y) = match (sm.window_x, sm.window_y) {
+                (Some(x), Some(y)) if is_pos_visible(x, y, &monitors) => (x, y),
+                _ => (100, 100),
+            };
+            window.set_outer_position(winit::dpi::LogicalPosition::new(f64::from(x), f64::from(y)));
         }
         let viewport = Self::viewport_of(id);
         pollster::block_on(self.painter.set_window(viewport, Some(window.clone())))?;
@@ -287,6 +305,10 @@ impl MultiWindowApp {
             m::SUBWIN_CT => {
                 let cur = self.app_state.settings.subtitle_mode.click_through;
                 self.app_state.settings.subtitle_mode.click_through = !cur;
+                // 开启即启动 500ms 断言轮询（关闭由续拍条件自然断链）
+                if !cur {
+                    self.app_state.schedule_subtitle_click_through_tick();
+                }
             }
             m::SHOW_PANEL => {
                 let vis = !self.window(WinId::Panel).is_visible().unwrap_or(false);
@@ -473,9 +495,28 @@ impl MultiWindowApp {
                 }
                 // 译文完成（含错误文本/同语言空串；原版 update_translation）
                 lt_proto::UiEvent::UpdateTranslation { id, text, tl_ms } => {
-                    self.app_state.update_translation(id, text, tl_ms);
+                    self.app_state.update_translation(id, text.clone(), tl_ms);
                     if let Some(hw) = self.find_mut(WinId::Overlay) {
                         hw.window.request_redraw();
+                    }
+                    // 字幕窗文本喂入（原版 pipeline 仅 _subwin.isVisible() 时 update_text）：
+                    // 译文完成 → {目标语言: 译文}；同语言空串 → {目标语言: 原文}
+                    // （原版 pipeline.py:459/629 同语言分支与 868/955 译文完成分支）
+                    if *self.app_state.visible.get(&WinId::Subtitle).unwrap_or(&false) {
+                        let original = self
+                            .app_state
+                            .messages
+                            .iter()
+                            .rev()
+                            .find(|m| m.id == id)
+                            .map(|m| m.original.clone());
+                        if let Some(original) = original {
+                            let value = if text.is_empty() { original.clone() } else { text };
+                            let mut tl = std::collections::BTreeMap::new();
+                            tl.insert(self.app_state.settings.target_language.clone(), value);
+                            self.app_state.subtitle_update_text(original, tl);
+                        }
+                        self.redraw(WinId::Subtitle);
                     }
                 }
                 // 翻译/用量统计（原版 update_stats）
@@ -615,6 +656,10 @@ impl MultiWindowApp {
                 WinAction::ToggleSubtitle => {
                     let vis = self.app_state.settings.subtitle_mode.enabled;
                     self.set_visible(WinId::Subtitle, vis);
+                    // 开启即恢复 500ms 穿透断言轮询（原版 showEvent 重断言 + _ct_timer）
+                    if vis && self.app_state.settings.subtitle_mode.click_through {
+                        self.app_state.schedule_subtitle_click_through_tick();
+                    }
                 }
                 WinAction::ApplyOverlayFlags => {
                     self.apply_overlay_flags();
@@ -643,6 +688,41 @@ impl MultiWindowApp {
                 WinAction::SetHeight(h) => {
                     self.enqueue_height(h);
                 }
+                WinAction::DragSubtitle => {
+                    // 原版 mousePressEvent MiddleButton → move；winit 走系统移动循环
+                    let _ = window.drag_window();
+                }
+                WinAction::SetSubtitleHeight(h) => {
+                    // 原版 _fit_height_animated：高度变化同时上移 y/2 保持视觉中心
+                    let scale = window.scale_factor();
+                    let cur = window.inner_size().to_logical::<f32>(scale);
+                    let dy = ((h - cur.height) / 2.0).round();
+                    if dy.abs() >= 1.0 {
+                        let pos = window.outer_position().unwrap_or_default();
+                        window.set_outer_position(winit::dpi::LogicalPosition::new(
+                            pos.x as f64 / scale,
+                            (pos.y as f64 - dy as f64) / scale,
+                        ));
+                    }
+                    let _ = window.request_inner_size(winit::dpi::LogicalSize::new(
+                        f64::from(cur.width),
+                        f64::from(h.max(20.0)),
+                    ));
+                }
+                WinAction::ClampSubtitlePos => {
+                    // 原版 on_finished → _clamp_to_screen + position_changed（500ms 防抖保存）
+                    let scale = window.scale_factor();
+                    let pos = window.outer_position().unwrap_or_default();
+                    let size = window.inner_size().to_logical::<f32>(scale);
+                    let cur = ((pos.x as f32 / scale as f32) as i32, (pos.y as f32 / scale as f32) as i32);
+                    // current_monitor 优先作兜底屏（对齐原版"未命中 → 主屏"的就近语义）
+                    let monitors = Self::monitor_rects(window.available_monitors(), window.current_monitor());
+                    let (x, y) = clamp_to_screen(cur.0, cur.1, size.width as i32, size.height as i32, &monitors);
+                    if (x, y) != cur {
+                        window.set_outer_position(winit::dpi::LogicalPosition::new(f64::from(x), f64::from(y)));
+                    }
+                    self.app_state.schedule_subtitle_pos_save((x, y));
+                }
             }
         }
         // 动画推进：结束帧落定终值并清除（进行中由 UI 帧投递 SetHeight）
@@ -669,6 +749,39 @@ impl MultiWindowApp {
             logical.width as u32,
             logical.height as u32,
         )
+    }
+
+    /// 当前字幕窗逻辑位置 (x, y)（防抖登记用）
+    fn subtitle_pos(&self) -> (i32, i32) {
+        let Some(hw) = self.find(WinId::Subtitle) else {
+            return (0, 0);
+        };
+        let scale = hw.window.scale_factor() as f32;
+        let pos = hw.window.outer_position().unwrap_or_default();
+        ((pos.x as f32 / scale) as i32, (pos.y as f32 / scale) as i32)
+    }
+
+    /// 显示器矩形表（逻辑 px，主屏/当前屏排首作钳制兜底；winit 无工作区概念 →
+    /// 全显示器尺寸，原版 availableGeometry 剔除任务栏为已知偏差）
+    fn monitor_rects(
+        monitors: impl Iterator<Item = winit::monitor::MonitorHandle>,
+        preferred: Option<winit::monitor::MonitorHandle>,
+    ) -> Vec<MonoRect> {
+        let mut ms: Vec<(winit::monitor::MonitorHandle, MonoRect)> = monitors
+            .map(|m| {
+                let scale = m.scale_factor() as f32;
+                let (pos, size) = (m.position(), m.size());
+                let rect = MonoRect {
+                    x: (pos.x as f32 / scale) as i32,
+                    y: (pos.y as f32 / scale) as i32,
+                    w: (size.width as f32 / scale) as i32,
+                    h: (size.height as f32 / scale) as i32,
+                };
+                (m, rect)
+            })
+            .collect();
+        ms.sort_by_key(|(m, _)| if preferred.as_ref() == Some(m) { 0 } else { 1 });
+        ms.into_iter().map(|(_, r)| r).collect()
     }
 
     /// 保持宽度调整窗口高度（逻辑 px；下限 200 = 原版 min height）
@@ -707,6 +820,25 @@ impl MultiWindowApp {
         )));
     }
 
+    /// 字幕窗位置防抖到期：读位置（逻辑 px）写 window_x/y 并持久化（原版 position_changed）
+    fn on_subtitle_pos_save_tick(&mut self) {
+        let Some(hw) = self.find(WinId::Subtitle) else { return };
+        let window = hw.window.clone();
+        let scale = window.scale_factor() as f32;
+        let Ok(pos) = window.outer_position() else { return };
+        let p = ((pos.x as f32 / scale) as i32, (pos.y as f32 / scale) as i32);
+        self.app_state.subtitle.pos_dirty_since = None;
+        if self.app_state.subtitle.last_saved_pos == Some(p) {
+            return;
+        }
+        self.app_state.subtitle.last_saved_pos = Some(p);
+        self.app_state.settings.subtitle_mode.window_x = Some(p.0);
+        self.app_state.settings.subtitle_mode.window_y = Some(p.1);
+        self.app_state.send_cmd(lt_proto::Cmd::PersistSettings(Box::new(
+            self.app_state.settings.clone(),
+        )));
+    }
+
     /// 穿透轮询（原版 _check_click_through 50ms）：光标在头部区（消息区之上）
     /// 时可交互，否则正文穿透。仅 Windows。
     #[cfg(windows)]
@@ -717,7 +849,7 @@ impl MultiWindowApp {
         let window = hw.window.clone();
         let enabled = self.app_state.ov_click_through;
         if !enabled {
-            Self::set_overlay_transparent(&window, false);
+            Self::set_window_transparent(&window, false);
             return;
         }
         let Ok(win_pos) = window.outer_position() else { return };
@@ -734,14 +866,36 @@ impl MultiWindowApp {
             && local_x <= logical.width as f64
             && local_y >= 0.0
             && local_y < header_px;
-        Self::set_overlay_transparent(&window, !in_header);
+        Self::set_window_transparent(&window, !in_header);
     }
 
-    /// WS_EX_TRANSPARENT 位切换。注：原版 E-04 要求与 WS_EX_LAYERED 成对
-    /// （Qt 语义）；winit+wgpu 透明窗口走 DWM 合成，加 LAYERED 反而破坏
-    /// surface 呈现，故仅切 TRANSPARENT 位（已知偏差，实机走查项）。
+    /// 字幕窗穿透轮询（原版 _ct_timer 500ms → _apply_click_through：
+    /// 全窗穿透 `winutil.set_click_through(self, "all")`，无头部例外）。
+    /// Qt 需定时重断言（show/raise 会清扩展样式），此处按位去重读写等效。
+    /// 仅 Windows。
     #[cfg(windows)]
-    fn set_overlay_transparent(window: &Window, enable: bool) {
+    fn poll_subtitle_click_through(&mut self) {
+        let Some(hw) = self.find(WinId::Subtitle) else { return };
+        let window = hw.window.clone();
+        let enabled = self.app_state.settings.subtitle_mode.click_through
+            && *self.app_state.visible.get(&WinId::Subtitle).unwrap_or(&false);
+        Self::set_window_transparent(&window, enabled);
+    }
+
+    /// 非 Windows 兜底（无穿透能力）
+    #[cfg(not(windows))]
+    fn poll_click_through(&mut self) {}
+
+    /// 非 Windows 兜底（无穿透能力）
+    #[cfg(not(windows))]
+    fn poll_subtitle_click_through(&mut self) {}
+
+    /// WS_EX_TRANSPARENT 位切换（悬浮窗/字幕窗共用的通用窗口层函数）。
+    /// 注：原版 E-04 要求与 WS_EX_LAYERED 成对（Qt 语义）；winit+wgpu 透明窗口
+    /// 走 DWM 合成，加 LAYERED 反而破坏 surface 呈现，故仅切 TRANSPARENT 位
+    /// （已知偏差，实机走查项）。
+    #[cfg(windows)]
+    fn set_window_transparent(window: &Window, enable: bool) {
         use raw_window_handle::{HasWindowHandle as _, RawWindowHandle};
         use ::windows::Win32::Foundation::HWND;
         use ::windows::Win32::UI::WindowsAndMessaging::{
@@ -762,10 +916,6 @@ impl MultiWindowApp {
             }
         }
     }
-
-    /// 非 Windows 兜底（无穿透能力）
-    #[cfg(not(windows))]
-    fn poll_click_through(&mut self) {}
 
     /// 执行导出（原版 export_messages；rfd 保存对话框 + 三种模式行格式）
     fn run_export(&mut self, mode: &str) {
@@ -822,11 +972,17 @@ impl MultiWindowApp {
 
     /// 启动即安排节拍（由 lt-app 在 run 前调用）：
     /// 悬浮窗监视节拍（overlay 行为不变）+ 启动流节拍（向导倒计时/收尾延迟）
+    /// + 字幕窗穿透轮询（原版 set_click_through 即启动 500ms 计时）
     pub fn kick_ticks(&mut self) {
         self.app_state.schedule_monitor_tick(WinId::Overlay);
         self.app_state.kick_setup_tick();
         if self.app_state.ov_click_through {
             self.app_state.schedule_click_through_tick();
+        }
+        if self.app_state.settings.subtitle_mode.click_through
+            && *self.app_state.visible.get(&WinId::Subtitle).unwrap_or(&false)
+        {
+            self.app_state.schedule_subtitle_click_through_tick();
         }
     }
 }
@@ -881,6 +1037,10 @@ impl ApplicationHandler<UiMsg> for MultiWindowApp {
                 // 拖动/移动结束防抖保存（原版 moveEvent → _schedule_pos_save）
                 self.app_state.schedule_pos_save(self.overlay_geo());
             }
+            WindowEvent::Moved(_) if id == WinId::Subtitle => {
+                // 字幕窗移动防抖保存（原版 mouseReleaseEvent → position_changed）
+                self.app_state.schedule_subtitle_pos_save(self.subtitle_pos());
+            }
             WindowEvent::ScaleFactorChanged { .. } => {
                 // surface 重配置由 Painter 在下一帧处理；请求重绘即可
                 self.window(id).request_redraw();
@@ -911,11 +1071,40 @@ impl ApplicationHandler<UiMsg> for MultiWindowApp {
                     self.app_state.flush_streams();
                     self.redraw(WinId::Overlay);
                 }
-                TickKind::PosSave => self.on_pos_save_tick(),
-                TickKind::ClickThrough => {
-                    self.poll_click_through();
-                    if self.app_state.ov_click_through {
-                        self.app_state.schedule_click_through_tick();
+                TickKind::PosSave => match tick.win {
+                    WinId::Subtitle => self.on_subtitle_pos_save_tick(),
+                    _ => self.on_pos_save_tick(),
+                },
+                TickKind::ClickThrough => match tick.win {
+                    WinId::Subtitle => {
+                        // 字幕窗 500ms 全窗穿透断言（原版 _ct_timer 周期重申）
+                        self.poll_subtitle_click_through();
+                        // 开关开启期间由宿主续拍（关闭/隐藏即断链）
+                        if self.app_state.settings.subtitle_mode.click_through
+                            && *self.app_state.visible.get(&WinId::Subtitle).unwrap_or(&false)
+                        {
+                            self.app_state.schedule_subtitle_click_through_tick();
+                        }
+                    }
+                    _ => {
+                        self.poll_click_through();
+                        if self.app_state.ov_click_through {
+                            self.app_state.schedule_click_through_tick();
+                        }
+                    }
+                },
+                // 字幕窗自动隐藏到点（原版 _auto_hide_timer.timeout → _on_auto_hide_timeout）
+                TickKind::SubtitleAutoHide => {
+                    let anim = self.app_state.settings.subtitle_mode.auto_hide_animation.clone();
+                    let dur = self.app_state.settings.subtitle_mode.auto_hide_duration;
+                    if self.app_state.subtitle.on_auto_hide_timeout(&anim, dur, Instant::now()) {
+                        self.redraw(WinId::Subtitle);
+                    }
+                }
+                // 字幕窗排队句子到点（原版 _pending_segment_timers 的 singleShot 到期）
+                TickKind::SubtitlePending => {
+                    if self.app_state.subtitle_flush_pending() {
+                        self.redraw(WinId::Subtitle);
                     }
                 }
                 TickKind::Setup => self.on_setup_tick(),

@@ -1,6 +1,6 @@
 //! UI 共享状态 —— 全部只被 UI 线程读写（事件经 UiMsg 进入，无锁竞争）。
 
-use lt_proto::{Cmd, Settings};
+use lt_proto::{Cmd, Settings, SubtitleMode};
 use std::time::{Duration, Instant};
 
 /// 窗口标识（4 个常驻窗口 + 启动流对话框）
@@ -61,6 +61,10 @@ pub enum TickKind {
     ClickThrough,
     /// 启动流（向导倒计时/收尾延迟）
     Setup,
+    /// 字幕窗自动隐藏到点（原版 _auto_hide_timer singleShot；win=Subtitle）
+    SubtitleAutoHide,
+    /// 字幕窗待插入句子到点（原版 _pending_segment_timers，1500ms 最小显示；win=Subtitle）
+    SubtitlePending,
 }
 
 /// 监视条数据：音频侧来自 UpdateMonitor 事件（每 chunk），系统侧 1s 节流采样。
@@ -123,6 +127,12 @@ pub enum WinAction {
     ToggleMode,
     /// 动画/模式推导出的窗口高度调整（逻辑 px，保持宽度）
     SetHeight(f32),
+    /// 字幕窗中键拖动（原版 mousePressEvent MiddleButton；宿主 drag_window）
+    DragSubtitle,
+    /// 字幕窗高度调整（原版 _fit_height_animated：随高度上移 y 保持视觉中心）
+    SetSubtitleHeight(f32),
+    /// 字幕窗高度落定后的多屏钳制（原版 on_finished → _clamp_to_screen + position_changed）
+    ClampSubtitlePos,
 }
 
 /// 悬浮窗模式（原版 DragHandle._mode："full"/"compact"）
@@ -198,6 +208,236 @@ impl LogWindowState {
     pub fn clear(&mut self) {
         self.lines.clear();
     }
+}
+
+// ── 字幕窗（M4.2，对照原版 subtitle_window.py + subtitle_text_widget.py）──
+
+/// 最小显示时间 ms（原版 _min_display_ms = 1500：上句插入后须满此时长才能被替换）
+pub const SUBTITLE_MIN_DISPLAY_MS: u64 = 1500;
+
+/// 字幕窗句子（原版 _sentences 元组 `(original, {lang: text})` 的结构化形态）
+#[derive(Debug, Clone, PartialEq)]
+pub struct SubtitleSentence {
+    pub original: String,
+    /// lang 码 → 译文；空键 "" 为原版 update_text(str) 兼容形态（包装为 {"": text}）
+    pub translations: std::collections::BTreeMap<String, String>,
+}
+
+/// 缓动曲线（原版 QEasingCurve.Type.OutCubic / InCubic）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Easing {
+    OutCubic,
+    InCubic,
+}
+
+/// 通用缓动动画（原版 QPropertyAnimation：起止值 + 自定义时长 + 缓动；
+/// [`HeightAnim`] 的泛化版——字幕窗高度 150ms 与淡入淡出自定义时长共用）
+#[derive(Debug, Clone)]
+pub struct EaseAnim {
+    pub from: f32,
+    pub to: f32,
+    pub start: Instant,
+    pub duration: Duration,
+    pub easing: Easing,
+}
+
+impl EaseAnim {
+    /// 当前进值；结束后返回 None 由调用方收敛
+    pub fn current(&self, now: Instant) -> Option<f32> {
+        if self.duration.is_zero() {
+            return None;
+        }
+        let t = now.saturating_duration_since(self.start).as_secs_f32() / self.duration.as_secs_f32();
+        if !(0.0..1.0).contains(&t) {
+            return None;
+        }
+        let eased = match self.easing {
+            Easing::OutCubic => 1.0 - (1.0 - t).powi(3),
+            Easing::InCubic => t * t * t,
+        };
+        Some(self.from + (self.to - self.from) * eased)
+    }
+}
+
+/// 字幕行换行缓存 key（原版 _text_cache 失效判据：文字/可用宽度/字号/描边任一变化）
+#[derive(Debug, Clone, PartialEq)]
+pub struct SubtitleLineKey {
+    pub text: String,
+    pub avail_w: u32,
+    pub font_size: u32,
+    pub outline_enabled: bool,
+    pub outline_width: u32,
+}
+
+/// 单条启用行的渲染状态（原版 _SubtitleTextWidget 对位字段）
+#[derive(Debug, Default, Clone)]
+pub struct SubtitleLineRender {
+    /// 当前文本（原版 _text）
+    pub text: String,
+    /// 贪心换行结果（原版 _wrapped_lines；空文本 = 空 Vec）
+    pub wrapped: Vec<String>,
+    /// 上次换行的缓存 key（原版 _text_cache；None = 需重排）
+    pub cache_key: Option<SubtitleLineKey>,
+}
+
+/// 字幕窗 UI 伴生状态（原版 SubtitleWindow 的时序字段 + 各行渲染缓存）
+#[derive(Default)]
+pub struct SubtitleUiState {
+    /// 句子队列（原版 _sentences，尾部为新句）
+    pub sentences: Vec<SubtitleSentence>,
+    /// 待延迟插入（原版 _pending_segment_timers；新更新先取消旧待插入 → 至多 1 个存活）
+    pub pending: Option<(Instant, SubtitleSentence)>,
+    /// 上次插入时刻（原版 _last_insert_time，1500ms 最小显示时序基准）
+    pub last_insert: Option<Instant>,
+    /// 自动隐藏已触发（原版 _is_hidden_by_timeout）
+    pub hidden_by_timeout: bool,
+    /// 自动隐藏到点（原版 _auto_hide_timer；None = 未计时 / 无句子 / timeout=0）
+    pub auto_hide_deadline: Option<Instant>,
+    /// 淡出/淡入动画（原版 animate_out/animate_in 的 fade 分支）
+    pub fade: Option<EaseAnim>,
+    /// 行文本/句子变化待重排（[_refresh_display] 的消费标志，UI 帧内消费）
+    pub display_dirty: bool,
+    /// 启用行渲染状态（原版 _text_widgets，按 lines 启用序对位）
+    pub lines: Vec<SubtitleLineRender>,
+    /// 高度动画（原版 _height_anim，150ms OutCubic）
+    pub height_anim: Option<EaseAnim>,
+    /// 最近一次已申请的窗口高度（动画 from 基准；宿主 request_inner_size 异步生效）
+    pub applied_height: f32,
+    /// 精简动效（原版 set_reduce_motion：跳过过渡直接落位；面板 M4.3 接入）
+    pub reduce_motion: bool,
+    /// 位置持久化防抖起点（原版 position_changed → 500ms 防抖；仅存 x/y）
+    pub pos_dirty_since: Option<Instant>,
+    /// 上次保存的位置 (x, y)，未变化不触发
+    pub last_saved_pos: Option<(i32, i32)>,
+}
+
+impl SubtitleUiState {
+    /// 原版 update_text → _on_update_text：取消待插入 + 1500ms 最小显示分流。
+    /// 时机参数从 cfg（settings.subtitle_mode）现取，对齐原版 self._settings 读法。
+    /// 返回 Some(到点时刻) = 进入 pending 队列（调用方安排 SubtitlePending 节拍）；
+    /// None = 已立即插入。
+    pub fn update_text(
+        &mut self,
+        original: String,
+        translations: std::collections::BTreeMap<String, String>,
+        sm: &SubtitleMode,
+        now: Instant,
+    ) -> Option<Instant> {
+        // _cancel_pending_segments：新更新永远取代旧的待插入
+        self.pending = None;
+        let sentence = SubtitleSentence { original, translations };
+        // base_delay = max(0, 1500 - elapsed)（原版 _on_update_text；首句 last_insert=0 → 0）
+        let base_delay = match self.last_insert {
+            None => 0,
+            Some(t) => {
+                let elapsed = now.saturating_duration_since(t).as_millis() as u64;
+                SUBTITLE_MIN_DISPLAY_MS.saturating_sub(elapsed)
+            }
+        };
+        if base_delay == 0 {
+            self.insert_sentence(sentence, sm, now);
+            None
+        } else {
+            let at = now + Duration::from_millis(base_delay);
+            self.pending = Some((at, sentence));
+            Some(at)
+        }
+    }
+
+    /// 原版 _insert_sentence：入队截断 + 隐藏中恢复 + 重排标记 + 重排自动隐藏计时
+    pub fn insert_sentence(&mut self, sentence: SubtitleSentence, sm: &SubtitleMode, now: Instant) {
+        self.sentences.push(sentence);
+        // 原版怪癖 1:1 保留：sentences=0 时 Python `_sentences[-0:]` = 全表 → 实际不截断
+        if sm.sentences > 0 && self.sentences.len() > sm.sentences as usize {
+            let drop = self.sentences.len() - sm.sentences as usize;
+            self.sentences.drain(..drop);
+        }
+        if self.hidden_by_timeout {
+            self.restore_from_auto_hide(&sm.auto_hide_animation, sm.auto_hide_duration, now);
+        }
+        // _restart_auto_hide_timer：timeout>0 且有句子才计时
+        self.auto_hide_deadline = if sm.auto_hide_timeout > 0 && !self.sentences.is_empty() {
+            Some(now + Duration::from_secs(sm.auto_hide_timeout as u64))
+        } else {
+            None
+        };
+        self.last_insert = Some(now);
+        self.display_dirty = true;
+    }
+
+    /// SubtitlePending 节拍消费（原版 timer.timeout → _insert_sentence）；
+    /// 未到点放回（正常节拍不会提前）；返回是否实际插入。
+    pub fn flush_pending(&mut self, sm: &SubtitleMode, now: Instant) -> bool {
+        match self.pending.take() {
+            Some((at, s)) if at <= now => {
+                self.insert_sentence(s, sm, now);
+                true
+            }
+            other => {
+                self.pending = other;
+                false
+            }
+        }
+    }
+
+    /// 原版 _on_auto_hide_timeout：置隐藏 + 启动淡出；重复触发无害。返回是否状态变化。
+    pub fn on_auto_hide_timeout(&mut self, hide_animation: &str, hide_duration_ms: u32, now: Instant) -> bool {
+        if self.hidden_by_timeout {
+            return false;
+        }
+        // 淡出起点 = 触发时的当前不透明度（原版 setStartValue(_content_opacity_val)）
+        let from = self.current_opacity(now);
+        self.hidden_by_timeout = true;
+        // animate_out：none=瞬时归零；fade=InCubic 淡出（slide_down 以 fade 近似，见模块注释）
+        self.fade = fade_anim(hide_animation, hide_duration_ms, from, 0.0, Easing::InCubic, now);
+        true
+    }
+
+    /// 原版 _restore_from_auto_hide：清隐藏标记 + 从 0 淡入（OutCubic）
+    pub fn restore_from_auto_hide(&mut self, hide_animation: &str, hide_duration_ms: u32, now: Instant) {
+        self.hidden_by_timeout = false;
+        // 原版：先置 _content_opacity_val=0 再 animate_in（0→1）
+        self.fade = fade_anim(hide_animation, hide_duration_ms, 0.0, 1.0, Easing::OutCubic, now);
+    }
+
+    /// 当前内容不透明度（原版 _content_opacity_val；动画中取缓动值，否则按隐藏标记）
+    pub fn current_opacity(&self, now: Instant) -> f32 {
+        match &self.fade {
+            Some(a) => a.current(now).unwrap_or(a.to),
+            None => {
+                if self.hidden_by_timeout { 0.0 } else { 1.0 }
+            }
+        }
+    }
+
+    /// 原版 clear()：清句子/待插入/隐藏计时，各行文本清空并回满不透明度
+    pub fn clear(&mut self) {
+        self.sentences.clear();
+        self.pending = None;
+        self.auto_hide_deadline = None;
+        self.hidden_by_timeout = false;
+        self.fade = None;
+        for l in &mut self.lines {
+            l.text.clear();
+            l.wrapped.clear();
+            l.cache_key = None;
+        }
+        self.display_dirty = true;
+    }
+}
+
+/// 依动画名构造淡入淡出动画；none/时长 0 = 瞬时（None，不透明度由隐藏标记兜底）
+fn fade_anim(animation: &str, duration_ms: u32, from: f32, to: f32, easing: Easing, now: Instant) -> Option<EaseAnim> {
+    if animation == "none" || duration_ms == 0 {
+        return None;
+    }
+    Some(EaseAnim {
+        from,
+        to,
+        start: now,
+        duration: Duration::from_millis(duration_ms as u64),
+        easing,
+    })
 }
 
 /// 悬浮窗 UI 伴生状态（全部仅 UI 线程触达）
@@ -348,6 +588,8 @@ pub struct AppState {
     pub stats: OverlayStats,
     /// 悬浮窗 UI 伴生状态（模式/动画/节流/防抖）
     pub overlay: OverlayUiState,
+    /// 字幕窗 UI 伴生状态（M4.2：句子队列/自动隐藏/高度动画/渲染缓存）
+    pub subtitle: SubtitleUiState,
     /// UI 帧内请求的窗口动作（宿主在帧后消费；Drag/Resize/Hide/ShowPanel）
     pub actions: Vec<(WinId, WinAction)>,
     /// 右键"清空列表"请求（帧后消费）
@@ -400,6 +642,7 @@ impl AppState {
             messages: Vec::new(),
             stats: OverlayStats::default(),
             overlay: OverlayUiState::default(),
+            subtitle: SubtitleUiState::default(),
             actions: Vec::new(),
             clear_request: false,
             logwin: LogWindowState::default(),
@@ -508,6 +751,65 @@ impl AppState {
         if !self.ticks.iter().any(|t| t.win == WinId::Overlay && t.kind == TickKind::ClickThrough) {
             self.ticks.push(Tick { at, win: WinId::Overlay, kind: TickKind::ClickThrough });
         }
+    }
+
+    /// 字幕窗文本更新入口（原版 SubtitleWindow.update_text → _on_update_text；
+    /// 宿主由 UpdateTranslation 事件换算 original + {lang: translation}）。
+    /// pending 进队时安排 SubtitlePending 节拍；立即插入路径同步自动隐藏节拍。
+    pub fn subtitle_update_text(&mut self, original: String, translations: std::collections::BTreeMap<String, String>) {
+        let now = Instant::now();
+        if let Some(at) = self.subtitle.update_text(original, translations, &self.settings.subtitle_mode, now) {
+            self.schedule_subtitle_tick(TickKind::SubtitlePending, at);
+        } else {
+            self.sync_subtitle_auto_hide_tick();
+        }
+    }
+
+    /// 字幕窗节拍安排（同窗同种去重：覆盖既有时刻）
+    pub fn schedule_subtitle_tick(&mut self, kind: TickKind, at: Instant) {
+        if let Some(t) = self.ticks.iter_mut().find(|t| t.win == WinId::Subtitle && t.kind == kind) {
+            t.at = at;
+        } else {
+            self.ticks.push(Tick { at, win: WinId::Subtitle, kind });
+        }
+    }
+
+    /// 依 auto_hide_deadline 同步自动隐藏节拍（None → 取消既有节拍）
+    pub fn sync_subtitle_auto_hide_tick(&mut self) {
+        match self.subtitle.auto_hide_deadline {
+            Some(at) => self.schedule_subtitle_tick(TickKind::SubtitleAutoHide, at),
+            None => self
+                .ticks
+                .retain(|t| !(t.win == WinId::Subtitle && t.kind == TickKind::SubtitleAutoHide)),
+        }
+    }
+
+    /// SubtitlePending 节拍：消费到点待插入（原版 timer.timeout → _insert_sentence）；
+    /// 返回是否实际插入（宿主据此重绘）。
+    pub fn subtitle_flush_pending(&mut self) -> bool {
+        let now = Instant::now();
+        if self.subtitle.flush_pending(&self.settings.subtitle_mode, now) {
+            self.sync_subtitle_auto_hide_tick();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// 字幕窗位置变更登记（原版 position_changed → 500ms 防抖保存；仅存 x/y）
+    pub fn schedule_subtitle_pos_save(&mut self, pos: (i32, i32)) {
+        if self.subtitle.last_saved_pos == Some(pos) {
+            return;
+        }
+        self.subtitle.pos_dirty_since = Some(Instant::now());
+        let at = Instant::now() + Duration::from_millis(500);
+        self.schedule_subtitle_tick(TickKind::PosSave, at);
+    }
+
+    /// 字幕窗 500ms 穿透断言节拍（原版 _ct_timer 500ms；由宿主按开关续拍）
+    pub fn schedule_subtitle_click_through_tick(&mut self) {
+        let at = Instant::now() + Duration::from_millis(500);
+        self.schedule_subtitle_tick(TickKind::ClickThrough, at);
     }
 
     /// 1s 节流的系统采样（进程 CPU/RSS，对照原版 psutil.Process）；
