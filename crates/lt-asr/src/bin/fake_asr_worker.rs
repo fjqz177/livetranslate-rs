@@ -12,6 +12,7 @@ use lt_proto::{AsrResult, EngineError};
 struct EchoEngine {
     hang_ms: u64,
     crash_on_transcribe: bool,
+    fail_transcribe: bool,
 }
 
 impl AsrEngine for EchoEngine {
@@ -19,6 +20,9 @@ impl AsrEngine for EchoEngine {
         if self.crash_on_transcribe {
             eprintln!("fake worker: 模拟崩溃");
             std::process::abort();
+        }
+        if self.fail_transcribe {
+            return Err(EngineError::Runtime { message: "注入的可恢复失败".into(), recoverable: true });
         }
         if self.hang_ms > 0 {
             std::thread::sleep(std::time::Duration::from_millis(self.hang_ms));
@@ -73,6 +77,7 @@ fn main() {
     let engine = EchoEngine {
         hang_ms: opt_u64(&options, "hang_ms"),
         crash_on_transcribe: opt_bool(&options, "crash_on_transcribe"),
+        fail_transcribe: opt_bool(&options, "fail_transcribe"),
     };
     let mut engine = Some(engine);
     let mut reader = FrameReader::new(&mut stdin);
