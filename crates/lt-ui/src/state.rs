@@ -1,9 +1,9 @@
 //! UI 共享状态 —— 全部只被 UI 线程读写（事件经 UiMsg 进入，无锁竞争）。
 
-use lt_proto::{Cmd, Settings, SubtitleMode};
+use lt_proto::{Cmd, Settings, SubtitleMode, UiMsg};
 use std::time::{Duration, Instant};
 
-/// 窗口标识（4 个常驻窗口 + 启动流对话框）
+/// 窗口标识（4 个常驻窗口 + 启动流对话框 + Benchmark 工具窗）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum WinId {
     Overlay,
@@ -13,6 +13,8 @@ pub enum WinId {
     /// 启动流对话框（首启向导/缺模型下载/模型加载共用一个常规装饰窗口；
     /// 标题随启动流阶段由窗口层 set_title 动态化）
     Setup,
+    /// 性能基准独立工具窗（原版 BenchmarkDialog；识别页页头按钮打开，默认隐藏）
+    Benchmark,
 }
 
 impl WinId {
@@ -24,6 +26,7 @@ impl WinId {
             WinId::Panel => "panel",
             WinId::Log => "log",
             WinId::Setup => "setup",
+            WinId::Benchmark => "benchmark",
         }
     }
 
@@ -36,6 +39,8 @@ impl WinId {
             WinId::Log => lt_i18n::t("window_log"),
             // 创建时的兜底标题；向导/下载/加载阶段由窗口层按流设置真实标题
             WinId::Setup => "LiveTranslate".into(),
+            // 原版 BenchmarkDialog.setWindowTitle(t("benchmark_dialog_title"))
+            WinId::Benchmark => lt_i18n::t("benchmark_dialog_title"),
         }
     }
 }
@@ -67,6 +72,9 @@ pub enum TickKind {
     SubtitlePending,
     /// 面板设置 300ms 防抖到期（原版 ControlPanel._save_timer singleShot；win=Panel）
     PanelApply,
+    /// 翻译页 system_prompt 600ms 防抖到期（原版 _prompt_debounce QTimer 600ms；
+    /// 到期发 SwitchTranslator 重建翻译器；win=Panel）
+    PromptApply,
 }
 
 /// 监视条数据：音频侧来自 UpdateMonitor 事件（每 chunk），系统侧 1s 节流采样。
@@ -138,6 +146,8 @@ pub enum WinAction {
     /// 常规页"重置窗口位置"（原版 _on_reset_positions：字幕窗回 (100,100)、
     /// 悬浮窗回主屏右下角；宿主移动窗口后走既有 Moved 防抖保存）
     ResetPositions,
+    /// 识别页页头"性能基准…"按钮（原版 BenchmarkDialog.exec()；宿主显示工具窗）
+    ShowBenchmark,
 }
 
 /// 悬浮窗模式（原版 DragHandle._mode："full"/"compact"）
@@ -473,6 +483,387 @@ pub struct OverlayUiState {
 /// 面板设置防抖时长（原版 _save_timer.setInterval(300)：控件变更 300ms 后一次性应用）
 pub const PANEL_APPLY_DEBOUNCE_MS: u64 = 300;
 
+/// 翻译页 system_prompt 防抖时长（原版 translation_tab._prompt_debounce 600ms）
+pub const PROMPT_APPLY_DEBOUNCE_MS: u64 = 600;
+
+/// ModelEditDialog 高级参数覆写行的键序（原版 _adv_rows 的插入序；
+/// 与 lt_proto::ModelConfig.overrides BTreeMap 的键集合一致）
+pub const OVERRIDE_KEYS: [&str; 6] =
+    ["temperature", "top_p", "max_tokens", "frequency_penalty", "presence_penalty", "seed"];
+
+/// thinking_style 下拉项（lt_translate::thinking::THINKING_STYLES 的 UI 镜像；
+/// 显示名走 i18n thinking_style_* 键）
+pub const THINKING_STYLE_VALUES: [&str; 6] = ["auto", "deepseek", "qwen", "vllm", "openai", "off"];
+
+/// thinking_style 存储值 → 下拉索引（未知值回退 auto=0）
+pub fn thinking_style_index(v: Option<&str>) -> usize {
+    v.and_then(|s| THINKING_STYLE_VALUES.iter().position(|k| *k == s)).unwrap_or(0)
+}
+
+/// 高级参数覆写行（原版 _make_override_row：checkbox 勾选才写 overrides）
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OverrideRow {
+    /// 勾选（原版 QCheckBox "覆盖"）
+    pub enabled: bool,
+    /// 数值（整数行 max_tokens/seed 以整数语义取用）
+    pub value: f64,
+}
+
+impl Default for OverrideRow {
+    fn default() -> Self {
+        Self { enabled: false, value: 0.0 }
+    }
+}
+
+/// ModelEditDialog 的控件草稿（原版 dialogs.py ModelEditDialog 的成员镜像）。
+/// 字段语义/范围/缺省逐项对照原版；OK 时经 [`ModelEditState::build`] 组装
+/// lt_proto::ModelConfig（条件序列化由 serde 契约保证）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModelEditState {
+    /// 新增（true）或编辑既有行（false，携带 `index`）
+    pub is_new: bool,
+    /// 编辑目标行号（is_new 时无意义）
+    pub index: usize,
+    // ── Basic ──
+    pub name: String,
+    pub api_base: String,
+    pub api_key: String,
+    pub model: String,
+    /// 0=不使用 1=系统代理 2=自定义（原版 _proxy_mode）
+    pub proxy_index: usize,
+    /// 自定义代理 URL（仅 proxy_index==2 可编辑）
+    pub proxy_url: String,
+    /// 0=auto 1=deepseek 2=qwen 3=vllm 4=openai 5=off（原版 no_think 复选的
+    /// 后继形态：契约键 thinking_style）
+    pub thinking_index: usize,
+    pub no_system_role: bool,
+    pub streaming: bool,
+    pub json_response: bool,
+    /// 0..=20（原版 QSpinBox）
+    pub context_turns: i32,
+    /// $ / 1M tokens（原版 QDoubleSpinBox 0-999 两位小数，0 = "—"）
+    pub input_price: f64,
+    pub output_price: f64,
+    /// 六行 checkbox+value（键序 = [`OVERRIDE_KEYS`]）
+    pub overrides: [OverrideRow; 6],
+    /// extra_body JSON 文本（空 = 不设置；非法 = 禁止确定）
+    pub extra_body_text: String,
+}
+
+impl ModelEditState {
+    /// "添加模型"空白草稿（原版无 model_data 分支：文本框全空、proxy=none、
+    /// no_think/streaming 默认勾选——对应 thinking=auto、streaming=true）
+    pub fn new_add() -> Self {
+        Self {
+            is_new: true,
+            index: 0,
+            name: String::new(),
+            api_base: String::new(),
+            api_key: String::new(),
+            model: String::new(),
+            proxy_index: 0,
+            proxy_url: String::new(),
+            thinking_index: 0,
+            no_system_role: false,
+            streaming: true,
+            json_response: false,
+            context_turns: 0,
+            input_price: 0.0,
+            output_price: 0.0,
+            overrides: std::array::from_fn(|_| OverrideRow::default()),
+            extra_body_text: String::new(),
+        }
+    }
+
+    /// 由既有 ModelConfig 填充（原版 model_data populate 分支）
+    pub fn new_edit(index: usize, cfg: &lt_proto::ModelConfig) -> Self {
+        // 原版 populate 的高级行缺省值（checkbox 未勾时数值不可见，但 spin 保持构造值）
+        const ADV_DEFAULTS: [f64; 6] = [0.3, 1.0, 256.0, 0.0, 0.0, 0.0];
+        let mut st = Self {
+            is_new: false,
+            index,
+            name: cfg.name.clone(),
+            api_base: cfg.api_base.clone(),
+            api_key: cfg.api_key.clone(),
+            model: cfg.model.clone(),
+            proxy_index: proxy_index_for(&cfg.proxy),
+            proxy_url: String::new(),
+            thinking_index: thinking_style_index(cfg.thinking_style.as_deref()),
+            no_system_role: cfg.no_system_role,
+            streaming: cfg.streaming,
+            json_response: cfg.json_response,
+            context_turns: cfg.context_turns as i32,
+            input_price: cfg.input_price,
+            output_price: cfg.output_price,
+            overrides: std::array::from_fn(|i| OverrideRow { enabled: false, value: ADV_DEFAULTS[i] }),
+            extra_body_text: String::new(),
+        };
+        // 原版 populate：非 none/system 且非空 → custom + URL
+        if st.proxy_index == 2 {
+            st.proxy_url = cfg.proxy.clone();
+        }
+        if let Some(map) = &cfg.overrides {
+            for (i, key) in OVERRIDE_KEYS.iter().enumerate() {
+                if let Some(v) = map.get(*key).filter(|v| !v.is_null()) {
+                    let num = v.as_f64().unwrap_or(0.0);
+                    st.overrides[i] = OverrideRow { enabled: true, value: num };
+                }
+            }
+        }
+        if let Some(extra) = &cfg.extra_body {
+            if !extra.is_null() {
+                st.extra_body_text = serde_json::to_string_pretty(extra).unwrap_or_default();
+            }
+        }
+        st
+    }
+
+    /// 解析 extra_body 文本（原版 _parse_extra_body：空 → Ok(None)；
+    /// 非法 JSON / 非 object → Err）
+    pub fn parse_extra_body(&self) -> Result<Option<serde_json::Value>, String> {
+        let text = self.extra_body_text.trim();
+        if text.is_empty() {
+            return Ok(None);
+        }
+        let v: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
+        if !v.is_object() {
+            return Err("extra_body must be a JSON object".into());
+        }
+        Ok(Some(v))
+    }
+
+    /// 组装 ModelConfig（原版 get_data；条件序列化语义由 serde 契约承载）。
+    /// extra_body 非法时返回 Err（UI 侧禁用确定按钮）。
+    pub fn build(&self) -> Result<lt_proto::ModelConfig, String> {
+        let extra_body = self.parse_extra_body()?;
+        let mut overrides: std::collections::BTreeMap<String, serde_json::Value> =
+            std::collections::BTreeMap::new();
+        for (i, key) in OVERRIDE_KEYS.iter().enumerate() {
+            let row = self.overrides[i];
+            if row.enabled {
+                let v = if matches!(*key, "max_tokens" | "seed") {
+                    serde_json::Value::from(row.value.round() as i64)
+                } else {
+                    // 原版 round(val, 2)
+                    serde_json::Value::from((row.value * 100.0).round() / 100.0)
+                };
+                overrides.insert((*key).to_string(), v);
+            }
+        }
+        Ok(lt_proto::ModelConfig {
+            name: self.name.trim().to_string(),
+            api_base: self.api_base.trim().to_string(),
+            api_key: self.api_key.trim().to_string(),
+            model: self.model.trim().to_string(),
+            proxy: self.proxy_arg(),
+            no_system_role: self.no_system_role,
+            thinking_style: match THINKING_STYLE_VALUES[self.thinking_index] {
+                "auto" => None,
+                v => Some(v.to_string()),
+            },
+            streaming: self.streaming,
+            json_response: self.json_response,
+            context_turns: self.context_turns.clamp(0, 20) as u32,
+            input_price: self.input_price.clamp(0.0, 999.0),
+            output_price: self.output_price.clamp(0.0, 999.0),
+            overrides: if overrides.is_empty() { None } else { Some(overrides) },
+            extra_body,
+        })
+    }
+
+    /// 代理三模式 → 契约字符串（原版 get_data proxy 分支：custom 且空白回退 none）
+    pub fn proxy_arg(&self) -> String {
+        match self.proxy_index {
+            1 => "system".into(),
+            2 => {
+                let t = self.proxy_url.trim();
+                if t.is_empty() { "none".into() } else { t.to_string() }
+            }
+            _ => "none".into(),
+        }
+    }
+}
+
+/// 代理契约字符串 → 下拉索引（原版 populate：system→1；非 none/system 且非空→2；否则 0）
+pub fn proxy_index_for(proxy: &str) -> usize {
+    if proxy == "system" {
+        1
+    } else if !proxy.is_empty() && proxy != "none" {
+        2
+    } else {
+        0
+    }
+}
+
+/// 字幕行编辑对话框草稿（原版 LineEditDialog 的成员镜像；字段全集 =
+/// lt_proto::SubtitleLine 的全部 15 个可编辑字段）
+#[derive(Debug, Clone, PartialEq)]
+pub struct LineEditState {
+    /// 行号（新增时为追加位置）
+    pub index: usize,
+    /// 新增（true）或编辑（false）
+    pub is_new: bool,
+    /// 0=原文 1=翻译（原版 _type_combo）
+    pub line_type_index: usize,
+    /// 目标语言码（仅翻译行有意义；原版 _lang_combo 跳过 auto）
+    pub lang: String,
+    pub enabled: bool,
+    pub font_family: String,
+    /// 8..=120 pt
+    pub font_size: i32,
+    /// "#rrggbb"
+    pub color: String,
+    /// 0..=100（% 表述；存储 0..=255 由换算承担）
+    pub opacity_pct: i32,
+    /// 0=左 1=中 2=右
+    pub align_index: usize,
+    pub outline_enabled: bool,
+    pub outline_color: String,
+    /// 0..=10 px
+    pub outline_width: i32,
+    pub bg_image: String,
+    /// 0..=5：none/fade/slide_left/slide_right/slide_up/slide_down
+    pub entry_anim_index: usize,
+    pub exit_anim_index: usize,
+    /// 50..=3000 ms
+    pub animation_duration: i32,
+}
+
+/// 行动画下拉项（原版 anim_items 顺序）
+pub const ANIM_VALUES: [&str; 6] =
+    ["none", "fade", "slide_left", "slide_right", "slide_up", "slide_down"];
+
+/// 动画存储值 → 下拉索引（未知值回退 none=0）
+pub fn anim_index(v: &str) -> usize {
+    ANIM_VALUES.iter().position(|a| *a == v).unwrap_or(0)
+}
+
+/// 对齐存储值 → 下拉索引（未知值回退 center=1）
+pub fn align_index(v: &str) -> usize {
+    match v {
+        "left" => 0,
+        "right" => 2,
+        _ => 1,
+    }
+}
+
+/// 下拉索引 → 对齐存储值
+pub fn align_value(idx: usize) -> &'static str {
+    match idx {
+        0 => "left",
+        2 => "right",
+        _ => "center",
+    }
+}
+
+impl LineEditState {
+    /// 由 SubtitleLine 填充（原版 LineEditDialog(cfg)）
+    pub fn new_edit(index: usize, line: &lt_proto::SubtitleLine) -> Self {
+        Self {
+            index,
+            is_new: false,
+            line_type_index: if line.line_type == "original" { 0 } else { 1 },
+            lang: line.lang.clone().unwrap_or_else(|| "zh".into()),
+            enabled: line.enabled,
+            font_family: line.font_family.clone(),
+            font_size: line.font_size as i32,
+            color: line.color.clone(),
+            opacity_pct: (f64::from(line.opacity) / 255.0 * 100.0).round() as i32,
+            align_index: align_index(&line.align),
+            outline_enabled: line.outline_enabled,
+            outline_color: line.outline_color.clone(),
+            outline_width: line.outline_width as i32,
+            bg_image: line.bg_image.clone(),
+            entry_anim_index: anim_index(&line.entry_animation),
+            exit_anim_index: anim_index(&line.exit_animation),
+            animation_duration: line.animation_duration as i32,
+        }
+    }
+
+    /// 新增行草稿（原版 _add_line 的 new_line 字典；lang=en、其余默认）
+    pub fn new_add(index: usize) -> Self {
+        let line = lt_proto::SubtitleLine { lang: Some("en".into()), ..Default::default() };
+        let mut st = Self::new_edit(index, &line);
+        st.is_new = true;
+        st
+    }
+
+    /// 组装 SubtitleLine（原版 get_config：opacity % ↔ 0-255 换算；
+    /// 仅翻译行携带 lang）
+    pub fn build(&self) -> lt_proto::SubtitleLine {
+        let line_type =
+            if self.line_type_index == 0 { "original" } else { "translation" }.to_string();
+        lt_proto::SubtitleLine {
+            line_type,
+            lang: if self.line_type_index == 1 { Some(self.lang.clone()) } else { None },
+            enabled: self.enabled,
+            font_family: self.font_family.clone(),
+            font_size: self.font_size.clamp(8, 120) as u32,
+            color: self.color.clone(),
+            opacity: (f64::from(self.opacity_pct.clamp(0, 100)) / 100.0 * 255.0).round() as u32,
+            align: align_value(self.align_index).to_string(),
+            outline_enabled: self.outline_enabled,
+            outline_color: self.outline_color.clone(),
+            outline_width: self.outline_width.clamp(0, 10) as u32,
+            bg_image: self.bg_image.clone(),
+            entry_animation: ANIM_VALUES[self.entry_anim_index].to_string(),
+            exit_animation: ANIM_VALUES[self.exit_anim_index].to_string(),
+            animation_duration: self.animation_duration.clamp(50, 3000) as u32,
+        }
+    }
+}
+
+/// 字幕行上移（原版 _move_line_up：row>0 才交换）。返回是否发生交换。
+pub fn move_line_up(lines: &mut [lt_proto::SubtitleLine], row: usize) -> bool {
+    if row == 0 || row >= lines.len() {
+        return false;
+    }
+    lines.swap(row, row - 1);
+    true
+}
+
+/// 字幕行下移（原版 _move_line_down：row < len-1 才交换）。返回是否发生交换。
+pub fn move_line_down(lines: &mut [lt_proto::SubtitleLine], row: usize) -> bool {
+    if row + 1 >= lines.len() {
+        return false;
+    }
+    lines.swap(row, row + 1);
+    true
+}
+
+/// 模型缓存扫描条目（原版 get_cache_entries 的 (name, path) + dir_size 结果）
+#[derive(Debug, Clone, PartialEq)]
+pub struct CacheEntry {
+    /// 显示名（"SenseVoice Small (ModelScope)" 等）
+    pub name: String,
+    pub path: std::path::PathBuf,
+    pub size: u64,
+}
+
+/// "#rrggbb" 颜色校验/归一（原版 QColor.name() 语义：小写 #rrggbb）。
+/// 接受 #RGB / #RRGGBB / #RRGGBBAA；非法返回 None（UI 保持原值 + 红字提示）。
+pub fn normalize_hex_color(s: &str) -> Option<String> {
+    let t = s.trim();
+    let hex = t.strip_prefix('#')?;
+    if hex.is_empty() || hex.chars().any(|c| !c.is_ascii_hexdigit()) {
+        return None;
+    }
+    match hex.len() {
+        // #RGB → 每位重复展开（Qt QColor 语义）
+        3 => {
+            let expanded: String = hex
+                .chars()
+                .flat_map(|c| [c, c])
+                .collect::<String>()
+                .to_ascii_lowercase();
+            Some(format!("#{expanded}"))
+        }
+        6 => Some(format!("#{}", hex.to_ascii_lowercase())),
+        8 => Some(format!("#{}", hex[..6].to_ascii_lowercase())),
+        _ => None,
+    }
+}
+
 /// 面板页序（原版 _pages 的固定顺序：常规/翻译/识别/字幕/数据与存储/诊断/关于）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PanelPage {
@@ -560,6 +951,21 @@ pub struct PanelUiState {
     /// 设置防抖到期时刻（原版 _save_timer singleShot：每次变更重置到 now+300ms
     /// → 300ms 内连发合并为最后一次的 deadline；到期由 PanelApply 节拍消费）
     pub apply_due_at: Option<Instant>,
+    /// 翻译页 system_prompt 防抖到期时刻（原版 _prompt_debounce 600ms；
+    /// 到期由 PromptApply 节拍消费 → SwitchTranslator 重建翻译器）
+    pub prompt_apply_due: Option<Instant>,
+    /// ModelEditDialog 打开中（None=关闭；翻译页模态区渲染）
+    pub model_editor: Option<ModelEditState>,
+    /// 字幕行编辑对话框打开中（None=关闭；字幕页模态区渲染）
+    pub line_editor: Option<LineEditState>,
+    /// 翻译页模型列表选中行（None=无选中；点击行 = 选中并跟随 active_model）
+    pub model_selected: Option<usize>,
+    /// 数据页缓存列表选中行
+    pub cache_selected: Option<usize>,
+    /// 字幕页文字行列表选中行
+    pub line_selected: Option<usize>,
+    /// 数据页缓存扫描结果（None=尚未扫描；进入数据页或点"刷新"时重建）
+    pub cache_entries: Option<Vec<CacheEntry>>,
 }
 
 impl PanelUiState {
@@ -584,6 +990,17 @@ impl PanelUiState {
     /// 防抖 deadline（原版 setInterval(300) 的到期时刻）
     pub fn apply_deadline(now: Instant) -> Instant {
         now + Duration::from_millis(PANEL_APPLY_DEBOUNCE_MS)
+    }
+
+    /// prompt 防抖到期消费（宿主在 PromptApply 节拍触发时调用）
+    pub fn take_prompt_apply_due(&mut self, now: Instant) -> bool {
+        match self.prompt_apply_due {
+            Some(at) if now >= at => {
+                self.prompt_apply_due = None;
+                true
+            }
+            _ => false,
+        }
     }
 }
 
@@ -730,6 +1147,20 @@ pub struct AppState {
     pub load_dialog: Option<String>,
     /// Worker 命令出口（宿主构造时注入；widget 代码经 send_cmd 直接发送）
     pub cmd_tx: Option<std::sync::mpsc::Sender<Cmd>>,
+    /// UI → 事件环回出口（宿主构造时注入 EventLoopProxy 转发；后台线程经
+    /// send_event 回流 UiMsg——benchmark 窗的 on_line 日志流即走此通道）
+    pub event_tx: Option<std::sync::Arc<dyn Fn(UiMsg) + Send + Sync>>,
+    /// 性能基准输出行（后台线程经 LogLine{target:"benchmark"} 事件回流追加；
+    /// 含结尾 "__DONE__" 停止标记，上限 500 行防内存膨胀）
+    pub bench_lines: Vec<String>,
+    /// 性能基准运行中（开始按钮禁用/文案切换；__DONE__ 到达即复位）
+    pub bench_running: bool,
+    /// 性能基准参与模型勾选（与 settings.models 对位；缺省全选）
+    pub bench_selected: Vec<bool>,
+    /// 性能基准源语言下拉索引（BENCH_SRC_LANGS）
+    pub bench_src: usize,
+    /// 性能基准目标语言下拉索引（BENCH_TGT_LANGS）
+    pub bench_tgt: usize,
     /// 缺模型下载失败后点"关闭"：请求退出应用（原版 reject → main 返回退出）
     pub quit_requested: bool,
     /// sysinfo 实例与上次采样时刻（1s 节流）
@@ -754,6 +1185,8 @@ impl AppState {
         visible.insert(WinId::Log, false); // 原版：启动即建但隐藏
         // Setup 对话框窗口：仅启动流进行中初始可见（运行期 load_dialog 单独控制）
         visible.insert(WinId::Setup, startup_pending);
+        // Benchmark 工具窗：启动即建但隐藏（原版仅点识别页"性能基准…"时 exec）
+        visible.insert(WinId::Benchmark, false);
         Self {
             settings,
             running: true,
@@ -777,6 +1210,12 @@ impl AppState {
             startup: flow,
             load_dialog: None,
             cmd_tx: None,
+            event_tx: None,
+            bench_lines: Vec::new(),
+            bench_running: false,
+            bench_selected: Vec::new(),
+            bench_src: 0,
+            bench_tgt: 0,
             quit_requested: false,
             sys: None,
             sys_last: None,
@@ -1016,6 +1455,49 @@ impl AppState {
             Some(self.settings.clone())
         } else {
             None
+        }
+    }
+
+    /// 翻译页 prompt 变更登记（原版 _prompt_debounce.start()：重启 600ms 单发定时）。
+    /// 到期由 [`TickKind::PromptApply`] 节拍消费（→ SwitchTranslator 重建翻译器）。
+    pub fn schedule_prompt_apply(&mut self) {
+        self.schedule_prompt_apply_at(Instant::now());
+    }
+
+    /// [`Self::schedule_prompt_apply`] 的可注入时钟版（测试用）
+    pub fn schedule_prompt_apply_at(&mut self, now: Instant) {
+        self.panel.prompt_apply_due = Some(now + Duration::from_millis(PROMPT_APPLY_DEBOUNCE_MS));
+        let at = now + Duration::from_millis(PROMPT_APPLY_DEBOUNCE_MS);
+        if let Some(t) = self
+            .ticks
+            .iter_mut()
+            .find(|t| t.win == WinId::Panel && t.kind == TickKind::PromptApply)
+        {
+            t.at = at;
+        } else {
+            self.ticks.push(Tick { at, win: WinId::Panel, kind: TickKind::PromptApply });
+        }
+    }
+
+    /// PromptApply 节拍到期消费（600ms 内连续编辑合并为一次）
+    pub fn take_due_prompt_apply(&mut self, now: Instant) -> bool {
+        self.panel.take_prompt_apply_due(now)
+    }
+
+    /// 性能基准输出追加一行（上限 500 行，满删最旧）
+    pub fn push_bench_line(&mut self, line: String) {
+        self.bench_lines.push(line);
+        if self.bench_lines.len() > 500 {
+            self.bench_lines.remove(0);
+        }
+    }
+
+    /// UI → 事件环回（后台线程闭包持有 event_tx 的 Arc 克隆后调用）。
+    /// 未注入时丢弃并记 debug（与 send_cmd 同款防御）。
+    pub fn send_event(&self, msg: UiMsg) {
+        match &self.event_tx {
+            Some(f) => f(msg),
+            None => tracing::debug!("event_tx 未注入，事件被丢弃: {msg:?}"),
         }
     }
 
@@ -1386,5 +1868,216 @@ mod tests {
         assert!(!st.panel.take_apply_due(t0 + Duration::from_millis(400)));
         assert!(st.take_due_panel_apply(t0 + Duration::from_millis(500)).is_some());
         assert!(st.take_due_panel_apply(t0 + Duration::from_millis(500)).is_none());
+    }
+
+    // ── M4.4 第二批：ModelEditState / LineEditState / prompt 防抖 / bench 行 ──
+
+    /// ModelEditState ↔ ModelConfig 全量往返（原版 populate ↔ get_data）
+    #[test]
+    fn model_edit_state_roundtrip_full_config() {
+        let cfg = lt_proto::ModelConfig {
+            name: "deepseek".into(),
+            api_base: "https://api.deepseek.com/v1".into(),
+            api_key: "sk-x".into(),
+            model: "deepseek-chat".into(),
+            proxy: "http://127.0.0.1:7890".into(),
+            no_system_role: true,
+            thinking_style: Some("qwen".into()),
+            streaming: false,
+            json_response: true,
+            context_turns: 4,
+            input_price: 0.27,
+            output_price: 1.1,
+            overrides: Some(
+                [
+                    ("temperature".to_string(), serde_json::json!(0.7)),
+                    ("max_tokens".to_string(), serde_json::json!(512)),
+                ]
+                .into_iter()
+                .collect(),
+            ),
+            extra_body: Some(serde_json::json!({"thinking": {"type": "disabled"}})),
+        };
+        let st = ModelEditState::new_edit(1, &cfg);
+        assert_eq!(st.proxy_index, 2, "自定义 URL → custom 模式");
+        assert_eq!(st.proxy_url, "http://127.0.0.1:7890");
+        assert_eq!(st.thinking_index, 2, "qwen → 索引 2");
+        let built = st.build().expect("extra_body 合法");
+        assert_eq!(built, cfg);
+    }
+
+    /// 代理三模式映射：none/system/custom+空白回退（原版 get_data proxy 分支）
+    #[test]
+    fn model_edit_proxy_modes() {
+        let mut st = ModelEditState::new_add();
+        st.proxy_index = 0;
+        assert_eq!(st.proxy_arg(), "none");
+        st.proxy_index = 1;
+        assert_eq!(st.proxy_arg(), "system");
+        st.proxy_index = 2;
+        st.proxy_url = "  ".into();
+        assert_eq!(st.proxy_arg(), "none", "custom 空白回退 none");
+        st.proxy_url = " http://p:8080 ".into();
+        assert_eq!(st.proxy_arg(), "http://p:8080", "去首尾空白");
+        // 契约字符串 → 索引往返
+        assert_eq!(proxy_index_for("none"), 0);
+        assert_eq!(proxy_index_for("system"), 1);
+        assert_eq!(proxy_index_for("http://p:8080"), 2);
+        assert_eq!(proxy_index_for(""), 0);
+    }
+
+    /// overrides 勾选 ↔ BTreeMap 往返：勾选才写入、整数行取整、未勾选 = None
+    #[test]
+    fn model_edit_overrides_checkbox_roundtrip() {
+        let mut st = ModelEditState::new_add();
+        st.overrides[0] = super::OverrideRow { enabled: true, value: 0.256 }; // temperature
+        st.overrides[2] = super::OverrideRow { enabled: true, value: 512.4 }; // max_tokens
+        let cfg = st.build().expect("ok");
+        let map = cfg.overrides.as_ref().expect("勾选后应存在");
+        assert_eq!(map.len(), 2);
+        assert_eq!(map["temperature"], serde_json::json!(0.26), "原版 round(val,2)");
+        assert_eq!(map["max_tokens"], serde_json::json!(512), "整数行取整");
+        // 未勾选 = None（缺省不落盘）
+        let st2 = ModelEditState::new_add();
+        assert!(st2.build().unwrap().overrides.is_none());
+        // 往返：勾选行回填后 build 保持
+        let back = ModelEditState::new_edit(0, &cfg);
+        assert!(back.overrides[0].enabled && back.overrides[2].enabled);
+        assert!(!back.overrides[1].enabled);
+        assert_eq!(back.build().unwrap(), cfg);
+    }
+
+    /// extra_body 解析：空 → None；合法 object → Some；非法/数组 → Err（原版 _parse_extra_body）
+    #[test]
+    fn model_edit_extra_body_parsing() {
+        let mut st = ModelEditState::new_add();
+        assert_eq!(st.build().unwrap().extra_body, None, "空文本不设置");
+        st.extra_body_text = r#"{"thinking": {"type": "disabled"}}"#.into();
+        let cfg = st.build().unwrap();
+        assert_eq!(cfg.extra_body, Some(serde_json::json!({"thinking": {"type": "disabled"}})));
+        st.extra_body_text = "not json".into();
+        assert!(st.build().is_err());
+        st.extra_body_text = "[1,2]".into();
+        assert!(st.build().is_err(), "非 object 拒绝");
+        st.extra_body_text = "  ".into();
+        assert_eq!(st.parse_extra_body(), Ok(None));
+    }
+
+    /// LineEditState ↔ SubtitleLine 全字段往返（原版 populate ↔ get_config）
+    #[test]
+    fn line_edit_state_roundtrip_all_fields() {
+        let line = lt_proto::SubtitleLine {
+            line_type: "translation".into(),
+            lang: Some("ja".into()),
+            enabled: false,
+            font_family: "SimHei".into(),
+            font_size: 36,
+            color: "#FFD700".into(),
+            opacity: 128,
+            align: "right".into(),
+            outline_enabled: false,
+            outline_color: "#123456".into(),
+            outline_width: 5,
+            bg_image: "D:/bg.png".into(),
+            entry_animation: "slide_up".into(),
+            exit_animation: "fade".into(),
+            animation_duration: 250,
+        };
+        let st = LineEditState::new_edit(1, &line);
+        assert_eq!(st.line_type_index, 1);
+        assert_eq!(st.lang, "ja");
+        assert_eq!(st.opacity_pct, 50, "128/255 ≈ 50%");
+        assert_eq!(st.entry_anim_index, 4);
+        let built = st.build();
+        assert_eq!(built, line, "全字段往返一致");
+    }
+
+    /// 原文行 lang=None；opacity % ↔ 0-255 换算；新增行草稿默认值
+    #[test]
+    fn line_edit_original_line_and_add_defaults() {
+        let orig = lt_proto::SubtitleLine {
+            line_type: "original".into(),
+            lang: None,
+            ..Default::default()
+        };
+        let st = LineEditState::new_edit(0, &orig);
+        assert_eq!(st.line_type_index, 0);
+        // 原文行即便草稿 lang 有兜底值，build 也必须回 None（原版 get_config 分支）
+        assert_eq!(st.build().lang, None);
+
+        let add = LineEditState::new_add(2);
+        assert!(add.is_new);
+        let built = add.build();
+        assert_eq!(built.line_type, "translation");
+        assert_eq!(built.lang.as_deref(), Some("en"), "原版 _add_line new_line");
+        assert_eq!(built.animation_duration, 300);
+        assert_eq!(built.opacity, 255);
+    }
+
+    /// 字幕行上移/下移边界（原版 _move_line_up/_move_line_down）
+    #[test]
+    fn move_line_boundaries() {
+        let mk = |n: u32| lt_proto::SubtitleLine { font_size: n, ..Default::default() };
+        let mut lines = vec![mk(1), mk(2), mk(3)];
+        assert!(!move_line_up(&mut lines, 0), "首行上移无效");
+        assert!(!move_line_down(&mut lines, 2), "末行下移无效");
+        assert!(move_line_down(&mut lines, 0));
+        assert_eq!(lines.iter().map(|l| l.font_size).collect::<Vec<_>>(), [2, 1, 3]);
+        assert!(move_line_up(&mut lines, 2));
+        assert_eq!(lines.iter().map(|l| l.font_size).collect::<Vec<_>>(), [2, 3, 1]);
+        // 越界行号防御
+        assert!(!move_line_up(&mut lines, 9));
+        assert!(!move_line_down(&mut lines, 9));
+    }
+
+    /// 颜色归一：#RRGGBB 小写化、#RGB 展开、8 位截断、非法拒绝
+    #[test]
+    fn normalize_hex_color_semantics() {
+        assert_eq!(normalize_hex_color("#FFD700"), Some("#ffd700".into()));
+        assert_eq!(normalize_hex_color(" #abc "), Some("#aabbcc".into()));
+        assert_eq!(normalize_hex_color("#AABBCCDD"), Some("#aabbcc".into()));
+        assert_eq!(normalize_hex_color("#GGGGGG"), None);
+        assert_eq!(normalize_hex_color("red"), None);
+        assert_eq!(normalize_hex_color("#12345"), None);
+        assert_eq!(normalize_hex_color(""), None);
+    }
+
+    /// prompt 600ms 防抖：登记/合并/消费与 PanelApply 互不干扰
+    #[test]
+    fn prompt_apply_debounce_independent() {
+        let mut st = AppState::new(Settings::default());
+        let t0 = Instant::now();
+        st.schedule_prompt_apply_at(t0);
+        st.schedule_prompt_apply_at(t0 + Duration::from_millis(200));
+        let ticks: Vec<_> = st.ticks.iter().filter(|t| t.kind == TickKind::PromptApply).collect();
+        assert_eq!(ticks.len(), 1, "连发合并为单节拍");
+        assert_eq!(ticks[0].at, t0 + Duration::from_millis(800), "deadline = 末次登记 + 600ms");
+        assert!(!st.take_due_prompt_apply(t0 + Duration::from_millis(799)));
+        assert!(st.take_due_prompt_apply(t0 + Duration::from_millis(800)));
+        assert!(!st.take_due_prompt_apply(t0 + Duration::from_millis(800)), "单发语义");
+        // 面板 300ms 防抖独立存在
+        assert!(st.panel.apply_due_at.is_none(), "prompt 登记不应触发 ApplySettings");
+    }
+
+    /// bench 行上限 500 删最旧（对齐 push_log_line 语义）
+    #[test]
+    fn bench_lines_cap_at_500() {
+        let mut st = AppState::new(Settings::default());
+        for i in 0..520 {
+            st.push_bench_line(format!("line {i}"));
+        }
+        assert_eq!(st.bench_lines.len(), 500);
+        assert_eq!(st.bench_lines[0], "line 20");
+        assert_eq!(st.bench_lines.last().unwrap(), "line 519");
+    }
+
+    /// thinking_style 存储值 ↔ 下拉索引（未知/None 回退 auto）
+    #[test]
+    fn thinking_style_index_mapping() {
+        assert_eq!(thinking_style_index(None), 0);
+        assert_eq!(thinking_style_index(Some("auto")), 0);
+        assert_eq!(thinking_style_index(Some("off")), 5);
+        assert_eq!(thinking_style_index(Some("bogus")), 0);
+        assert_eq!(super::THINKING_STYLE_VALUES.len(), 6);
     }
 }

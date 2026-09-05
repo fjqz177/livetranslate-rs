@@ -188,6 +188,7 @@ dialog_delete_msg: >-
   re-downloaded on next launch.
 
   Continue?
+delete_all_done_msg: "Deleted all {count} cached models. Settings are preserved; the app keeps running — models will be re-downloaded on demand after a restart."
 
 # Dialogs
 window_setup: "LiveTranslate - Initial Setup"
@@ -245,6 +246,13 @@ extra_body_hint: "JSON object of provider-specific parameters merged into reques
 extra_body_invalid: "extra_body must be a valid JSON object"
 override_enable: "Override"
 override_hint: "When unchecked, uses server default or global config"
+label_thinking_style: "Thinking style:"
+thinking_style_auto: "Auto (guess by endpoint)"
+thinking_style_deepseek: "DeepSeek / GLM / Volcengine"
+thinking_style_qwen: "Qwen / SiliconFlow (enable_thinking)"
+thinking_style_vllm: "vLLM / SGLang (chat_template_kwargs)"
+thinking_style_openai: "OpenAI / Grok (reasoning_effort)"
+thinking_style_off: "Off (send no parameter)"
 loading_model: "Loading {name}...\nPlease wait."
 error_title: "Error"
 error_load_asr: "Failed to load ASR model:\n{error}"
@@ -414,6 +422,9 @@ import_done_msg: "Settings imported. Restart the app to apply them."
 btn_open_benchmark: "Performance benchmark…"
 benchmark_dialog_title: "Performance Benchmark"
 benchmark_pending_m44: "The benchmark window lands with milestone M4.4."
+group_bench_models: "Models under test"
+bench_done_title: "Benchmark finished"
+bench_done_msg: "All selected models have been tested."
 # Rust additions (recognition page engine/model/cache: engine_display_* fallback to registry display names)
 engine_display_funasr: "FunASR (SenseVoice)"
 engine_display_whisper: "Whisper (faster-whisper)"

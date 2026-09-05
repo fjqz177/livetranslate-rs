@@ -68,6 +68,14 @@ impl MultiWindowApp {
             egui_wgpu::RendererOptions::default(),
         ));
         let proxy = event_loop.create_proxy();
+        // UI → 事件环回出口（后台线程经 AppState.send_event 回流 UiMsg；
+        // benchmark 窗的 on_line 日志流即走此通道）
+        {
+            let proxy = proxy.clone();
+            app_state.event_tx = Some(std::sync::Arc::new(move |msg: UiMsg| {
+                let _ = proxy.send_event(msg);
+            }));
+        }
         Ok(Self {
             app_state,
             ctx,
@@ -102,6 +110,8 @@ impl MultiWindowApp {
         self.create_window(event_loop, WinId::Log, (900, 500))?;
         // 启动流对话框（原版 QDialog：常规装饰窗口；可见性 = 启动流进行中）
         self.create_window(event_loop, WinId::Setup, (560, 420))?;
+        // 性能基准独立工具窗（原版 BenchmarkDialog resize(680, 480)；默认隐藏）
+        self.create_window(event_loop, WinId::Benchmark, (680, 480))?;
         // Setup 标题随启动流阶段动态化（向导/缺模型下载；加载框在 ModelLoadStart 再设）
         let setup_title = match &self.app_state.startup {
             StartupFlow::Wizard(_) => lt_i18n::t("window_setup"),
@@ -628,8 +638,25 @@ impl MultiWindowApp {
                     self.app_state.schedule_setup_tick(Duration::from_millis(500));
                     self.redraw_setup();
                 }
-                // 日志行（常驻桥接线程全程转发 → 日志窗；级别过滤在窗口状态内）
+                // 日志行（常驻桥接线程全程转发 → 日志窗；级别过滤在窗口状态内）。
+                // target=="benchmark" 的行为基准输出流：同步追加到 bench_lines
+                // （独立窗渲染源）并重绘基准窗；__DONE__ 复位运行态 + 完成提示。
                 lt_proto::UiEvent::LogLine { level, target, msg } => {
+                    if target == "benchmark" {
+                        let done = msg == "__DONE__";
+                        self.app_state.push_bench_line(msg.clone());
+                        self.redraw(WinId::Benchmark);
+                        if done && self.app_state.bench_running {
+                            self.app_state.bench_running = false;
+                            tracing::info!("性能基准完成");
+                            rfd::MessageDialog::new()
+                                .set_title(lt_i18n::t("bench_done_title"))
+                                .set_description(lt_i18n::t("bench_done_msg").as_str())
+                                .set_buttons(rfd::MessageButtons::Ok)
+                                .set_level(rfd::MessageLevel::Info)
+                                .show();
+                        }
+                    }
                     if self.app_state.logwin.push(crate::state::LogLineEntry {
                         time: chrono::Local::now().format("%H:%M:%S").to_string(),
                         level,
@@ -678,6 +705,10 @@ impl MultiWindowApp {
                 }
                 WinAction::ShowPanel => {
                     self.set_visible(WinId::Panel, true);
+                }
+                WinAction::ShowBenchmark => {
+                    // 原版 BenchmarkDialog.exec()：显示独立工具窗
+                    self.set_visible(WinId::Benchmark, true);
                 }
                 WinAction::ToggleSubtitle => {
                     let vis = self.app_state.settings.subtitle_mode.enabled;
@@ -1169,6 +1200,20 @@ impl ApplicationHandler<UiMsg> for MultiWindowApp {
                 // 面板设置 300ms 防抖到期（原版 _save_timer.timeout → _apply_settings：
                 // 整体重放 ApplySettings，AppShell 负责热应用 + 落盘）
                 TickKind::PanelApply => self.on_panel_apply_tick(),
+                // 翻译页 prompt 600ms 防抖到期（原版 _prompt_debounce → _apply_prompt：
+                // system_prompt 已实时写入 settings，此处重建活动模型翻译器）
+                TickKind::PromptApply => {
+                    if self.app_state.take_due_prompt_apply(Instant::now()) {
+                        let s = &self.app_state;
+                        if let Some(cfg) =
+                            s.settings.models.get(s.settings.active_model).cloned()
+                        {
+                            tracing::info!("System prompt updated（600ms 防抖到期，重建翻译器）");
+                            self.app_state
+                                .send_cmd(lt_proto::Cmd::SwitchTranslator(Box::new(cfg)));
+                        }
+                    }
+                }
             }
         }
         // 2) 空闲策略：等待最近节拍或事件

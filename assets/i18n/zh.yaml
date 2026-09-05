@@ -187,6 +187,8 @@ dialog_delete_msg: >-
   设置将被保留，所需模型将在下次启动时重新下载。
 
   是否继续？
+# Rust 版：删除全部后不退出应用，改为提示重启生效
+delete_all_done_msg: "已删除全部 {count} 个缓存模型。设置已保留，应用继续运行；重启应用后模型将按需重新下载。"
 
 # 对话框
 window_setup: "LiveTranslate - 初始设置"
@@ -244,6 +246,14 @@ extra_body_hint: "供应商专有参数的 JSON 对象，会合并到请求的 e
 extra_body_invalid: "extra_body 必须是合法的 JSON 对象"
 override_enable: "覆盖"
 override_hint: "未勾选时使用服务端默认值或全局配置"
+# Rust 版新增：thinking_style 下拉（no_think 复选的后继形态，契约键 thinking_style）
+label_thinking_style: "思考链风格:"
+thinking_style_auto: "自动 (按端点猜测)"
+thinking_style_deepseek: "DeepSeek / GLM / 火山方舟"
+thinking_style_qwen: "Qwen / SiliconFlow (enable_thinking)"
+thinking_style_vllm: "vLLM / SGLang (chat_template_kwargs)"
+thinking_style_openai: "OpenAI / Grok (reasoning_effort)"
+thinking_style_off: "关闭 (不发送关闭参数)"
 loading_model: "正在加载 {name}...\n请稍候。"
 error_title: "错误"
 error_load_asr: "ASR 模型加载失败:\n{error}"
@@ -413,6 +423,10 @@ import_done_msg: "设置已导入，重启应用后生效。"
 btn_open_benchmark: "性能基准…"
 benchmark_dialog_title: "性能基准"
 benchmark_pending_m44: "性能基准窗口随 M4.4 里程碑接入。"
+# Rust 版新增：性能基准独立工具窗（M4.4 接入）
+group_bench_models: "参与测试的模型"
+bench_done_title: "性能基准完成"
+bench_done_msg: "全部所选模型测试完成。"
 # Rust 版新增（识别页引擎/模型/缓存：engine_display_* 缺键回退注册表显示名）
 engine_display_funasr: "FunASR (SenseVoice)"
 engine_display_whisper: "Whisper (faster-whisper)"

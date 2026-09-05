@@ -1,4 +1,4 @@
-//! 控制面板（M4.3 第一批：面板框架 + 常规页 + 识别页；对照原版 ui/panel/）：
+//! 控制面板（M4.3 框架 + M4.4 全部七页；对照原版 ui/panel/）：
 //!
 //! - 框架（panel.py）：左侧 200px 导航列表（品牌行 + 7 页项，选中高亮）+
 //!   右侧页栈（每页 = 标题 + 一行提示 + 可滚动内容，高内容页滚动不撑破窗口，
@@ -7,13 +7,20 @@
 //!   取自原版 DARK_QSS/LIGHT_QSS 字面色。
 //! - 设置流（panel.py `_auto_save`）：控件直接改 `AppState.settings` 对应字段，
 //!   300ms 防抖后经 [`lt_proto::Cmd::ApplySettings`] 整体重放（热应用 + 落盘，
-//!   原版 settings_changed 语义）；引擎/模型/语言/设备类即时命令不走防抖。
+//!   原版 settings_changed 语义）；引擎/模型/语言类即时命令不走防抖。
 //!
-//! 常规页见 [`general`]，识别页见 [`vad`]；本批未接入的页显示占位提示
-//! （翻译/字幕/数据与存储/诊断/关于随 M4.4+ 波次）。
+//! 页实现：常规 [`general`] / 翻译 [`translation`] / 识别 [`vad`] /
+//! 字幕 [`subtitle_page`] / 样式（悬浮窗预设，[`style`]）/
+//! 数据与存储 [`data`] / 诊断 [`diagnostics`] / 关于 [`about`]。
 
 mod autostart;
+pub mod about;
+pub mod data;
+pub mod diagnostics;
 pub mod general;
+pub mod style;
+pub mod subtitle_page;
+pub mod translation;
 pub mod vad;
 
 use crate::state::{AppState, PanelPage, ThemeMode};
@@ -116,6 +123,37 @@ pub fn send_switch_engine(state: &AppState) {
     });
 }
 
+/// 当前激活模型配置（active_model 越界时回退首行；sanitize 保证至少一个模型）
+pub fn active_model_config(s: &Settings) -> Option<lt_proto::ModelConfig> {
+    s.models.get(s.active_model).or_else(|| s.models.first()).cloned()
+}
+
+// ── 打开目录/链接（原版 TabBase.open_path / QDesktopServices.openUrl；
+//    工程内无既有打开工具 → std::process::Command 现成模式）──
+
+/// 用系统文件管理器打开目录（原版 open_path：Windows explorer / 其他 xdg-open）。
+/// 失败仅记日志（按钮路径已 mkdir 兜底，失败面极窄）。
+pub fn open_in_explorer(path: &std::path::Path) {
+    #[cfg(windows)]
+    let result = std::process::Command::new("explorer").arg(path).spawn();
+    #[cfg(not(windows))]
+    let result = std::process::Command::new("xdg-open").arg(path).spawn();
+    if let Err(e) = result {
+        tracing::warn!("打开目录失败 {}: {e}", path.display());
+    }
+}
+
+/// 用系统默认浏览器打开 URL（原版 QDesktopServices.openUrl）
+pub fn open_url(url: &str) {
+    #[cfg(windows)]
+    let result = std::process::Command::new("cmd").args(["/c", "start", "", url]).spawn();
+    #[cfg(not(windows))]
+    let result = std::process::Command::new("xdg-open").arg(url).spawn();
+    if let Err(e) = result {
+        tracing::warn!("打开链接失败 {url}: {e}");
+    }
+}
+
 // ── 框架布局 ──
 
 /// 面板 UI 总入口（windows::dispatch 按 WinId::Panel 分派到这里）
@@ -172,7 +210,7 @@ pub fn panel_ui(ui: &mut Ui, state: &mut AppState) {
                     if selected { pal.title } else { pal.weak },
                 );
                 if resp.clicked() {
-                    // 原版 _on_nav_changed：切栈 + 数据/诊断页刷新（两页本批未接入）
+                    // 原版 _on_nav_changed：切栈；数据页缓存扫描在页内惰性触发
                     state.panel.page = page;
                 }
             }
@@ -194,8 +232,8 @@ pub fn panel_ui(ui: &mut Ui, state: &mut AppState) {
                         )
                         .clicked()
                     {
-                        // M4.3：benchmark 独立工具窗随 M4.4 接入（原版 BenchmarkDialog.exec()）
-                        tracing::info!("{}", lt_i18n::t("benchmark_pending_m44"));
+                        // 原版 BenchmarkDialog.exec()：打开独立工具窗（app.rs 显示）
+                        state.enqueue_action(crate::state::WinId::Panel, crate::state::WinAction::ShowBenchmark);
                     }
                 });
             } else {
@@ -215,8 +253,12 @@ pub fn panel_ui(ui: &mut Ui, state: &mut AppState) {
                     let mut col = ui.new_child(egui::UiBuilder::new().max_rect(rect));
                     match page {
                         PanelPage::General => general::page(&mut col, state, &pal),
+                        PanelPage::Translation => translation::page(&mut col, state, &pal),
                         PanelPage::Recognition => vad::page(&mut col, state, &pal),
-                        other => pending_page(&mut col, &pal, other),
+                        PanelPage::Subtitles => subtitle_page::page(&mut col, state, &pal),
+                        PanelPage::Data => data::page(&mut col, state, &pal),
+                        PanelPage::Diagnostics => diagnostics::page(&mut col, state, &pal),
+                        PanelPage::About => about::page(&mut col, state, &pal),
                     }
                     let used = col.min_rect();
                     ui.advance_cursor_after_rect(used);
@@ -230,13 +272,6 @@ fn page_header(ui: &mut Ui, pal: &Palette, page: PanelPage) {
     ui.label(RichText::new(lt_i18n::t(page.nav_key())).strong().size(18.0).color(pal.title));
     ui.label(RichText::new(lt_i18n::t(page.hint_key())).size(12.0).color(pal.weak));
     ui.add_space(4.0);
-}
-
-/// 本批未接入页的占位（翻译/字幕/数据与存储/诊断/关于随 M4.4+ 波次）
-fn pending_page(ui: &mut Ui, pal: &Palette, page: PanelPage) {
-    group_card(ui, pal, &lt_i18n::t(page.nav_key()), |ui| {
-        ui.label(RichText::new(lt_i18n::t("page_pending")).color(pal.weak));
-    });
 }
 
 /// 分组卡片：组标题 + 圆角描边组框（原版 QGroupBox + DARK/LIGHT_QSS 字面色）
@@ -274,6 +309,37 @@ pub fn form_row(ui: &mut Ui, label: &str, add_control: impl FnOnce(&mut Ui)) {
 /// 弱化提示行（原版 hintLabel）
 pub fn hint_line(ui: &mut Ui, pal: &Palette, text: &str) {
     ui.label(RichText::new(text).size(11.5).color(pal.weak));
+}
+
+/// 颜色字段行（原版 _ColorButton：色块预览 + "#rrggbb" 文本输入；rfd 无颜色
+/// 对话框 → 文本编辑承载）。非法值：色块灰底红框提示，字符串原样保留
+/// （契约自由格式，overlay 侧 parse_color 有回退）。返回是否发生变更。
+pub fn color_field(ui: &mut Ui, id: &str, value: &mut String) -> bool {
+    ui.push_id(id, |ui| {
+        ui.horizontal(|ui| {
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(28.0, 18.0), egui::Sense::hover());
+            match crate::state::normalize_hex_color(value) {
+                // from_hex 对 8 位 hex 也接受；normalize 已截到 6 位
+                Some(hex) => {
+                    if let Ok(c) = egui::Color32::from_hex(&hex) {
+                        ui.painter().rect_filled(rect, 3.0, c);
+                    }
+                }
+                None => {
+                    ui.painter().rect_filled(rect, 3.0, egui::Color32::GRAY);
+                    ui.painter().rect_stroke(
+                        rect,
+                        3.0,
+                        Stroke::new(1.5, egui::Color32::RED),
+                        egui::StrokeKind::Inside,
+                    );
+                }
+            }
+            ui.add(egui::TextEdit::singleline(value).desired_width(96.0)).changed()
+        })
+        .inner
+    })
+    .inner
 }
 
 /// 设置导出 JSON（原版 _export_settings：store.snapshot 的 JSON pretty 形态）
