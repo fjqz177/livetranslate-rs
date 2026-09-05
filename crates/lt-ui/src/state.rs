@@ -60,8 +60,7 @@ pub struct MonitorData {
     pub ram_total_gb: f64,
 }
 
-/// 悬浮窗单条消息（对照原版 ChatMessage 的数据字段）。
-/// translation / tl_ms 为 M3 翻译链路占位（UpdateTranslation 接线前恒为 None / 0.0）。
+/// 悬浮窗单条消息（对照原版 ChatMessage 的数据字段）
 #[derive(Debug, Clone)]
 pub struct OverlayMessage {
     pub id: u64,
@@ -71,10 +70,20 @@ pub struct OverlayMessage {
     /// 源语言标签（"zh"/"en"…）
     pub lang: String,
     pub asr_ms: f64,
-    /// 译文（M3 翻译链路占位）
+    /// 译文（流式期间为累积部分文本；同语言为空串）
     pub translation: Option<String>,
-    /// 翻译耗时（M3 翻译链路占位）
+    /// 翻译耗时（流式期间 0，完成事件时更新）
     pub tl_ms: f64,
+}
+
+/// 翻译/用量统计（UpdateStats 事件；MonitorBar stats 段渲染，M4 完备）
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct OverlayStats {
+    pub asr_n: u64,
+    pub tl_n: u64,
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+    pub cost: f64,
 }
 
 /// 首启向导的阶段（原版 SetupWizardDialog 用控件可用性表达，这里显式化）
@@ -198,6 +207,8 @@ pub struct AppState {
     pub monitor: MonitorData,
     /// 悬浮窗消息链（AddMessage 事件追加，上限 50 条、删最旧）
     pub messages: Vec<OverlayMessage>,
+    /// 翻译/用量统计（UpdateStats 事件更新）
+    pub stats: OverlayStats,
     /// ASR 设备标签（"SenseVoice Small" 等；不可用时 "ASR unavailable"）
     pub asr_label: Option<String>,
     /// 启动流状态机（首启向导/缺模型下载/Ready）
@@ -242,6 +253,7 @@ impl AppState {
             ticks: Vec::new(),
             monitor: MonitorData::default(),
             messages: Vec::new(),
+            stats: OverlayStats::default(),
             asr_label: None,
             startup: flow,
             load_dialog: None,
@@ -258,6 +270,31 @@ impl AppState {
         if self.messages.len() > 50 {
             self.messages.remove(0);
         }
+    }
+
+    /// 按 id 从最新往回找消息索引（消息链短，线性即可）
+    fn find_message_mut(&mut self, id: u64) -> Option<&mut OverlayMessage> {
+        self.messages.iter_mut().rev().find(|m| m.id == id)
+    }
+
+    /// 流式译文增量（原版 update_streaming：写入累积部分文本）
+    pub fn update_streaming(&mut self, id: u64, partial: String) {
+        if let Some(m) = self.find_message_mut(id) {
+            m.translation = Some(partial);
+        }
+    }
+
+    /// 译文完成（原版 update_translation；空文本=同语言/无翻译，同样置 Some）
+    pub fn update_translation(&mut self, id: u64, text: String, tl_ms: f64) {
+        if let Some(m) = self.find_message_mut(id) {
+            m.translation = Some(text);
+            m.tl_ms = tl_ms;
+        }
+    }
+
+    /// 统计快照更新（原版 update_stats）
+    pub fn update_stats(&mut self, stats: OverlayStats) {
+        self.stats = stats;
     }
 
     /// 1s 节流的系统采样（CPU/RAM）；在监视节拍触发时调用。
@@ -401,6 +438,55 @@ mod tests {
         assert_eq!(st.messages.len(), 50);
         assert_eq!(st.messages[0].id, 6);
         assert_eq!(st.messages.last().unwrap().id, 55);
+    }
+
+    #[test]
+    fn translation_updates_target_latest_message_with_id() {
+        let mut st = AppState::new(Settings::default());
+        // 同 id 消息出现两次（现实中不发生，防御语义：取最新）
+        st.push_message(msg(1));
+        st.push_message(msg(2));
+
+        st.update_streaming(2, "partial".into());
+        assert_eq!(st.messages.last().unwrap().translation.as_deref(), Some("partial"));
+        assert_eq!(st.messages.last().unwrap().tl_ms, 0.0);
+
+        st.update_translation(2, "done".into(), 320.0);
+        let m = st.messages.last().unwrap();
+        assert_eq!(m.translation.as_deref(), Some("done"));
+        assert_eq!(m.tl_ms, 320.0);
+
+        // 不存在的 id：无害 no-op
+        st.update_translation(999, "ghost".into(), 1.0);
+        assert!(st.messages.iter().all(|m| m.id != 999));
+
+        // 淘汰边界：id=1 已被挤出 50 条窗口（仅 2 条时不适用，直接验证 id=1 更新）
+        st.update_translation(1, "first".into(), 5.0);
+        assert_eq!(st.messages[0].translation.as_deref(), Some("first"));
+    }
+
+    #[test]
+    fn same_language_empty_translation_still_marked() {
+        let mut st = AppState::new(Settings::default());
+        st.push_message(msg(7));
+        // 同语言回空译文：translation=Some("")，消息标记完成
+        st.update_translation(7, String::new(), 0.0);
+        let m = st.messages.last().unwrap();
+        assert_eq!(m.translation.as_deref(), Some(""));
+    }
+
+    #[test]
+    fn stats_snapshot_replaces_wholesale() {
+        let mut st = AppState::new(Settings::default());
+        st.update_stats(OverlayStats {
+            asr_n: 10,
+            tl_n: 8,
+            prompt_tokens: 1000,
+            completion_tokens: 500,
+            cost: 0.002,
+        });
+        assert_eq!(st.stats.asr_n, 10);
+        assert_eq!(st.stats.cost, 0.002);
     }
 
     #[test]

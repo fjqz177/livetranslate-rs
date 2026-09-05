@@ -365,13 +365,11 @@ where
         results.sort_by(|a, b| a.avg_ttft.partial_cmp(&b.avg_ttft).unwrap_or(std::cmp::Ordering::Equal));
         on_line(&format!("\n{}", "=".repeat(60)));
         on_line("Ranking by Avg TTFT:");
-        let mut i = 1;
-        for r in results.iter().filter(|r| r.error.is_none()) {
+        for (i, r) in (1..).zip(results.iter().filter(|r| r.error.is_none())) {
             on_line(&format!(
                 "  #{i}  TTFT {:6.0}ms \u{b1} {:4.0}ms  Total {:6.0}ms \u{b1} {:4.0}ms  {}",
                 r.avg_ttft, r.std_ttft, r.avg_total, r.std_total, r.name
             ));
-            i += 1;
         }
         for r in results.iter().filter(|r| r.error.is_some()) {
             on_line(&format!("  FAIL  {}: {}", r.name, r.error.clone().unwrap_or_default()));

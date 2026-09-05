@@ -14,6 +14,8 @@ lt-models = { workspace = true }
 lt-ui = { workspace = true }
 lt-asr = { workspace = true }
 lt-pipeline = { workspace = true }
+lt-translate = { workspace = true }
+crossbeam-channel = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }

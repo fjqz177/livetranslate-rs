@@ -406,7 +406,7 @@ impl MultiWindowApp {
                         hw.window.request_redraw();
                     }
                 }
-                // 新识别消息 → 追加到悬浮窗消息链并重绘（译文更新 M3 接线）
+                // 新识别消息 → 追加到悬浮窗消息链并重绘
                 lt_proto::UiEvent::AddMessage { id, timestamp, original, lang, asr_ms } => {
                     self.app_state.push_message(OverlayMessage {
                         id,
@@ -414,12 +414,36 @@ impl MultiWindowApp {
                         original,
                         lang,
                         asr_ms,
-                        translation: None, // M3 翻译链路占位
+                        translation: None,
                         tl_ms: 0.0,
                     });
                     if let Some(hw) = self.find_mut(WinId::Overlay) {
                         hw.window.request_redraw();
                     }
+                }
+                // 流式译文增量（原版 update_streaming；50ms 节流渲染随 M4）
+                lt_proto::UiEvent::UpdateStreaming { id, partial } => {
+                    self.app_state.update_streaming(id, partial);
+                    if let Some(hw) = self.find_mut(WinId::Overlay) {
+                        hw.window.request_redraw();
+                    }
+                }
+                // 译文完成（含错误文本/同语言空串；原版 update_translation）
+                lt_proto::UiEvent::UpdateTranslation { id, text, tl_ms } => {
+                    self.app_state.update_translation(id, text, tl_ms);
+                    if let Some(hw) = self.find_mut(WinId::Overlay) {
+                        hw.window.request_redraw();
+                    }
+                }
+                // 翻译/用量统计（原版 update_stats）
+                lt_proto::UiEvent::UpdateStats { asr_n, tl_n, prompt_tokens, completion_tokens, cost } => {
+                    self.app_state.update_stats(crate::state::OverlayStats {
+                        asr_n,
+                        tl_n,
+                        prompt_tokens,
+                        completion_tokens,
+                        cost,
+                    });
                 }
                 // ASR 设备标签（悬浮窗 MonitorBar device 段）；同时视作加载框关闭信号
                 //（原版 App.model_load_done 在设备就绪/不可用时都会被调用）

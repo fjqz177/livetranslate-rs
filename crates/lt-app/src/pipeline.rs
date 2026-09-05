@@ -8,7 +8,9 @@
 //!     - 语音段：capture 线程直接入满丢旧段队列（等价原版 _enqueue_asr）
 //! → ASR 线程：段队列空闲时做 RSS 回收（原版 _asr_loop queue.Empty 分支）；
 //!   AsrManager.transcribe（独占）→ 段级三层过滤（空/纯标点 → 噪声 → 语言，
-//!   对照原版 main.py `_process_segment`）→ AddMessage。
+//!   对照原版 main.py `_process_segment`）→ AddMessage
+//!   → 同语言直接回空译文；否则提交翻译线程池（M3；原版 _tl_executor，
+//!   max_workers=8）→ UpdateStreaming/UpdateTranslation/UpdateStats。
 //!
 //! 未就绪链路：模型未缓存 → 发 AsrUnavailable（M2.5 向导接管首启下载）。
 
@@ -17,13 +19,221 @@ use lt_models::registry;
 use lt_pipeline::audio::wasapi_win::WasapiBackend;
 use lt_pipeline::{AudioBackend, BoundedDropQueue, CaptureLoop, SegmentSource, VadProcessor, VadSettings};
 use lt_proto::{UiEvent, UiMsg};
-use std::sync::atomic::{AtomicBool, Ordering};
+use lt_translate::Translator;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use winit::event_loop::EventLoopProxy;
 
 /// 段队列容量（对齐原版 _asr_queue maxsize=16，满丢最旧）
 const SEGMENT_QUEUE_CAP: usize = 16;
+
+/// 翻译线程池 worker 数（对齐原版 ThreadPoolExecutor(max_workers=8)）
+const TL_POOL_WORKERS: usize = 8;
+
+/// 定宽任务池（等价原版 _tl_executor：任务排队、固定 worker 消费）
+struct JobPool {
+    tx: crossbeam_channel::Sender<Box<dyn FnOnce() + Send>>,
+    stopped: Arc<AtomicBool>,
+}
+
+impl JobPool {
+    fn new(workers: usize) -> Self {
+        let (tx, rx) = crossbeam_channel::unbounded::<Box<dyn FnOnce() + Send>>();
+        let rx = Arc::new(rx);
+        let stopped = Arc::new(AtomicBool::new(false));
+        for i in 0..workers {
+            let rx = rx.clone();
+            let stopped = stopped.clone();
+            let _ = std::thread::Builder::new()
+                .name(format!("lt-tl-{i}"))
+                .spawn(move || {
+                    while let Ok(job) = rx.recv() {
+                        // 停止后排队的任务直接丢弃（等价 executor.shutdown）
+                        if stopped.load(Ordering::Relaxed) {
+                            continue;
+                        }
+                        job();
+                    }
+                });
+        }
+        Self { tx, stopped }
+    }
+
+    fn submit(&self, job: impl FnOnce() + Send + 'static) {
+        if self.stopped.load(Ordering::Relaxed) {
+            return;
+        }
+        let _ = self.tx.send(Box::new(job));
+    }
+
+    /// 停止接收并丢弃排队任务；在跑的任务自然结束（translate 自带超时兜底）
+    fn shutdown(&self) {
+        self.stopped.store(true, Ordering::Relaxed);
+    }
+}
+
+/// 翻译/用量统计（跨 ASR 线程与翻译 worker；原子量）
+pub(crate) struct TlStats {
+    asr_count: AtomicU64,
+    tl_count: AtomicU64,
+    prompt_tokens: AtomicU64,
+    completion_tokens: AtomicU64,
+    input_price: f64,
+    output_price: f64,
+}
+
+impl TlStats {
+    fn new(input_price: f64, output_price: f64) -> Self {
+        Self {
+            asr_count: AtomicU64::new(0),
+            tl_count: AtomicU64::new(0),
+            prompt_tokens: AtomicU64::new(0),
+            completion_tokens: AtomicU64::new(0),
+            input_price,
+            output_price,
+        }
+    }
+
+    fn cost(&self) -> f64 {
+        lt_translate::compute_cost(
+            self.prompt_tokens.load(Ordering::Relaxed),
+            self.completion_tokens.load(Ordering::Relaxed),
+            self.input_price,
+            self.output_price,
+        )
+    }
+
+    fn snapshot_event(&self) -> UiEvent {
+        UiEvent::UpdateStats {
+            asr_n: self.asr_count.load(Ordering::Relaxed),
+            tl_n: self.tl_count.load(Ordering::Relaxed),
+            prompt_tokens: self.prompt_tokens.load(Ordering::Relaxed),
+            completion_tokens: self.completion_tokens.load(Ordering::Relaxed),
+            cost: self.cost(),
+        }
+    }
+}
+
+/// 翻译装置：Translator + 统计 + 线程池（ASR 线程与翻译 worker 共享）
+struct TlRig {
+    translator: Arc<Translator>,
+    stats: Arc<TlStats>,
+    pool: JobPool,
+}
+
+impl TlRig {
+    /// 按设置构建；models 为空/active_model 越界 → None（不翻译，仅 ASR）
+    fn from_settings(settings: &lt_proto::Settings) -> Option<Self> {
+        let mc = settings.models.get(settings.active_model)?;
+        let params = lt_translate::TranslatorParams {
+            api_base: mc.api_base.clone(),
+            api_key: mc.api_key.clone(),
+            model: mc.model.clone(),
+            target_language: settings.target_language.clone(),
+            max_tokens: 256,
+            temperature: 0.3,
+            streaming: mc.streaming,
+            system_prompt: (!settings.system_prompt.is_empty())
+                .then(|| settings.system_prompt.clone()),
+            proxy: mc.proxy.clone(),
+            // 原版 no_think 缺省 true（legacy 迁移后仅 thinking_style 生效）
+            no_think: true,
+            no_system_role: mc.no_system_role,
+            thinking_style: mc.thinking_style.clone(),
+            json_response: mc.json_response,
+            timeout: settings.timeout,
+            overrides: mc.overrides.clone(),
+            extra_body: mc.extra_body.clone(),
+        };
+        let translator = match Translator::new(params) {
+            Ok(t) => {
+                t.set_context_turns(mc.context_turns);
+                Arc::new(t)
+            }
+            Err(e) => {
+                tracing::error!("Translator 构建失败（模型 {:?}）: {e}", mc.name);
+                return None;
+            }
+        };
+        let stats = Arc::new(TlStats::new(mc.input_price, mc.output_price));
+        tracing::info!(
+            "Switching translator: {} ({})",
+            mc.name,
+            mc.model
+        );
+        Some(Self { translator, stats, pool: JobPool::new(TL_POOL_WORKERS) })
+    }
+
+    /// 提交一段的翻译任务（对照原版 _translate_async 的成功/重复/错误三路）；
+    /// 同语言不进此函数（ASR 线程直接回空译文，见 run_asr_thread）
+    fn submit_translation(&self, proxy: &EventLoopProxy<UiMsg>, id: u64, text: String, source_lang: String) {
+        let translator = self.translator.clone();
+        let stats = self.stats.clone();
+        let proxy = proxy.clone();
+        self.pool.submit(move || {
+            let t0 = Instant::now();
+            let mut translated: Option<String> = None;
+            for item in translator.translate_iter(&text, &source_lang) {
+                match item {
+                    Ok(partial) => {
+                        let _ = proxy.send_event(UiMsg::Event(UiEvent::UpdateStreaming {
+                            id,
+                            partial: partial.clone(),
+                        }));
+                        translated = Some(partial);
+                    }
+                    Err(lt_translate::TranslateError::Repetition(_)) => {
+                        tracing::warn!(
+                            "Repetition loop detected, model may not support structured output well"
+                        );
+                        let _ = proxy.send_event(UiMsg::Event(UiEvent::UpdateTranslation {
+                            id,
+                            text: lt_i18n::t("error_repetition"),
+                            tl_ms: 0.0,
+                        }));
+                        return;
+                    }
+                    Err(e) => {
+                        if e.is_expected() {
+                            tracing::warn!("Translate error: {e}");
+                        } else {
+                            tracing::error!("Translate error: {e}");
+                        }
+                        let _ = proxy.send_event(UiMsg::Event(UiEvent::UpdateTranslation {
+                            id,
+                            text: e.ui_text(),
+                            tl_ms: 0.0,
+                        }));
+                        return;
+                    }
+                }
+            }
+            // 成功路径（原版 _translate_async 循环结束后）
+            let tl_ms = t0.elapsed().as_secs_f64() * 1000.0;
+            let translated = translated.unwrap_or_default();
+            stats.tl_count.fetch_add(1, Ordering::Relaxed);
+            let (pt, ct) = translator.last_usage();
+            stats.prompt_tokens.fetch_add(pt, Ordering::Relaxed);
+            stats.completion_tokens.fetch_add(ct, Ordering::Relaxed);
+            tracing::info!("Translate ({tl_ms:.0}ms): {translated}");
+            let _ = proxy.send_event(UiMsg::Event(UiEvent::UpdateTranslation {
+                id,
+                text: translated.clone(),
+                tl_ms,
+            }));
+            let _ = proxy.send_event(UiMsg::Event(stats.snapshot_event()));
+            if translated.is_empty() {
+                // 原版走 finalize_no_translation（transcript 链路 M4/M6 接入）
+                tracing::debug!("译文为空，无 transcript 写入（TranscriptWriter 待接入）");
+            }
+        });
+    }
+
+    fn shutdown(&self) {
+        self.pool.shutdown();
+    }
+}
 
 pub struct Pipeline {
     backend: WasapiBackend,
@@ -36,6 +246,8 @@ pub struct Pipeline {
     /// _apply_pending_asr_settings）；仅加锁存值，绝不跨进程调用
     #[allow(dead_code)]
     pending: lt_asr::AsrPendingHandle,
+    /// 翻译装置（models 空/构建失败时 None = 仅 ASR 不翻译）
+    tl: Option<Arc<TlRig>>,
     threads: Vec<std::thread::JoinHandle<()>>,
 }
 
@@ -98,6 +310,9 @@ impl Pipeline {
             })?;
         }
 
+        // ── 翻译装置（M3）：models 非空即构建；失败仅告警不阻断 ASR ──
+        let tl = TlRig::from_settings(settings).map(Arc::new);
+
         // ── ASR 线程：Manager 独占 + 段处理 ──
         {
             let stop = stop.clone();
@@ -105,13 +320,14 @@ impl Pipeline {
             let segment_queue = segment_queue.clone();
             let settings = settings.clone();
             let pending = pending.clone();
+            let tl = tl.clone();
             threads.push(std::thread::Builder::new().name("lt-asr-main".into()).spawn(move || {
-                run_asr_thread(&settings, segment_queue, pending, stop, proxy);
+                run_asr_thread(&settings, segment_queue, pending, stop, proxy, tl);
             })?);
         }
 
-        tracing::info!("管道已启动（capture + VAD + ASR）");
-        Ok(Self { backend, stop, paused, pending, threads })
+        tracing::info!("管道已启动（capture + VAD + ASR + 翻译）");
+        Ok(Self { backend, stop, paused, pending, tl, threads })
     }
 
     #[allow(dead_code)]
@@ -137,6 +353,9 @@ impl Pipeline {
     pub fn stop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
         self.backend.stop();
+        if let Some(tl) = &self.tl {
+            tl.shutdown();
+        }
         for h in self.threads.drain(..) {
             let _ = h.join();
         }
@@ -204,6 +423,7 @@ fn run_asr_thread(
     pending: lt_asr::AsrPendingHandle,
     stop: Arc<AtomicBool>,
     proxy: EventLoopProxy<UiMsg>,
+    tl: Option<Arc<TlRig>>,
 ) {
     // 构造 worker 配置（当前仅 sensevoice；whisper M5）
     let models_dir = match lt_models::paths::models_dir(settings.models_dir.as_deref()) {
@@ -302,13 +522,31 @@ fn run_asr_thread(
                 let asr_ms = t0.elapsed().as_secs_f64() * 1000.0;
                 let timestamp = chrono::Local::now().format("%H:%M:%S").to_string();
                 let id = uuid::Uuid::new_v4().as_u128() as u64;
+                let original_text = result.text;
+                let source_lang = result.language;
                 let _ = proxy.send_event(UiMsg::Event(UiEvent::AddMessage {
                     id,
                     timestamp,
-                    original: result.text,
-                    lang: result.language,
+                    original: original_text.clone(),
+                    lang: source_lang.clone(),
                     asr_ms,
                 }));
+
+                // ── 翻译分流（原版 _process_segment 尾部；字幕窗 extra_langs 随 M4 接入）──
+                if let Some(rig) = &tl {
+                    rig.stats.asr_count.fetch_add(1, Ordering::Relaxed);
+                    if source_lang == settings.target_language {
+                        tracing::info!("Same language ({source_lang}), no translation");
+                        let _ = proxy.send_event(UiMsg::Event(UiEvent::UpdateTranslation {
+                            id,
+                            text: String::new(),
+                            tl_ms: 0.0,
+                        }));
+                        let _ = proxy.send_event(UiMsg::Event(rig.stats.snapshot_event()));
+                    } else {
+                        rig.submit_translation(&proxy, id, original_text, source_lang);
+                    }
+                }
             }
             Err(e) => {
                 tracing::warn!("ASR 段识别失败: {e}");
@@ -325,6 +563,46 @@ fn run_asr_thread(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── TlRig::from_settings：翻译装置构建（M3 装配） ──
+
+    #[test]
+    fn tl_rig_builds_from_default_settings() {
+        let settings = lt_proto::Settings::default();
+        let rig = TlRig::from_settings(&settings);
+        assert!(rig.is_some(), "默认 settings 带一个默认模型，应能构建");
+        // 目标语言来自全局设置而非模型配置
+        assert_eq!(rig.unwrap().translator.target_language(), settings.target_language);
+    }
+
+    #[test]
+    fn tl_rig_none_when_active_model_out_of_bounds() {
+        let mut settings = lt_proto::Settings::default();
+        settings.active_model = 99;
+        assert!(TlRig::from_settings(&settings).is_none());
+    }
+
+    #[test]
+    fn tl_rig_none_when_models_empty() {
+        let mut settings = lt_proto::Settings::default();
+        settings.models.clear();
+        assert!(TlRig::from_settings(&settings).is_none());
+    }
+
+    #[test]
+    fn job_pool_drops_jobs_after_shutdown() {
+        use std::sync::atomic::AtomicU64;
+        let pool = JobPool::new(2);
+        pool.shutdown();
+        // shutdown 之后的提交不执行（submit 侧短路 + worker 侧双重检查）
+        let ran = Arc::new(AtomicU64::new(0));
+        let r = ran.clone();
+        pool.submit(move || {
+            r.fetch_add(1, Ordering::Relaxed);
+        });
+        std::thread::sleep(Duration::from_millis(200));
+        assert_eq!(ran.load(Ordering::Relaxed), 0);
+    }
 
     // ── reject_segment：三层过滤（对照原版 _process_segment） ──
 

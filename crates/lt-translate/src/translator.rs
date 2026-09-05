@@ -530,10 +530,7 @@ impl Translator {
     pub fn translate(&self, text: &str, source_language: &str) -> Result<String, TranslateError> {
         let mut last: Option<Result<String, TranslateError>> = None;
         for item in self.translate_iter(text, source_language) {
-            match item {
-                Ok(s) => last = Some(Ok(s)),
-                Err(e) => return Err(e),
-            }
+            last = Some(Ok(item?));
         }
         // translate_iter 必产至少一个值
         last.unwrap_or_else(|| Err(TranslateError::Other("no translation produced".into())))
@@ -545,10 +542,12 @@ impl Translator {
     pub fn translate_iter(&self, text: &str, source_language: &str) -> TranslateStream {
         let system_prompt = self.build_system_prompt(source_language);
         if !self.streaming {
-            let result = self.translate_sync(&system_prompt, text).and_then(|r| {
-                self.append_history(text, &r);
-                Ok(r)
-            });
+            let result =
+                self.translate_sync(&system_prompt, text)
+                    .map(|r| {
+                        self.append_history(text, &r);
+                        r
+                    });
             return TranslateStream::sync(result);
         }
 
@@ -872,10 +871,10 @@ pub(crate) fn format_prompt_template(
                         return None;
                     }
                     field.push(cur);
-                    match chars.next() {
-                        Some(n) => cur = n,
-                        None => return None, // 未闭合
-                    }
+                    let Some(n) = chars.next() else {
+                        return None; // 未闭合
+                    };
+                    cur = n;
                 }
                 match field.as_str() {
                     "source_lang" => out.push_str(source),
