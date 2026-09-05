@@ -2,9 +2,7 @@
 //! 菜单结构逐项对照 RESEARCH.md §1.3（原版 main.py 托盘段）。
 
 use lt_proto::UiMsg;
-use muda::{
-    accelerator::Accelerator, CheckMenuItem, Menu, MenuId, MenuItem, PredefinedMenuItem, Submenu,
-};
+use muda::{accelerator::Accelerator, Menu, MenuId, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
 /// 托盘状态图标（原版 icons.create_app_icon 的三态：run 绿点/pause 琥珀/error 红）
@@ -17,39 +15,26 @@ pub enum IconStatus {
     Error,
 }
 
-/// 菜单项 id（menu event 依据；保持稳定字符串）
+/// 菜单项 id（menu event 依据；保持稳定字符串）。
+/// 对齐新版原版 app_shell.build_tray_shell 的最小菜单：
+/// 状态行 / 暂停恢复 / 悬浮窗显隐 / 控制面板 / 退出。
+/// 模型与语言切换收敛在悬浮窗下拉（新版明确"tray menu stays minimal"）。
 pub mod ids {
+    pub const STATUS: &str = "tray_status";
     pub const PAUSE: &str = "tray_pause";
     pub const OVERLAY_TOGGLE: &str = "tray_hide_overlay";
-    pub const SUBWIN_TOGGLE: &str = "subwin_show";
-    pub const SUBWIN_CT: &str = "subwin_click_through_tray";
     pub const SHOW_PANEL: &str = "tray_show_panel";
-    pub const SHOW_LOG: &str = "tray_show_log";
-    pub const OV_CT: &str = "ov_ct";
-    pub const OV_TOPMOST: &str = "ov_topmost";
-    pub const OV_AUTOSCROLL: &str = "ov_autoscroll";
-    pub const OV_TASKBAR: &str = "ov_taskbar";
-    pub const EXPORT_ORIG: &str = "export_original";
-    pub const EXPORT_TRANS: &str = "export_translation";
-    pub const EXPORT_ALL: &str = "export_all";
     pub const QUIT: &str = "quit";
-    pub fn lang(code: &str) -> muda::MenuId { muda::MenuId::new(format!("lang_{code}")) }
-    pub fn asr_lang(code: &str) -> muda::MenuId { muda::MenuId::new(format!("asrlang_{code}")) }
 }
 
-/// 需要在运行期改状态（勾选/文字）的菜单项句柄
+/// 需要在运行期改文字的菜单项句柄（新版最小集）
 pub struct TrayHandles {
+    /// 状态行（禁用项，● 运行 · 引擎 · 模型 · 源 → 目标）
+    pub status: MenuItem,
+    /// 暂停/恢复（文字随状态切换）
     pub pause: MenuItem,
-    pub subwin: CheckMenuItem,
-    pub subwin_ct: CheckMenuItem,
-    pub ov_ct: CheckMenuItem,
-    pub ov_topmost: CheckMenuItem,
-    pub ov_autoscroll: CheckMenuItem,
-    pub ov_taskbar: CheckMenuItem,
-    /// 目标语言单选组（code → 项）
-    pub langs: Vec<(String, CheckMenuItem)>,
-    /// 源语言单选组（code → 项）
-    pub asr_langs: Vec<(String, CheckMenuItem)>,
+    /// 悬浮窗 显示/隐藏（文字随可见性切换）
+    pub overlay_toggle: MenuItem,
 }
 
 pub struct Tray {
@@ -64,109 +49,35 @@ impl Tray {
     }
 }
 
-/// 语言条目文本："code - 原生名"（auto 用 i18n 文案）
-fn lang_label(code: &str, native: Option<&str>) -> String {
-    match native {
-        Some(n) => format!("{code} - {n}"),
-        None => format!("{code} - {}", lt_i18n::t("asr_lang_auto")),
-    }
-}
-
 /// 构建完整托盘（含子菜单），并把事件转发到 EventLoopProxy。
 /// 必须在主线程调用（Windows 要求托盘与消息循环同线程）。
 pub fn build(proxy: std::sync::Arc<dyn Fn(UiMsg) + Send + Sync>) -> anyhow::Result<Tray> {
     let menu = Menu::new();
+
+    // ── 状态行（只读；文字随运行态/引擎/模型/语言刷新）──
+    let status = MenuItem::with_id(MenuId::new(ids::STATUS), "● --", false, None::<Accelerator>);
+    menu.append(&status)?;
+    menu.append(&PredefinedMenuItem::separator())?;
 
     // ── 暂停/恢复（文字随状态切换）──
     let pause = MenuItem::with_id(MenuId::new(ids::PAUSE), lt_i18n::t("tray_pause"), true, None::<Accelerator>);
     menu.append(&pause)?;
     menu.append(&PredefinedMenuItem::separator())?;
 
-    // ── 悬浮窗 / 字幕窗 ──
+    // ── 悬浮窗显隐（文字随可见性切换；首次隐藏弹气泡，原版 _hide_notified）──
     let overlay_toggle = MenuItem::with_id(
         MenuId::new(ids::OVERLAY_TOGGLE),
         lt_i18n::t("tray_hide_overlay"),
         true, None::<Accelerator>,
     );
     menu.append(&overlay_toggle)?;
-    let subwin = CheckMenuItem::with_id(MenuId::new(ids::SUBWIN_TOGGLE), lt_i18n::t("subwin_show"), true, false, None::<Accelerator>);
-    menu.append(&subwin)?;
-    let subwin_ct = CheckMenuItem::with_id(MenuId::new(ids::SUBWIN_CT), lt_i18n::t("subwin_click_through_tray"), true, false, None::<Accelerator>);
-    menu.append(&subwin_ct)?;
     menu.append(&PredefinedMenuItem::separator())?;
 
-    // ── 面板 / 日志 ──
+    // ── 控制面板 ──
     let panel = MenuItem::with_id(MenuId::new(ids::SHOW_PANEL), lt_i18n::t("tray_show_panel"), true, None::<Accelerator>);
-    let log = MenuItem::with_id(MenuId::new(ids::SHOW_LOG), lt_i18n::t("tray_show_log"), true, None::<Accelerator>);
     menu.append(&panel)?;
-    menu.append(&log)?;
 
-    // ── 悬浮窗子菜单（4 复选，默认：置顶√ 自动滚动√）──
-    let ov_menu = Submenu::with_id(MenuId::new("m_overlay"), lt_i18n::t("tray_menu_overlay"), true);
-    let ov_ct = CheckMenuItem::with_id(MenuId::new(ids::OV_CT), lt_i18n::t("click_through"), true, false, None::<Accelerator>);
-    let ov_topmost = CheckMenuItem::with_id(MenuId::new(ids::OV_TOPMOST), lt_i18n::t("top_most"), true, true, None::<Accelerator>);
-    let ov_autoscroll = CheckMenuItem::with_id(MenuId::new(ids::OV_AUTOSCROLL), lt_i18n::t("auto_scroll"), true, true, None::<Accelerator>);
-    let ov_taskbar = CheckMenuItem::with_id(MenuId::new(ids::OV_TASKBAR), lt_i18n::t("taskbar"), true, false, None::<Accelerator>);
-    ov_menu.append(&ov_ct)?;
-    ov_menu.append(&ov_topmost)?;
-    ov_menu.append(&ov_autoscroll)?;
-    ov_menu.append(&ov_taskbar)?;
-    menu.append(&ov_menu)?;
-
-    // ── 模型子菜单（M0 占位；M2 起按 settings.models 动态重建）──
-    let model_menu = Submenu::with_id(MenuId::new("m_model"), lt_i18n::t("tray_menu_model"), true);
-    let placeholder = MenuItem::with_id(
-        MenuId::new("model_placeholder"),
-        lt_i18n::t("model_label"),
-        false, None::<Accelerator>,
-    );
-    model_menu.append(&placeholder)?;
-    menu.append(&model_menu)?;
-
-    // ── 目标语言子菜单：常用直接列出 + "更多语言"二级子菜单（共 29 语）──
-    let common: Vec<&str> = lt_i18n::COMMON_LANG_CODES.iter().copied().filter(|c| *c != "auto").collect();
-    let lang_menu = Submenu::with_id(MenuId::new("m_lang"), lt_i18n::t("tray_menu_target_lang"), true);
-    let mut langs = Vec::new();
-    let more = Submenu::with_id(MenuId::new("m_lang_more"), lt_i18n::t("tray_more_langs"), true);
-    for (code, native) in lt_i18n::LANGUAGES.iter().skip(1) {
-        let item = CheckMenuItem::with_id(ids::lang(code), lang_label(code, *native), true, false, None::<Accelerator>);
-        if common.contains(code) {
-            lang_menu.append(&item)?;
-        } else {
-            more.append(&item)?;
-        }
-        langs.push((code.to_string(), item));
-    }
-    lang_menu.append(&more)?;
-    menu.append(&lang_menu)?;
-
-    // ── 源语言(ASR 提示)子菜单：auto + 全部语言 ──
-    let asr_menu = Submenu::with_id(MenuId::new("m_asrlang"), lt_i18n::t("tray_menu_asr_lang"), true);
-    let mut asr_langs = Vec::new();
-    let asr_more = Submenu::with_id(MenuId::new("m_asrlang_more"), lt_i18n::t("tray_more_langs"), true);
-    for (code, native) in lt_i18n::LANGUAGES.iter() {
-        let item = CheckMenuItem::with_id(ids::asr_lang(code), lang_label(code, *native), true, false, None::<Accelerator>);
-        if *code == "auto" || common.contains(code) {
-            asr_menu.append(&item)?;
-        } else {
-            asr_more.append(&item)?;
-        }
-        asr_langs.push((code.to_string(), item));
-    }
-    asr_menu.append(&asr_more)?;
-    menu.append(&asr_menu)?;
-
-    // ── 导出子菜单 ──
-    let export_menu = Submenu::with_id(MenuId::new("m_export"), lt_i18n::t("export_menu"), true);
-    let e1 = MenuItem::with_id(MenuId::new(ids::EXPORT_ORIG), lt_i18n::t("export_original"), true, None::<Accelerator>);
-    let e2 = MenuItem::with_id(MenuId::new(ids::EXPORT_TRANS), lt_i18n::t("export_translation"), true, None::<Accelerator>);
-    let e3 = MenuItem::with_id(MenuId::new(ids::EXPORT_ALL), lt_i18n::t("export_all"), true, None::<Accelerator>);
-    export_menu.append(&e1)?;
-    export_menu.append(&e2)?;
-    export_menu.append(&e3)?;
-    menu.append(&export_menu)?;
-
-    // ── 退出 ──
+    // ── 退出（宿主侧带确认框，原版 on_quit(confirm=True)）──
     menu.append(&PredefinedMenuItem::separator())?;
     let quit = MenuItem::with_id(MenuId::new(ids::QUIT), lt_i18n::t("quit"), true, None::<Accelerator>);
     menu.append(&quit)?;
@@ -178,7 +89,7 @@ pub fn build(proxy: std::sync::Arc<dyn Fn(UiMsg) + Send + Sync>) -> anyhow::Resu
     }));
     let proxy_tray = proxy.clone();
     TrayIconEvent::set_event_handler(Some(move |_ev: TrayIconEvent| {
-        // M0：托盘本体点击暂不处理（原版无左键行为）
+        // 原版无左键行为
         let _ = &proxy_tray;
     }));
 
@@ -190,17 +101,7 @@ pub fn build(proxy: std::sync::Arc<dyn Fn(UiMsg) + Send + Sync>) -> anyhow::Resu
 
     Ok(Tray {
         icon: tray,
-        handles: TrayHandles {
-            pause,
-            subwin,
-            subwin_ct,
-            ov_ct,
-            ov_topmost,
-            ov_autoscroll,
-            ov_taskbar,
-            langs,
-            asr_langs,
-        },
+        handles: TrayHandles { status, pause, overlay_toggle },
     })
 }
 

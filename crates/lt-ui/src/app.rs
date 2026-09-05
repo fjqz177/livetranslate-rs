@@ -40,6 +40,8 @@ pub struct MultiWindowApp {
     windows: Vec<HostedWindow>,
     pub tray: Option<Tray>,
     proxy: EventLoopProxy<UiMsg>,
+    /// 托盘首次隐藏悬浮窗已弹过气泡（原版 _hide_notified）
+    overlay_hide_notified: bool,
 }
 
 impl MultiWindowApp {
@@ -67,6 +69,7 @@ impl MultiWindowApp {
             windows: Vec::new(),
             tray: None,
             proxy,
+            overlay_hide_notified: false,
         })
     }
 
@@ -251,38 +254,23 @@ impl MultiWindowApp {
     }
 
     /// 把 AppState 的勾选状态同步到托盘菜单（三向同步的一环）
+    /// 托盘状态同步（新版最小菜单：仅状态行文字；模型/语言切换收敛悬浮窗）
     fn sync_tray_checks(&mut self) {
-        let Some(t) = &self.tray else { return };
-        let s = &self.app_state;
-        let _ = t
-            .handles
-            .subwin
-            .set_checked(*s.visible.get(&WinId::Subtitle).unwrap_or(&false));
-        let _ = t.handles.subwin_ct.set_checked(s.settings.subtitle_mode.click_through);
-        let _ = t.handles.ov_ct.set_checked(s.ov_click_through);
-        let _ = t.handles.ov_topmost.set_checked(s.ov_topmost);
-        let _ = t.handles.ov_autoscroll.set_checked(s.ov_auto_scroll);
-        let _ = t.handles.ov_taskbar.set_checked(s.ov_taskbar);
-        for (code, item) in &t.handles.langs {
-            let _ = item.set_checked(*code == s.settings.target_language);
-        }
-        for (code, item) in &t.handles.asr_langs {
-            let _ = item.set_checked(*code == s.settings.asr_language);
-        }
+        self.update_tray_status();
     }
 
-    /// 托盘菜单动作
+    /// 托盘菜单动作（新版最小菜单：暂停/悬浮窗显隐/面板/退出）
     fn on_menu(&mut self, event_loop: &ActiveEventLoop, id: &str) {
         use tray::ids as m;
         match id {
             m::PAUSE => {
                 self.app_state.running = !self.app_state.running;
-                let text = if self.app_state.running {
-                    lt_i18n::t("tray_pause")
-                } else {
-                    lt_i18n::t("tray_resume")
-                };
                 if let Some(t) = &self.tray {
+                    let text = if self.app_state.running {
+                        lt_i18n::t("tray_pause")
+                    } else {
+                        lt_i18n::t("tray_resume")
+                    };
                     let _ = t.handles.pause.set_text(text);
                     let status = if self.app_state.running {
                         tray::IconStatus::Run
@@ -291,53 +279,71 @@ impl MultiWindowApp {
                     };
                     t.set_status(status);
                 }
+                self.update_tray_status();
                 tracing::info!("管道 {}", if self.app_state.running { "运行" } else { "暂停" });
             }
             m::OVERLAY_TOGGLE => {
                 let vis = !self.window(WinId::Overlay).is_visible().unwrap_or(false);
-                self.set_visible(WinId::Overlay, vis);
-            }
-            m::SUBWIN_TOGGLE => {
-                let vis = !self.window(WinId::Subtitle).is_visible().unwrap_or(false);
-                self.set_visible(WinId::Subtitle, vis);
-                self.app_state.settings.subtitle_mode.enabled = vis;
-            }
-            m::SUBWIN_CT => {
-                let cur = self.app_state.settings.subtitle_mode.click_through;
-                self.app_state.settings.subtitle_mode.click_through = !cur;
-                // 开启即启动 500ms 断言轮询（关闭由续拍条件自然断链）
-                if !cur {
-                    self.app_state.schedule_subtitle_click_through_tick();
+                if let Some(t) = &self.tray {
+                    let text = if vis {
+                        lt_i18n::t("tray_hide_overlay")
+                    } else {
+                        lt_i18n::t("tray_show_overlay")
+                    };
+                    let _ = t.handles.overlay_toggle.set_text(text);
+                    // 首次隐藏提示（原版 tray.showMessage 气泡；tray-icon 0.24
+                    // 无气泡 API → 降级为日志，已知偏差，待 Shell_NotifyIcon 直调）
+                    if !vis && !self.overlay_hide_notified {
+                        self.overlay_hide_notified = true;
+                        tracing::info!("{}", lt_i18n::t("hide_tray_hint"));
+                    }
                 }
+                self.set_visible(WinId::Overlay, vis);
             }
             m::SHOW_PANEL => {
                 let vis = !self.window(WinId::Panel).is_visible().unwrap_or(false);
                 self.set_visible(WinId::Panel, vis);
             }
-            m::SHOW_LOG => {
-                let vis = !self.window(WinId::Log).is_visible().unwrap_or(false);
-                self.set_visible(WinId::Log, vis);
-            }
-            m::OV_CT => self.app_state.ov_click_through = !self.app_state.ov_click_through,
-            m::OV_TOPMOST => self.app_state.ov_topmost = !self.app_state.ov_topmost,
-            m::OV_AUTOSCROLL => self.app_state.ov_auto_scroll = !self.app_state.ov_auto_scroll,
-            m::OV_TASKBAR => self.app_state.ov_taskbar = !self.app_state.ov_taskbar,
             m::QUIT => {
-                tracing::info!("收到退出指令");
-                event_loop.exit();
-            }
-            other => {
-                if let Some(code) = other.strip_prefix("lang_") {
-                    self.app_state.settings.target_language = code.to_string();
-                    tracing::info!("目标语言: {code}");
-                } else if let Some(code) = other.strip_prefix("asrlang_") {
-                    self.app_state.settings.asr_language = code.to_string();
-                    tracing::info!("源语言提示: {code}");
+                // 原版 on_quit(confirm=True)：确认框；取消则不退出
+                let confirmed = rfd::MessageDialog::new()
+                    .set_title(lt_i18n::t("quit_confirm_title"))
+                    .set_description(lt_i18n::t("quit_confirm_msg"))
+                    .set_buttons(rfd::MessageButtons::OkCancel)
+                    .set_level(rfd::MessageLevel::Info)
+                    .show();
+                if confirmed == rfd::MessageDialogResult::Ok {
+                    tracing::info!("收到退出指令（已确认）");
+                    event_loop.exit();
                 }
             }
+            other => {
+                tracing::debug!("未知托盘菜单项: {other}");
+            }
         }
-        self.sync_tray_checks();
         self.apply_overlay_flags();
+    }
+
+    /// 刷新托盘状态行（● 状态 · 引擎 · 模型 · 源 → 目标；原版 status_action）
+    fn update_tray_status(&mut self) {
+        let s = &self.app_state;
+        let state = if s.running { "运行" } else { "暂停" };
+        let engine = s.asr_label.clone().unwrap_or_else(|| "--".into());
+        let model = s
+            .settings
+            .models
+            .get(s.settings.active_model)
+            .map(|m| m.name.clone())
+            .unwrap_or_else(|| "--".into());
+        let text = lt_i18n::t("tray_status_format")
+            .replace("{state}", state)
+            .replace("{engine}", &engine)
+            .replace("{model}", &model)
+            .replace("{src}", &s.settings.asr_language)
+            .replace("{tgt}", &s.settings.target_language);
+        if let Some(t) = &self.tray {
+            let _ = t.handles.status.set_text(text);
+        }
     }
 
     fn set_visible(&mut self, id: WinId, vis: bool) {

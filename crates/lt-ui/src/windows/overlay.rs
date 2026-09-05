@@ -304,6 +304,19 @@ fn monitor_bar(ui: &mut Ui, state: &AppState, opa_pct: u32) {
         }
         level_bar(ui, "RMS:", state.monitor.rms, BAR_RMS, opa_pct);
         level_bar(ui, "VAD:", state.monitor.vad, BAR_VAD, opa_pct);
+        // 费用挂统计行右端（原版 stats_label 的 cost_str 在行尾；新版参照截图
+        // 显示在电平行右端，随宽度拉伸对齐）
+        if state.stats.cost > 0.0 {
+            let symbol = if lt_i18n::get_lang() == "zh" { "¥" } else { "$" };
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(
+                    RichText::new(format!("{symbol}{:.4}", state.stats.cost))
+                        .monospace()
+                        .size(10.5)
+                        .color(opa(Color32::from_rgb(0xff, 0xaa, 0x55), opa_pct)),
+                );
+            });
+        }
     });
     ui.add_space(2.0);
     stats_line(ui, state, opa_pct);
@@ -380,15 +393,6 @@ fn stats_line(ui: &mut Ui, state: &AppState, opa_pct: u32) {
                 .size(10.5)
                 .color(o(Color32::from_rgb(0x66, 0x66, 0x66))),
         );
-        if stats.cost > 0.0 {
-            let symbol = if lt_i18n::get_lang() == "zh" { "¥" } else { "$" };
-            ui.label(
-                RichText::new(format!("{symbol}{:.4}", stats.cost))
-                    .monospace()
-                    .size(10.5)
-                    .color(o(Color32::from_rgb(0xff, 0xaa, 0x55))),
-            );
-        }
     });
 }
 
