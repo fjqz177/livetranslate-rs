@@ -2633,6 +2633,7 @@ name = "lt-pipeline"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "crossbeam-channel",
  "lt-models",
  "lt-proto",
@@ -2641,6 +2642,7 @@ dependencies = [
  "parking_lot",
  "serde_json",
  "tracing",
+ "uuid",
  "wasapi",
 ]
 
