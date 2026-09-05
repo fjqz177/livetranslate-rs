@@ -19,6 +19,21 @@ fn hf_snapshots(models_dir: &Path, repo: &str) -> Option<PathBuf> {
     p.is_dir().then_some(p)
 }
 
+/// 下载器写入布局（与探测同一约定）：
+/// HF → `huggingface/hub/models--{org}--{name}/snapshots/{rev}`，
+/// MS → `modelscope/models/{org}--{name}/snapshots/{rev}`
+pub fn hf_style_snapshot(models_dir: &Path, hub: crate::download::Hub, repo: &str, rev: &str) -> PathBuf {
+    let (org, name) = repo.split_once('/').unwrap_or((repo, ""));
+    match hub {
+        crate::download::Hub::Hf => {
+            hf_cache_root(models_dir).join(format!("models--{org}--{name}")).join("snapshots").join(rev)
+        }
+        crate::download::Hub::Ms => {
+            ms_cache_root(models_dir).join("models").join(format!("{org}--{name}")).join("snapshots").join(rev)
+        }
+    }
+}
+
 /// HF repo 是否"存在且下载完成"（E-10：统计可解析文件总字节；
 /// 忽略孤儿 .incomplete blob；损坏符号链接视为不完整）
 pub fn hf_repo_complete(models_dir: &Path, repo: &str, min_bytes: u64) -> bool {
@@ -233,9 +248,9 @@ mod tests {
     fn is_asr_cached_dual_hub_or() {
         let dir = tmpdir("dual");
         assert!(!is_asr_cached(&dir, "funasr", "sensevoice-small"));
-        // MS 侧命中
+        // MS 侧命中（pengzhendong 镜像仓，M2 核对）
         write(
-            &ms_cache_root(&dir).join("csukuangfj").join("sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17").join("model.int8.onnx"),
+            &ms_cache_root(&dir).join("pengzhendong").join("sherpa-onnx-sense-voice-zh-en-ja-ko-yue").join("model.int8.onnx"),
             10,
         );
         assert!(is_asr_cached(&dir, "funasr", "sensevoice-small"));

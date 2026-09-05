@@ -56,7 +56,7 @@ whisper-rs = "0.16"
 
 # ── LLM / 网络 ──
 async-openai = { version = "0.41", features = ["byot"] }
-reqwest = { version = "0.13", default-features = false, features = ["rustls-tls", "stream", "json", "gzip"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "webpki-roots", "stream", "json", "gzip", "blocking"] }
 
 # ── 异步 ──
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "fs", "process", "signal", "sync"] }

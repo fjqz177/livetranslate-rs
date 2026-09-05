@@ -20,12 +20,13 @@ pub struct ModelEntry {
     pub files: &'static [&'static str],
 }
 
-/// SenseVoice（sherpa-onnx 转换包，~250MB：model.int8.onnx + tokens.txt）
+/// SenseVoice（sherpa-onnx 转换包：model.int8.onnx 239MB + tokens.txt）。
+/// MS 侧 csukuangfj 未发布 → 用 pengzhendong 镜像仓（文件与 HF 官方包一致，M2 核对完毕）。
 pub const SENSEVOICE_SMALL: ModelEntry = ModelEntry {
     key: "sensevoice-small",
     display: "SenseVoice Small",
     hf: Some("csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17"),
-    ms: Some("csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17"),
+    ms: Some("pengzhendong/sherpa-onnx-sense-voice-zh-en-ja-ko-yue"),
     always_hf: false,
     estimated_bytes: 250_000_000,
     files: &["model.int8.onnx", "tokens.txt"],
@@ -103,6 +104,11 @@ mod tests {
         assert_eq!(
             SENSEVOICE_SMALL.hf,
             Some("csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17")
+        );
+        // MS 侧无 csukuangfj sherpa 包 → pengzhendong 镜像（M2 实测核对）
+        assert_eq!(
+            SENSEVOICE_SMALL.ms,
+            Some("pengzhendong/sherpa-onnx-sense-voice-zh-en-ja-ko-yue")
         );
         assert!(!SENSEVOICE_SMALL.always_hf);
         assert!(SENSEVOICE_SMALL.files.contains(&"model.int8.onnx"));
