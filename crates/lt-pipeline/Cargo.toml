@@ -1,0 +1,6 @@
+[package]
+name = "lt-pipeline"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

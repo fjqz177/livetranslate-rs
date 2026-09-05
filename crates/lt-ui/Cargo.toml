@@ -1,0 +1,20 @@
+[package]
+name = "lt-ui"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+lt-proto = { workspace = true }
+lt-i18n = { workspace = true }
+egui = { workspace = true }
+egui-winit = { workspace = true }
+egui-wgpu = { workspace = true }
+winit = { workspace = true }
+tray-icon = { workspace = true }
+muda = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+parking_lot = { workspace = true }
+
+[target."cfg(windows)".dependencies]
+windows = { workspace = true }

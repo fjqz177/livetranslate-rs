@@ -1,0 +1,22 @@
+[package]
+name = "lt-app"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "livetranslate"
+path = "src/main.rs"
+
+[dependencies]
+lt-proto = { workspace = true }
+lt-i18n = { workspace = true }
+lt-models = { workspace = true }
+lt-ui = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tokio = { workspace = true }
+parking_lot = { workspace = true }
+
+[target."cfg(windows)".dependencies]
+windows = { workspace = true }

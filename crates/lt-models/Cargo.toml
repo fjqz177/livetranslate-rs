@@ -1,0 +1,12 @@
+[package]
+name = "lt-models"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+lt-proto = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+dirs = { workspace = true }

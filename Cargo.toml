@@ -1,0 +1,85 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/lt-proto",
+    "crates/lt-i18n",
+    "crates/lt-models",
+    "crates/lt-pipeline",
+    "crates/lt-asr",
+    "crates/lt-translate",
+    "crates/lt-ui",
+    "crates/lt-app",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+lt-proto = { path = "crates/lt-proto" }
+lt-i18n = { path = "crates/lt-i18n" }
+lt-models = { path = "crates/lt-models" }
+lt-pipeline = { path = "crates/lt-pipeline" }
+lt-asr = { path = "crates/lt-asr" }
+lt-translate = { path = "crates/lt-translate" }
+lt-ui = { path = "crates/lt-ui" }
+
+# ── GUI ──
+egui = "0.36"
+egui-winit = "0.36"
+egui-wgpu = "0.36"
+winit = "0.30"
+
+# ── Win32 互操作 ──
+windows = { version = "0.62", features = [
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Graphics_Gdi",
+    "Win32_Foundation",
+    "Win32_System_Threading",
+    "Win32_System_SystemInformation",
+    "Win32_Storage_FileSystem",
+] }
+
+# ── 托盘 ──
+tray-icon = "0.21"
+muda = "0.17"
+
+# ── 音频 ──
+wasapi = "0.15"
+
+# ── 推理 ──
+ort = { version = "2.0.0-rc.13", default-features = false, features = ["ndarray"] }
+sherpa-onnx = "1.13"
+whisper-rs = "0.14"
+
+# ── LLM / 网络 ──
+async-openai = { version = "0.41", features = ["byot"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json", "gzip"] }
+
+# ── 异步 ──
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "fs", "process", "signal", "sync"] }
+
+# ── 序列化 ──
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+
+# ── 系统/工具 ──
+sysinfo = "0.33"
+sys-locale = "0.3"
+dirs = "6"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "time"] }
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4"] }
+anyhow = "1"
+thiserror = "2"
+parking_lot = "0.12"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+opt-level = 2
+panic = "unwind"
