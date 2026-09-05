@@ -164,6 +164,61 @@ pub fn is_asr_cached(models_dir: &Path, engine: &str, model: &str) -> bool {
     }
 }
 
+/// 缺失模型条目（原版 get_missing_models 的元素结构）。
+/// Silero VAD 内嵌 exe（D-5），恒不缺失。
+#[derive(Debug, Clone)]
+pub struct MissingModel {
+    /// 显示名（向导/下载对话框标题行用，如 "SenseVoice Small" / "Whisper tiny"）
+    pub display: String,
+    pub hub_hf: Option<&'static str>,
+    pub hub_ms: Option<&'static str>,
+    pub always_hf: bool,
+    pub files: &'static [&'static str],
+}
+
+/// 缺失模型清单（原版 get_missing_models；本地自定义 whisper 路径不触发下载）
+pub fn missing_models(
+    models_dir: &Path,
+    engine: &str,
+    funasr_model: &str,
+    whisper_size: &str,
+) -> Vec<MissingModel> {
+    match engine {
+        "funasr" => {
+            // mlt/非法键回退 sensevoice-small（与 pipeline 装载一致，D-14）
+            let entry = registry::funasr_entry(funasr_model)
+                .or_else(|| registry::funasr_entry("sensevoice-small"))
+                .expect("sensevoice-small 常量条目必存在");
+            if is_funasr_cached(models_dir, &entry) {
+                Vec::new()
+            } else {
+                vec![MissingModel {
+                    display: entry.display.into(),
+                    hub_hf: entry.hf,
+                    hub_ms: entry.ms,
+                    always_hf: entry.always_hf,
+                    files: entry.files,
+                }]
+            }
+        }
+        "whisper" => {
+            // 非 builtin 档位（本地 GGML 路径）不算缺失（原版同语义）
+            if registry::whisper_repo(whisper_size).is_none() || is_whisper_cached(models_dir, whisper_size) {
+                return Vec::new();
+            }
+            let entry = registry::whisper_entry_for(whisper_size).expect("builtin 档位已核");
+            vec![MissingModel {
+                display: format!("Whisper {}", entry.key),
+                hub_hf: entry.hf,
+                hub_ms: entry.ms,
+                always_hf: entry.always_hf,
+                files: entry.files,
+            }]
+        }
+        _ => Vec::new(),
+    }
+}
+
 /// 本地模型目录（已缓存时返回 snapshot 路径；未缓存 None）。
 /// 双 hub 优先级：MS（国内快）→ HF。
 pub fn local_model_dir(models_dir: &Path, entry: &ModelEntry) -> Option<PathBuf> {
@@ -254,6 +309,30 @@ mod tests {
             10,
         );
         assert!(is_asr_cached(&dir, "funasr", "sensevoice-small"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn missing_models_semantics() {
+        let dir = tmpdir("missing");
+        // 空目录：funasr 缺 sensevoice-small
+        let miss = missing_models(&dir, "funasr", "sensevoice-small", "");
+        assert_eq!(miss.len(), 1);
+        assert_eq!(miss[0].display, "SenseVoice Small");
+        // mlt 键回退后同样报 sensevoice-small 缺失（D-14）
+        let miss = missing_models(&dir, "funasr", "funasr-mlt-nano-2512", "");
+        assert_eq!(miss[0].display, "SenseVoice Small");
+        // whisper builtin 档缺；本地路径不触发下载
+        let miss = missing_models(&dir, "whisper", "", "tiny");
+        assert_eq!(miss.len(), 1);
+        assert_eq!(miss[0].display, "Whisper tiny");
+        assert!(missing_models(&dir, "whisper", "", "D:/my/model.bin").is_empty());
+        // MS 侧命中 → funasr 不再缺失
+        write(
+            &ms_cache_root(&dir).join("pengzhendong").join("sherpa-onnx-sense-voice-zh-en-ja-ko-yue").join("model.int8.onnx"),
+            10,
+        );
+        assert!(missing_models(&dir, "funasr", "sensevoice-small", "").is_empty());
         let _ = fs::remove_dir_all(&dir);
     }
 

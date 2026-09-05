@@ -1,13 +1,17 @@
-//! LiveTranslate 主入口（M0.8 装配）。
+//! LiveTranslate 主入口（M0.8 装配 + M2.5 启动流）。
 //!
-//! 启动流（对齐原版 main()，向导/下载对话框在 M2 插入）：
-//! 单实例检查 → 设置加载（无配置先走默认）→ i18n → 日志三路 → 多窗口 UI + 托盘。
-//! `--asr-worker` 为 worker 子进程入口（M2 实装）。
+//! 启动流（对齐原版 main()）：
+//! - 无 settings → 首启向导（hub 按语言默认/代理三选/15s 倒计时自动下载）；
+//! - 有 settings 但模型缺失 → 下载对话框（取消即退出）；
+//! - 就绪 → 立即启动管道；向导/下载流程在 DownloadSucceeded 时启动（AppShell）。
+//! `--asr-worker` 为 worker 子进程入口。
 
+mod backend;
 mod logging;
 mod pipeline;
+mod shell;
 
-use lt_proto::UiMsg;
+use lt_proto::{Cmd, UiMsg};
 
 fn main() -> anyhow::Result<()> {
     // worker 子进程入口：--asr-worker <config-json>（M2.3 起实装 SenseVoice）
@@ -20,32 +24,59 @@ fn main() -> anyhow::Result<()> {
 
     ensure_single_instance()?;
 
-    let settings = lt_models::settings_io::load()?.unwrap_or_default();
-    lt_i18n::set_lang(&settings.ui_lang);
+    let settings_opt = lt_models::settings_io::load()?;
+    let initial_settings = settings_opt.clone().unwrap_or_default();
+
+    // 启动流判定（原版：SETTINGS_FILE 不存在 → 向导；否则 get_missing_models
+    // 非空 → 下载对话框；silero 内嵌恒不缺 D-5）
+    let (first_launch, missing) = match &settings_opt {
+        None => (true, Vec::new()),
+        Some(s) => {
+            let models_dir = lt_models::paths::models_dir(s.models_dir.as_deref())?;
+            (
+                false,
+                lt_models::cache::missing_models(
+                    &models_dir,
+                    &s.asr_engine,
+                    &s.funasr_model,
+                    &s.whisper_model_size,
+                ),
+            )
+        }
+    };
+    let ready_now = !first_launch && missing.is_empty();
+    let flow = lt_ui::startup_flow(
+        first_launch,
+        missing.iter().map(|m| m.display.clone()).collect(),
+    );
+
+    lt_i18n::set_lang(&initial_settings.ui_lang);
     logging::init()?;
 
     let event_loop = winit::event_loop::EventLoop::<UiMsg>::with_user_event().build()?;
+    let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<Cmd>();
     let mut app = lt_ui::MultiWindowApp::new(
-        lt_ui::AppState::new(settings.clone()),
+        lt_ui::AppState::with_startup(initial_settings.clone(), flow),
         &event_loop,
-        None, // cmd_tx：M4 面板控件接入时注入
+        Some(cmd_tx),
     )?;
     app.kick_ticks();
 
-    // 管道：capture → VAD → ASR → UI 事件（M2.6）
     let proxy = event_loop.create_proxy();
-    let mut pipeline = pipeline::Pipeline::start(&settings, proxy)?;
-    tracing::info!("LiveTranslate 启动（4 窗口 + 托盘 + 管道）");
+    // 后台命令线程：下载编排 + 日志桥接（M2.5）；其余命令 M4 接线
+    backend::spawn(cmd_rx, proxy.clone(), first_launch, initial_settings.clone(), missing);
 
-    let result = event_loop.run_app(&mut app);
+    let mut shell = shell::AppShell::new(
+        app,
+        proxy,
+        ready_now.then(|| initial_settings.clone()),
+    );
 
-    pipeline.stop();
+    let result = event_loop.run_app(&mut shell);
+
+    shell.shutdown();
     result?;
 
-    // 退出前保存设置（窗口可见性/托盘开关等运行态）
-    if let Err(e) = lt_models::settings_io::save(&app.app_state.settings) {
-        tracing::error!("设置保存失败: {e}");
-    }
     tracing::info!("LiveTranslate 退出");
     Ok(())
 }

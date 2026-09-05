@@ -248,6 +248,8 @@ fn run_asr_thread(
     };
     // Manager 持 UI 线程同款挂起句柄：transcribe 前应用挂起的语言/padding
     let mut manager = AsrManager::with_pending(pending);
+    // 模型加载对话框（原版 _ModelLoadDialog：装载期模态；AsrDevice/AsrUnavailable 关闭）
+    let _ = proxy.send_event(UiMsg::Event(UiEvent::ModelLoadStart(entry.display.into())));
     if let Err(e) = manager.ensure_started(&config) {
         let _ = proxy.send_event(UiMsg::Event(UiEvent::AsrUnavailable));
         tracing::error!("ASR worker 启动失败: {e}");

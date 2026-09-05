@@ -43,8 +43,15 @@ pub enum UiEvent {
     AsrUnavailable,
     /// 日志行（tracing broadcast → 日志窗/下载框）
     LogLine { level: u8, target: String, msg: String },
-    /// 下载进度文本（走日志流形态）
+    /// 下载进度/日志行（向导与缺模型下载对话框共用的日志流形态；
+    /// 承载 Downloader 事件与下载期间 INFO 级 tracing 行）
     DownloadProgress(String),
+    /// 下载成功（携带应生效的设置：向导=13 键默认块，缺模型=现有设置）
+    DownloadSucceeded { settings: Box<Settings> },
+    /// 下载失败（可重试；UI 恢复控件并显示 btn_retry）
+    DownloadFailed(String),
+    /// 模型加载开始（_ModelLoadDialog 打开依据；label 如 "SenseVoice Small"）
+    ModelLoadStart(String),
     /// 模型加载结束（切换引擎的 _ModelLoadDialog 关闭依据）
     ModelLoadDone { ok: bool, error: Option<String> },
 }
@@ -56,6 +63,8 @@ pub enum Cmd {
     Pause,
     Resume,
     Stop,
+    /// 首启向导/缺模型对话框：开始下载（hub: "ms"|"hf"；proxy: "none"|"system"|URL）
+    StartDownload { hub: String, proxy: String },
     /// 引擎/模型/hub 任一变化触发（签名相同则管道侧自行跳过）
     SwitchEngine {
         engine: String,

@@ -9,7 +9,7 @@
 //! - CloseRequested 一律隐藏窗口（退出仅走托盘 Quit，等价 setQuitOnLastWindowClosed(false)）；
 //! - 点击穿透由窗口层按 50ms 轮询处理（M4 接入），本宿主只负责窗口创建与 flags。
 
-use crate::state::{AppState, OverlayMessage, WinId};
+use crate::state::{AppState, OverlayMessage, StartupFlow, WinId, push_log_line};
 use crate::tray::{self, Tray};
 use crate::windows;
 use egui::{Context, ViewportId};
@@ -39,17 +39,17 @@ pub struct MultiWindowApp {
     windows: Vec<HostedWindow>,
     pub tray: Option<Tray>,
     proxy: EventLoopProxy<UiMsg>,
-    /// Worker 命令出口（管道就绪后由 lt-app 注入；M0 占位）
-    pub cmd_tx: Option<std::sync::mpsc::Sender<lt_proto::Cmd>>,
 }
 
 impl MultiWindowApp {
     /// 创建宿主（需在主线程）。异步的 wgpu 初始化用 pollster 阻塞完成。
+    /// cmd_tx 存入 AppState（widget 代码经 send_cmd 直接发送命令）。
     pub fn new(
-        app_state: AppState,
+        mut app_state: AppState,
         event_loop: &EventLoop<UiMsg>,
         cmd_tx: Option<std::sync::mpsc::Sender<lt_proto::Cmd>>,
     ) -> anyhow::Result<Self> {
+        app_state.cmd_tx = cmd_tx;
         let ctx = Context::default();
         install_cjk_fonts(&ctx);
         let painter = pollster::block_on(Painter::new(
@@ -66,7 +66,6 @@ impl MultiWindowApp {
             windows: Vec::new(),
             tray: None,
             proxy,
-            cmd_tx,
         })
     }
 
@@ -88,6 +87,15 @@ impl MultiWindowApp {
         self.create_window(event_loop, WinId::Subtitle, (1000, 160))?;
         self.create_window(event_loop, WinId::Panel, (520, 650))?;
         self.create_window(event_loop, WinId::Log, (900, 500))?;
+        // 启动流对话框（原版 QDialog：常规装饰窗口；可见性 = 启动流进行中）
+        self.create_window(event_loop, WinId::Setup, (560, 420))?;
+        // Setup 标题随启动流阶段动态化（向导/缺模型下载；加载框在 ModelLoadStart 再设）
+        let setup_title = match &self.app_state.startup {
+            StartupFlow::Wizard(_) => lt_i18n::t("window_setup"),
+            StartupFlow::DownloadMissing { .. } => lt_i18n::t("window_download"),
+            StartupFlow::Ready => "LiveTranslate".to_string(),
+        };
+        self.set_setup_title(&setup_title);
 
         // 托盘（主线程创建；事件经 proxy 回流）
         let proxy = self.proxy.clone();
@@ -300,6 +308,88 @@ impl MultiWindowApp {
         }
     }
 
+    /// Setup 窗标题动态化（向导/缺模型下载/加载框共用一个原生窗口）
+    fn set_setup_title(&mut self, title: &str) {
+        if let Some(hw) = self.find_mut(WinId::Setup) {
+            hw.window.set_title(title);
+        }
+    }
+
+    /// 重绘 Setup 窗（下载日志追加/失败/成功/加载框开关等状态变化时）
+    fn redraw_setup(&mut self) {
+        if let Some(hw) = self.find_mut(WinId::Setup) {
+            hw.window.request_redraw();
+        }
+    }
+
+    /// 关闭模型加载对话框（ModelLoadDone / AsrDevice / AsrUnavailable 触发）。
+    /// 仅 load_dialog 显示中才动作，且仅 startup==Ready 时隐藏 Setup 窗——
+    /// 避免误关首启向导/缺模型下载流程仍在使用的窗口。
+    fn close_load_dialog(&mut self) {
+        if self.app_state.load_dialog.take().is_some()
+            && matches!(self.app_state.startup, StartupFlow::Ready)
+        {
+            self.set_visible(WinId::Setup, false);
+        }
+    }
+
+    /// Setup 窗节拍分派：向导倒计时（1s 一拍）与启动流成功后的 500ms 收尾延迟。
+    /// 定时仅在向导 Idle / 成功待收尾期间存在（事件到达即重绘，无需节拍）。
+    fn on_setup_tick(&mut self) {
+        enum Action {
+            Countdown,
+            Finish,
+            None,
+        }
+        let action = match &self.app_state.startup {
+            StartupFlow::Wizard(w) => match w.phase {
+                crate::state::WizardPhase::Idle => Action::Countdown,
+                crate::state::WizardPhase::Done => Action::Finish,
+                _ => Action::None,
+            },
+            StartupFlow::DownloadMissing { finished, .. } => {
+                if *finished { Action::Finish } else { Action::None }
+            }
+            StartupFlow::Ready => Action::None,
+        };
+        match action {
+            Action::Countdown => {
+                if let StartupFlow::Wizard(w) = &mut self.app_state.startup {
+                    w.countdown -= 1;
+                }
+                // 原版 _tick_countdown：归零即自动开始下载，否则按 1s 续拍
+                if matches!(&self.app_state.startup, StartupFlow::Wizard(w) if w.countdown <= 0) {
+                    self.app_state.wizard_auto_start();
+                } else {
+                    self.app_state.schedule_setup_tick(Duration::from_secs(1));
+                }
+            }
+            Action::Finish => {
+                self.finish_startup();
+                return; // 窗已隐藏，无需重绘
+            }
+            Action::None => {}
+        }
+        self.redraw_setup(); // 刷新倒计时文本等
+    }
+
+    /// 启动流收尾（原版对话框 accept 之后）：startup=Ready、关 Setup 窗、
+    /// 揭开主窗口（字幕窗按 settings.subtitle_mode.enabled，日志窗保持隐藏）
+    fn finish_startup(&mut self) {
+        self.app_state.startup = StartupFlow::Ready;
+        // 下载成功即启管道（AppShell），ModelLoadStart 可能落在 500ms 收尾期内——
+        // 原版两个对话框先后出现，这里共用一个原生窗口，故加载框已开则保留窗口
+        if self.app_state.load_dialog.is_none() {
+            self.set_visible(WinId::Setup, false);
+        }
+        let subtitle = self.app_state.settings.subtitle_mode.enabled;
+        self.set_visible(WinId::Overlay, true);
+        self.set_visible(WinId::Subtitle, subtitle);
+        self.set_visible(WinId::Panel, true);
+        self.app_state.visible.insert(WinId::Log, false);
+        self.sync_tray_checks();
+    }
+
     /// UiMsg 统一入口（管道事件/托盘事件）
     fn on_msg(&mut self, event_loop: &ActiveEventLoop, msg: UiMsg) {
         match msg {
@@ -331,29 +421,88 @@ impl MultiWindowApp {
                         hw.window.request_redraw();
                     }
                 }
-                // ASR 设备标签（悬浮窗 MonitorBar device 段）
+                // ASR 设备标签（悬浮窗 MonitorBar device 段）；同时视作加载框关闭信号
+                //（原版 App.model_load_done 在设备就绪/不可用时都会被调用）
                 lt_proto::UiEvent::AsrDevice(label) => {
                     self.app_state.asr_label = Some(label);
                     if let Some(hw) = self.find_mut(WinId::Overlay) {
                         hw.window.request_redraw();
                     }
+                    self.close_load_dialog();
                 }
-                // ASR 完全不可用（沿用原版字面文案）
+                // ASR 完全不可用（沿用原版字面文案）；同样关闭加载框
                 lt_proto::UiEvent::AsrUnavailable => {
                     self.app_state.asr_label = Some("ASR unavailable".into());
                     if let Some(hw) = self.find_mut(WinId::Overlay) {
                         hw.window.request_redraw();
                     }
+                    self.close_load_dialog();
                 }
+                // ── 启动流：下载日志流（向导/缺模型对话框共用）──
+                lt_proto::UiEvent::DownloadProgress(line) => {
+                    match &mut self.app_state.startup {
+                        StartupFlow::Wizard(w) => push_log_line(&mut w.log, line),
+                        StartupFlow::DownloadMissing { log, .. } => push_log_line(log, line),
+                        StartupFlow::Ready => {}
+                    }
+                    self.redraw_setup();
+                }
+                // ── 启动流：下载失败（可重试；恢复控件 / 显示"关闭"按钮）──
+                lt_proto::UiEvent::DownloadFailed(e) => {
+                    let failed_line = lt_i18n::t("download_failed").replace("{error}", &e);
+                    match &mut self.app_state.startup {
+                        StartupFlow::Wizard(w) => {
+                            w.phase = crate::state::WizardPhase::Failed;
+                            push_log_line(&mut w.log, failed_line);
+                        }
+                        StartupFlow::DownloadMissing { failed, log, .. } => {
+                            *failed = Some(e);
+                            push_log_line(log, failed_line);
+                        }
+                        StartupFlow::Ready => {}
+                    }
+                    self.redraw_setup();
+                }
+                // ── 启动流：下载成功（应用下发设置 + 500ms 后收尾关窗）──
+                lt_proto::UiEvent::DownloadSucceeded { settings } => {
+                    self.app_state.settings = *settings;
+                    let done_line = lt_i18n::t("download_complete");
+                    match &mut self.app_state.startup {
+                        StartupFlow::Wizard(w) => {
+                            push_log_line(&mut w.log, done_line);
+                            w.phase = crate::state::WizardPhase::Done;
+                        }
+                        StartupFlow::DownloadMissing { log, finished, .. } => {
+                            push_log_line(log, done_line);
+                            *finished = true;
+                        }
+                        StartupFlow::Ready => {}
+                    }
+                    // 原版 QTimer.singleShot(500, accept)：安排 500ms 收尾节拍
+                    self.app_state.cancel_setup_tick();
+                    self.app_state.schedule_setup_tick(Duration::from_millis(500));
+                    self.redraw_setup();
+                }
+                // ── 模型加载对话框打开（标题固定 "LiveTranslate"）──
+                lt_proto::UiEvent::ModelLoadStart(label) => {
+                    self.app_state.load_dialog = Some(label);
+                    self.set_visible(WinId::Setup, true);
+                    self.set_setup_title("LiveTranslate");
+                    self.redraw_setup();
+                }
+                // ── 模型加载结束：关闭加载框（仅 load_dialog 显示中才动作）──
+                lt_proto::UiEvent::ModelLoadDone { .. } => self.close_load_dialog(),
                 // M1：其余管道事件尚未接入（M2 起逐个接线）；先落日志防黑洞
                 other => tracing::debug!("UI 事件（待接线）: {other:?}"),
             },
         }
     }
 
-    /// 启动即安排悬浮窗监视节拍（由 lt-app 在 run 前调用）
+    /// 启动即安排节拍（由 lt-app 在 run 前调用）：
+    /// 悬浮窗监视节拍（overlay 行为不变）+ 启动流节拍（向导倒计时/收尾延迟）
     pub fn kick_ticks(&mut self) {
         self.app_state.schedule_monitor_tick(WinId::Overlay);
+        self.app_state.kick_setup_tick();
     }
 }
 
@@ -415,11 +564,18 @@ impl ApplicationHandler<UiMsg> for MultiWindowApp {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        // 1) 到期节拍 → 重绘对应窗口并补下一拍
+        // 0) 缺模型下载失败后点"关闭"：退出应用（原版 reject → main 返回）
+        if self.app_state.quit_requested {
+            tracing::info!("退出请求（启动流对话框关闭）");
+            event_loop.exit();
+            return;
+        }
+        // 1) 到期节拍 → 按窗口分派：overlay=系统采样+续拍，Setup=倒计时/收尾延迟
         for win in self.app_state.drain_due_ticks() {
-            // 悬浮窗监视节拍：先做 1s 节流的系统采样（CPU/RAM）
-            if win == WinId::Overlay {
-                self.app_state.sample_system();
+            match win {
+                WinId::Overlay => self.app_state.sample_system(),
+                WinId::Setup => self.on_setup_tick(),
+                _ => {}
             }
             if let Some(hw) = self.find(win) {
                 hw.window.request_redraw();

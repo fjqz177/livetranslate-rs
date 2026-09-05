@@ -4,6 +4,8 @@
 use crate::state::{AppState, OverlayMessage, WinId};
 use egui::{Align2, Color32, Layout, RichText, Ui};
 
+pub mod setup;
+
 /// 颜色解析失败的回退值（对照 Style 默认值 / 原版字面色）
 const FALLBACK_TIMESTAMP: Color32 = Color32::from_rgb(0x88, 0x88, 0x99);
 const FALLBACK_ORIGINAL: Color32 = Color32::from_rgb(0xcc, 0xcc, 0xcc);
@@ -202,6 +204,8 @@ pub fn dispatch(win: WinId, ui: &mut Ui, state: &mut AppState) {
         WinId::Subtitle => subtitle_ui(ui, state),
         WinId::Panel => panel_ui(ui, state),
         WinId::Log => log_ui(ui, state),
+        // 启动流对话框（首启向导/缺模型下载/模型加载按 state 内部阶段再分派）
+        WinId::Setup => setup::setup_ui(ui, state),
     }
 }
 
