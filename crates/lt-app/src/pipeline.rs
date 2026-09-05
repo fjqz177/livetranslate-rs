@@ -270,7 +270,7 @@ pub struct Pipeline {
     threads: Vec<std::thread::JoinHandle<()>>,
 }
 
-/// ASR 线程消费的翻译器命令
+/// ASR 线程消费的翻译器/引擎命令
 pub(crate) enum TlSwitch {
     /// 整体重建翻译装置（切模型；历史随旧实例丢弃，与原版重建 Translator 一致）
     ReplaceRig { config: Box<lt_proto::ModelConfig>, settings: Box<lt_proto::Settings> },
@@ -278,6 +278,16 @@ pub(crate) enum TlSwitch {
     TargetLanguage(String),
     /// 原地改超时（原版 set_timeout）
     Timeout(u32),
+    /// 运行时切换 ASR 引擎/模型（原版 _switch_asr_engine；ensure_started
+    /// 内部带替换+失败回滚，此处只补路由与 UI 事件）
+    ReplaceEngine {
+        engine: String,
+        funasr_model: String,
+        /// whisper 档位（M5 引擎实装后消费；funasr 路径忽略）
+        #[allow(dead_code)]
+        whisper_model_size: String,
+        language: String,
+    },
 }
 
 impl Pipeline {
@@ -399,6 +409,39 @@ impl Pipeline {
         }
     }
 
+    /// 运行时切换 ASR 引擎/模型（原版 _switch_asr_engine 的路由；
+    /// ASR 线程空闲分支执行 ensure_started，失败回滚由 Manager 内部保证）
+    pub fn switch_engine(&self, engine: &str, funasr_model: &str, whisper_model_size: &str, language: &str) {
+        if let Some(tx) = &self.tl_switch {
+            let _ = tx.send(TlSwitch::ReplaceEngine {
+                engine: engine.to_string(),
+                funasr_model: funasr_model.to_string(),
+                whisper_model_size: whisper_model_size.to_string(),
+                language: language.to_string(),
+            });
+        }
+    }
+
+    /// 运行时切换采集设备（原版 set_audio_device；后端线程内重启）
+    pub fn set_audio_device(&mut self, choice: lt_proto::AudioDeviceChoice) {
+        let dev = match choice {
+            lt_proto::AudioDeviceChoice::SystemDefault => None,
+            lt_proto::AudioDeviceChoice::Named(n) => Some(n),
+            lt_proto::AudioDeviceChoice::Disabled => Some("__disabled__".into()),
+        };
+        self.backend.set_device(dev);
+    }
+
+    /// 运行时切换麦克风（原版 set_mic_device；None=禁用）
+    pub fn set_mic_device(&mut self, choice: lt_proto::MicDeviceChoice) {
+        let dev = match choice {
+            lt_proto::MicDeviceChoice::Off => None,
+            lt_proto::MicDeviceChoice::Default => Some("__default__".into()),
+            lt_proto::MicDeviceChoice::Named(n) => Some(n),
+        };
+        self.backend.set_mic_device(dev);
+    }
+
     #[allow(dead_code)]
     pub fn set_paused(&self, paused: bool) {
         self.paused.store(paused, Ordering::Relaxed);
@@ -485,6 +528,38 @@ fn resolve_funasr_entry(key: &str) -> (registry::ModelEntry, bool) {
     }
 }
 
+/// 引擎/模型键 → (worker 配置, 显示名)；未缓存或引擎未实装 → None。
+/// 启动路径与运行时切换（TlSwitch::ReplaceEngine）共用。
+fn build_worker_config(
+    models_dir: &std::path::Path,
+    engine: &str,
+    funasr_model: &str,
+    pad_seconds: f32,
+    language: &str,
+) -> Option<(WorkerConfig, String)> {
+    match engine {
+        "funasr" => {
+            let (entry, _fell_back) = resolve_funasr_entry(funasr_model);
+            let model_dir = lt_models::cache::local_model_dir(models_dir, &entry)?;
+            Some((
+                WorkerConfig {
+                    engine: "sensevoice".into(),
+                    display_name: entry.display.into(),
+                    language: language.to_string(),
+                    pad_seconds: Some(pad_seconds),
+                    options: serde_json::json!({ "model_dir": model_dir.to_string_lossy() }),
+                },
+                entry.display.into(),
+            ))
+        }
+        // whisper 引擎 M5 实装；此前的"无视 engine 恒起 sensevoice"改为如实不可用
+        other => {
+            tracing::warn!("引擎 {other:?} 尚未实装（M5），无法启动 worker");
+            None
+        }
+    }
+}
+
 /// ASR 线程：模型就绪则循环识别；未缓存则发 AsrUnavailable 后待命
 fn run_asr_thread(
     settings: &lt_proto::Settings,
@@ -519,7 +594,14 @@ fn run_asr_thread(
             settings.funasr_model
         );
     }
-    let Some(model_dir) = lt_models::cache::local_model_dir(&models_dir, &entry) else {
+    let worker = build_worker_config(
+        &models_dir,
+        &settings.asr_engine,
+        &settings.funasr_model,
+        settings.sensevoice_pad_seconds,
+        &settings.asr_language,
+    );
+    let Some((config, display)) = worker else {
         let _ = proxy.send_event(UiMsg::Event(UiEvent::AsrUnavailable));
         tracing::warn!("ASR 模型未缓存（{entry:?}），等待向导/下载（M2.5）");
         // 待命：模型就绪前吞掉段（无引擎可用）
@@ -531,24 +613,16 @@ fn run_asr_thread(
         return;
     };
 
-    let config = WorkerConfig {
-        engine: "sensevoice".into(),
-        display_name: entry.display.into(),
-        language: settings.asr_language.clone(),
-        pad_seconds: Some(settings.sensevoice_pad_seconds),
-        options: serde_json::json!({ "model_dir": model_dir.to_string_lossy() }),
-    };
     // Manager 持 UI 线程同款挂起句柄：transcribe 前应用挂起的语言/padding
     let mut manager = AsrManager::with_pending(pending);
     // 模型加载对话框（原版 _ModelLoadDialog：装载期模态；AsrDevice/AsrUnavailable 关闭）
-    let _ = proxy.send_event(UiMsg::Event(UiEvent::ModelLoadStart(entry.display.into())));
+    let _ = proxy.send_event(UiMsg::Event(UiEvent::ModelLoadStart(display.clone())));
     if let Err(e) = manager.ensure_started(&config) {
         let _ = proxy.send_event(UiMsg::Event(UiEvent::AsrUnavailable));
         tracing::error!("ASR worker 启动失败: {e}");
     } else {
         let _ = proxy.send_event(UiMsg::Event(UiEvent::AsrDevice(format!(
-            "{} [cpu]",
-            entry.display
+            "{display} [cpu]"
         ))));
     }
 
@@ -575,6 +649,34 @@ fn run_asr_thread(
                     TlSwitch::Timeout(secs) => {
                         if let Some(rig) = &tl {
                             rig.translator.set_timeout(secs);
+                        }
+                    }
+                    TlSwitch::ReplaceEngine { engine, funasr_model, whisper_model_size: _, language } => {
+                        // 原版 _switch_asr_engine：装配新配置 → 加载对话框 →
+                        // ensure_started（失败内部回滚旧 worker）→ 设备/不可用事件
+                        match build_worker_config(
+                            &models_dir,
+                            &engine,
+                            &funasr_model,
+                            settings.sensevoice_pad_seconds,
+                            &language,
+                        ) {
+                            Some((config, display)) => {
+                                let _ = proxy.send_event(UiMsg::Event(UiEvent::ModelLoadStart(display.clone())));
+                                if let Err(e) = manager.ensure_started(&config) {
+                                    let _ = proxy.send_event(UiMsg::Event(UiEvent::AsrUnavailable));
+                                    tracing::error!("引擎切换失败（已回滚）: {e}");
+                                } else {
+                                    let _ = proxy.send_event(UiMsg::Event(UiEvent::AsrDevice(format!(
+                                        "{display} [cpu]"
+                                    ))));
+                                    tracing::info!("引擎已切换: {engine}/{funasr_model}");
+                                }
+                            }
+                            None => {
+                                let _ = proxy.send_event(UiMsg::Event(UiEvent::AsrUnavailable));
+                                tracing::warn!("引擎切换目标不可用（未缓存/未知）: {engine}/{funasr_model}");
+                            }
                         }
                     }
                 }

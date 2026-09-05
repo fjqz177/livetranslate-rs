@@ -124,7 +124,42 @@ impl AppShell {
                     tracing::error!("设置保存失败: {e:#}");
                 }
             }
-            // 其余命令 M4 后续波次接线（音频设备/增量 ASR/引擎切换）
+            Cmd::SwitchEngine { engine, funasr_model, whisper_model_size, hub: _, language } => {
+                if let Some(p) = self.pipeline.as_ref() {
+                    p.switch_engine(&engine, &funasr_model, &whisper_model_size, &language);
+                }
+                let s = &mut self.ui.app_state.settings;
+                s.asr_engine = engine;
+                s.funasr_model = funasr_model;
+                s.whisper_model_size = whisper_model_size;
+                s.asr_language = language;
+                self.persist_settings();
+            }
+            Cmd::SetAudioDevice(choice) => {
+                let dev = match &choice {
+                    lt_proto::AudioDeviceChoice::SystemDefault => None,
+                    lt_proto::AudioDeviceChoice::Named(n) => Some(n.clone()),
+                    lt_proto::AudioDeviceChoice::Disabled => Some("__disabled__".into()),
+                };
+                if let Some(p) = self.pipeline.as_mut() {
+                    p.set_audio_device(choice);
+                }
+                self.ui.app_state.settings.audio_device = dev;
+                self.persist_settings();
+            }
+            Cmd::SetMicDevice(choice) => {
+                let dev = match &choice {
+                    lt_proto::MicDeviceChoice::Off => None,
+                    lt_proto::MicDeviceChoice::Default => Some("__default__".into()),
+                    lt_proto::MicDeviceChoice::Named(n) => Some(n.clone()),
+                };
+                if let Some(p) = self.pipeline.as_mut() {
+                    p.set_mic_device(choice);
+                }
+                self.ui.app_state.settings.mic_device = dev;
+                self.persist_settings();
+            }
+            // 其余命令 M4 后续波次接线（增量 ASR/ApplySettings）
             other => tracing::debug!("命令待后续接线: {other:?}"),
         }
     }
