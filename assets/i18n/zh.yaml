@@ -84,6 +84,7 @@ label_window_opacity: "窗口透明度:"
 
 # VAD / ASR 标签页
 group_asr_engine: "ASR 引擎"
+group_devices: "设备"
 label_engine: "引擎:"
 label_language_hint: "语言提示:"
 asr_lang_auto: "自动检测"
@@ -411,6 +412,17 @@ import_done_msg: "设置已导入，重启应用后生效。"
 # 识别页
 btn_open_benchmark: "性能基准…"
 benchmark_dialog_title: "性能基准"
+benchmark_pending_m44: "性能基准窗口随 M4.4 里程碑接入。"
+# Rust 版新增（识别页引擎/模型/缓存：engine_display_* 缺键回退注册表显示名）
+engine_display_funasr: "FunASR (SenseVoice)"
+engine_display_whisper: "Whisper (faster-whisper)"
+model_experimental: "（实验性）"
+group_model_cache: "模型缓存"
+model_not_cached: "未缓存"
+model_mlt_disabled_hint: "上游尚未发布该模型的 ONNX 转换，暂不可选。"
+
+# 后续里程碑页占位
+page_pending: "（此页随后续里程碑接入）"
 
 # 诊断页
 diag_lazy_hint: "诊断信息将在打开此页面时生成。"

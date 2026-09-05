@@ -65,6 +65,8 @@ pub enum TickKind {
     SubtitleAutoHide,
     /// 字幕窗待插入句子到点（原版 _pending_segment_timers，1500ms 最小显示；win=Subtitle）
     SubtitlePending,
+    /// 面板设置 300ms 防抖到期（原版 ControlPanel._save_timer singleShot；win=Panel）
+    PanelApply,
 }
 
 /// 监视条数据：音频侧来自 UpdateMonitor 事件（每 chunk），系统侧 1s 节流采样。
@@ -133,6 +135,9 @@ pub enum WinAction {
     SetSubtitleHeight(f32),
     /// 字幕窗高度落定后的多屏钳制（原版 on_finished → _clamp_to_screen + position_changed）
     ClampSubtitlePos,
+    /// 常规页"重置窗口位置"（原版 _on_reset_positions：字幕窗回 (100,100)、
+    /// 悬浮窗回主屏右下角；宿主移动窗口后走既有 Moved 防抖保存）
+    ResetPositions,
 }
 
 /// 悬浮窗模式（原版 DragHandle._mode："full"/"compact"）
@@ -463,6 +468,125 @@ pub struct OverlayUiState {
     pub export_request: Option<String>,
 }
 
+// ── 控制面板（M4.3 第一批，对照原版 ui/panel/panel.py + _chrome.py）──
+
+/// 面板设置防抖时长（原版 _save_timer.setInterval(300)：控件变更 300ms 后一次性应用）
+pub const PANEL_APPLY_DEBOUNCE_MS: u64 = 300;
+
+/// 面板页序（原版 _pages 的固定顺序：常规/翻译/识别/字幕/数据与存储/诊断/关于）
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PanelPage {
+    #[default]
+    General,
+    Translation,
+    Recognition,
+    Subtitles,
+    Data,
+    Diagnostics,
+    About,
+}
+
+impl PanelPage {
+    /// 原版 _pages 顺序（panel.py:190-198）
+    pub const ALL: [PanelPage; 7] = [
+        PanelPage::General,
+        PanelPage::Translation,
+        PanelPage::Recognition,
+        PanelPage::Subtitles,
+        PanelPage::Data,
+        PanelPage::Diagnostics,
+        PanelPage::About,
+    ];
+
+    /// 左侧导航 i18n 键（原版 nav_* 键；yaml 无 nav_vad，识别页真实键为 nav_recognition）
+    pub fn nav_key(self) -> &'static str {
+        match self {
+            PanelPage::General => "nav_general",
+            PanelPage::Translation => "nav_translation",
+            PanelPage::Recognition => "nav_recognition",
+            PanelPage::Subtitles => "nav_subtitles",
+            PanelPage::Data => "nav_data",
+            PanelPage::Diagnostics => "nav_diagnostics",
+            PanelPage::About => "nav_about",
+        }
+    }
+
+    /// 页头提示 i18n 键（原版 page_header(title, t("page_*_hint"))）
+    pub fn hint_key(self) -> &'static str {
+        match self {
+            PanelPage::General => "page_general_hint",
+            PanelPage::Translation => "page_translation_hint",
+            PanelPage::Recognition => "page_recognition_hint",
+            PanelPage::Subtitles => "page_subtitles_hint",
+            PanelPage::Data => "page_data_hint",
+            PanelPage::Diagnostics => "page_diagnostics_hint",
+            PanelPage::About => "nav_about",
+        }
+    }
+}
+
+/// 面板明暗主题（原版 _chrome.THEME_MODES = ("dark","light")，DEFAULT_THEME = dark）。
+/// 注意：settings 契约缺 `theme` 键（lt-proto 不动）→ 仅存内存态，重启回深色默认。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ThemeMode {
+    #[default]
+    Dark,
+    Light,
+}
+
+/// 音频设备枚举缓存（UI 线程临时 WasapiBackend 枚举，刷新按钮/首次进入识别页时重建）
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct DeviceCache {
+    pub outputs: Vec<String>,
+    pub inputs: Vec<String>,
+    pub default_output: Option<String>,
+}
+
+/// 控制面板 UI 伴生状态（全部仅 UI 线程触达；对照 ControlPanel 的面板局部字段）
+#[derive(Default)]
+pub struct PanelUiState {
+    /// 当前页（原版 _nav.currentRow + _stack.setCurrentIndex）
+    pub page: PanelPage,
+    /// 明暗主题（内存态；settings 契约缺 theme 键，见 [`ThemeMode`]）
+    pub theme: ThemeMode,
+    /// 启动时隐藏悬浮窗（内存态；settings 契约缺 start_hidden 键，生效随 M4.4 启动流）
+    pub start_hidden: bool,
+    /// 减少动效（内存态；settings 契约缺 reduce_motion 键；同步进 SubtitleUiState 生效）
+    pub reduce_motion: bool,
+    /// 开机自启当前态（None=未探测；Windows 注册表 Run 键为事实源，见 panel::autostart）
+    pub autostart: Option<bool>,
+    /// 设备枚举缓存（None=未枚举；识别页首次显示或点"刷新"时重建）
+    pub devices: Option<DeviceCache>,
+    /// 设置防抖到期时刻（原版 _save_timer singleShot：每次变更重置到 now+300ms
+    /// → 300ms 内连发合并为最后一次的 deadline；到期由 PanelApply 节拍消费）
+    pub apply_due_at: Option<Instant>,
+}
+
+impl PanelUiState {
+    /// 设置变更登记（原版 TabBase.auto_save → _save_timer.start() 重启 300ms 单发定时）。
+    /// `now` 由调用方注入以便测试；宿主按 [`TickKind::PanelApply`] 节拍消费。
+    pub fn mark_dirty_at(&mut self, now: Instant) {
+        self.apply_due_at = Some(Self::apply_deadline(now));
+    }
+
+    /// 防抖到期消费（宿主在 PanelApply 节拍触发时调用）：返回是否应发送 ApplySettings。
+    /// 未到 deadline / 无待应用变更 → false。
+    pub fn take_apply_due(&mut self, now: Instant) -> bool {
+        match self.apply_due_at {
+            Some(at) if now >= at => {
+                self.apply_due_at = None;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// 防抖 deadline（原版 setInterval(300) 的到期时刻）
+    pub fn apply_deadline(now: Instant) -> Instant {
+        now + Duration::from_millis(PANEL_APPLY_DEBOUNCE_MS)
+    }
+}
+
 /// 首启向导的阶段（原版 SetupWizardDialog 用控件可用性表达，这里显式化）
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WizardPhase {
@@ -596,6 +720,8 @@ pub struct AppState {
     pub clear_request: bool,
     /// 日志窗状态（M4.5）
     pub logwin: LogWindowState,
+    /// 控制面板 UI 伴生状态（M4.3：页栈/主题/设备缓存/设置防抖）
+    pub panel: PanelUiState,
     /// ASR 设备标签（"SenseVoice Small" 等；不可用时 "ASR unavailable"）
     pub asr_label: Option<String>,
     /// 启动流状态机（首启向导/缺模型下载/Ready）
@@ -646,6 +772,7 @@ impl AppState {
             actions: Vec::new(),
             clear_request: false,
             logwin: LogWindowState::default(),
+            panel: PanelUiState::default(),
             asr_label: None,
             startup: flow,
             load_dialog: None,
@@ -857,6 +984,39 @@ impl AppState {
     /// 取消 Setup 节拍（下载开始即停倒计时定时器，等价原版 _auto_timer.stop()）
     pub fn cancel_setup_tick(&mut self) {
         self.ticks.retain(|t| t.win != WinId::Setup);
+    }
+
+    /// 面板设置变更登记（原版 _auto_save：控件改 draft 后重启 300ms 单发定时；
+    /// 300ms 内的连续变更不断顺延时刻 → 合并为一次 ApplySettings）。
+    /// 宿主在 [`TickKind::PanelApply`] 节拍触发时经 [`Self::take_due_panel_apply`] 发送。
+    pub fn schedule_panel_apply(&mut self) {
+        self.schedule_panel_apply_at(Instant::now());
+    }
+
+    /// [`Self::schedule_panel_apply`] 的可注入时钟版（测试用）
+    pub fn schedule_panel_apply_at(&mut self, now: Instant) {
+        self.panel.mark_dirty_at(now);
+        let at = PanelUiState::apply_deadline(now);
+        if let Some(t) = self
+            .ticks
+            .iter_mut()
+            .find(|t| t.win == WinId::Panel && t.kind == TickKind::PanelApply)
+        {
+            t.at = at;
+        } else {
+            self.ticks.push(Tick { at, win: WinId::Panel, kind: TickKind::PanelApply });
+        }
+    }
+
+    /// PanelApply 节拍到期：消费防抖并返回应整体重放的设置快照
+    /// （原版 _do_auto_save → _apply_settings → settings_changed.emit(snapshot)）。
+    /// 返回 None = 无脏标记（不该发生，防御语义）。
+    pub fn take_due_panel_apply(&mut self, now: Instant) -> Option<Settings> {
+        if self.panel.take_apply_due(now) {
+            Some(self.settings.clone())
+        } else {
+            None
+        }
     }
 
     /// 若启动流需要节拍（向导倒计时 / 成功后 500ms 收尾延迟）则安排 Setup 节拍。
@@ -1147,5 +1307,84 @@ mod tests {
         assert!(*st.visible.get(&WinId::Overlay).unwrap());
         assert!(!*st.visible.get(&WinId::Setup).unwrap());
         assert!(!*st.visible.get(&WinId::Log).unwrap());
+    }
+
+    // ── 面板（M4.3）：页序 / 防抖 / 页键 ──
+
+    /// 页序对照原版 _pages（panel.py:190-198）固定 7 页
+    #[test]
+    fn panel_pages_order_matches_original() {
+        assert_eq!(
+            PanelPage::ALL,
+            [
+                PanelPage::General,
+                PanelPage::Translation,
+                PanelPage::Recognition,
+                PanelPage::Subtitles,
+                PanelPage::Data,
+                PanelPage::Diagnostics,
+                PanelPage::About,
+            ]
+        );
+        // 导航键与 yaml 真实键对齐（t() 缺键回退 key 本身 → 不等即键缺失）
+        for page in PanelPage::ALL {
+            assert_ne!(lt_i18n::t(page.nav_key()), page.nav_key(), "nav 键缺失: {}", page.nav_key());
+        }
+        for page in PanelPage::ALL {
+            assert_ne!(lt_i18n::t(page.hint_key()), page.hint_key(), "hint 键缺失: {}", page.hint_key());
+        }
+    }
+
+    /// 面板默认值：深色主题（原版 DEFAULT_THEME = dark）、首页常规、无设备缓存
+    #[test]
+    fn panel_state_defaults_match_original_chrome() {
+        let st = AppState::new(Settings::default());
+        assert_eq!(st.panel.page, PanelPage::General);
+        assert_eq!(st.panel.theme, ThemeMode::Dark);
+        assert_eq!(st.panel.autostart, None);
+        assert!(st.panel.devices.is_none());
+        assert!(st.panel.apply_due_at.is_none());
+        assert!(!st.panel.start_hidden);
+        assert!(!st.panel.reduce_motion);
+    }
+
+    /// 防抖：登记后 300ms 到期触发一次；到期前不触发
+    #[test]
+    fn panel_apply_debounce_fires_once_after_300ms() {
+        let mut st = AppState::new(Settings::default());
+        st.settings.vad_threshold = 0.35;
+        let t0 = Instant::now();
+        st.schedule_panel_apply_at(t0);
+        // 到期前：无快照
+        assert!(!st.panel.take_apply_due(t0 + Duration::from_millis(299)));
+        // 到期：返回当前设置快照
+        let snap = st.take_due_panel_apply(t0 + Duration::from_millis(300)).expect("300ms 应触发");
+        assert_eq!(snap.vad_threshold, 0.35);
+        // 消费后不再触发（单发语义，原版 setSingleShot(True)）
+        assert!(st.take_due_panel_apply(t0 + Duration::from_millis(600)).is_none());
+        // 节拍已无未到期项（消费时 tick 已被 drain；此处防御：deadline 标记已清）
+        assert_eq!(st.panel.apply_due_at, None);
+    }
+
+    /// 防抖合并：300ms 内连续登记 → 只保留一个节拍且时刻顺延（原版 singleShot restart）
+    #[test]
+    fn panel_apply_debounce_merges_bursts() {
+        let mut st = AppState::new(Settings::default());
+        let t0 = Instant::now();
+        st.schedule_panel_apply_at(t0);
+        st.schedule_panel_apply_at(t0 + Duration::from_millis(100));
+        st.schedule_panel_apply_at(t0 + Duration::from_millis(200));
+        // 仅一个 PanelApply 节拍，deadline = 最后一次登记 + 300ms
+        let ticks: Vec<_> = st
+            .ticks
+            .iter()
+            .filter(|t| t.win == WinId::Panel && t.kind == TickKind::PanelApply)
+            .collect();
+        assert_eq!(ticks.len(), 1, "300ms 内连发应合并为单节拍");
+        assert_eq!(ticks[0].at, t0 + Duration::from_millis(500));
+        // 合并后仍只发一次（draft 最终值即快照）
+        assert!(!st.panel.take_apply_due(t0 + Duration::from_millis(400)));
+        assert!(st.take_due_panel_apply(t0 + Duration::from_millis(500)).is_some());
+        assert!(st.take_due_panel_apply(t0 + Duration::from_millis(500)).is_none());
     }
 }

@@ -55,6 +55,12 @@ impl MultiWindowApp {
         app_state.cmd_tx = cmd_tx;
         let ctx = Context::default();
         install_cjk_fonts(&ctx);
+        // 面板主题收敛为应用级默认（原版 ControlPanel 构造时 _apply_chrome：
+        // DEFAULT_THEME = dark；浅色随常规页切换，ctx 全窗口生效）
+        ctx.set_theme(match app_state.panel.theme {
+            crate::state::ThemeMode::Dark => egui::ThemePreference::Dark,
+            crate::state::ThemeMode::Light => egui::ThemePreference::Light,
+        });
         let painter = pollster::block_on(Painter::new(
             ctx.clone(),
             egui_wgpu::WgpuConfiguration::default(),
@@ -91,7 +97,8 @@ impl MultiWindowApp {
         // 字幕窗宽度取配置（原版 setFixedWidth(window_width)，高度自适应）
         let sub_w = self.app_state.settings.subtitle_mode.window_width;
         self.create_window(event_loop, WinId::Subtitle, (sub_w, 160))?;
-        self.create_window(event_loop, WinId::Panel, (520, 650))?;
+        // 面板尺寸对齐原版 ControlPanel（resize 920×660 / minimumSize 760×560）
+        self.create_window(event_loop, WinId::Panel, (920, 660))?;
         self.create_window(event_loop, WinId::Log, (900, 500))?;
         // 启动流对话框（原版 QDialog：常规装饰窗口；可见性 = 启动流进行中）
         self.create_window(event_loop, WinId::Setup, (560, 420))?;
@@ -138,6 +145,10 @@ impl MultiWindowApp {
         }
         if id == WinId::Overlay {
             attrs = attrs.with_min_inner_size(winit::dpi::LogicalSize::new(480.0, 200.0));
+        }
+        if id == WinId::Panel {
+            // 原版 setMinimumSize(760, 560)
+            attrs = attrs.with_min_inner_size(winit::dpi::LogicalSize::new(760.0, 560.0));
         }
         if id == WinId::Subtitle {
             // 原版 setFixedWidth：宽度固定（高度自适应）→ 禁用户拖拽缩放
@@ -456,6 +467,15 @@ impl MultiWindowApp {
         self.sync_tray_checks();
     }
 
+    /// 面板设置防抖到期（原版 _do_auto_save → _apply_settings）：整体重放 ApplySettings
+    fn on_panel_apply_tick(&mut self) {
+        let now = Instant::now();
+        if let Some(snapshot) = self.app_state.take_due_panel_apply(now) {
+            tracing::info!("面板设置应用（300ms 防抖到期）");
+            self.app_state.send_cmd(lt_proto::Cmd::ApplySettings(Box::new(snapshot)));
+        }
+    }
+
     /// UiMsg 统一入口（管道事件/托盘事件）
     fn on_msg(&mut self, event_loop: &ActiveEventLoop, msg: UiMsg) {
         match msg {
@@ -728,6 +748,38 @@ impl MultiWindowApp {
                         window.set_outer_position(winit::dpi::LogicalPosition::new(f64::from(x), f64::from(y)));
                     }
                     self.app_state.schedule_subtitle_pos_save((x, y));
+                }
+                WinAction::ResetPositions => {
+                    // 原版 app_shell._on_reset_positions：字幕窗回 (100,100)；
+                    // 悬浮窗回主屏右下 (right-ow-50, bottom-oh-100)。窗口移动后由
+                    // 既有 Moved → 防抖保存路径写回 settings（此处同步直写一次兜底）。
+                    if let Some(sub) = self.find_mut(WinId::Subtitle) {
+                        sub.window.set_outer_position(winit::dpi::LogicalPosition::new(100.0, 100.0));
+                    }
+                    if let Some(ov) = self.find(WinId::Overlay) {
+                        let scale = ov.window.scale_factor();
+                        let size = ov.window.inner_size().to_logical::<f32>(scale);
+                        if let Some(m) = ov.window.primary_monitor() {
+                            let (mp, ms, msf) = (m.position(), m.size(), m.scale_factor());
+                            let right = ((mp.x as f64 + ms.width as f64) / msf) as i32;
+                            let bottom = ((mp.y as f64 + ms.height as f64) / msf) as i32;
+                            let x = right - size.width as i32 - 50;
+                            let y = bottom - size.height as i32 - 100;
+                            ov.window
+                                .set_outer_position(winit::dpi::LogicalPosition::new(f64::from(x), f64::from(y)));
+                        }
+                    }
+                    // settings 同步（原版 _save_subwin_state/_save_overlay_pos 即时保存）
+                    let geo = self.overlay_geo();
+                    let s = &mut self.app_state.settings;
+                    s.subtitle_mode.window_x = Some(100);
+                    s.subtitle_mode.window_y = Some(100);
+                    s.overlay_x = Some(geo.0);
+                    s.overlay_y = Some(geo.1);
+                    self.app_state.subtitle.last_saved_pos = Some((100, 100));
+                    self.app_state.send_cmd(lt_proto::Cmd::PersistSettings(Box::new(
+                        self.app_state.settings.clone(),
+                    )));
                 }
             }
         }
@@ -1114,6 +1166,9 @@ impl ApplicationHandler<UiMsg> for MultiWindowApp {
                     }
                 }
                 TickKind::Setup => self.on_setup_tick(),
+                // 面板设置 300ms 防抖到期（原版 _save_timer.timeout → _apply_settings：
+                // 整体重放 ApplySettings，AppShell 负责热应用 + 落盘）
+                TickKind::PanelApply => self.on_panel_apply_tick(),
             }
         }
         // 2) 空闲策略：等待最近节拍或事件

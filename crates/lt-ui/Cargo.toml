@@ -6,6 +6,10 @@ edition.workspace = true
 [dependencies]
 lt-proto = { workspace = true }
 lt-i18n = { workspace = true }
+# 面板：模型缓存探测/注册表（lt-models）+ 设备枚举（lt-pipeline 的 AudioBackend）
+lt-models = { workspace = true }
+lt-pipeline = { workspace = true }
+serde_json = { workspace = true }
 egui = { workspace = true }
 egui-winit = { workspace = true }
 egui-wgpu = { workspace = true }
@@ -27,4 +31,5 @@ windows = { workspace = true, features = [
     "Win32_Foundation",
     "Win32_UI_WindowsAndMessaging", # 穿透轮询（GetCursorPos/EXSTYLE）
     "Win32_Graphics_Gdi",
+    "Win32_System_Registry",        # 常规页：开机自启（HKCU Run 键）
 ] }

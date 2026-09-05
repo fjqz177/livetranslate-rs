@@ -1,0 +1,4 @@
+
+[env]
+# whisper-rs-sys 的 bindgen 需要 libclang；用 pip 装 libclang 包内的 dll（M5）
+LIBCLANG_PATH = "C:/Users/fjqz177/AppData/Local/Programs/Python/Python313/Lib/site-packages/clang/native"
