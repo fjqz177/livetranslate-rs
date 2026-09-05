@@ -101,21 +101,21 @@ windows = { version = "0.62", features = [
     "Win32_Globalization",          # 字体枚举备选
     "Win32_Storage_FileSystem",     # explorer 打开
 ] }
-tray-icon = "0.21"
-muda = "0.17"
-wasapi = "0.15"
+tray-icon = "0.24"
+muda = "0.19"
+wasapi = "0.24"
 ort = { version = "2.0.0-rc.13", default-features = false, features = [
     "ndarray", "copy-dylibs",       # 注：M0 验证与 sherpa 的 ORT 共存后调整（R-4）
 ] }
 sherpa-onnx = { version = "1.13", default-features = true }   # static 默认开
-whisper-rs = "0.14"                 # 不开 cuda（纯 CPU 硬约束）
+whisper-rs = "0.16"                 # 不开 cuda（纯 CPU 硬约束）
 async-openai = { version = "0.41", features = ["byot"] }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json", "gzip"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls-tls", "stream", "json", "gzip"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "fs", "process", "signal", "sync"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
-sysinfo = "0.33"
+sysinfo = "0.39"
 dirs = "6"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "time"] }
@@ -590,6 +590,7 @@ pad_bucket(audio, quantum=round(16000*pad)): remainder==0 原样; 否则尾部�
 - M-03 权威封装优先（用户偏好，async-openai/whisper.cpp 均此原则），自写代码集中在"业务语义层"（translator 逻辑/VAD 状态机/下载布局）。
 - M-04 每个里程碑首日安排"高危验证"（M0=R-4/R-12、M3=R-13、M5=模型文件名/语言 API），失败当天切预案，不拖。
 - M-05 对 Python 源码的行为疑问一律回读源文件，不凭记忆（本次复核纠出 6 处）。
+- M-06 **依赖版本耦合审计（2026-09-05 施工期执行）**：注入式 API（async-openai 的 Client::build(http_client)）要求注入方与库方 reqwest 大版本严格一致——async-openai 0.41.3 依赖 reqwest 0.13，故全工程 reqwest 锁 0.13；同理今后凡注入 client/handle 的组合，升级一方必须同查另一方。版本基线已全量对齐最新（egui 0.36.1 / winit 0.30.13 / windows 0.62.2 / tray-icon 0.24.2 / muda 0.19.3 / wasapi 0.24 / whisper-rs 0.16 / ort 2.0.0-rc.13 / sherpa-onnx 1.13.7 / sysinfo 0.39 / pollster 1.0）；serde_yaml 已停止维护但为最终稳定版（0.9.34），内嵌 i18n 用途无升级必要。
 
 ---
 
