@@ -1101,10 +1101,17 @@ impl ApplicationHandler<UiMsg> for MultiWindowApp {
         };
         let id = self.windows[pos].id;
         // 先喂给 egui（累积输入），再处理窗口语义
-        let _resp = {
+        let resp = {
             let hw = &mut self.windows[pos];
             hw.state.on_window_event(&hw.window, &event)
         };
+        // 关键：输入事件携带 repaint 标志——忽略它会导致"点击缓冲到下一帧
+        // 才被消费"，而该窗口无周期节拍时下一帧永不到来（表现为控件点击
+        // 全部无响应）。注意 egui_winit 对 RedrawRequested 本身也返回
+        // repaint=true，绝不能回环请求（否则 1350fps 自旋饿死其他窗口）。
+        if resp.repaint && !matches!(event, WindowEvent::RedrawRequested) {
+            self.window(id).request_redraw();
+        }
         match event {
             WindowEvent::CloseRequested => {
                 // 原版语义：关窗=隐藏（退出只走托盘）
@@ -1122,9 +1129,23 @@ impl ApplicationHandler<UiMsg> for MultiWindowApp {
                     self.window(id).request_redraw();
                 }
             }
-            WindowEvent::Moved(_) if id == WinId::Overlay => {
-                // 拖动/移动结束防抖保存（原版 moveEvent → _schedule_pos_save）
-                self.app_state.schedule_pos_save(self.overlay_geo());
+            WindowEvent::Moved(_) => {
+                if id == WinId::Overlay {
+                    // 拖动/移动结束防抖保存（原版 moveEvent → _schedule_pos_save）
+                    self.app_state.schedule_pos_save(self.overlay_geo());
+                }
+                // 外部移动（DPI 上下文变化/挂起恢复）后 DXGI 表面可能失配白屏：
+                // 以当前尺寸强制重配置（幂等；尺寸未变时为廉价空转）
+                let sz = self.window(id).inner_size();
+                if let (Ok(w), Ok(h)) = (u32::try_from(sz.width), u32::try_from(sz.height)) {
+                    if w > 0 && h > 0 {
+                        if let (Ok(w), Ok(h)) = (w.try_into(), h.try_into()) {
+                            self.painter
+                                .on_window_resized(Self::viewport_of(id), w, h);
+                        }
+                        self.window(id).request_redraw();
+                    }
+                }
             }
             WindowEvent::Moved(_) if id == WinId::Subtitle => {
                 // 字幕窗移动防抖保存（原版 mouseReleaseEvent → position_changed）
@@ -1223,6 +1244,11 @@ impl ApplicationHandler<UiMsg> for MultiWindowApp {
             .unwrap_or_else(|| Instant::now() + Duration::from_secs(3600));
         event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
     }
+}
+
+/// 尺寸是否非零（最小化时为 0，跳过表面重配置）
+fn size_nonzero(size: winit::dpi::PhysicalSize<u32>) -> bool {
+    size.width > 0 && size.height > 0
 }
 
 /// 窗口清屏色：透明窗口必须清成全透明，否则出现残留底色
