@@ -152,11 +152,9 @@ mod tests {
         }
         // 等首个段出现；capture 线程内 monitor 回调先于段入队（同线程程序顺序，
         // 段队列互斥锁的获取/释放保证此处读到的 monitor 日志已含此前全部回调）
-        let (source, audio) = loop {
-            match seg_tx.pop_timeout(Duration::from_secs(3)) {
-                Some(v) => break v,
-                None => panic!("未收到段 (monitors={})", monitors.lock().unwrap().len()),
-            }
+        let (source, audio) = match seg_tx.pop_timeout(Duration::from_secs(3)) {
+            Some(v) => v,
+            None => panic!("未收到段 (monitors={})", monitors.lock().unwrap().len()),
         };
         assert_eq!(source, SegmentSource::VadFlush);
         assert!(audio.len() >= 40 * 512);
@@ -208,11 +206,9 @@ mod tests {
         };
         let r = running.clone();
         let h = std::thread::spawn(move || lp.run(&mut vad, &r));
-        let (source, seg) = loop {
-            match seg_tx.pop_timeout(Duration::from_secs(3)) {
-                Some(v) => break v,
-                None => panic!("超时路径未产出段"),
-            }
+        let (source, seg) = match seg_tx.pop_timeout(Duration::from_secs(3)) {
+            Some(v) => v,
+            None => panic!("超时路径未产出段"),
         };
         assert_eq!(source, SegmentSource::VadFlush);
         assert!(seg.len() >= 40 * 512);
