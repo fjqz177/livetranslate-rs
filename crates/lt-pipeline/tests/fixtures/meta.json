@@ -1,0 +1,72 @@
+{
+ "cases": [
+  {
+   "name": "res_44100_st2",
+   "rate": 44100,
+   "channels": 2,
+   "frames": 1024,
+   "in_n": 2048,
+   "out_n": 371
+  },
+  {
+   "name": "res_48000_st2",
+   "rate": 48000,
+   "channels": 2,
+   "frames": 480,
+   "in_n": 960,
+   "out_n": 160
+  },
+  {
+   "name": "res_48000_st6",
+   "rate": 48000,
+   "channels": 6,
+   "frames": 720,
+   "in_n": 4320,
+   "out_n": 240
+  },
+  {
+   "name": "res_44100_mono",
+   "rate": 44100,
+   "channels": 1,
+   "frames": 1024,
+   "in_n": 1024,
+   "out_n": 371
+  },
+  {
+   "name": "res_32000_mono",
+   "rate": 32000,
+   "channels": 1,
+   "frames": 1023,
+   "in_n": 1023,
+   "out_n": 511
+  },
+  {
+   "name": "res_16000_mono",
+   "rate": 16000,
+   "channels": 1,
+   "frames": 512,
+   "in_n": 512,
+   "out_n": 512
+  },
+  {
+   "name": "res_8000_mono",
+   "rate": 8000,
+   "channels": 1,
+   "frames": 256,
+   "in_n": 256,
+   "out_n": 512
+  }
+ ],
+ "mix": {
+  "loop_n": 512,
+  "mic_n": 300,
+  "mic_rms": 0.30159279704093933,
+  "loop_rms": 0.3954893946647644
+ },
+ "pad": {
+  "quantum": 8000,
+  "in_n": 8192,
+  "out_n": 16000,
+  "exact_n": 16000
+ }
+}

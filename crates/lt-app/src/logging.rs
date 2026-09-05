@@ -10,7 +10,8 @@ use tracing_subscriber::{fmt, Layer};
 /// 日志广播通道（日志窗 M4 订阅；下载进度也走此通道）
 static HUB: OnceLock<tokio::sync::broadcast::Sender<UiEvent>> = OnceLock::new();
 
-/// 订阅日志广播（新会话/新窗口各持一份 Receiver）
+/// 订阅日志广播（新会话/新窗口各持一份 Receiver；日志窗 M4 / 下载框 M2 接线）
+#[allow(dead_code)]
 pub fn subscribe() -> tokio::sync::broadcast::Receiver<UiEvent> {
     hub().subscribe()
 }

@@ -305,10 +305,20 @@ impl MultiWindowApp {
         match msg {
             UiMsg::Menu(id) => self.on_menu(event_loop, &id),
             UiMsg::Tray(_t) => {}
-            UiMsg::Event(e) => {
-                // M0：管道尚未接入；先落到日志，防止事件黑洞
-                tracing::debug!("UI 事件（待接线）: {e:?}");
-            }
+            UiMsg::Event(e) => match e {
+                // 监视条数据（capture 线程每 chunk 一条 → 节流重绘）
+                lt_proto::UiEvent::UpdateMonitor { rms, vad, mic_rms } => {
+                    let m = &mut self.app_state.monitor;
+                    m.rms = rms;
+                    m.vad = vad;
+                    m.mic_rms = mic_rms;
+                    if let Some(hw) = self.find_mut(WinId::Overlay) {
+                        hw.window.request_redraw();
+                    }
+                }
+                // M1：其余管道事件尚未接入（M2 起逐个接线）；先落日志防黑洞
+                other => tracing::debug!("UI 事件（待接线）: {other:?}"),
+            },
         }
     }
 
@@ -378,6 +388,10 @@ impl ApplicationHandler<UiMsg> for MultiWindowApp {
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         // 1) 到期节拍 → 重绘对应窗口并补下一拍
         for win in self.app_state.drain_due_ticks() {
+            // 悬浮窗监视节拍：先做 1s 节流的系统采样（CPU/RAM）
+            if win == WinId::Overlay {
+                self.app_state.sample_system();
+            }
             if let Some(hw) = self.find(win) {
                 hw.window.request_redraw();
             }

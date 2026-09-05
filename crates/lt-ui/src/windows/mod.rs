@@ -6,6 +6,7 @@ use egui::{Align2, Color32, Layout, RichText, Ui};
 
 /// 悬浮窗占位：透明背景 + 圆角深色容器 + DragHandle 雏形 + 消息区示意。
 /// 已验证关键能力：透明、无边框、置顶、跳过任务栏、CJK 字体渲染。
+/// M1.6：MonitorBar 数据链（RMS/VAD/MIC 条 + CPU/RAM）。
 pub fn overlay_ui(ui: &mut Ui, state: &mut AppState) {
     let outer = ui.available_rect_before_wrap();
     // 容器：rgba(15,15,25,200) 圆角 8（原版初始容器样式）
@@ -25,6 +26,8 @@ pub fn overlay_ui(ui: &mut Ui, state: &mut AppState) {
                 );
             });
             ui.add_space(6.0);
+            monitor_bar(ui, state);
+            ui.add_space(6.0);
             ui.set_min_height(120.0);
             ui.label(
                 RichText::new("waiting for audio…")
@@ -42,6 +45,49 @@ pub fn overlay_ui(ui: &mut Ui, state: &mut AppState) {
             );
             ui.allocate_rect(outer, egui::Sense::hover());
         });
+}
+
+/// 单条电平条（0..1），标签 + 圆角槽 + 填充
+fn level_bar(ui: &mut Ui, label: &str, v: f32, color: Color32) {
+    const W: f32 = 140.0;
+    const H: f32 = 8.0;
+    ui.horizontal(|ui| {
+        ui.label(
+            RichText::new(format!("{label:>4}"))
+                .monospace()
+                .color(Color32::from_rgb(140, 140, 150))
+                .size(10.0),
+        );
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(W, H), egui::Sense::hover());
+        let v = v.clamp(0.0, 1.0);
+        ui.painter().rect_filled(rect, 3.0, Color32::from_rgb(40, 40, 55));
+        if v > 0.0 {
+            ui.painter().rect_filled(
+                egui::Rect::from_min_size(rect.min, egui::vec2(W * v, H)),
+                3.0,
+                color,
+            );
+        }
+    });
+}
+
+/// MonitorBar：音频电平（UpdateMonitor 事件驱动）+ 系统（1s sysinfo 采样）
+fn monitor_bar(ui: &mut Ui, state: &AppState) {
+    let m = state.monitor;
+    level_bar(ui, "RMS", m.rms, Color32::from_rgb(80, 170, 240));
+    level_bar(ui, "VAD", m.vad, Color32::from_rgb(120, 220, 120));
+    if let Some(mic) = m.mic_rms {
+        level_bar(ui, "MIC", mic, Color32::from_rgb(230, 170, 90));
+    }
+    ui.label(
+        RichText::new(format!(
+            "CPU {:.0}%   RAM {:.1}/{:.1} GB",
+            m.cpu, m.ram_used_gb, m.ram_total_gb
+        ))
+        .monospace()
+        .color(Color32::from_rgb(120, 120, 135))
+        .size(10.0),
+    );
 }
 
 /// 字幕窗占位：透明 + 底部居中大字（描边两遍绘制法的最小验证）。

@@ -63,10 +63,9 @@ fn ensure_single_instance() -> anyhow::Result<()> {
         {
             anyhow::bail!("LiveTranslate 已在运行（单实例互斥量已存在）");
         }
-        let handle = CreateMutexW(None, true, pcw)
+        // HANDLE 是裸包装无 Drop：不关即存活到进程退出，由 OS 回收
+        let _handle = CreateMutexW(None, true, pcw)
             .map_err(|e| anyhow::anyhow!("创建单实例互斥量失败: {e}"))?;
-        // 故意遗忘：句柄须存活到进程结束，由 OS 回收
-        std::mem::forget(handle);
     }
     Ok(())
 }

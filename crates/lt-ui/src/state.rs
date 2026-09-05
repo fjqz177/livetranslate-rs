@@ -41,6 +41,19 @@ pub struct Tick {
     pub win: WinId,
 }
 
+/// 监视条数据：音频侧来自 UpdateMonitor 事件（每 chunk），系统侧 1s 节流采样
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MonitorData {
+    pub rms: f32,
+    pub vad: f32,
+    pub mic_rms: Option<f32>,
+    /// CPU 全局占用 %（sysinfo 1s 采样）
+    pub cpu: f32,
+    /// 内存 GB（used / total）
+    pub ram_used_gb: f64,
+    pub ram_total_gb: f64,
+}
+
 /// 全局 UI 状态。随里程碑逐步扩充（消息流/监视数据/统计……）。
 pub struct AppState {
     pub settings: Settings,
@@ -55,6 +68,11 @@ pub struct AppState {
     pub ov_taskbar: bool,
     /// 待处理的定时重绘
     pub ticks: Vec<Tick>,
+    /// 监视条数据链（任务 1.6）
+    pub monitor: MonitorData,
+    /// sysinfo 实例与上次采样时刻（1s 节流）
+    sys: Option<sysinfo::System>,
+    sys_last: Option<Instant>,
 }
 
 impl AppState {
@@ -74,7 +92,31 @@ impl AppState {
             ov_auto_scroll: true,
             ov_taskbar: false,
             ticks: Vec::new(),
+            monitor: MonitorData::default(),
+            sys: None,
+            sys_last: None,
         }
+    }
+
+    /// 1s 节流的系统采样（CPU/RAM）；在监视节拍触发时调用。
+    /// sysinfo 的 CPU 占用需要两次间隔采样才有意义，首次为 0 属预期。
+    pub fn sample_system(&mut self) {
+        let now = Instant::now();
+        if !self
+            .sys_last
+            .map_or(true, |t| now.duration_since(t) >= std::time::Duration::from_secs(1))
+        {
+            return;
+        }
+        self.sys_last = Some(now);
+        let sys = self.sys.get_or_insert_with(sysinfo::System::new);
+        sys.refresh_cpu_usage();
+        sys.refresh_memory();
+        let m = &mut self.monitor;
+        m.cpu = sys.global_cpu_usage();
+        const GB: f64 = 1024.0 * 1024.0 * 1024.0;
+        m.ram_used_gb = sys.used_memory() as f64 / GB;
+        m.ram_total_gb = sys.total_memory() as f64 / GB;
     }
 
     /// 设置 1s 监视节拍（悬浮窗 MonitorBar；M0 用于占位时钟）

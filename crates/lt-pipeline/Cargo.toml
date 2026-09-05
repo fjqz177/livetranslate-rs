@@ -4,3 +4,17 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+lt-proto.workspace = true
+
+tracing.workspace = true
+anyhow.workspace = true
+parking_lot.workspace = true
+crossbeam-channel.workspace = true
+ndarray = "0.17"
+ort = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+wasapi.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
