@@ -55,7 +55,8 @@ sherpa-onnx = "1.13"
 whisper-rs = "0.16"
 
 # ── LLM / 网络 ──
-async-openai = { version = "0.41", features = ["byot"] }
+# 0.41 的 default 仅含 rustls，_api（Client/chat）与 chat-completion 需显式开启
+async-openai = { version = "0.41", default-features = false, features = ["rustls", "_api", "chat-completion", "byot"] }
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "webpki-roots", "stream", "json", "gzip", "blocking"] }
 
 # ── 异步 ──
