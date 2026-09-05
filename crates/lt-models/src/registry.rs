@@ -43,24 +43,28 @@ pub const FUNASR_NANO: ModelEntry = ModelEntry {
     files: &["model.int8.onnx", "tokens.txt"],
 };
 
-/// whisper 各档：repo = ggml-org/whisper-{size}（turbo 独立 repo）
-pub fn whisper_repo(size: &str) -> Option<&'static str> {    match size {
-        "tiny" => Some("ggml-org/whisper-tiny"),
-        "base" => Some("ggml-org/whisper-base"),
-        "small" => Some("ggml-org/whisper-small"),
-        "medium" => Some("ggml-org/whisper-medium"),
-        "large-v3" => Some("ggml-org/whisper-large-v3"),
-        "turbo" => Some("ggml-org/whisper-large-v3-turbo"),
+/// whisper 各档统一 HF repo。
+/// 【M5 首日核实】PLAN 预估的 ggml-org/whisper-{size} 六仓已全部转为私有
+/// （API 返回 401，resolve 端点同）；whisper.cpp 官方模型仓是单仓
+/// `ggerganov/whisper.cpp`（六档文件齐全，HF/hf-mirror 均公开可下）。
+pub fn whisper_repo(size: &str) -> Option<&'static str> {
+    match size {
+        "tiny" | "base" | "small" | "medium" | "large-v3" | "turbo" => {
+            Some("ggerganov/whisper.cpp")
+        }
         _ => None,
     }
 }
 
-/// whisper ggml 文件名（q5_0 默认档）【M5 首日核对】
+/// whisper ggml 文件名（量化默认档）。
+/// 【M5 首日核实】ggerganov/whisper.cpp 仓内实际：tiny/base/small 只有
+/// q5_1 量化（无 q5_0，会 404）；medium/large-v3/turbo 有 q5_0。
+/// 与 whisper.cpp 官方 download-ggml-model 脚本的量化档位一致。
 pub fn whisper_ggml_file(size: &str) -> Option<&'static str> {
     match size {
-        "tiny" => Some("ggml-tiny-q5_0.bin"),
-        "base" => Some("ggml-base-q5_0.bin"),
-        "small" => Some("ggml-small-q5_0.bin"),
+        "tiny" => Some("ggml-tiny-q5_1.bin"),
+        "base" => Some("ggml-base-q5_1.bin"),
+        "small" => Some("ggml-small-q5_1.bin"),
         "medium" => Some("ggml-medium-q5_0.bin"),
         "large-v3" => Some("ggml-large-v3-q5_0.bin"),
         "turbo" => Some("ggml-large-v3-turbo-q5_0.bin"),
@@ -68,14 +72,16 @@ pub fn whisper_ggml_file(size: &str) -> Option<&'static str> {
     }
 }
 
-/// whisper 静态表（always HF；q5_0 默认档）
+/// whisper 静态表（always HF；量化默认档）。
+/// estimated_bytes = 仓内实际文件字节数（HF API tree/main 实测，2026-09-06）；
+/// 半体积阈值据此判定完整性（fp16 体积 78M~3.1G 与量化文件无关，故不沿用）。
 pub const WHISPER_ENTRIES: [ModelEntry; 6] = [
-    ModelEntry { key: "tiny", display: "tiny", hf: Some("ggml-org/whisper-tiny"), ms: None, always_hf: true, estimated_bytes: 78_000_000, files: &["ggml-tiny-q5_0.bin"] },
-    ModelEntry { key: "base", display: "base", hf: Some("ggml-org/whisper-base"), ms: None, always_hf: true, estimated_bytes: 148_000_000, files: &["ggml-base-q5_0.bin"] },
-    ModelEntry { key: "small", display: "small", hf: Some("ggml-org/whisper-small"), ms: None, always_hf: true, estimated_bytes: 488_000_000, files: &["ggml-small-q5_0.bin"] },
-    ModelEntry { key: "medium", display: "medium", hf: Some("ggml-org/whisper-medium"), ms: None, always_hf: true, estimated_bytes: 1_530_000_000, files: &["ggml-medium-q5_0.bin"] },
-    ModelEntry { key: "large-v3", display: "large-v3", hf: Some("ggml-org/whisper-large-v3"), ms: None, always_hf: true, estimated_bytes: 3_100_000_000, files: &["ggml-large-v3-q5_0.bin"] },
-    ModelEntry { key: "turbo", display: "turbo (快档)", hf: Some("ggml-org/whisper-large-v3-turbo"), ms: None, always_hf: true, estimated_bytes: 809_000_000, files: &["ggml-large-v3-turbo-q5_0.bin"] },
+    ModelEntry { key: "tiny", display: "tiny", hf: Some("ggerganov/whisper.cpp"), ms: None, always_hf: true, estimated_bytes: 32_152_673, files: &["ggml-tiny-q5_1.bin"] },
+    ModelEntry { key: "base", display: "base", hf: Some("ggerganov/whisper.cpp"), ms: None, always_hf: true, estimated_bytes: 59_707_625, files: &["ggml-base-q5_1.bin"] },
+    ModelEntry { key: "small", display: "small", hf: Some("ggerganov/whisper.cpp"), ms: None, always_hf: true, estimated_bytes: 190_085_487, files: &["ggml-small-q5_1.bin"] },
+    ModelEntry { key: "medium", display: "medium", hf: Some("ggerganov/whisper.cpp"), ms: None, always_hf: true, estimated_bytes: 539_212_467, files: &["ggml-medium-q5_0.bin"] },
+    ModelEntry { key: "large-v3", display: "large-v3", hf: Some("ggerganov/whisper.cpp"), ms: None, always_hf: true, estimated_bytes: 1_081_140_203, files: &["ggml-large-v3-q5_0.bin"] },
+    ModelEntry { key: "turbo", display: "turbo (快档)", hf: Some("ggerganov/whisper.cpp"), ms: None, always_hf: true, estimated_bytes: 574_041_195, files: &["ggml-large-v3-turbo-q5_0.bin"] },
 ];
 
 /// 合法 funasr 模型键（与 lt_proto::FUNASR_MODELS 对齐）
@@ -122,10 +128,34 @@ mod tests {
             let e = whisper_entry_for(size).expect(size);
             assert!(e.always_hf);
             assert!(e.ms.is_none());
+            // 【M5 核实】ggml-org/whisper-* 六仓已私有 → 统一官方单仓
+            assert_eq!(e.hf, Some("ggerganov/whisper.cpp"));
             assert_eq!(e.files.len(), 1);
-            assert!(e.files[0].contains("q5_0"));
+            assert!(e.files[0].contains("q5_"));
         }
         assert!(whisper_entry_for("custom-path").is_none());
+    }
+
+    #[test]
+    fn whisper_ggml_file_mapping_matches_repo_reality() {
+        // 【M5 首日核实】ggerganov/whisper.cpp 仓内实际文件名：
+        // tiny/base/small 只有 q5_1（q5_0 会 404）；medium/large-v3/turbo 有 q5_0
+        assert_eq!(whisper_ggml_file("tiny"), Some("ggml-tiny-q5_1.bin"));
+        assert_eq!(whisper_ggml_file("base"), Some("ggml-base-q5_1.bin"));
+        assert_eq!(whisper_ggml_file("small"), Some("ggml-small-q5_1.bin"));
+        assert_eq!(whisper_ggml_file("medium"), Some("ggml-medium-q5_0.bin"));
+        assert_eq!(whisper_ggml_file("large-v3"), Some("ggml-large-v3-q5_0.bin"));
+        assert_eq!(whisper_ggml_file("turbo"), Some("ggml-large-v3-turbo-q5_0.bin"));
+        assert_eq!(whisper_ggml_file("nope"), None);
+        // files 与映射函数必须一致（下载清单=探测目标）
+        for size in ["tiny", "base", "small", "medium", "large-v3", "turbo"] {
+            let e = whisper_entry_for(size).expect(size);
+            assert_eq!(e.files, &[whisper_ggml_file(size).expect(size)]);
+            // estimated_bytes 取仓内实际字节数（半体积阈值依赖）：
+            // 必须超过 funasr 通用的 50MB 下限感知不到的小文件，且足够大以区分截断
+            assert!(e.estimated_bytes >= 30_000_000, "{size}");
+        }
+        assert_eq!(whisper_repo("tiny"), whisper_repo("turbo"));
     }
 
     #[test]

@@ -2,3 +2,9 @@
 [env]
 # whisper-rs-sys 的 bindgen 需要 libclang；用 pip 装 libclang 包内的 dll（M5）
 LIBCLANG_PATH = "C:/Users/fjqz177/AppData/Local/Programs/Python/Python313/Lib/site-packages/clang/native"
+# whisper.cpp CRT 对齐（M5.1 双栈链接）：sherpa-onnx-sys 为预编译静态库（静态 CRT /MT
+# 内嵌），whisper.cpp 走 cmake 默认 /MD 会在最终链接拉入 msvcprt.lib 与 sherpa 内嵌
+# CRT 定义冲突（LNK2005/LNK1169）。统一为静态 CRT（whisper-rs-sys build.rs 透传
+# 全部 CMAKE_* 环境变量；CMP0091 默认 OLD，需显式 NEW 才使 MSVC_RUNTIME_LIBRARY 生效）
+CMAKE_POLICY_DEFAULT_CMP0091 = "NEW"
+CMAKE_MSVC_RUNTIME_LIBRARY = "MultiThreaded"

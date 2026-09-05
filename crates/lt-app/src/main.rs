@@ -118,7 +118,7 @@ fn ensure_single_instance() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// worker 子进程主循环：SenseVoice（whisper 引擎 M5 扩展）
+/// worker 子进程主循环：SenseVoice / Whisper（M5.1）
 fn asr_worker_entry(cfg_json: &str) -> anyhow::Result<()> {
     let config: lt_asr::WorkerConfig = serde_json::from_str(cfg_json)?;
     match config.engine.as_str() {
@@ -135,6 +135,17 @@ fn asr_worker_entry(cfg_json: &str) -> anyhow::Result<()> {
                         .map(std::path::PathBuf::from)
                         .ok_or_else(|| anyhow::anyhow!("缺少 model_dir"))?;
                     lt_asr::sensevoice::SenseVoiceEngine::load(&dir, cfg.pad_seconds, &cfg.language)
+                        .map_err(|e| anyhow::anyhow!("{e}"))
+                },
+            )
+        }
+        "whisper" => {
+            lt_asr::worker::run(
+                std::io::stdin().lock(),
+                std::io::stdout().lock(),
+                config,
+                move |cfg| {
+                    lt_asr::WhisperEngine::from_config(cfg)
                         .map_err(|e| anyhow::anyhow!("{e}"))
                 },
             )

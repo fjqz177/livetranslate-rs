@@ -7,6 +7,7 @@ edition.workspace = true
 lt-proto = { workspace = true }
 ort = { workspace = true }
 sherpa-onnx = { workspace = true }
+whisper-rs = { workspace = true }   # 纯 CPU：workspace 声明未开任何 GPU feature
 anyhow = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }

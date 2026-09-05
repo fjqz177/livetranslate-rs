@@ -2,6 +2,7 @@
 
 pub mod client;
 pub mod engine;
+pub mod engines;
 pub mod frame;
 #[cfg(windows)]
 pub mod job;
@@ -10,6 +11,7 @@ pub mod sensevoice;
 pub mod worker;
 
 pub use client::{AsrClientError, AsrWorkerClient, Status};
+pub use engines::whisper::WhisperEngine;
 pub use manager::{AsrManager, AsrManagerError, AsrPendingHandle, Spawner};
 pub use engine::AsrEngine;
 pub use frame::{ErrorInfo, ReadyInfo, ReqKind, Request, RespKind, Response};

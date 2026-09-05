@@ -125,33 +125,40 @@ pub fn is_funasr_cached(models_dir: &Path, entry: &ModelEntry) -> bool {
     ms_ok || hf_ok
 }
 
-/// whisper 档位缓存：GGML 单文件，阈值 = 估计体积一半（原版语义）；
+/// whisper 档位 → 模型 .bin 绝对路径。
+/// builtin 档：HF snapshot 取字典序最后（E-10）且含目标量化文件的目录；
+/// 非 builtin 值视为本地 GGML 路径，存在即返回。
+pub fn whisper_model_path(models_dir: &Path, size: &str) -> Option<PathBuf> {
+    let Some(repo) = registry::whisper_repo(size) else {
+        let p = PathBuf::from(size);
+        return p.is_file().then_some(p);
+    };
+    let file = registry::whisper_ggml_file(size)?;
+    let snap_root = hf_snapshots(models_dir, repo)?;
+    let mut snaps: Vec<PathBuf> = std::fs::read_dir(snap_root)
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .collect();
+    snaps.sort();
+    snaps.into_iter().rev().map(|snap| snap.join(file)).find(|f| f.is_file())
+}
+
+/// whisper 档位缓存：GGML 单文件，阈值 = 估计体积一半（原版语义；
+/// estimated_bytes 已按仓内实际量化文件校准，完整下载必过阈）；
 /// 非 builtin 值视为本地路径，存在即缓存。
 pub fn is_whisper_cached(models_dir: &Path, size: &str) -> bool {
     if registry::whisper_repo(size).is_none() {
-        // 本地 GGML 路径（M5 细化扩展名过滤）
+        // 本地 GGML 路径
         return Path::new(size).is_file();
     }
-    let Some(repo) = registry::whisper_repo(size) else { return false };
-    let Some(file) = registry::whisper_ggml_file(size) else { return false };
+    let Some(p) = whisper_model_path(models_dir, size) else {
+        return false;
+    };
     let entry = registry::whisper_entry_for(size).expect("注册表已核");
     let min = (entry.estimated_bytes / 2).max(1);
-    let Some(snap_root) = hf_snapshots(models_dir, repo) else {
-        return false;
-    };
-    // 任一 snapshot 内目标文件存在且过半体积
-    let Ok(entries) = std::fs::read_dir(&snap_root) else {
-        return false;
-    };
-    for snap in entries.flatten() {
-        let f = snap.path().join(file);
-        if let Ok(m) = f.metadata() {
-            if m.len() >= min {
-                return true;
-            }
-        }
-    }
-    false
+    p.metadata().is_ok_and(|m| m.len() >= min)
 }
 
 /// 统一入口（对齐原版 is_asr_cached(engine, model, hub)；
@@ -340,17 +347,39 @@ mod tests {
     fn whisper_needs_half_of_estimate() {
         let dir = tmpdir("wh");
         assert!(!is_asr_cached(&dir, "whisper", "tiny"));
-        let snap = hf_cache_root(&dir).join("models--ggml-org--whisper-tiny").join("snapshots").join("main");
-        write(&snap.join("ggml-tiny-q5_0.bin"), 40_000_000); // < 78MB/2 = 39MB? 40>39 ✓ 但边界测试补一档
+        // tiny q5_1 实际 32_152_673B，半体积阈值 ≈16MB：20MB 过、10MB 不过
+        let snap = hf_cache_root(&dir).join("models--ggerganov--whisper.cpp").join("snapshots").join("main");
+        write(&snap.join("ggml-tiny-q5_1.bin"), 20_000_000);
         assert!(is_asr_cached(&dir, "whisper", "tiny"));
-        // 半体积阈值：78/2=39MB；30MB 不够
-        let snap2 = hf_cache_root(&dir).join("models--ggml-org--whisper-tiny").join("snapshots").join("v2");
-        write(&snap2.join("ggml-tiny-q5_0.bin"), 30_000_000);
-        // 旧 snapshot（main）仍完整 → 或语义下仍 true；独立目录验证：
+        // 独立目录验证半体积下界
         let dir2 = tmpdir("wh2");
-        let s2 = hf_cache_root(&dir2).join("models--ggml-org--whisper-tiny").join("snapshots").join("main");
-        write(&s2.join("ggml-tiny-q5_0.bin"), 30_000_000);
+        let s2 = hf_cache_root(&dir2).join("models--ggerganov--whisper.cpp").join("snapshots").join("main");
+        write(&s2.join("ggml-tiny-q5_1.bin"), 10_000_000);
         assert!(!is_asr_cached(&dir2, "whisper", "tiny"));
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&dir2);
+    }
+
+    #[test]
+    fn whisper_model_path_picks_lexicographically_last_snapshot() {
+        let dir = tmpdir("whpath");
+        let snaps = hf_cache_root(&dir).join("models--ggerganov--whisper.cpp").join("snapshots");
+        // 新旧 snapshot 均含文件 → 取字典序最后（E-10）
+        write(&snaps.join("aaa").join("ggml-tiny-q5_1.bin"), 10);
+        write(&snaps.join("zzz").join("ggml-tiny-q5_1.bin"), 10);
+        let got = whisper_model_path(&dir, "tiny").expect("应解析到文件");
+        assert!(got.to_string_lossy().replace('\\', "/").ends_with("zzz/ggml-tiny-q5_1.bin"));
+        // 新 snapshot 缺文件 → 回退旧 snapshot
+        let dir2 = tmpdir("whpath2");
+        let snaps2 = hf_cache_root(&dir2).join("models--ggerganov--whisper.cpp").join("snapshots");
+        write(&snaps2.join("aaa").join("ggml-tiny-q5_1.bin"), 10);
+        write(&snaps2.join("zzz").join("ggml-base-q5_1.bin"), 10);
+        let got2 = whisper_model_path(&dir2, "tiny").expect("旧 snapshot 回退");
+        assert!(got2.to_string_lossy().replace('\\', "/").ends_with("aaa/ggml-tiny-q5_1.bin"));
+        // 完全缺失 → None；本地路径直通
+        assert!(whisper_model_path(&tmpdir("whpath3"), "small").is_none());
+        let local = whisper_model_path(&dir, "D:/models/ggml-tiny.bin");
+        assert!(local.is_none(), "不存在的本地路径不应命中");
         let _ = fs::remove_dir_all(&dir);
         let _ = fs::remove_dir_all(&dir2);
     }

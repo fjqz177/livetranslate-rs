@@ -285,8 +285,7 @@ pub(crate) enum TlSwitch {
     ReplaceEngine {
         engine: String,
         funasr_model: String,
-        /// whisper 档位（M5 引擎实装后消费；funasr 路径忽略）
-        #[allow(dead_code)]
+        /// whisper 档位（builtin 六档 | 本地 GGML 路径）
         whisper_model_size: String,
         language: String,
     },
@@ -554,6 +553,31 @@ fn resolve_funasr_entry(key: &str) -> (registry::ModelEntry, bool) {
     }
 }
 
+/// whisper 档位 → (模型 .bin 路径, 显示名)。
+/// builtin 档：cache::whisper_model_path（snapshot 字典序最后，E-10）；
+/// 非 builtin 值视为本地 GGML 路径，文件存在即用（显示名取文件 stem）。
+fn resolve_whisper_model(
+    models_dir: &std::path::Path,
+    whisper_model: &str,
+) -> Option<(std::path::PathBuf, String)> {
+    match registry::whisper_entry_for(whisper_model) {
+        Some(entry) => {
+            let p = lt_models::cache::whisper_model_path(models_dir, whisper_model)?;
+            Some((p, format!("Whisper {}", entry.key)))
+        }
+        None => {
+            let p = std::path::PathBuf::from(whisper_model);
+            p.is_file().then(|| {
+                let display = p
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| whisper_model.to_string());
+                (p, display)
+            })
+        }
+    }
+}
+
 /// 引擎/模型键 → (worker 配置, 显示名)；未缓存或引擎未实装 → None。
 /// 启动路径与运行时切换（TlSwitch::ReplaceEngine）共用。
 fn build_worker_config(
@@ -562,6 +586,8 @@ fn build_worker_config(
     funasr_model: &str,
     pad_seconds: f32,
     language: &str,
+    whisper_model: &str,
+    whisper_pad: f32,
 ) -> Option<(WorkerConfig, String)> {
     match engine {
         "funasr" => {
@@ -578,9 +604,23 @@ fn build_worker_config(
                 entry.display.into(),
             ))
         }
-        // whisper 引擎 M5 实装；此前的"无视 engine 恒起 sensevoice"改为如实不可用
+        "whisper" => {
+            // M5.1：whisper_model_size 为 builtin 档（缓存 snapshot 解析 .bin）
+            // 或本地 GGML 路径；未缓存 → None（发 AsrUnavailable，等向导/下载）
+            let (model_path, display) = resolve_whisper_model(models_dir, whisper_model)?;
+            Some((
+                WorkerConfig {
+                    engine: "whisper".into(),
+                    display_name: display.clone(),
+                    language: language.to_string(),
+                    pad_seconds: Some(whisper_pad),
+                    options: serde_json::json!({ "model_path": model_path.to_string_lossy() }),
+                },
+                display,
+            ))
+        }
         other => {
-            tracing::warn!("引擎 {other:?} 尚未实装（M5），无法启动 worker");
+            tracing::warn!("引擎 {other:?} 未实装，无法启动 worker");
             None
         }
     }
@@ -607,8 +647,13 @@ fn run_asr_thread(
             return;
         }
     };
-    // 模型键 → 条目；mlt/非法键回退 sensevoice-small（不阻断 UI，也不得用 nano 冒充）
-    let (entry, fell_back) = resolve_funasr_entry(&settings.funasr_model);
+    // 模型键 → 条目；mlt/非法键回退 sensevoice-small（不阻断 UI，也不得用 nano 冒充）。
+    // 诊断仅 funasr 引擎相关：whisper 启动诊断走 build_worker_config 的 whisper 分支
+    let (entry, fell_back) = if settings.asr_engine == "funasr" {
+        resolve_funasr_entry(&settings.funasr_model)
+    } else {
+        (registry::SENSEVOICE_SMALL.clone(), false)
+    };
     if fell_back {
         let reason = if settings.funasr_model == "funasr-mlt-nano-2512" {
             "mlt 无上游 ONNX 转换，待上游产出（D-14）"
@@ -626,6 +671,8 @@ fn run_asr_thread(
         &settings.funasr_model,
         settings.sensevoice_pad_seconds,
         &settings.asr_language,
+        &settings.whisper_model_size,
+        settings.whisper_pad_seconds,
     );
     let Some((config, display)) = worker else {
         let _ = proxy.send_event(UiMsg::Event(UiEvent::AsrUnavailable));
@@ -677,7 +724,7 @@ fn run_asr_thread(
                             rig.translator.set_timeout(secs);
                         }
                     }
-                    TlSwitch::ReplaceEngine { engine, funasr_model, whisper_model_size: _, language } => {
+                    TlSwitch::ReplaceEngine { engine, funasr_model, whisper_model_size, language } => {
                         // 原版 _switch_asr_engine：装配新配置 → 加载对话框 →
                         // ensure_started（失败内部回滚旧 worker）→ 设备/不可用事件
                         match build_worker_config(
@@ -686,6 +733,8 @@ fn run_asr_thread(
                             &funasr_model,
                             settings.sensevoice_pad_seconds,
                             &language,
+                            &whisper_model_size,
+                            settings.whisper_pad_seconds,
                         ) {
                             Some((config, display)) => {
                                 let _ = proxy.send_event(UiMsg::Event(UiEvent::ModelLoadStart(display.clone())));
@@ -909,5 +958,90 @@ mod tests {
         let (entry, fell_back) = resolve_funasr_entry("funasr-nano-2512");
         assert!(!fell_back);
         assert_eq!(entry.key, "funasr-nano-2512");
+    }
+
+    // ── build_worker_config：whisper 分支（M5.1） ──
+
+    fn tmp_models_dir(name: &str) -> std::path::PathBuf {
+        let base = std::env::temp_dir().join(format!("lt_bwc_test_{name}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        base
+    }
+
+    /// 造 tiny q5_1 缓存（20MB > 半体积阈值 ≈16MB）
+    fn write_tiny_cache(dir: &std::path::Path) {
+        let snap = lt_models::paths::hf_cache_root(dir)
+            .join("models--ggerganov--whisper.cpp")
+            .join("snapshots")
+            .join("main");
+        std::fs::create_dir_all(&snap).unwrap();
+        std::fs::write(snap.join("ggml-tiny-q5_1.bin"), vec![0u8; 20_000_000]).unwrap();
+    }
+
+    #[test]
+    fn whisper_builtin_cached_builds_worker_config() {
+        let dir = tmp_models_dir("cached");
+        write_tiny_cache(&dir);
+        let got = build_worker_config(&dir, "whisper", "", 0.5, "auto", "tiny", 0.7);
+        let (cfg, display) = got.expect("tiny 已缓存应可装配");
+        assert_eq!(cfg.engine, "whisper");
+        assert_eq!(display, "Whisper tiny");
+        assert_eq!(cfg.display_name, "Whisper tiny");
+        assert_eq!(cfg.language, "auto");
+        // whisper 分支必须用 whisper_pad 而非 sensevoice pad
+        assert_eq!(cfg.pad_seconds, Some(0.7));
+        let model_path = cfg
+            .options
+            .get("model_path")
+            .and_then(|v| v.as_str())
+            .expect("options 应带 model_path");
+        assert!(model_path.replace('\\', "/").ends_with("main/ggml-tiny-q5_1.bin"), "{model_path}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn whisper_uncached_is_none() {
+        let dir = tmp_models_dir("uncached");
+        assert!(build_worker_config(&dir, "whisper", "", 0.5, "auto", "tiny", 0.5).is_none());
+        // 非法档位（既非 builtin 也非存在的本地路径）同样 None
+        assert!(build_worker_config(&dir, "whisper", "", 0.5, "auto", "bogus-size", 0.5).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn whisper_local_path_passthrough() {
+        let dir = tmp_models_dir("local");
+        let bin = dir.join("my-whisper.bin");
+        std::fs::write(&bin, vec![0u8; 1024]).unwrap();
+        let got = build_worker_config(dir.parent().unwrap(), "whisper", "", 0.5, "zh", &bin.to_string_lossy(), 0.6);
+        let (cfg, display) = got.expect("存在的本地路径应直通");
+        assert_eq!(cfg.engine, "whisper");
+        assert_eq!(
+            cfg.options.get("model_path").and_then(|v| v.as_str()),
+            Some(bin.to_string_lossy().as_ref())
+        );
+        assert_eq!(display, "my-whisper");
+        assert_eq!(cfg.pad_seconds, Some(0.6));
+        // 不存在的本地路径 → None
+        assert!(build_worker_config(&dir, "whisper", "", 0.5, "zh", "Z:/no/model.bin", 0.5).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn funasr_branch_unchanged_via_ms_cache() {
+        // 守护既有 funasr 路径：MS 侧命中（pengzhendong 镜像）→ 正常装配 sensevoice
+        let dir = tmp_models_dir("funasr");
+        let ms = lt_models::paths::ms_cache_root(&dir)
+            .join("pengzhendong")
+            .join("sherpa-onnx-sense-voice-zh-en-ja-ko-yue");
+        std::fs::create_dir_all(&ms).unwrap();
+        let got = build_worker_config(&dir, "funasr", "sensevoice-small", 0.4, "auto", "tiny", 0.5);
+        let (cfg, display) = got.expect("MS 缓存命中应可装配");
+        assert_eq!(cfg.engine, "sensevoice");
+        assert_eq!(display, "SenseVoice Small");
+        assert_eq!(cfg.pad_seconds, Some(0.4)); // funasr 用 sensevoice pad
+        assert!(cfg.options.get("model_dir").is_some());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
