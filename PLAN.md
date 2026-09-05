@@ -584,6 +584,11 @@ pad_bucket(audio, quantum=round(16000*pad)): remainder==0 原样; 否则尾部�
 - E-10 原版 `is_asr_cached` 的 HF snapshot 取"字典序最后"而非 mtime；完整性阈值 50MB/半体积——照抄。
 - E-11 compact 动画曾因 Windows MINMAXINFO 不一致改用 frameGeometry → egui 下直接管理 size，但**多 DPI 下保存/恢复坐标要用物理像素并做 _is_pos_visible 多屏校验**（原版语义）。
 
+**来自 2026-09-05 中期审计的纠偏记录（P0/P1 清单已执行）**：
+- M2.6 曾在"管道侧跑通"时打勾，但悬浮窗未接 AddMessage（验收=用户可见 `[lang] 原文`）——**里程碑打勾以本表"完成标准"列的用户可见行为为准**，不以内部链路为准。
+- 装配层文件（pipeline.rs/manager.rs/app.rs）是"无逐行原文可抄"的新发明区，算法层（有 Python 原文对照）零偏离——**每写装配层文件前先回读 main.py 对应段落**（M-05 的强化版）。
+- 已知实现级偏差（非 bug，记录在案）：① SenseVoice `set_language` 经重建识别器实现（sherpa 语言是创建期参数），切换语言会重载模型（秒级），原版为瞬时改参——切换罕见，接受；② 段队列/监视事件的线程拓扑已对齐原版（capture 直推段队列=原版 `_enqueue_asr`，容量 16；monitor 直接经 EventLoopProxy=原版跨线程信号）；③ RSS 回收仅在段队列空闲时进行（原版 `_asr_loop` queue.Empty 分支语义）。
+
 **来自本次调研的方法论（M-xx）**：
 - M-01 **不赌未文档化的第三方内部行为**（hf-hub 缓存布局教训）→ 关键依赖面要么官方文档确认，要么自控（自写下载器）。
 - M-02 **推理栈选型必须核对解码策略与质量证据**（sherpa whisper 仅 greedy + CER 告警教训）→ 已用 whisper.cpp 解决；后续换任何推理库先问"解码参数能否 1:1"。

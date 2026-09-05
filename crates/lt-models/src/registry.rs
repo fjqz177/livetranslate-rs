@@ -81,11 +81,13 @@ pub const WHISPER_ENTRIES: [ModelEntry; 6] = [
 /// 合法 funasr 模型键（与 lt_proto::FUNASR_MODELS 对齐）
 pub const FUNASR_KEYS: [&str; 3] = ["sensevoice-small", "funasr-nano-2512", "funasr-mlt-nano-2512"];
 
-/// 按键取 funasr 条目（mlt 与 nano 同包；mlt UI 置灰）
+/// 按键取 funasr 条目；None = 该键当前不可用
 pub fn funasr_entry(key: &str) -> Option<ModelEntry> {
     match key {
         "sensevoice-small" => Some(SENSEVOICE_SMALL.clone()),
-        "funasr-nano-2512" | "funasr-mlt-nano-2512" => Some(FUNASR_NANO.clone()),
+        "funasr-nano-2512" => Some(FUNASR_NANO.clone()),
+        // mlt 是独立模型，无上游 ONNX 转换，待上游产出（D-14）；不得用 nano 冒充
+        "funasr-mlt-nano-2512" => None,
         _ => None,
     }
 }
@@ -130,7 +132,8 @@ mod tests {
     fn funasr_entry_keys() {
         assert!(funasr_entry("sensevoice-small").is_some());
         assert!(funasr_entry("funasr-nano-2512").is_some());
-        assert!(funasr_entry("funasr-mlt-nano-2512").is_some());
+        // mlt 无上游 ONNX 转换（D-14）→ None，运行时回退 sensevoice-small
+        assert!(funasr_entry("funasr-mlt-nano-2512").is_none());
         assert!(funasr_entry("bogus").is_none());
     }
 }

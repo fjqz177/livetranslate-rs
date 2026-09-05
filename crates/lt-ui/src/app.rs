@@ -9,7 +9,7 @@
 //! - CloseRequested 一律隐藏窗口（退出仅走托盘 Quit，等价 setQuitOnLastWindowClosed(false)）；
 //! - 点击穿透由窗口层按 50ms 轮询处理（M4 接入），本宿主只负责窗口创建与 flags。
 
-use crate::state::{AppState, WinId};
+use crate::state::{AppState, OverlayMessage, WinId};
 use crate::tray::{self, Tray};
 use crate::windows;
 use egui::{Context, ViewportId};
@@ -312,6 +312,35 @@ impl MultiWindowApp {
                     m.rms = rms;
                     m.vad = vad;
                     m.mic_rms = mic_rms;
+                    if let Some(hw) = self.find_mut(WinId::Overlay) {
+                        hw.window.request_redraw();
+                    }
+                }
+                // 新识别消息 → 追加到悬浮窗消息链并重绘（译文更新 M3 接线）
+                lt_proto::UiEvent::AddMessage { id, timestamp, original, lang, asr_ms } => {
+                    self.app_state.push_message(OverlayMessage {
+                        id,
+                        timestamp,
+                        original,
+                        lang,
+                        asr_ms,
+                        translation: None, // M3 翻译链路占位
+                        tl_ms: 0.0,
+                    });
+                    if let Some(hw) = self.find_mut(WinId::Overlay) {
+                        hw.window.request_redraw();
+                    }
+                }
+                // ASR 设备标签（悬浮窗 MonitorBar device 段）
+                lt_proto::UiEvent::AsrDevice(label) => {
+                    self.app_state.asr_label = Some(label);
+                    if let Some(hw) = self.find_mut(WinId::Overlay) {
+                        hw.window.request_redraw();
+                    }
+                }
+                // ASR 完全不可用（沿用原版字面文案）
+                lt_proto::UiEvent::AsrUnavailable => {
+                    self.app_state.asr_label = Some("ASR unavailable".into());
                     if let Some(hw) = self.find_mut(WinId::Overlay) {
                         hw.window.request_redraw();
                     }

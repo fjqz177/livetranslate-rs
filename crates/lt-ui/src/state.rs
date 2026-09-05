@@ -54,6 +54,23 @@ pub struct MonitorData {
     pub ram_total_gb: f64,
 }
 
+/// 悬浮窗单条消息（对照原版 ChatMessage 的数据字段）。
+/// translation / tl_ms 为 M3 翻译链路占位（UpdateTranslation 接线前恒为 None / 0.0）。
+#[derive(Debug, Clone)]
+pub struct OverlayMessage {
+    pub id: u64,
+    /// "HH:MM:SS"（ASR 事件已格式化）
+    pub timestamp: String,
+    pub original: String,
+    /// 源语言标签（"zh"/"en"…）
+    pub lang: String,
+    pub asr_ms: f64,
+    /// 译文（M3 翻译链路占位）
+    pub translation: Option<String>,
+    /// 翻译耗时（M3 翻译链路占位）
+    pub tl_ms: f64,
+}
+
 /// 全局 UI 状态。随里程碑逐步扩充（消息流/监视数据/统计……）。
 pub struct AppState {
     pub settings: Settings,
@@ -70,6 +87,10 @@ pub struct AppState {
     pub ticks: Vec<Tick>,
     /// 监视条数据链（任务 1.6）
     pub monitor: MonitorData,
+    /// 悬浮窗消息链（AddMessage 事件追加，上限 50 条、删最旧）
+    pub messages: Vec<OverlayMessage>,
+    /// ASR 设备标签（"SenseVoice Small" 等；不可用时 "ASR unavailable"）
+    pub asr_label: Option<String>,
     /// sysinfo 实例与上次采样时刻（1s 节流）
     sys: Option<sysinfo::System>,
     sys_last: Option<Instant>,
@@ -93,8 +114,18 @@ impl AppState {
             ov_taskbar: false,
             ticks: Vec::new(),
             monitor: MonitorData::default(),
+            messages: Vec::new(),
+            asr_label: None,
             sys: None,
             sys_last: None,
+        }
+    }
+
+    /// 追加一条识别消息；超过 50 条删最旧（原版 _max_messages = 50）。
+    pub fn push_message(&mut self, msg: OverlayMessage) {
+        self.messages.push(msg);
+        if self.messages.len() > 50 {
+            self.messages.remove(0);
         }
     }
 
@@ -148,5 +179,34 @@ impl AppState {
     /// 最近的节拍时刻（None = 无定时事项，可无限期等待）
     pub fn next_tick(&self) -> Option<Instant> {
         self.ticks.iter().map(|t| t.at).min()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn msg(id: u64) -> OverlayMessage {
+        OverlayMessage {
+            id,
+            timestamp: format!("12:00:{:02}", id % 60),
+            original: format!("消息 {id}"),
+            lang: "zh".into(),
+            asr_ms: 100.0,
+            translation: None,
+            tl_ms: 0.0,
+        }
+    }
+
+    #[test]
+    fn messages_cap_at_50_keep_newest() {
+        let mut st = AppState::new(Settings::default());
+        for i in 1..=55u64 {
+            st.push_message(msg(i));
+        }
+        // 上限 50 条，保留的是最新的 50 条（首条 id 应为第 6 条）
+        assert_eq!(st.messages.len(), 50);
+        assert_eq!(st.messages[0].id, 6);
+        assert_eq!(st.messages.last().unwrap().id, 55);
     }
 }

@@ -4,7 +4,8 @@
 //! → capture 线程（CaptureLoop：RMS/VAD 监视 + VAD 状态机 + 超时静音推进）
 //!     - Monitor 事件：直接经 EventLoopProxy 推 UI（每 chunk ≈31/s）
 //!     - Segment 事件：进满丢旧段队列（监视事件永不挤掉语音段）
-//! → ASR 线程：AsrManager.transcribe（独占）→ 段处理（噪声过滤）→ AddMessage。
+//! → ASR 线程：AsrManager.transcribe（独占）→ 段级三层过滤（空/纯标点 → 噪声 → 语言，
+//!   对照原版 main.py `_process_segment`）→ AddMessage。
 //!
 //! 未就绪链路：模型未缓存 → 发 AsrUnavailable（M2.5 向导接管首启下载）。
 
@@ -143,6 +144,47 @@ fn vad_settings_from(s: &lt_proto::Settings) -> VadSettings {
     }
 }
 
+/// 过滤原因（供 run_asr_thread 按层分级记日志，单测断言用）
+const REJECT_EMPTY: &str = "empty/punctuation-only";
+const REJECT_NOISE: &str = "noise";
+const REJECT_LANGUAGE: &str = "language-mismatch";
+
+/// 段级结果过滤（对照原版 main.py `_process_segment` 的三层过滤，顺序一致）。
+/// 返回 `Some(原因)` 表示丢弃该段：
+/// 1. 空/纯标点（无任何字母数字字符）；
+/// 2. 噪声（段长 ≥2.0s 且字母数字字符数 ≤3）；
+/// 3. 语言（设置非 auto 且识别语言与设置不符）。
+fn reject_segment(
+    text: &str,
+    seg_seconds: f64,
+    asr_language: &str,
+    detected_lang: &str,
+) -> Option<&'static str> {
+    let alnum = text.chars().filter(|c| c.is_alphanumeric()).count();
+    if text.is_empty() || alnum == 0 {
+        return Some(REJECT_EMPTY);
+    }
+    if seg_seconds >= 2.0 && alnum <= 3 {
+        return Some(REJECT_NOISE);
+    }
+    if asr_language != "auto" && detected_lang != asr_language {
+        return Some(REJECT_LANGUAGE);
+    }
+    None
+}
+
+/// funasr 模型键 → (条目, 是否回退)。
+/// mlt 无上游 ONNX 转换、待上游产出（D-14）；mlt/非法键统一回退 sensevoice-small（bool = true）。
+fn resolve_funasr_entry(key: &str) -> (registry::ModelEntry, bool) {
+    match registry::funasr_entry(key) {
+        Some(e) => (e, false),
+        None => (
+            registry::funasr_entry("sensevoice-small").expect("sensevoice-small 常量条目必存在"),
+            true,
+        ),
+    }
+}
+
 /// ASR 线程：模型就绪则循环识别；未缓存则发 AsrUnavailable 后待命
 fn run_asr_thread(
     settings: &lt_proto::Settings,
@@ -159,14 +201,19 @@ fn run_asr_thread(
             return;
         }
     };
-    let entry = match registry::funasr_entry(&settings.funasr_model) {
-        Some(e) => e,
-        None => {
-            let _ = proxy.send_event(UiMsg::Event(UiEvent::AsrUnavailable));
-            tracing::error!("未知 funasr 模型键: {}", settings.funasr_model);
-            return;
-        }
-    };
+    // 模型键 → 条目；mlt/非法键回退 sensevoice-small（不阻断 UI，也不得用 nano 冒充）
+    let (entry, fell_back) = resolve_funasr_entry(&settings.funasr_model);
+    if fell_back {
+        let reason = if settings.funasr_model == "funasr-mlt-nano-2512" {
+            "mlt 无上游 ONNX 转换，待上游产出（D-14）"
+        } else {
+            "非法模型键"
+        };
+        tracing::warn!(
+            "funasr 模型 {:?} 不可用（{reason}），回退 sensevoice-small",
+            settings.funasr_model
+        );
+    }
     let Some(model_dir) = lt_models::cache::local_model_dir(&models_dir, &entry) else {
         let _ = proxy.send_event(UiMsg::Event(UiEvent::AsrUnavailable));
         tracing::warn!("ASR 模型未缓存（{entry:?}），等待向导/下载（M2.5）");
@@ -208,16 +255,26 @@ fn run_asr_thread(
         let t0 = std::time::Instant::now();
         match manager.transcribe(&audio, false) {
             Ok(result) => {
-                if result.text.is_empty() {
-                    continue;
-                }
-                // 噪声过滤（原版 _process_segment：长段却只有 ≤3 个字母数字 → 丢弃）
-                let alnum = result.text.chars().filter(|c| c.is_alphanumeric()).count();
-                if seg_seconds >= 2.0 && alnum <= 3 {
-                    tracing::debug!(
-                        "噪声过滤: {seg_seconds:.1}s 段仅产出 {:?}",
-                        result.text
-                    );
+                // 段级三层过滤（原版 _process_segment：空/纯标点 → 噪声 → 语言）
+                if let Some(reason) =
+                    reject_segment(&result.text, seg_seconds, &settings.asr_language, &result.language)
+                {
+                    match reason {
+                        REJECT_LANGUAGE => {
+                            // 预览按字符截断，避免切坏 UTF-8 边界
+                            let preview: String = result.text.chars().take(60).collect();
+                            tracing::info!(
+                                "语言过滤: 期望 {:?} 但识别为 {:?}，丢弃: {preview}",
+                                settings.asr_language,
+                                result.language
+                            );
+                        }
+                        REJECT_NOISE => tracing::debug!(
+                            "噪声过滤: {seg_seconds:.1}s 段仅产出 {:?}",
+                            result.text
+                        ),
+                        _ => tracing::debug!("ASR 返回空/纯标点结果，跳过: {:?}", result.text),
+                    }
                     continue;
                 }
                 let asr_ms = t0.elapsed().as_secs_f64() * 1000.0;
@@ -241,4 +298,94 @@ fn run_asr_thread(
     }
     manager.shutdown();
     tracing::info!("ASR 线程退出");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── reject_segment：三层过滤（对照原版 _process_segment） ──
+
+    #[test]
+    fn empty_text_rejected() {
+        assert_eq!(reject_segment("", 1.0, "auto", "zh"), Some(REJECT_EMPTY));
+    }
+
+    #[test]
+    fn punctuation_only_rejected() {
+        // 中英文纯标点均无字母数字字符 → 第 1 层拒绝
+        assert_eq!(reject_segment("。。。", 1.0, "auto", "zh"), Some(REJECT_EMPTY));
+        assert_eq!(reject_segment("!!!", 0.5, "auto", "en"), Some(REJECT_EMPTY));
+    }
+
+    #[test]
+    fn whitespace_only_rejected() {
+        // 空白串同样无字母数字字符，等价纯标点
+        assert_eq!(reject_segment("   ", 1.0, "auto", "zh"), Some(REJECT_EMPTY));
+    }
+
+    #[test]
+    fn noise_long_segment_few_alnum_rejected() {
+        // 段长 ≥2.0s 且仅 ≤3 个字母数字 → 第 2 层拒绝
+        assert_eq!(reject_segment("abc", 2.0, "auto", "zh"), Some(REJECT_NOISE));
+        assert_eq!(reject_segment("嗯。嗯。嗯", 3.5, "auto", "zh"), Some(REJECT_NOISE));
+    }
+
+    #[test]
+    fn short_segment_few_chars_passes() {
+        // 短段（<2.0s）不属于噪声过滤范围
+        assert_eq!(reject_segment("ab", 0.5, "auto", "zh"), None);
+    }
+
+    #[test]
+    fn normal_text_passes() {
+        assert_eq!(reject_segment("你好世界", 2.5, "auto", "zh"), None);
+    }
+
+    #[test]
+    fn language_mismatch_rejected() {
+        // 设置 zh 但识别为 en → 第 3 层拒绝
+        assert_eq!(reject_segment("hello world", 1.0, "zh", "en"), Some(REJECT_LANGUAGE));
+    }
+
+    #[test]
+    fn auto_language_skips_lang_filter() {
+        // auto 时不做语言过滤：即使识别为 en 也放行
+        assert_eq!(reject_segment("hello world", 1.0, "auto", "en"), None);
+    }
+
+    #[test]
+    fn filter_order_empty_before_language() {
+        // 顺序固定：空文本即使语言不匹配也命中第 1 层而非第 3 层
+        assert_eq!(reject_segment("", 3.0, "zh", "en"), Some(REJECT_EMPTY));
+    }
+
+    // ── resolve_funasr_entry：mlt/非法键回退（D-14） ──
+
+    #[test]
+    fn mlt_falls_back_to_sensevoice() {
+        let (entry, fell_back) = resolve_funasr_entry("funasr-mlt-nano-2512");
+        assert!(fell_back);
+        // 绝不能静默用 nano 冒充 mlt（D-14）
+        assert_eq!(entry, registry::funasr_entry("sensevoice-small").unwrap());
+    }
+
+    #[test]
+    fn bogus_key_falls_back_to_sensevoice() {
+        // 非法键与原版非法值语义一致：回退 sensevoice-small
+        let (entry, fell_back) = resolve_funasr_entry("bogus");
+        assert!(fell_back);
+        assert_eq!(entry.key, "sensevoice-small");
+    }
+
+    #[test]
+    fn valid_keys_no_fallback() {
+        let (entry, fell_back) = resolve_funasr_entry("sensevoice-small");
+        assert!(!fell_back);
+        assert_eq!(entry.key, "sensevoice-small");
+
+        let (entry, fell_back) = resolve_funasr_entry("funasr-nano-2512");
+        assert!(!fell_back);
+        assert_eq!(entry.key, "funasr-nano-2512");
+    }
 }

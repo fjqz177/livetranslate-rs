@@ -17,6 +17,13 @@ pub const ASR_ENGINES: [&str; 2] = ["funasr", "whisper"];
 pub const FUNASR_MODELS: [&str; 3] = ["sensevoice-small", "funasr-nano-2512", "funasr-mlt-nano-2512"];
 /// 合法 whisper 档位（r8：+turbo）
 pub const WHISPER_SIZES: [&str; 6] = ["tiny", "base", "small", "medium", "large-v3", "turbo"];
+/// 旧版独立引擎名 → funasr 模型（对照原版 FUNASR_LEGACY_ENGINE_ALIASES；
+/// 引擎别名命中时必须覆盖 funasr_model，即使其已是合法值）
+pub const ASR_ENGINE_LEGACY_ALIASES: [(&str, &str); 3] = [
+    ("sensevoice", "sensevoice-small"),
+    ("funasr-nano", "funasr-nano-2512"),
+    ("funasr-mlt-nano", "funasr-mlt-nano-2512"),
+];
 
 fn normalize_funasr_model(v: &str) -> String {
     match v {
@@ -142,6 +149,18 @@ impl Settings {
     /// 非法/裁剪值回退，返回被修正项的描述（供调用方记日志）
     pub fn sanitize(&mut self) -> Vec<String> {
         let mut fixed = Vec::new();
+        // legacy 引擎别名迁移（对照原版 normalize_asr_engine_selection/
+        // migrate_funasr_settings）：命中别名表 → funasr + 别名目标，
+        // 且覆盖当前 funasr_model（原版语义：引擎别名优先）
+        if let Some((_, target)) = ASR_ENGINE_LEGACY_ALIASES
+            .iter()
+            .find(|(from, _)| *from == self.asr_engine)
+        {
+            let old = std::mem::replace(&mut self.asr_engine, "funasr".into());
+            let target = (*target).into();
+            fixed.push(format!("asr_engine: '{old}' → funasr + {target}"));
+            self.funasr_model = target;
+        }
         if !ASR_ENGINES.contains(&self.asr_engine.as_str()) {
             let old = std::mem::replace(&mut self.asr_engine, "funasr".into());
             fixed.push(format!("asr_engine: '{old}' 已裁剪/非法 → funasr"));
@@ -445,6 +464,51 @@ mod tests {
         // 序列化后不再出现 no_think
         let out = serde_json::to_value(&s).unwrap();
         assert!(out["models"][0].get("no_think").is_none());
+    }
+
+    /// legacy 引擎别名：asr_engine 命中别名表 → funasr + 别名目标，
+    /// 且覆盖已存的 funasr_model（对照原版 migrate_funasr_settings）
+    #[test]
+    fn legacy_engine_alias_migration() {
+        // funasr-nano → funasr + funasr-nano-2512
+        let s = Settings::from_value_compatible(serde_json::json!({
+            "asr_engine": "funasr-nano"
+        }));
+        assert_eq!(s.asr_engine, "funasr");
+        assert_eq!(s.funasr_model, "funasr-nano-2512");
+
+        // 引擎别名优先：即使已存合法 funasr_model 也被覆盖
+        let s = Settings::from_value_compatible(serde_json::json!({
+            "asr_engine": "sensevoice",
+            "funasr_model": "funasr-nano-2512"
+        }));
+        assert_eq!(s.asr_engine, "funasr");
+        assert_eq!(s.funasr_model, "sensevoice-small");
+
+        // funasr-mlt-nano → funasr + funasr-mlt-nano-2512
+        let s = Settings::from_value_compatible(serde_json::json!({
+            "asr_engine": "funasr-mlt-nano"
+        }));
+        assert_eq!(s.asr_engine, "funasr");
+        assert_eq!(s.funasr_model, "funasr-mlt-nano-2512");
+    }
+
+    /// 正常引擎值不触发别名迁移，funasr_model 保持原样
+    #[test]
+    fn normal_engine_values_untouched() {
+        let s = Settings::from_value_compatible(serde_json::json!({
+            "asr_engine": "funasr",
+            "funasr_model": "funasr-mlt-nano-2512"
+        }));
+        assert_eq!(s.asr_engine, "funasr");
+        assert_eq!(s.funasr_model, "funasr-mlt-nano-2512");
+
+        let s = Settings::from_value_compatible(serde_json::json!({
+            "asr_engine": "whisper"
+        }));
+        assert_eq!(s.asr_engine, "whisper");
+        // whisper 引擎不动 funasr_model（默认值）
+        assert_eq!(s.funasr_model, "sensevoice-small");
     }
 
     #[test]
