@@ -13,6 +13,7 @@ winit = { workspace = true }
 raw-window-handle = "0.6"
 tray-icon = { workspace = true }
 muda = { workspace = true }
+image = { workspace = true }
 rfd = { workspace = true }
 chrono = { workspace = true }
 anyhow = { workspace = true }

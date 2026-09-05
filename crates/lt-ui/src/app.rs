@@ -117,7 +117,8 @@ impl MultiWindowApp {
         let mut attrs = Window::default_attributes()
             .with_title(id.title())
             .with_inner_size(winit::dpi::LogicalSize::new(size.0, size.1))
-            .with_resizable(true);
+            .with_resizable(true)
+            .with_window_icon(crate::tray::window_icon());
         if matches!(id, WinId::Overlay | WinId::Subtitle) {
             attrs = attrs
                 .with_transparent(true)
@@ -265,6 +266,12 @@ impl MultiWindowApp {
                 };
                 if let Some(t) = &self.tray {
                     let _ = t.handles.pause.set_text(text);
+                    let status = if self.app_state.running {
+                        tray::IconStatus::Run
+                    } else {
+                        tray::IconStatus::Pause
+                    };
+                    t.set_status(status);
                 }
                 tracing::info!("管道 {}", if self.app_state.running { "运行" } else { "暂停" });
             }
@@ -485,14 +492,25 @@ impl MultiWindowApp {
                 //（原版 App.model_load_done 在设备就绪/不可用时都会被调用）
                 lt_proto::UiEvent::AsrDevice(label) => {
                     self.app_state.asr_label = Some(label);
+                    if let Some(t) = &self.tray {
+                        let status = if self.app_state.running {
+                            tray::IconStatus::Run
+                        } else {
+                            tray::IconStatus::Pause
+                        };
+                        t.set_status(status);
+                    }
                     if let Some(hw) = self.find_mut(WinId::Overlay) {
                         hw.window.request_redraw();
                     }
                     self.close_load_dialog();
                 }
-                // ASR 完全不可用（沿用原版字面文案）；同样关闭加载框
+                // ASR 完全不可用（沿用原版字面文案）；同样关闭加载框 + 托盘错误图标
                 lt_proto::UiEvent::AsrUnavailable => {
                     self.app_state.asr_label = Some("ASR unavailable".into());
+                    if let Some(t) = &self.tray {
+                        t.set_status(tray::IconStatus::Error);
+                    }
                     if let Some(hw) = self.find_mut(WinId::Overlay) {
                         hw.window.request_redraw();
                     }

@@ -61,6 +61,9 @@ impl AppShell {
                     p.set_paused(true);
                 }
                 self.ui.app_state.running = false;
+                if let Some(t) = &self.ui.tray {
+                    t.set_status(lt_ui::tray::IconStatus::Pause);
+                }
                 tracing::info!("管道暂停");
             }
             Cmd::Resume => {
@@ -68,6 +71,9 @@ impl AppShell {
                     p.set_paused(false);
                 }
                 self.ui.app_state.running = true;
+                if let Some(t) = &self.ui.tray {
+                    t.set_status(lt_ui::tray::IconStatus::Run);
+                }
                 tracing::info!("管道恢复");
             }
             // 挂起机制：UI 线程只存值，ASR 线程在下一次 transcribe 前应用

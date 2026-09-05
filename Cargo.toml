@@ -49,6 +49,9 @@ muda = "0.19"
 # ── 原生文件对话框（导出/本地模型路径选择）──
 rfd = "0.15"
 
+# ── 图标 PNG 解码（托盘/窗口图标；仅 png feature）──
+image = { version = "0.25", default-features = false, features = ["png"] }
+
 # ── 音频 ──
 wasapi = "0.24"
 

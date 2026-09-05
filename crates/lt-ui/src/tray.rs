@@ -7,6 +7,16 @@ use muda::{
 };
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
+/// 托盘状态图标（原版 icons.create_app_icon 的三态：run 绿点/pause 琥珀/error 红）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IconStatus {
+    /// 应用默认图标（app.png）
+    App,
+    Run,
+    Pause,
+    Error,
+}
+
 /// 菜单项 id（menu event 依据；保持稳定字符串）
 pub mod ids {
     pub const PAUSE: &str = "tray_pause";
@@ -45,6 +55,13 @@ pub struct TrayHandles {
 pub struct Tray {
     pub icon: TrayIcon,
     pub handles: TrayHandles,
+}
+
+impl Tray {
+    /// 切换托盘状态图标（原版 tray.setIcon(create_app_icon(status))）
+    pub fn set_status(&self, status: IconStatus) {
+        let _ = self.icon.set_icon(Some(icon_for(status)));
+    }
 }
 
 /// 语言条目文本："code - 原生名"（auto 用 i18n 文案）
@@ -165,11 +182,10 @@ pub fn build(proxy: std::sync::Arc<dyn Fn(UiMsg) + Send + Sync>) -> anyhow::Resu
         let _ = &proxy_tray;
     }));
 
-    let icon = tray_icon();
     let tray = TrayIconBuilder::new()
         .with_menu(Box::new(menu))
         .with_tooltip(lt_i18n::t("tray_tooltip"))
-        .with_icon(icon)
+        .with_icon(icon_for(IconStatus::App))
         .build()?;
 
     Ok(Tray {
@@ -188,9 +204,54 @@ pub fn build(proxy: std::sync::Arc<dyn Fn(UiMsg) + Send + Sync>) -> anyhow::Resu
     })
 }
 
+/// 解码内嵌图标 PNG → tray_icon::Icon（素材缺失时回退运行时绘制）
+fn icon_for(status: IconStatus) -> Icon {
+    let (bytes, label): (&[u8], &str) = match status {
+        IconStatus::App => (
+            include_bytes!("../../../assets/icons/app.png").as_slice(),
+            "app.png",
+        ),
+        IconStatus::Run => (
+            include_bytes!("../../../assets/icons/tray_run_64.png").as_slice(),
+            "tray_run_64.png",
+        ),
+        IconStatus::Pause => (
+            include_bytes!("../../../assets/icons/tray_pause_64.png").as_slice(),
+            "tray_pause_64.png",
+        ),
+        IconStatus::Error => (
+            include_bytes!("../../../assets/icons/tray_error_64.png").as_slice(),
+            "tray_error_64.png",
+        ),
+    };
+    match decode_png(bytes) {
+        Some(icon) => icon,
+        None => {
+            tracing::warn!("图标解码失败（{label}），回退运行时绘制");
+            drawn_icon()
+        }
+    }
+}
+
+/// PNG → RGBA → Icon（image crate 仅开 png feature）
+fn decode_png(bytes: &[u8]) -> Option<Icon> {
+    let img = image::load_from_memory(bytes).ok()?.to_rgba8();
+    let (w, h) = img.dimensions();
+    Icon::from_rgba(img.into_raw(), w, h).ok()
+}
+
+/// 窗口图标（winit；app_32.png，面板/日志等常规窗口标题栏用）
+pub fn window_icon() -> Option<winit::window::Icon> {
+    let img = image::load_from_memory(include_bytes!("../../../assets/icons/app_32.png"))
+        .ok()?
+        .to_rgba8();
+    let (w, h) = img.dimensions();
+    winit::window::Icon::from_rgba(img.into_raw(), w, h).ok()
+}
+
 /// 运行时绘制托盘图标：64×64 蓝底圆角 + 白色 "LT"（矩形拼字，无字体依赖）。
-/// 对应原版 create_app_icon() 的 Qt 绘制。
-fn tray_icon() -> Icon {
+/// 素材解码失败时的兜底（原版 _drawn_icon 的等价物）。
+fn drawn_icon() -> Icon {
     const W: usize = 64;
     const H: usize = 64;
     let mut rgba = vec![0u8; W * H * 4];
