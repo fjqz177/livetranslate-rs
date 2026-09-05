@@ -13,6 +13,7 @@ lt-i18n = { workspace = true }
 lt-models = { workspace = true }
 lt-ui = { workspace = true }
 lt-asr = { workspace = true }
+lt-pipeline = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
@@ -21,6 +22,8 @@ tokio = { workspace = true }
 parking_lot = { workspace = true }
 winit = { workspace = true }
 chrono = { workspace = true }
+uuid = { workspace = true }
+crossbeam-channel = { workspace = true }
 
 [target."cfg(windows)".dependencies]
 windows = { workspace = true }

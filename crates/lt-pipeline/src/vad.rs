@@ -11,6 +11,38 @@ use std::path::Path;
 /// 内嵌 Silero v5 模型（来源与 sha256 见 assets/SOURCES.md）
 static SILERO_MODEL: &[u8] = include_bytes!("../../../assets/silero_vad.onnx");
 
+/// 内嵌 onnxruntime.dll（R-4 预案 A：ort 走 load-dynamic，主进程独占一份 ORT；
+/// worker 子进程用 sherpa 静态 ORT，互不冲突）
+static ORT_DLL: &[u8] = include_bytes!("../../../assets/ort/onnxruntime.dll");
+
+/// 解压 onnxruntime.dll 到配置目录并设置 ORT_DYLIB_PATH（幂等，进程内只需成功一次）。
+/// 必须在首个 ort Session 创建前调用。
+pub fn ensure_ort_dylib() -> anyhow::Result<()> {
+    use std::sync::Once;
+    static ONCE: Once = Once::new();
+    let mut result = Ok(());
+    ONCE.call_once(|| {
+        result = (|| {
+            let dir = lt_models::paths::config_dir()?.join("ort");
+            std::fs::create_dir_all(&dir)?;
+            let target = dir.join("onnxruntime.dll");
+            // 尺寸一致视为已解压（版本随 exe 发布更新时删除旧文件重新解压）
+            let need = !target.is_file()
+                || std::fs::metadata(&target).map(|m| m.len() as usize).unwrap_or(0) != ORT_DLL.len();
+            if need {
+                let tmp = target.with_extension("dll.tmp");
+                std::fs::write(&tmp, ORT_DLL)?;
+                std::fs::rename(&tmp, &target)?;
+                tracing::info!("onnxruntime.dll 已解压至 {}", target.display());
+            }
+            // ort 在首个 Session 前读取该环境变量
+            std::env::set_var("ORT_DYLIB_PATH", &target);
+            Ok(())
+        })();
+    });
+    result
+}
+
 /// 16k 下的 Silero 输入窗口
 const WINDOW_16K: usize = 512;
 /// v5 state 张量元素数（2×1×128）
@@ -53,6 +85,8 @@ impl SileroVad {
     }
 
     pub fn from_bytes(model: &[u8]) -> anyhow::Result<Self> {
+        // load-dynamic：确保 dll 已解压且 ORT_DYLIB_PATH 就位（R-4 预案 A）
+        super::ensure_ort_dylib().context("解压 onnxruntime.dll")?;
         let session = ort::session::Session::builder()
             .context("ort SessionBuilder")?
             .commit_from_memory(model)

@@ -50,7 +50,7 @@ muda = "0.19"
 wasapi = "0.24"
 
 # ── 推理 ──
-ort = { version = "2.0.0-rc.13", features = ["ndarray"] }
+ort = { version = "2.0.0-rc.13", default-features = false, features = ["ndarray", "load-dynamic"] }
 sherpa-onnx = "1.13"
 whisper-rs = "0.16"
 

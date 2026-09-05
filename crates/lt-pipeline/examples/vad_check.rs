@@ -9,6 +9,8 @@
 use lt_pipeline::vad::{ConfidenceSource as _, SileroVad};
 
 fn main() -> anyhow::Result<()> {
+    // load-dynamic：任何 ort 调用前必须就位（首次加载读 ORT_DYLIB_PATH）
+    lt_pipeline::ensure_ort_dylib()?;
     // 独立构建 session 以打印元数据
     let model = std::fs::read("assets/silero_vad.onnx")
         .or_else(|_| std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/silero_vad.onnx")))?;

@@ -5,6 +5,7 @@
 //! `--asr-worker` 为 worker 子进程入口（M2 实装）。
 
 mod logging;
+mod pipeline;
 
 use lt_proto::UiMsg;
 
@@ -14,6 +15,9 @@ fn main() -> anyhow::Result<()> {
         return asr_worker_entry(&cfg);
     }
 
+    // R-4 预案 A：ort 走 load-dynamic，任何 ort 调用前解压 dll 并指向它
+    lt_pipeline::ensure_ort_dylib()?;
+
     ensure_single_instance()?;
 
     let settings = lt_models::settings_io::load()?.unwrap_or_default();
@@ -22,14 +26,21 @@ fn main() -> anyhow::Result<()> {
 
     let event_loop = winit::event_loop::EventLoop::<UiMsg>::with_user_event().build()?;
     let mut app = lt_ui::MultiWindowApp::new(
-        lt_ui::AppState::new(settings),
+        lt_ui::AppState::new(settings.clone()),
         &event_loop,
-        None, // cmd_tx：M2 管道接入时注入
+        None, // cmd_tx：M4 面板控件接入时注入
     )?;
     app.kick_ticks();
-    tracing::info!("LiveTranslate 启动（M0 骨架：4 窗口 + 托盘）");
 
-    event_loop.run_app(&mut app)?;
+    // 管道：capture → VAD → ASR → UI 事件（M2.6）
+    let proxy = event_loop.create_proxy();
+    let mut pipeline = pipeline::Pipeline::start(&settings, proxy)?;
+    tracing::info!("LiveTranslate 启动（4 窗口 + 托盘 + 管道）");
+
+    let result = event_loop.run_app(&mut app);
+
+    pipeline.stop();
+    result?;
 
     // 退出前保存设置（窗口可见性/托盘开关等运行态）
     if let Err(e) = lt_models::settings_io::save(&app.app_state.settings) {

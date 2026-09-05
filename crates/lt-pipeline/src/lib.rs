@@ -5,11 +5,12 @@ pub mod vad;
 
 pub use audio::{
     mix_with_mic, pad_bucket, pad_bucket_len, resample_linear, rms, to_mono,
-    BoundedDropQueue, CHUNK_DURATION, CHUNK_SAMPLES, TARGET_RATE,
+    AudioBackend, BoundedDropQueue, CHUNK_DURATION, CHUNK_SAMPLES, TARGET_RATE,
 };
+pub use audio::capture::CaptureLoop;
 pub use vad::{
-    make_confidence_source, ConfidenceSource, DisabledVad, EnergyVad, SileroVad,
-    VadProcessor, VadSettings,
+    ensure_ort_dylib, make_confidence_source, ConfidenceSource, DisabledVad, EnergyVad,
+    SileroVad, VadProcessor, VadSettings,
 };
 
 /// 段来源（对齐原版 _enqueue_asr 的 seg_type）
