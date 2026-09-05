@@ -2164,7 +2164,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
- "crossbeam-channel",
  "lt-asr",
  "lt-i18n",
  "lt-models",

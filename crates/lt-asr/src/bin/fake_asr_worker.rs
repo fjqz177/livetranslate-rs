@@ -1,7 +1,8 @@
 //! 测试用假 ASR worker（echo 引擎 + 可注入故障）。
 //!
 //! 通过 WorkerConfig.options 注入行为：
-//! `{"fake": {"crash_on_ready": true, "crash_on_transcribe": true, "hang_ms": 5000}}`
+//! `{"fake": {"crash_on_ready": true, "crash_on_transcribe": true,
+//!            "crash_on_set_language": true, "fail_transcribe": true, "hang_ms": 5000}}`
 
 use lt_asr::engine::AsrEngine;
 use lt_asr::frame::{FrameReader, FrameWriter, ReqKind, Request, Response, ReadyInfo};
@@ -12,6 +13,7 @@ use lt_proto::{AsrResult, EngineError};
 struct EchoEngine {
     hang_ms: u64,
     crash_on_transcribe: bool,
+    crash_on_set_language: bool,
     fail_transcribe: bool,
 }
 
@@ -35,6 +37,10 @@ impl AsrEngine for EchoEngine {
         })
     }
     fn set_language(&mut self, _lang: &str) -> Result<(), EngineError> {
+        if self.crash_on_set_language {
+            eprintln!("fake worker: set_language 时模拟崩溃");
+            std::process::abort();
+        }
         Ok(())
     }
     fn set_input_padding(&mut self, _pad: f32) -> Result<(), EngineError> {
@@ -77,6 +83,7 @@ fn main() {
     let engine = EchoEngine {
         hang_ms: opt_u64(&options, "hang_ms"),
         crash_on_transcribe: opt_bool(&options, "crash_on_transcribe"),
+        crash_on_set_language: opt_bool(&options, "crash_on_set_language"),
         fail_transcribe: opt_bool(&options, "fail_transcribe"),
     };
     let mut engine = Some(engine);

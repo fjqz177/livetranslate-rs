@@ -6,11 +6,16 @@
 //! - 进程退出/超时 → 自动重启（≤3 次）；耗尽 → 标记不可用
 //! - RSS 超出基线 +2048MB → 优雅回收（不占失败配额，E-06；仅在段队列空闲时
 //!   调用，对齐原版 _asr_loop queue.Empty 分支）
-//! - 引擎配置变更 → 替换 worker（generation 语义：旧实例关闭，计数清零）
+//! - 引擎配置变更 → 替换 worker（generation 语义：旧实例关闭，计数清零）；
+//!   新配置加载失败 → 回滚旧 worker（原版 _switch_asr_engine._load）
+//! - 语言/padding 走挂起句柄（原版 _asr_pending_*）：UI 线程只存值，ASR 线程
+//!   在每次 transcribe 前应用（_apply_pending_asr_settings，送达即提交）
 
 use crate::client::{AsrClientError, AsrWorkerClient};
 use crate::worker::WorkerConfig;
 use lt_proto::AsrResult;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 /// 自动重启上限（原版 _asr_restart_max）
 const RESTART_MAX: u32 = 3;
@@ -22,6 +27,11 @@ const RECYCLE_DELTA_MB: u64 = 2048;
 pub enum AsrManagerError {
     #[error("ASR 不可用: {0}")]
     Unavailable(String),
+    /// worker 死亡/超时且已自动重启（本段丢弃）：**命令未送达**。
+    /// pending 语义据此保持挂起（原版异常传播路径：挂起值由重启后的
+    /// worker 在下一次 transcribe 前重新应用）
+    #[error("{0}")]
+    Restarted(String),
     #[error("{0}")]
     Failed(String),
 }
@@ -34,6 +44,48 @@ impl AsrManagerError {
 
 pub type Spawner = Box<dyn Fn(&WorkerConfig) -> Result<AsrWorkerClient, AsrClientError> + Send>;
 
+/// 挂起状态（原版 _asr_pending_language/_asr_pending_padding；
+/// UI 线程只写，ASR 线程在每次 transcribe 前应用并清除）
+#[derive(Default)]
+struct PendingState {
+    language: Option<String>,
+    /// padding 按引擎类型挂起（"funasr"/"whisper"），互不覆盖
+    padding: HashMap<String, f32>,
+}
+
+/// UI 线程安全句柄：仅加锁存值，绝不跨进程调用（原版 _set_asr_language/
+/// _set_asr_padding 语义——慢/挂死的 worker 不能冻结 UI）。UI 线程与 ASR 线程
+/// 各持一份克隆，共享同一挂起状态。
+#[derive(Clone, Default)]
+pub struct AsrPendingHandle(Arc<Mutex<PendingState>>);
+
+impl AsrPendingHandle {
+    /// UI 线程：挂起识别语言（ASR 线程下一次 transcribe 前应用并提交）
+    pub fn set_language(&self, lang: &str) {
+        self.lock().language = Some(lang.to_string());
+    }
+
+    /// UI 线程：按引擎家族（"funasr"/"whisper"）挂起 padding，互不覆盖
+    pub fn set_padding(&self, engine_family: &str, secs: f32) {
+        self.lock().padding.insert(engine_family.to_string(), secs);
+    }
+
+    /// 锁内仅做存取（无 panic 点）；中毒也取回数据，不放大 panic
+    fn lock(&self) -> MutexGuard<'_, PendingState> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+/// 引擎名 → 引擎家族（padding 挂起键，对应原版 asr_type "funasr"/"whisper"）。
+/// 注意：M5 nano 接入时复核（nano 属 funasr 家族但不支持 padding）。
+fn engine_family(engine: &str) -> &'static str {
+    match engine {
+        "sensevoice" | "nano" => "funasr",
+        // 其余（whisper 系）一律归 whisper 家族
+        _ => "whisper",
+    }
+}
+
 pub struct AsrManager {
     client: Option<AsrWorkerClient>,
     config: Option<WorkerConfig>,
@@ -42,16 +94,28 @@ pub struct AsrManager {
     baseline_mb: Option<u64>,
     unavailable: bool,
     spawn: Spawner,
+    /// 语言/padding 挂起句柄（与 UI 线程共享；transcribe 前应用）
+    pending: AsrPendingHandle,
 }
 
 impl AsrManager {
     /// 生产构造：走 `当前exe --asr-worker`（与 AsrWorkerClient::spawn 相同）
     pub fn new() -> Self {
-        Self::with_spawner(Box::new(|cfg| AsrWorkerClient::spawn(cfg.clone())))
+        Self::with_pending(AsrPendingHandle::default())
+    }
+
+    /// 生产构造 + 指定挂起句柄（UI 线程持同一句柄即可挂起语言/padding）
+    pub fn with_pending(pending: AsrPendingHandle) -> Self {
+        Self::with_spawner_and_pending(Box::new(|cfg| AsrWorkerClient::spawn(cfg.clone())), pending)
     }
 
     /// 注入 spawner（测试用假 worker）
     pub fn with_spawner(spawn: Spawner) -> Self {
+        Self::with_spawner_and_pending(spawn, AsrPendingHandle::default())
+    }
+
+    /// 注入 spawner + 挂起句柄（测试：假 worker + 共享挂起状态）
+    pub fn with_spawner_and_pending(spawn: Spawner, pending: AsrPendingHandle) -> Self {
         Self {
             client: None,
             config: None,
@@ -60,6 +124,7 @@ impl AsrManager {
             baseline_mb: None,
             unavailable: false,
             spawn,
+            pending,
         }
     }
 
@@ -69,6 +134,11 @@ impl AsrManager {
 
     pub fn is_ready(&self) -> bool {
         self.client.is_some() && !self.unavailable
+    }
+
+    /// 当前 worker 配置（测试与 UI 读取用；worker 未启动时为 None）
+    pub fn config(&self) -> Option<&WorkerConfig> {
+        self.config.as_ref()
     }
 
     fn spawn_ready(&mut self, config: &WorkerConfig) -> Result<(), AsrManagerError> {
@@ -105,7 +175,10 @@ impl AsrManager {
         if self.client.is_some() && self.config.as_ref().map_or(false, |c| sig(c) == sig(config)) {
             return Ok(()); // 已就绪且配置一致
         }
-        // 配置变更：关旧起新（generation 推进）
+        // 配置变更：关旧起新（generation 推进）；新配置加载失败回滚旧 worker
+        // （原版 _switch_asr_engine._load：先停旧再载新，载入失败恢复旧配置）。
+        // 回滚前提：此前确有可用 worker——复活路径 client 已为 None，谈不上回滚。
+        let old_config = if self.client.is_some() { self.config.clone() } else { None };
         if let Some(old) = self.client.as_mut() {
             tracing::info!("ASR 配置变更，替换 worker");
             old.shutdown();
@@ -113,7 +186,29 @@ impl AsrManager {
         self.client = None;
         self.restart_count = 0;
         self.error_count = 0;
-        self.spawn_ready(config)
+        if let Err(e) = self.spawn_ready(config) {
+            // 首次启动本就没有旧 worker：无回滚可言，维持原样直接返回失败
+            let Some(old_config) = old_config else {
+                return Err(e);
+            };
+            tracing::warn!("新引擎加载失败（{e}），尝试用旧配置恢复 worker");
+            match self.spawn_ready(&old_config) {
+                Ok(()) => {
+                    // 回滚成功：manager 仍可用，但对调用方而言本次切换失败（非 Unavailable）
+                    Err(AsrManagerError::Failed(format!(
+                        "新引擎加载失败: {e}；已回滚 {}",
+                        old_config.engine
+                    )))
+                }
+                Err(re) => {
+                    let msg = format!("新引擎加载失败: {e}；恢复旧 worker 也失败: {re}");
+                    self.mark_unavailable(&msg);
+                    Err(AsrManagerError::Unavailable(msg))
+                }
+            }
+        } else {
+            Ok(())
+        }
     }
 
     /// 单次识别：错误分类 + 自动恢复（与原版 _run_asr 一致；失败不重试同一段）
@@ -124,6 +219,11 @@ impl AsrManager {
     ) -> Result<AsrResult, AsrManagerError> {
         if self.unavailable || self.client.is_none() {
             return Err(AsrManagerError::Unavailable("worker 未就绪".into()));
+        }
+        // 识别前应用挂起设置（原版 _apply_pending_asr_settings）：
+        // worker 死亡/超时 → 保持挂起并直接上抛，重启后的 worker 重新应用
+        if let Err(e) = self.apply_pending() {
+            return Err(e);
         }
         let result = self.client.as_mut().unwrap().transcribe(audio, word_timestamps);
         match result {
@@ -162,6 +262,74 @@ impl AsrManager {
         self.simple_request(|c| c.set_input_padding(pad_seconds))
     }
 
+    /// 应用挂起的语言/padding（原版 _apply_pending_asr_settings；transcribe 前调用）。
+    /// 提交规则（原版"命令送达即提交"）：
+    /// - 命令送达（Ok）或送达后 worker 回可恢复错误（Failed，仅 warn）→ 写回
+    ///   restart config（防自动重启/RSS 回收回退到引擎切换时的旧值）+ 清除挂起；
+    /// - worker 死亡/超时（Unavailable，原版异常传播）→ 保持挂起并上抛。
+    fn apply_pending(&mut self) -> Result<(), AsrManagerError> {
+        let snapshot = {
+            let st = self.pending.lock();
+            (st.language.clone(), st.padding.clone())
+        };
+        // ── 语言 ──
+        if let Some(lang) = snapshot.0 {
+            match self.set_language(&lang) {
+                Err(e @ AsrManagerError::Unavailable(_)) => return Err(e), // 保持挂起
+                // worker 死亡/超时（命令未送达，原版异常传播）：保持挂起，
+                // 由重启后的 worker 在下一次 transcribe 前重新应用
+                Err(e @ AsrManagerError::Restarted(_)) => return Err(e),
+                Err(AsrManagerError::Failed(e)) => {
+                    tracing::warn!("ASR 语言更新失败（仍提交挂起值）: {e}");
+                }
+                Ok(()) => {}
+            }
+            if let Some(cfg) = self.config.as_mut() {
+                cfg.language = lang.clone();
+            }
+            // 清除挂起（原版 _clear_pending_language：UI 期间又挂了新值则保留新值）
+            let mut st = self.pending.lock();
+            if st.language.as_deref() == Some(lang.as_str()) {
+                st.language = None;
+            }
+        }
+        // ── padding：只取当前 worker 引擎家族对应的挂起条目 ──
+        let Some(engine) = self.config.as_ref().map(|c| c.engine.clone()) else {
+            return Ok(());
+        };
+        let family = engine_family(&engine);
+        let Some(&secs) = snapshot.1.get(family) else {
+            return Ok(());
+        };
+        // funasr 家族中 nano 不支持 padding（原版 funasr_supports_padding：
+        // sensevoice=true、nano=false）：不下发也不写回 config，仅清除挂起
+        if family == "funasr" && engine == "nano" {
+            let mut st = self.pending.lock();
+            if st.padding.get(family) == Some(&secs) {
+                st.padding.remove(family);
+            }
+            return Ok(());
+        }
+        match self.set_input_padding(secs) {
+            Err(e @ AsrManagerError::Unavailable(_)) => return Err(e), // 保持挂起
+            // 同语言分支：worker 死亡/超时命令未送达，保持挂起
+            Err(e @ AsrManagerError::Restarted(_)) => return Err(e),
+            Err(AsrManagerError::Failed(e)) => {
+                tracing::warn!("ASR padding 更新失败（仍提交挂起值）: {e}");
+            }
+            Ok(()) => {}
+        }
+        if let Some(cfg) = self.config.as_mut() {
+            cfg.pad_seconds = Some(secs);
+        }
+        // 清除挂起（原版 _clear_pending_padding：值已被 UI 更新则保留新值）
+        let mut st = self.pending.lock();
+        if st.padding.get(family) == Some(&secs) {
+            st.padding.remove(family);
+        }
+        Ok(())
+    }
+
     fn simple_request(
         &mut self,
         f: impl FnOnce(&mut AsrWorkerClient) -> Result<(), AsrClientError>,
@@ -171,7 +339,9 @@ impl AsrManager {
         };
         match f(c) {
             Ok(()) => Ok(()),
+            // 原版语义：Exited 与 Timeout 都走 _recover_asr_worker（kill+重启）
             Err(AsrClientError::Exited(r)) => Err(self.recover(&format!("进程退出: {r}"))),
+            Err(AsrClientError::Timeout(t)) => Err(self.recover(&format!("响应超时 {t:.1}s"))),
             Err(e) => Err(AsrManagerError::Failed(format!("{e}"))),
         }
     }
@@ -195,7 +365,7 @@ impl AsrManager {
         }
         tracing::warn!("ASR worker 死亡（{reason}）；自动重启 {}/{}", self.restart_count, RESTART_MAX);
         match self.spawn_ready(&config) {
-            Ok(()) => AsrManagerError::Failed(format!("{reason}；已自动重启，本段丢弃")),
+            Ok(()) => AsrManagerError::Restarted(format!("{reason}；已自动重启，本段丢弃")),
             Err(e) => {
                 let msg = format!("{reason}；重启失败: {e}");
                 if self.restart_count >= RESTART_MAX {

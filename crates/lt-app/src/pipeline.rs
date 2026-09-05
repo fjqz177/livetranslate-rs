@@ -31,6 +31,11 @@ pub struct Pipeline {
     /// 暂停标志（capture 线程丢弃 chunk 不喂 VAD）；M4 托盘暂停联动
     #[allow(dead_code)]
     paused: Arc<AtomicBool>,
+    /// UI 线程挂起语言/padding 的句柄：UI 线程调用 set_pending_*，ASR 线程在
+    /// 下一次 transcribe 前应用（原版 _set_asr_language/_set_asr_padding +
+    /// _apply_pending_asr_settings）；仅加锁存值，绝不跨进程调用
+    #[allow(dead_code)]
+    pending: lt_asr::AsrPendingHandle,
     threads: Vec<std::thread::JoinHandle<()>>,
 }
 
@@ -39,6 +44,8 @@ impl Pipeline {
     pub fn start(settings: &lt_proto::Settings, proxy: EventLoopProxy<UiMsg>) -> anyhow::Result<Self> {
         let stop = Arc::new(AtomicBool::new(false));
         let paused = Arc::new(AtomicBool::new(false));
+        // 语言/padding 挂起句柄：Pipeline 存一份供 UI 线程调，ASR 线程持克隆应用
+        let pending = lt_asr::AsrPendingHandle::default();
 
         // ── 音频：chunk 满丢旧队列 ──
         let chunk_queue = Arc::new(BoundedDropQueue::new(100));
@@ -97,18 +104,34 @@ impl Pipeline {
             let proxy = proxy.clone();
             let segment_queue = segment_queue.clone();
             let settings = settings.clone();
+            let pending = pending.clone();
             threads.push(std::thread::Builder::new().name("lt-asr-main".into()).spawn(move || {
-                run_asr_thread(&settings, segment_queue, stop, proxy);
+                run_asr_thread(&settings, segment_queue, pending, stop, proxy);
             })?);
         }
 
         tracing::info!("管道已启动（capture + VAD + ASR）");
-        Ok(Self { backend, stop, paused, threads })
+        Ok(Self { backend, stop, paused, pending, threads })
     }
 
     #[allow(dead_code)]
     pub fn set_paused(&self, paused: bool) {
         self.paused.store(paused, Ordering::Relaxed);
+    }
+
+    /// UI 线程调用：挂起 ASR 识别语言；ASR 线程在下一次 transcribe 前应用并提交
+    /// （原版 _set_asr_language + _apply_pending_asr_settings；仅加锁存值，
+    /// 绝不跨进程调用，慢/挂死的 worker 不会冻结 UI）
+    #[allow(dead_code)]
+    pub fn set_pending_language(&self, lang: &str) {
+        self.pending.set_language(lang);
+    }
+
+    /// UI 线程调用：按引擎家族（"funasr"/"whisper"）挂起 padding；ASR 线程在下一次
+    /// transcribe 前应用（原版 _set_asr_padding + _apply_pending_asr_settings）
+    #[allow(dead_code)]
+    pub fn set_pending_padding(&self, engine_family: &str, secs: f32) {
+        self.pending.set_padding(engine_family, secs);
     }
 
     pub fn stop(&mut self) {
@@ -178,6 +201,7 @@ fn resolve_funasr_entry(key: &str) -> (registry::ModelEntry, bool) {
 fn run_asr_thread(
     settings: &lt_proto::Settings,
     segment_queue: Arc<BoundedDropQueue<(SegmentSource, Vec<f32>)>>,
+    pending: lt_asr::AsrPendingHandle,
     stop: Arc<AtomicBool>,
     proxy: EventLoopProxy<UiMsg>,
 ) {
@@ -222,7 +246,8 @@ fn run_asr_thread(
         pad_seconds: Some(settings.sensevoice_pad_seconds),
         options: serde_json::json!({ "model_dir": model_dir.to_string_lossy() }),
     };
-    let mut manager = AsrManager::new();
+    // Manager 持 UI 线程同款挂起句柄：transcribe 前应用挂起的语言/padding
+    let mut manager = AsrManager::with_pending(pending);
     if let Err(e) = manager.ensure_started(&config) {
         let _ = proxy.send_event(UiMsg::Event(UiEvent::AsrUnavailable));
         tracing::error!("ASR worker 启动失败: {e}");
