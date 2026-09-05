@@ -9,10 +9,9 @@ mod logging;
 use lt_proto::UiMsg;
 
 fn main() -> anyhow::Result<()> {
-    // worker 子进程入口（M2 实装真实引擎循环）
-    if std::env::args().any(|a| a == "--asr-worker") {
-        eprintln!("asr-worker 入口尚未实装（M2）");
-        std::process::exit(1);
+    // worker 子进程入口：--asr-worker <config-json>（M2.3 起实装 SenseVoice）
+    if let Some(cfg) = std::env::args().skip_while(|a| a != "--asr-worker").nth(1) {
+        return asr_worker_entry(&cfg);
     }
 
     ensure_single_instance()?;
@@ -73,4 +72,29 @@ fn ensure_single_instance() -> anyhow::Result<()> {
 #[cfg(not(windows))]
 fn ensure_single_instance() -> anyhow::Result<()> {
     Ok(())
+}
+
+/// worker 子进程主循环：SenseVoice（whisper 引擎 M5 扩展）
+fn asr_worker_entry(cfg_json: &str) -> anyhow::Result<()> {
+    let config: lt_asr::WorkerConfig = serde_json::from_str(cfg_json)?;
+    match config.engine.as_str() {
+        "sensevoice" => {
+            lt_asr::worker::run(
+                std::io::stdin().lock(),
+                std::io::stdout().lock(),
+                config,
+                move |cfg| {
+                    let dir = cfg
+                        .options
+                        .get("model_dir")
+                        .and_then(|v| v.as_str())
+                        .map(std::path::PathBuf::from)
+                        .ok_or_else(|| anyhow::anyhow!("缺少 model_dir"))?;
+                    lt_asr::sensevoice::SenseVoiceEngine::load(&dir, cfg.pad_seconds, &cfg.language)
+                        .map_err(|e| anyhow::anyhow!("{e}"))
+                },
+            )
+        }
+        other => anyhow::bail!("未知 worker 引擎: {other}"),
+    }
 }

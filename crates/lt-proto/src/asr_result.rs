@@ -1,7 +1,9 @@
 //! ASR 结果与引擎错误类型（worker↔主进程共用）。
 
+use serde::{Deserialize, Serialize};
+
 /// 统一识别结果（对应原版 transcribe() 返回 dict）
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct AsrResult {
     pub text: String,
     /// ISO 码（"en"/"zh"/...），检测不到时 "auto"/"unknown"
@@ -9,11 +11,12 @@ pub struct AsrResult {
     /// 原版 SenseVoice/Nano 直接回传 code；Whisper 查 LANGUAGE_DISPLAY
     pub language_name: String,
     /// word_timestamps=True 时（仅 Whisper 引擎支持）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub words: Option<Vec<WordTs>>,
 }
 
 /// 词级时间戳（秒）
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WordTs {
     pub word: String,
     pub start: f64,

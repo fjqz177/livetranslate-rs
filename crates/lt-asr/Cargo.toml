@@ -9,3 +9,11 @@ ort = { workspace = true }
 sherpa-onnx = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+sysinfo = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true }
