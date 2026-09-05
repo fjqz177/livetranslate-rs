@@ -110,6 +110,7 @@ impl Downloader {
     pub fn http_client(&self) -> anyhow::Result<reqwest::blocking::Client> {
         let mut b = reqwest::blocking::Client::builder()
             .connect_timeout(Duration::from_secs(10))
+            .user_agent(concat!("livetranslate-rs/", env!("CARGO_PKG_VERSION")))
             .redirect(reqwest::redirect::Policy::limited(10));
         b = match &self.proxy {
             ProxyMode::None => b.no_proxy(),
