@@ -18,15 +18,6 @@ pub const FUNASR_MODELS: [&str; 3] = ["sensevoice-small", "funasr-nano-2512", "f
 /// 合法 whisper 档位（r8：+turbo）
 pub const WHISPER_SIZES: [&str; 6] = ["tiny", "base", "small", "medium", "large-v3", "turbo"];
 
-/// 原版 legacy 引擎名/别名 → funasr（对照 FUNASR_LEGACY_ENGINE_ALIASES）
-fn normalize_asr_engine(v: &str) -> String {
-    match v {
-        "whisper" => "whisper".into(),
-        // anime-whisper/remote-whisper 已裁剪；sensevoice 等旧名统一折叠为 funasr
-        _ => "funasr".into(),
-    }
-}
-
 fn normalize_funasr_model(v: &str) -> String {
     match v {
         "sensevoice" => "sensevoice-small".into(),

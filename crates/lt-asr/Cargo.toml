@@ -4,3 +4,8 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+lt-proto = { workspace = true }
+ort = { workspace = true }
+sherpa-onnx = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
