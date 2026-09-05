@@ -45,13 +45,9 @@ pub fn save(s: &Settings) -> anyhow::Result<()> {
 mod tests {
     use super::*;
 
-    /// 独占一个临时配置目录跑读写往返（避免测试间环境变量竞争：
-    /// 串行执行，用全局锁保护环境变量）
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     #[test]
     fn roundtrip_and_legacy_load() {
-        let _g = ENV_LOCK.lock().unwrap();
+        let _g = crate::ENV_LOCK.lock().unwrap();
         let dir = std::env::temp_dir().join(format!("lt_settings_test_{}", std::process::id()));
         std::env::set_var("LIVETRANSLATE_CONFIG_DIR", &dir);
         let _cleanup = scopeguard(&dir);
@@ -91,7 +87,7 @@ mod tests {
 
     #[test]
     fn corrupted_file_treated_as_missing() {
-        let _g = ENV_LOCK.lock().unwrap();
+        let _g = crate::ENV_LOCK.lock().unwrap();
         let dir = std::env::temp_dir().join(format!("lt_settings_bad_{})", std::process::id()).replace(")", ""));
         std::env::set_var("LIVETRANSLATE_CONFIG_DIR", &dir);
         std::fs::create_dir_all(&dir).unwrap();

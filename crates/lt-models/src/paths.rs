@@ -55,6 +55,7 @@ mod tests {
 
     #[test]
     fn config_dir_respects_env_override() {
+        let _g = crate::ENV_LOCK.lock().unwrap();
         let dir = std::env::temp_dir().join("lt_test_cfg");
         std::env::set_var("LIVETRANSLATE_CONFIG_DIR", &dir);
         assert_eq!(config_dir().unwrap(), dir);
