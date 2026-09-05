@@ -40,24 +40,40 @@ impl WinId {
     }
 }
 
-/// 定时重绘条目（监视节拍 / 动画驱动等；WaitUntil 调度的依据）
+/// 定时重绘条目（监视节拍 / 流式刷新 / 位置保存 / 穿透轮询 / 启动流节拍）
 #[derive(Debug, Clone)]
 pub struct Tick {
     pub at: Instant,
     pub win: WinId,
+    pub kind: TickKind,
 }
 
-/// 监视条数据：音频侧来自 UpdateMonitor 事件（每 chunk），系统侧 1s 节流采样
+/// 节拍种类（同窗口可并存多种节拍；宿主按 kind 分派动作）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TickKind {
+    /// 1s 系统采样（悬浮窗 MonitorBar）
+    Monitor,
+    /// 50ms 流式译文节流刷新
+    StreamFlush,
+    /// 500ms 位置/尺寸持久化防抖
+    PosSave,
+    /// 50ms 穿透光标感知轮询（原版 _ct_timer）
+    ClickThrough,
+    /// 启动流（向导倒计时/收尾延迟）
+    Setup,
+}
+
+/// 监视条数据：音频侧来自 UpdateMonitor 事件（每 chunk），系统侧 1s 节流采样。
+/// CPU/RAM 为**进程自身**指标（原版 psutil.Process：cpu_percent + RSS MB）。
 #[derive(Debug, Clone, Copy, Default)]
 pub struct MonitorData {
     pub rms: f32,
     pub vad: f32,
     pub mic_rms: Option<f32>,
-    /// CPU 全局占用 %（sysinfo 1s 采样）
+    /// 进程 CPU 占用 %（sysinfo 1s 采样）
     pub cpu: f32,
-    /// 内存 GB（used / total）
-    pub ram_used_gb: f64,
-    pub ram_total_gb: f64,
+    /// 进程 RSS MB（原版 stats 行显示 `RAM {mb}MB`）
+    pub ram_mb: f32,
 }
 
 /// 悬浮窗单条消息（对照原版 ChatMessage 的数据字段）
@@ -74,6 +90,8 @@ pub struct OverlayMessage {
     pub translation: Option<String>,
     /// 翻译耗时（流式期间 0，完成事件时更新）
     pub tl_ms: f64,
+    /// 流式进行中（True 时不渲染 TL 耗时，原版流式/完成分设标签文本）
+    pub streaming: bool,
 }
 
 /// 翻译/用量统计（UpdateStats 事件；MonitorBar stats 段渲染，M4 完备）
@@ -84,6 +102,80 @@ pub struct OverlayStats {
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
     pub cost: f64,
+}
+
+/// UI → 宿主的窗口动作（egui 无窗口句柄；由 UI 帧入队、宿主在帧后执行）
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum WinAction {
+    /// 标题栏拖动（winit drag_window）
+    Drag,
+    /// 右下角尺寸手柄拖动（winit drag_resize_window）
+    ResizeSouthEast,
+    /// 隐藏窗口（悬浮窗"隐藏"按钮，等价 tray OVERLAY_TOGGLE 的反向）
+    Hide,
+    /// 显示/置前控制面板（原版 settings_requested）
+    ShowPanel,
+    /// 切换字幕窗可见性（悬浮窗"字幕"按钮 = settings.subtitle_mode.enabled 翻转后）
+    ToggleSubtitle,
+    /// 置顶/任务栏复选变化 → 重新应用窗口 flags
+    ApplyOverlayFlags,
+    /// 紧凑/完整模式切换（宿主计算动画 from/to 并启动）
+    ToggleMode,
+    /// 动画/模式推导出的窗口高度调整（逻辑 px，保持宽度）
+    SetHeight(f32),
+}
+
+/// 悬浮窗模式（原版 DragHandle._mode："full"/"compact"）
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OverlayMode {
+    #[default]
+    Full,
+    Compact,
+}
+
+/// 紧凑模式高度动画（原版 QPropertyAnimation 200ms OutCubic）
+#[derive(Debug, Clone, Copy)]
+pub struct HeightAnim {
+    pub from: f32,
+    pub to: f32,
+    pub start: Instant,
+}
+
+impl HeightAnim {
+    pub const DURATION: Duration = Duration::from_millis(200);
+
+    /// 当前进值（OutCubic：1-(1-t)^3）；结束后返回 None 由调用方收敛
+    pub fn current(&self, now: Instant) -> Option<f32> {
+        let t = (now - self.start).as_secs_f32() / (Self::DURATION.as_secs_f32());
+        if t >= 1.0 {
+            return None;
+        }
+        let eased = 1.0 - (1.0 - t).powi(3);
+        Some(self.from + (self.to - self.from) * eased)
+    }
+}
+
+/// 悬浮窗 UI 伴生状态（全部仅 UI 线程触达）
+#[derive(Default)]
+pub struct OverlayUiState {
+    /// 消息区顶部 y（逻辑 px，最近一帧测量；穿透轮询据此划分可交互头部）
+    pub header_px: f32,
+    /// 显示模式（原版 _mode）
+    pub mode: OverlayMode,
+    /// 紧凑前的窗口高度（原版 _height_before_compact；恢复用）
+    pub height_before_compact: Option<f32>,
+    /// 进行中的高度动画
+    pub anim: Option<HeightAnim>,
+    /// 自动滚动待执行（add/translation/flush 时置位，帧内消费）
+    pub scroll_pending: bool,
+    /// 流式节流缓冲（原版 update_streaming 50ms QTimer）：msg_id → 最新部分文本
+    pub pending_streams: std::collections::HashMap<u64, String>,
+    /// 位置/尺寸持久化防抖起点（原版 _pos_save_timer 500ms）；None=无待保存变更
+    pub pos_dirty_since: Option<Instant>,
+    /// 上次保存的几何 (x, y, w, h)，未变化不触发（原版 _last_saved_geo）
+    pub last_saved_geo: Option<(i32, i32, u32, u32)>,
+    /// 待执行的导出（右键菜单；"original"/"translation"/"both"，宿主帧后弹保存框）
+    pub export_request: Option<String>,
 }
 
 /// 首启向导的阶段（原版 SetupWizardDialog 用控件可用性表达，这里显式化）
@@ -209,6 +301,12 @@ pub struct AppState {
     pub messages: Vec<OverlayMessage>,
     /// 翻译/用量统计（UpdateStats 事件更新）
     pub stats: OverlayStats,
+    /// 悬浮窗 UI 伴生状态（模式/动画/节流/防抖）
+    pub overlay: OverlayUiState,
+    /// UI 帧内请求的窗口动作（宿主在帧后消费；Drag/Resize/Hide/ShowPanel）
+    pub actions: Vec<(WinId, WinAction)>,
+    /// 右键"清空列表"请求（帧后消费）
+    pub clear_request: bool,
     /// ASR 设备标签（"SenseVoice Small" 等；不可用时 "ASR unavailable"）
     pub asr_label: Option<String>,
     /// 启动流状态机（首启向导/缺模型下载/Ready）
@@ -254,6 +352,9 @@ impl AppState {
             monitor: MonitorData::default(),
             messages: Vec::new(),
             stats: OverlayStats::default(),
+            overlay: OverlayUiState::default(),
+            actions: Vec::new(),
+            clear_request: false,
             asr_label: None,
             startup: flow,
             load_dialog: None,
@@ -277,11 +378,37 @@ impl AppState {
         self.messages.iter_mut().rev().find(|m| m.id == id)
     }
 
-    /// 流式译文增量（原版 update_streaming：写入累积部分文本）
+    /// 流式译文增量（原版 update_streaming：50ms 节流）。
+    /// 只缓冲 + 安排 50ms 悬浮窗节拍；节拍触发时 [`Self::flush_streams`] 落盘到消息。
     pub fn update_streaming(&mut self, id: u64, partial: String) {
-        if let Some(m) = self.find_message_mut(id) {
-            m.translation = Some(partial);
+        self.overlay.pending_streams.insert(id, partial);
+        self.schedule_overlay_flush();
+    }
+
+    /// 若无待触发的 50ms 流式节拍则安排一个（原版 singleShot 50ms 语义）
+    fn schedule_overlay_flush(&mut self) {
+        let at = Instant::now() + Duration::from_millis(50);
+        let already = self.ticks.iter().any(|t| {
+            t.win == WinId::Overlay && t.kind == TickKind::StreamFlush && t.at <= at + Duration::from_millis(50)
+        });
+        if !already {
+            self.ticks.push(Tick { at, win: WinId::Overlay, kind: TickKind::StreamFlush });
         }
+    }
+
+    /// 节拍触发：把缓冲的流式文本写入消息并标记滚动/重绘
+    pub fn flush_streams(&mut self) {
+        if self.overlay.pending_streams.is_empty() {
+            return;
+        }
+        let pending = std::mem::take(&mut self.overlay.pending_streams);
+        for (id, text) in pending {
+            if let Some(m) = self.find_message_mut(id) {
+                m.translation = Some(text);
+                m.streaming = true;
+            }
+        }
+        self.overlay.scroll_pending = true;
     }
 
     /// 译文完成（原版 update_translation；空文本=同语言/无翻译，同样置 Some）
@@ -289,7 +416,9 @@ impl AppState {
         if let Some(m) = self.find_message_mut(id) {
             m.translation = Some(text);
             m.tl_ms = tl_ms;
+            m.streaming = false;
         }
+        self.overlay.scroll_pending = true;
     }
 
     /// 统计快照更新（原版 update_stats）
@@ -297,8 +426,44 @@ impl AppState {
         self.stats = stats;
     }
 
-    /// 1s 节流的系统采样（CPU/RAM）；在监视节拍触发时调用。
-    /// sysinfo 的 CPU 占用需要两次间隔采样才有意义，首次为 0 属预期。
+    /// UI 帧内请求窗口动作（宿主帧后消费）
+    pub fn enqueue_action(&mut self, win: WinId, action: WinAction) {
+        self.actions.push((win, action));
+    }
+
+    /// 取走全部窗口动作
+    pub fn drain_actions(&mut self) -> Vec<(WinId, WinAction)> {
+        std::mem::take(&mut self.actions)
+    }
+
+    /// 悬浮窗持久化几何 (x, y, w, h)（settings.overlay_* 四键齐备才生效）
+    pub fn overlay_geometry(&self) -> Option<(i32, i32, u32, u32)> {
+        let s = &self.settings;
+        Some((s.overlay_x?, s.overlay_y?, s.overlay_w?, s.overlay_h?))
+    }
+
+    /// 位置/尺寸变更登记（原版 _schedule_pos_save：几何变化 → 500ms 防抖保存）
+    pub fn schedule_pos_save(&mut self, geo: (i32, i32, u32, u32)) {
+        if self.overlay.last_saved_geo == Some(geo) {
+            return;
+        }
+        self.overlay.pos_dirty_since = Some(Instant::now());
+        let at = Instant::now() + Duration::from_millis(500);
+        if !self.ticks.iter().any(|t| t.win == WinId::Overlay && t.kind == TickKind::PosSave) {
+            self.ticks.push(Tick { at, win: WinId::Overlay, kind: TickKind::PosSave });
+        }
+    }
+
+    /// 悬浮窗穿透轮询节拍（原版 _ct_timer 50ms；仅穿透开启时由宿主续拍）
+    pub fn schedule_click_through_tick(&mut self) {
+        let at = Instant::now() + Duration::from_millis(50);
+        if !self.ticks.iter().any(|t| t.win == WinId::Overlay && t.kind == TickKind::ClickThrough) {
+            self.ticks.push(Tick { at, win: WinId::Overlay, kind: TickKind::ClickThrough });
+        }
+    }
+
+    /// 1s 节流的系统采样（进程 CPU/RSS，对照原版 psutil.Process）；
+    /// 在监视节拍触发时调用。CPU 占用需两次采样才有意义，首次为 0 属预期。
     pub fn sample_system(&mut self) {
         let now = Instant::now();
         if !self
@@ -309,22 +474,22 @@ impl AppState {
         }
         self.sys_last = Some(now);
         let sys = self.sys.get_or_insert_with(sysinfo::System::new);
-        sys.refresh_cpu_usage();
-        sys.refresh_memory();
+        let pid = sysinfo::Pid::from_u32(std::process::id());
+        sys.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[pid]), true);
         let m = &mut self.monitor;
-        m.cpu = sys.global_cpu_usage();
-        const GB: f64 = 1024.0 * 1024.0 * 1024.0;
-        m.ram_used_gb = sys.used_memory() as f64 / GB;
-        m.ram_total_gb = sys.total_memory() as f64 / GB;
+        if let Some(proc) = sys.process(pid) {
+            m.cpu = proc.cpu_usage();
+            m.ram_mb = proc.memory() as f32 / 1024.0 / 1024.0;
+        }
     }
 
-    /// 设置 1s 监视节拍（悬浮窗 MonitorBar；M0 用于占位时钟）
+    /// 设置 1s 监视节拍（悬浮窗 MonitorBar）
     pub fn schedule_monitor_tick(&mut self, win: WinId) {
         let at = Instant::now() + Duration::from_secs(1);
-        if let Some(t) = self.ticks.iter_mut().find(|t| t.win == win) {
+        if let Some(t) = self.ticks.iter_mut().find(|t| t.win == win && t.kind == TickKind::Monitor) {
             t.at = at;
         } else {
-            self.ticks.push(Tick { at, win });
+            self.ticks.push(Tick { at, win, kind: TickKind::Monitor });
         }
     }
 
@@ -335,7 +500,7 @@ impl AppState {
         if let Some(t) = self.ticks.iter_mut().find(|t| t.win == WinId::Setup) {
             t.at = at;
         } else {
-            self.ticks.push(Tick { at, win: WinId::Setup });
+            self.ticks.push(Tick { at, win: WinId::Setup, kind: TickKind::Setup });
         }
     }
 
@@ -390,19 +555,18 @@ impl AppState {
         }
     }
 
-    /// 取走所有到期的节拍；返回需要重绘的窗口集合
-    pub fn drain_due_ticks(&mut self) -> Vec<WinId> {
+    /// 取走所有到期的节拍；返回需要处理的节拍（宿主按 kind 分派）
+    pub fn drain_due_ticks(&mut self) -> Vec<Tick> {
         let now = Instant::now();
         let mut due = Vec::new();
         self.ticks.retain(|t| {
             if t.at <= now {
-                due.push(t.win);
+                due.push(t.clone());
                 false
             } else {
                 true
             }
         });
-        due.dedup();
         due
     }
 
@@ -425,6 +589,7 @@ mod tests {
             asr_ms: 100.0,
             translation: None,
             tl_ms: 0.0,
+            streaming: false,
         }
     }
 
@@ -447,14 +612,19 @@ mod tests {
         st.push_message(msg(1));
         st.push_message(msg(2));
 
+        // 流式只入缓冲，50ms 节拍 flush 后才落消息（并置 streaming 标志）
         st.update_streaming(2, "partial".into());
+        assert_eq!(st.messages.last().unwrap().translation, None);
+        st.flush_streams();
         assert_eq!(st.messages.last().unwrap().translation.as_deref(), Some("partial"));
+        assert!(st.messages.last().unwrap().streaming);
         assert_eq!(st.messages.last().unwrap().tl_ms, 0.0);
 
         st.update_translation(2, "done".into(), 320.0);
         let m = st.messages.last().unwrap();
         assert_eq!(m.translation.as_deref(), Some("done"));
         assert_eq!(m.tl_ms, 320.0);
+        assert!(!m.streaming);
 
         // 不存在的 id：无害 no-op
         st.update_translation(999, "ghost".into(), 1.0);

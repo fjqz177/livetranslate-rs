@@ -126,6 +126,11 @@ impl TlRig {
     /// 按设置构建；models 为空/active_model 越界 → None（不翻译，仅 ASR）
     fn from_settings(settings: &lt_proto::Settings) -> Option<Self> {
         let mc = settings.models.get(settings.active_model)?;
+        Self::from_model_config(mc, settings)
+    }
+
+    /// 按指定模型配置构建（运行时切换用；构建失败仅告警并返回 None）
+    fn from_model_config(mc: &lt_proto::ModelConfig, settings: &lt_proto::Settings) -> Option<Self> {
         let params = lt_translate::TranslatorParams {
             api_base: mc.api_base.clone(),
             api_key: mc.api_key.clone(),
@@ -248,7 +253,20 @@ pub struct Pipeline {
     pending: lt_asr::AsrPendingHandle,
     /// 翻译装置（models 空/构建失败时 None = 仅 ASR 不翻译）
     tl: Option<Arc<TlRig>>,
+    /// 运行时翻译器切换通道（UI 域命令 → ASR 线程空闲分支应用；
+    /// 原版对应 _switch_translator / set_target_language / set_timeout）
+    tl_switch: Option<crossbeam_channel::Sender<TlSwitch>>,
     threads: Vec<std::thread::JoinHandle<()>>,
+}
+
+/// ASR 线程消费的翻译器命令
+pub(crate) enum TlSwitch {
+    /// 整体重建翻译装置（切模型；历史随旧实例丢弃，与原版重建 Translator 一致）
+    ReplaceRig { config: Box<lt_proto::ModelConfig>, settings: Box<lt_proto::Settings> },
+    /// 原地改目标语言（原版 set_target_language；同语言判定也用新值）
+    TargetLanguage(String),
+    /// 原地改超时（原版 set_timeout）
+    Timeout(u32),
 }
 
 impl Pipeline {
@@ -312,6 +330,7 @@ impl Pipeline {
 
         // ── 翻译装置（M3）：models 非空即构建；失败仅告警不阻断 ASR ──
         let tl = TlRig::from_settings(settings).map(Arc::new);
+        let (tl_switch_tx, tl_switch_rx) = crossbeam_channel::unbounded::<TlSwitch>();
 
         // ── ASR 线程：Manager 独占 + 段处理 ──
         {
@@ -322,12 +341,36 @@ impl Pipeline {
             let pending = pending.clone();
             let tl = tl.clone();
             threads.push(std::thread::Builder::new().name("lt-asr-main".into()).spawn(move || {
-                run_asr_thread(&settings, segment_queue, pending, stop, proxy, tl);
+                run_asr_thread(&settings, segment_queue, pending, stop, proxy, tl, tl_switch_rx);
             })?);
         }
 
         tracing::info!("管道已启动（capture + VAD + ASR + 翻译）");
-        Ok(Self { backend, stop, paused, pending, tl, threads })
+        Ok(Self { backend, stop, paused, pending, tl, tl_switch: Some(tl_switch_tx), threads })
+    }
+
+    /// 运行时切换翻译模型（原版 _switch_translator 的用户可见路径；
+    /// ASR 线程在下一次空闲分支应用，慢/挂死的服务端不冻结 UI）
+    pub fn switch_translator(&self, config: &lt_proto::ModelConfig, settings: &lt_proto::Settings) {
+        let Some(tx) = &self.tl_switch else { return };
+        let _ = tx.send(TlSwitch::ReplaceRig {
+            config: Box::new(config.clone()),
+            settings: Box::new(settings.clone()),
+        });
+    }
+
+    /// 运行时改目标语言（翻译 + 悬浮窗同语言判定同步生效）
+    pub fn set_translator_target_language(&self, lang: &str) {
+        if let Some(tx) = &self.tl_switch {
+            let _ = tx.send(TlSwitch::TargetLanguage(lang.to_string()));
+        }
+    }
+
+    /// 运行时改翻译超时（原版 set_timeout）
+    pub fn set_translator_timeout(&self, secs: u32) {
+        if let Some(tx) = &self.tl_switch {
+            let _ = tx.send(TlSwitch::Timeout(secs));
+        }
     }
 
     #[allow(dead_code)]
@@ -423,8 +466,11 @@ fn run_asr_thread(
     pending: lt_asr::AsrPendingHandle,
     stop: Arc<AtomicBool>,
     proxy: EventLoopProxy<UiMsg>,
-    tl: Option<Arc<TlRig>>,
+    mut tl: Option<Arc<TlRig>>,
+    tl_switch: crossbeam_channel::Receiver<TlSwitch>,
 ) {
+    // 目标语言的运行时快照（同语言判定用；TlSwitch::TargetLanguage 同步更新）
+    let mut target_language = settings.target_language.clone();
     // 构造 worker 配置（当前仅 sensevoice；whisper M5）
     let models_dir = match lt_models::paths::models_dir(settings.models_dir.as_deref()) {
         Ok(d) => d,
@@ -484,9 +530,29 @@ fn run_asr_thread(
         // 取段：capture 线程直塞的 (source, audio)（source 目前仅 VadFlush，
         // M6 interim 接入后再分流）
         let Some((source, audio)) = segment_queue.pop_timeout(Duration::from_millis(500)) else {
-            // 空闲分支：RSS 回收仅在此做（原版 _asr_loop queue.Empty；
-            // worker 未启动时为无害 no-op）
+            // 空闲分支：RSS 回收（原版 _asr_loop queue.Empty）+ 翻译器切换命令
             manager.maybe_recycle_if_idle();
+            while let Ok(sw) = tl_switch.try_recv() {
+                match sw {
+                    TlSwitch::ReplaceRig { config, settings } => {
+                        if let Some(rig) = TlRig::from_model_config(&config, &settings) {
+                            tracing::info!("翻译器已切换: {} ({})", config.name, config.model);
+                            tl = Some(Arc::new(rig));
+                        }
+                    }
+                    TlSwitch::TargetLanguage(lang) => {
+                        target_language = lang.clone();
+                        if let Some(rig) = &tl {
+                            rig.translator.set_target_language(&lang);
+                        }
+                    }
+                    TlSwitch::Timeout(secs) => {
+                        if let Some(rig) = &tl {
+                            rig.translator.set_timeout(secs);
+                        }
+                    }
+                }
+            }
             continue;
         };
         let _ = source;
@@ -535,7 +601,7 @@ fn run_asr_thread(
                 // ── 翻译分流（原版 _process_segment 尾部；字幕窗 extra_langs 随 M4 接入）──
                 if let Some(rig) = &tl {
                     rig.stats.asr_count.fetch_add(1, Ordering::Relaxed);
-                    if source_lang == settings.target_language {
+                    if source_lang == target_language {
                         tracing::info!("Same language ({source_lang}), no translation");
                         let _ = proxy.send_event(UiMsg::Event(UiEvent::UpdateTranslation {
                             id,

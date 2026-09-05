@@ -33,7 +33,10 @@ pub fn spawn(
                     }
                     // 下载对话框失败后的关闭按钮（原版 reject → sys.exit(0)）
                     Cmd::Stop => quit(&proxy),
-                    other => tracing::debug!("命令暂未接线（M4 面板）: {other:?}"),
+                    // 管道类命令原样回流事件循环，由 AppShell 分发（持有 Pipeline）
+                    other => {
+                        let _ = proxy.send_event(UiMsg::Cmd(other));
+                    }
                 }
             }
         })

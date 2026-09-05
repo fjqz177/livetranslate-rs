@@ -16,6 +16,8 @@ pub enum UiMsg {
     Tray(String),
     /// muda 菜单点击（携带 MenuItemId）
     Menu(String),
+    /// UI → 宿主的管道命令（backend 线程转发；AppShell 统一分发）
+    Cmd(Cmd),
 }
 
 /// 工作线程 → UI 的事件（对齐原版 SubtitleOverlay 的跨线程信号集）
@@ -77,6 +79,8 @@ pub enum Cmd {
     SetPadding { engine: String, secs: f32 },
     SetAudioDevice(AudioDeviceChoice),
     SetMicDevice(MicDeviceChoice),
+    /// 悬浮窗位置/尺寸防抖到期（宿主写盘；500ms 一次，原版 position_changed）
+    PersistSettings(Box<Settings>),
     /// 切换翻译模型 / prompt / 超时等设置整体重放
     ApplySettings(Box<Settings>),
     SwitchTranslator(Box<ModelConfig>),

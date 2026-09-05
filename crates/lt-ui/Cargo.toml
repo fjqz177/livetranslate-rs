@@ -10,8 +10,11 @@ egui = { workspace = true }
 egui-winit = { workspace = true }
 egui-wgpu = { workspace = true }
 winit = { workspace = true }
+raw-window-handle = "0.6"
 tray-icon = { workspace = true }
 muda = { workspace = true }
+rfd = { workspace = true }
+chrono = { workspace = true }
 anyhow = { workspace = true }
 pollster = { workspace = true }
 tracing = { workspace = true }
@@ -19,4 +22,8 @@ parking_lot = { workspace = true }
 sysinfo = { workspace = true }
 
 [target."cfg(windows)".dependencies]
-windows = { workspace = true }
+windows = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging", # 穿透轮询（GetCursorPos/EXSTYLE）
+    "Win32_Graphics_Gdi",
+] }

@@ -9,7 +9,7 @@
 //! - CloseRequested 一律隐藏窗口（退出仅走托盘 Quit，等价 setQuitOnLastWindowClosed(false)）；
 //! - 点击穿透由窗口层按 50ms 轮询处理（M4 接入），本宿主只负责窗口创建与 flags。
 
-use crate::state::{AppState, OverlayMessage, StartupFlow, WinId, push_log_line};
+use crate::state::{AppState, OverlayMessage, StartupFlow, TickKind, WinAction, WinId, push_log_line};
 use crate::tray::{self, Tray};
 use crate::windows;
 use egui::{Context, ViewportId};
@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
-use winit::window::{Window, WindowLevel};
+use winit::window::{ResizeDirection, Window, WindowLevel};
 
 #[cfg(windows)]
 use winit::platform::windows::{WindowAttributesExtWindows, WindowExtWindows};
@@ -129,10 +129,30 @@ impl MultiWindowApp {
                 attrs = attrs.with_skip_taskbar(true);
             }
         }
+        if id == WinId::Overlay {
+            attrs = attrs.with_min_inner_size(winit::dpi::LogicalSize::new(480.0, 200.0));
+        }
         let visible = *self.app_state.visible.get(&id).unwrap_or(&true);
         attrs = attrs.with_visible(visible);
 
         let window = Arc::new(event_loop.create_window(attrs)?);
+        // 悬浮窗恢复上次几何（原版 move(x,y)+resize(w,h)；位置需多屏可见校验 E-11）
+        if id == WinId::Overlay {
+            if let Some(geo) = self.app_state.overlay_geometry() {
+                let (x, y, w, h) = geo;
+                let visible_on_monitor = event_loop.available_monitors().any(|m| {
+                    let (mp, ms) = (m.position(), m.size());
+                    let mx2 = mp.x + ms.width as i32;
+                    let my2 = mp.y + ms.height as i32;
+                    // 至少 80px 主体落在某显示器内
+                    x + w as i32 > mp.x + 80 && x < mx2 - 80 && y + h as i32 > mp.y + 80 && y < my2 - 80
+                });
+                if visible_on_monitor {
+                    let _ = window.request_inner_size(winit::dpi::LogicalSize::new(w as f64, h as f64));
+                    window.set_outer_position(winit::dpi::LogicalPosition::new(x as f64, y as f64));
+                }
+            }
+        }
         let viewport = Self::viewport_of(id);
         pollster::block_on(self.painter.set_window(viewport, Some(window.clone())))?;
         let state = egui_winit::State::new(
@@ -197,6 +217,17 @@ impl MultiWindowApp {
             .unwrap_or(false);
         if want_repaint {
             window.request_redraw();
+        }
+        // 帧后：处理窗口动作 / 右键导出 / 清空请求
+        self.process_actions();
+        if id == WinId::Overlay {
+            if let Some(mode) = self.app_state.overlay.export_request.take() {
+                self.run_export(&mode);
+            }
+            if self.app_state.clear_request {
+                self.app_state.clear_request = false;
+                self.app_state.messages.clear();
+            }
         }
     }
 
@@ -395,6 +426,8 @@ impl MultiWindowApp {
         match msg {
             UiMsg::Menu(id) => self.on_menu(event_loop, &id),
             UiMsg::Tray(_t) => {}
+            // 管道域命令由 lt-app::AppShell.user_event 处理（本层无 Pipeline）
+            UiMsg::Cmd(_) => {}
             UiMsg::Event(e) => match e {
                 // 监视条数据（capture 线程每 chunk 一条 → 节流重绘）
                 lt_proto::UiEvent::UpdateMonitor { rms, vad, mic_rms } => {
@@ -416,6 +449,7 @@ impl MultiWindowApp {
                         asr_ms,
                         translation: None,
                         tl_ms: 0.0,
+                        streaming: false,
                     });
                     if let Some(hw) = self.find_mut(WinId::Overlay) {
                         hw.window.request_redraw();
@@ -522,11 +556,247 @@ impl MultiWindowApp {
         }
     }
 
+    /// 重绘指定窗口（节拍/动作路径的便捷入口）
+    fn redraw(&mut self, id: WinId) {
+        if let Some(hw) = self.find(id) {
+            hw.window.request_redraw();
+        }
+    }
+
+    /// 消费 UI 帧入队的窗口动作（run_frame 尾部调用；winit 句柄操作在此）
+    fn process_actions(&mut self) {
+        for (win, action) in self.app_state.drain_actions() {
+            let Some(hw) = self.find(win) else { continue };
+            let window = hw.window.clone();
+            match action {
+                WinAction::Drag => {
+                    let _ = window.drag_window();
+                }
+                WinAction::ResizeSouthEast => {
+                    let _ = window.drag_resize_window(ResizeDirection::SouthEast);
+                }
+                WinAction::Hide => {
+                    self.set_visible(win, false);
+                }
+                WinAction::ShowPanel => {
+                    self.set_visible(WinId::Panel, true);
+                }
+                WinAction::ToggleSubtitle => {
+                    let vis = self.app_state.settings.subtitle_mode.enabled;
+                    self.set_visible(WinId::Subtitle, vis);
+                }
+                WinAction::ApplyOverlayFlags => {
+                    self.apply_overlay_flags();
+                }
+                WinAction::ToggleMode => {
+                    let compact =
+                        self.app_state.overlay.mode == crate::state::OverlayMode::Compact;
+                    let cur_h = window.inner_size().to_logical::<f32>(window.scale_factor()).height;
+                    let (from, to) = if compact {
+                        self.app_state.overlay.height_before_compact = Some(cur_h);
+                        (cur_h, 200.0) // 200 = 原版 minimumHeight
+                    } else {
+                        (cur_h, self.app_state.overlay.height_before_compact.unwrap_or(500.0))
+                    };
+                    // 差距过小直接落位（原版 abs(actual-target)<10 分支）
+                    if (from - to).abs() < 10.0 {
+                        self.enqueue_height(to);
+                    } else {
+                        self.app_state.overlay.anim = Some(crate::state::HeightAnim {
+                            from,
+                            to,
+                            start: Instant::now(),
+                        });
+                    }
+                }
+                WinAction::SetHeight(h) => {
+                    self.enqueue_height(h);
+                }
+            }
+        }
+        // 动画推进：结束帧落定终值并清除（进行中由 UI 帧投递 SetHeight）
+        if let Some(anim) = self.app_state.overlay.anim {
+            if anim.current(Instant::now()).is_none() {
+                let target = anim.to;
+                self.app_state.overlay.anim = None;
+                self.enqueue_height(target);
+            }
+        }
+    }
+
+    /// 当前悬浮窗逻辑几何 (x, y, w, h)（防抖登记用）
+    fn overlay_geo(&self) -> (i32, i32, u32, u32) {
+        let Some(hw) = self.find(WinId::Overlay) else {
+            return (0, 0, 0, 0);
+        };
+        let scale = hw.window.scale_factor() as f32;
+        let pos = hw.window.outer_position().unwrap_or_default();
+        let logical = hw.window.inner_size().to_logical::<f32>(hw.window.scale_factor());
+        (
+            (pos.x as f32 / scale) as i32,
+            (pos.y as f32 / scale) as i32,
+            logical.width as u32,
+            logical.height as u32,
+        )
+    }
+
+    /// 保持宽度调整窗口高度（逻辑 px；下限 200 = 原版 min height）
+    fn enqueue_height(&mut self, h: f32) {
+        let Some(hw) = self.find(WinId::Overlay) else { return };
+        let scale = hw.window.scale_factor();
+        let w = hw.window.inner_size().to_logical::<f32>(scale).width;
+        let _ = hw
+            .window
+            .request_inner_size(winit::dpi::LogicalSize::new(w, h.max(200.0)));
+    }
+
+    /// 位置/尺寸防抖到期：读几何（逻辑 px）写设置并持久化（原版 position_changed）
+    fn on_pos_save_tick(&mut self) {
+        let Some(hw) = self.find(WinId::Overlay) else { return };
+        let window = hw.window.clone();
+        let scale = window.scale_factor() as f32;
+        let Ok(pos) = window.outer_position() else { return };
+        let logical = window.inner_size().to_logical::<f32>(window.scale_factor());
+        let x = (pos.x as f32 / scale) as i32;
+        let y = (pos.y as f32 / scale) as i32;
+        let w = logical.width as u32;
+        let h = logical.height as u32;
+        let geo = (x, y, w, h);
+        self.app_state.overlay.pos_dirty_since = None;
+        if self.app_state.overlay.last_saved_geo == Some(geo) {
+            return;
+        }
+        self.app_state.overlay.last_saved_geo = Some(geo);
+        self.app_state.settings.overlay_x = Some(x);
+        self.app_state.settings.overlay_y = Some(y);
+        self.app_state.settings.overlay_w = Some(w);
+        self.app_state.settings.overlay_h = Some(h);
+        self.app_state.send_cmd(lt_proto::Cmd::PersistSettings(Box::new(
+            self.app_state.settings.clone(),
+        )));
+    }
+
+    /// 穿透轮询（原版 _check_click_through 50ms）：光标在头部区（消息区之上）
+    /// 时可交互，否则正文穿透。仅 Windows。
+    #[cfg(windows)]
+    fn poll_click_through(&mut self) {
+        use ::windows::Win32::Foundation::POINT;
+        use ::windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+        let Some(hw) = self.find(WinId::Overlay) else { return };
+        let window = hw.window.clone();
+        let enabled = self.app_state.ov_click_through;
+        if !enabled {
+            Self::set_overlay_transparent(&window, false);
+            return;
+        }
+        let Ok(win_pos) = window.outer_position() else { return };
+        let mut pt = POINT::default();
+        if unsafe { GetCursorPos(&mut pt) }.is_err() {
+            return;
+        }
+        let scale = window.scale_factor() as f64;
+        let logical = window.inner_size().to_logical::<f32>(window.scale_factor());
+        let local_x = (pt.x as f64 - win_pos.x as f64) / scale;
+        let local_y = (pt.y as f64 - win_pos.y as f64) / scale;
+        let header_px = self.app_state.overlay.header_px as f64;
+        let in_header = local_x >= 0.0
+            && local_x <= logical.width as f64
+            && local_y >= 0.0
+            && local_y < header_px;
+        Self::set_overlay_transparent(&window, !in_header);
+    }
+
+    /// WS_EX_TRANSPARENT 位切换。注：原版 E-04 要求与 WS_EX_LAYERED 成对
+    /// （Qt 语义）；winit+wgpu 透明窗口走 DWM 合成，加 LAYERED 反而破坏
+    /// surface 呈现，故仅切 TRANSPARENT 位（已知偏差，实机走查项）。
+    #[cfg(windows)]
+    fn set_overlay_transparent(window: &Window, enable: bool) {
+        use raw_window_handle::{HasWindowHandle as _, RawWindowHandle};
+        use ::windows::Win32::Foundation::HWND;
+        use ::windows::Win32::UI::WindowsAndMessaging::{
+            GetWindowLongW, SetWindowLongW, GWL_EXSTYLE, WS_EX_TRANSPARENT,
+        };
+        let Ok(handle) = window.window_handle() else { return };
+        let RawWindowHandle::Win32(win32) = handle.as_raw() else { return };
+        let hwnd = HWND(win32.hwnd.get() as *mut core::ffi::c_void);
+        unsafe {
+            let style = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
+            let new_style = if enable {
+                style | WS_EX_TRANSPARENT.0
+            } else {
+                style & !WS_EX_TRANSPARENT.0
+            };
+            if new_style != style {
+                SetWindowLongW(hwnd, GWL_EXSTYLE, new_style as i32);
+            }
+        }
+    }
+
+    /// 非 Windows 兜底（无穿透能力）
+    #[cfg(not(windows))]
+    fn poll_click_through(&mut self) {}
+
+    /// 执行导出（原版 export_messages；rfd 保存对话框 + 三种模式行格式）
+    fn run_export(&mut self, mode: &str) {
+        if self.app_state.messages.is_empty() {
+            tracing::info!("{}", lt_i18n::t("export_empty"));
+            return;
+        }
+        let suffix = match mode {
+            "original" => "original",
+            "translation" => "translation",
+            _ => "all",
+        };
+        let default_name = format!(
+            "livetrans_{}_{}.txt",
+            chrono::Local::now().format("%Y%m%d_%H%M%S"),
+            suffix
+        );
+        let Some(path) = rfd::FileDialog::new()
+            .set_title(lt_i18n::t("export_dialog_title"))
+            .set_file_name(&default_name)
+            .add_filter("Text", &["txt"])
+            .save_file()
+        else {
+            return;
+        };
+        let mut lines = Vec::new();
+        for msg in &self.app_state.messages {
+            let ts = &msg.timestamp;
+            let orig = msg.original.trim();
+            let trans = msg.translation.as_deref().unwrap_or("").trim();
+            match mode {
+                "original" => lines.push(format!("[{ts}] {orig}")),
+                "translation" => {
+                    if !trans.is_empty() {
+                        lines.push(format!("[{ts}] {trans}"));
+                    }
+                }
+                _ => {
+                    lines.push(format!("[{ts}] {orig}"));
+                    if !trans.is_empty() {
+                        lines.push(format!("  -> {trans}"));
+                    }
+                    lines.push(String::new());
+                }
+            }
+        }
+        let body = lines.join("\n").trim_end().to_string() + "\n";
+        if let Err(e) = std::fs::write(&path, body) {
+            tracing::error!("{}: {e}", lt_i18n::t("export_failed"));
+        } else {
+            tracing::info!("导出完成: {}", path.display());
+        }
+    }
+
     /// 启动即安排节拍（由 lt-app 在 run 前调用）：
     /// 悬浮窗监视节拍（overlay 行为不变）+ 启动流节拍（向导倒计时/收尾延迟）
     pub fn kick_ticks(&mut self) {
         self.app_state.schedule_monitor_tick(WinId::Overlay);
         self.app_state.kick_setup_tick();
+        if self.app_state.ov_click_through {
+            self.app_state.schedule_click_through_tick();
+        }
     }
 }
 
@@ -576,6 +846,10 @@ impl ApplicationHandler<UiMsg> for MultiWindowApp {
                     self.window(id).request_redraw();
                 }
             }
+            WindowEvent::Moved(_) if id == WinId::Overlay => {
+                // 拖动/移动结束防抖保存（原版 moveEvent → _schedule_pos_save）
+                self.app_state.schedule_pos_save(self.overlay_geo());
+            }
             WindowEvent::ScaleFactorChanged { .. } => {
                 // surface 重配置由 Painter 在下一帧处理；请求重绘即可
                 self.window(id).request_redraw();
@@ -594,19 +868,26 @@ impl ApplicationHandler<UiMsg> for MultiWindowApp {
             event_loop.exit();
             return;
         }
-        // 1) 到期节拍 → 按窗口分派：overlay=系统采样+续拍，Setup=倒计时/收尾延迟
-        for win in self.app_state.drain_due_ticks() {
-            match win {
-                WinId::Overlay => self.app_state.sample_system(),
-                WinId::Setup => self.on_setup_tick(),
-                _ => {}
-            }
-            if let Some(hw) = self.find(win) {
-                hw.window.request_redraw();
-            }
-            // M0：悬浮窗每秒一拍（监视节拍占位）
-            if win == WinId::Overlay {
-                self.app_state.schedule_monitor_tick(WinId::Overlay);
+        // 1) 到期节拍按 kind 分派（同窗口可并存多种节拍）
+        for tick in self.app_state.drain_due_ticks() {
+            match tick.kind {
+                TickKind::Monitor => {
+                    self.app_state.sample_system();
+                    self.app_state.schedule_monitor_tick(WinId::Overlay);
+                    self.redraw(WinId::Overlay);
+                }
+                TickKind::StreamFlush => {
+                    self.app_state.flush_streams();
+                    self.redraw(WinId::Overlay);
+                }
+                TickKind::PosSave => self.on_pos_save_tick(),
+                TickKind::ClickThrough => {
+                    self.poll_click_through();
+                    if self.app_state.ov_click_through {
+                        self.app_state.schedule_click_through_tick();
+                    }
+                }
+                TickKind::Setup => self.on_setup_tick(),
             }
         }
         // 2) 空闲策略：等待最近节拍或事件

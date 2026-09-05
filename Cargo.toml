@@ -46,6 +46,9 @@ windows = { version = "0.62", features = [
 tray-icon = "0.24"
 muda = "0.19"
 
+# ── 原生文件对话框（导出/本地模型路径选择）──
+rfd = "0.15"
+
 # ── 音频 ──
 wasapi = "0.24"
 
