@@ -120,6 +120,8 @@ struct TlRig {
     translator: Arc<Translator>,
     stats: Arc<TlStats>,
     pool: JobPool,
+    /// 会话转录写盘（原版 self._transcript；ASR 线程写原文，worker 配对译文）
+    transcript: Arc<lt_pipeline::transcript::TranscriptWriter>,
 }
 
 impl TlRig {
@@ -167,7 +169,12 @@ impl TlRig {
             mc.name,
             mc.model
         );
-        Some(Self { translator, stats, pool: JobPool::new(TL_POOL_WORKERS) })
+        Some(Self {
+            translator,
+            stats,
+            pool: JobPool::new(TL_POOL_WORKERS),
+            transcript: Pipeline::transcript_handle(),
+        })
     }
 
     /// 提交一段的翻译任务（对照原版 _translate_async 的成功/重复/错误三路）；
@@ -175,6 +182,7 @@ impl TlRig {
     fn submit_translation(&self, proxy: &EventLoopProxy<UiMsg>, id: u64, text: String, source_lang: String) {
         let translator = self.translator.clone();
         let stats = self.stats.clone();
+        let transcript = self.transcript.clone();
         let proxy = proxy.clone();
         self.pool.submit(move || {
             let t0 = Instant::now();
@@ -192,6 +200,7 @@ impl TlRig {
                         tracing::warn!(
                             "Repetition loop detected, model may not support structured output well"
                         );
+                        transcript.finalize_no_translation(id);
                         let _ = proxy.send_event(UiMsg::Event(UiEvent::UpdateTranslation {
                             id,
                             text: lt_i18n::t("error_repetition"),
@@ -205,6 +214,7 @@ impl TlRig {
                         } else {
                             tracing::error!("Translate error: {e}");
                         }
+                        transcript.finalize_no_translation(id);
                         let _ = proxy.send_event(UiMsg::Event(UiEvent::UpdateTranslation {
                             id,
                             text: e.ui_text(),
@@ -229,8 +239,9 @@ impl TlRig {
             }));
             let _ = proxy.send_event(UiMsg::Event(stats.snapshot_event()));
             if translated.is_empty() {
-                // 原版走 finalize_no_translation（transcript 链路 M4/M6 接入）
-                tracing::debug!("译文为空，无 transcript 写入（TranscriptWriter 待接入）");
+                transcript.finalize_no_translation(id);
+            } else {
+                transcript.write_translation(id, &translated);
             }
         });
     }
@@ -270,8 +281,23 @@ pub(crate) enum TlSwitch {
 }
 
 impl Pipeline {
+    /// 转录写盘句柄（进程级单例；enabled 跟随 settings.auto_save_transcript）
+    fn transcript_handle() -> Arc<lt_pipeline::transcript::TranscriptWriter> {
+        static HANDLE: std::sync::OnceLock<Arc<lt_pipeline::transcript::TranscriptWriter>> =
+            std::sync::OnceLock::new();
+        HANDLE.get_or_init(|| {
+            let dir = lt_models::paths::transcripts_dir()
+                .unwrap_or_else(|_| std::path::PathBuf::from("transcripts"));
+            Arc::new(lt_pipeline::transcript::TranscriptWriter::new(dir))
+        })
+        .clone()
+    }
+
     /// 按设置启动整条管道；模型未缓存时不阻断 UI（发 AsrUnavailable）
     pub fn start(settings: &lt_proto::Settings, proxy: EventLoopProxy<UiMsg>) -> anyhow::Result<Self> {
+        // ── 转录写盘（原版 self._transcript + auto_save_transcript）──
+        Self::transcript_handle().set_enabled(settings.auto_save_transcript);
+
         let stop = Arc::new(AtomicBool::new(false));
         let paused = Arc::new(AtomicBool::new(false));
         // 语言/padding 挂起句柄：Pipeline 存一份供 UI 线程调，ASR 线程持克隆应用
@@ -592,7 +618,7 @@ fn run_asr_thread(
                 let source_lang = result.language;
                 let _ = proxy.send_event(UiMsg::Event(UiEvent::AddMessage {
                     id,
-                    timestamp,
+                    timestamp: timestamp.clone(),
                     original: original_text.clone(),
                     lang: source_lang.clone(),
                     asr_ms,
@@ -601,8 +627,10 @@ fn run_asr_thread(
                 // ── 翻译分流（原版 _process_segment 尾部；字幕窗 extra_langs 随 M4 接入）──
                 if let Some(rig) = &tl {
                     rig.stats.asr_count.fetch_add(1, Ordering::Relaxed);
+                    rig.transcript.write_original(id, &timestamp, &original_text);
                     if source_lang == target_language {
                         tracing::info!("Same language ({source_lang}), no translation");
+                        rig.transcript.finalize_no_translation(id);
                         let _ = proxy.send_event(UiMsg::Event(UiEvent::UpdateTranslation {
                             id,
                             text: String::new(),

@@ -10,6 +10,8 @@ lt-models.workspace = true
 tracing.workspace = true
 anyhow.workspace = true
 parking_lot.workspace = true
+chrono.workspace = true
+uuid.workspace = true
 crossbeam-channel.workspace = true
 ndarray = "0.17"
 ort = { workspace = true }
