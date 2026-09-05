@@ -22,6 +22,9 @@ pub struct CaptureLoop<F> {
     pub monitor: F,
     /// 暂停标志（暂停时丢弃 chunk 不喂 VAD，对齐原版 _paused）
     pub paused: Arc<AtomicBool>,
+    /// VAD 参数热更新槽（原版面板经 _vad_lock 调 update_settings 的等价物）：
+    /// UI 侧塞入 Some(新设置)，capture 线程每 chunk 取走应用（take-and-clear）
+    pub vad_update: Arc<std::sync::Mutex<Option<crate::vad::VadSettings>>>,
 }
 
 impl<F: Fn(f32, f64, Option<f32>) + Send> CaptureLoop<F> {
@@ -30,6 +33,10 @@ impl<F: Fn(f32, f64, Option<f32>) + Send> CaptureLoop<F> {
     pub fn run<C: ConfidenceSource>(&self, vad: &mut VadProcessor<C>, running: &AtomicBool) {
         let silence_chunk = vec![0.0f32; CHUNK_SAMPLES];
         while running.load(Ordering::Relaxed) {
+            // 应用挂起的 VAD 参数（原版 vad_processor.update_settings）
+            if let Some(s) = self.vad_update.lock().unwrap().take() {
+                vad.update_settings(&s);
+            }
             match self.chunk_rx.pop_timeout(Duration::from_secs(1)) {
                 None => {
                     // 超时：VAD 在说话则喂静音推进（原版 effective_silence_limit()+1 个）
@@ -124,6 +131,7 @@ mod tests {
                 monitors.lock().unwrap().push((rms, vad, mic_rms));
             },
             paused,
+            vad_update: Arc::new(std::sync::Mutex::new(None)),
         };
         let r = running.clone();
         let h = std::thread::spawn(move || {
@@ -196,6 +204,7 @@ mod tests {
             segment_tx: seg_tx.clone(),
             monitor: |_, _, _| {},
             paused,
+            vad_update: Arc::new(std::sync::Mutex::new(None)),
         };
         let r = running.clone();
         let h = std::thread::spawn(move || lp.run(&mut vad, &r));

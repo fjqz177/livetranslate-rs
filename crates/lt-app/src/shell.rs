@@ -5,7 +5,7 @@
 //!   accept 后经 `_deferred_init` + 500ms `on_start` 的等价时机）；
 //! - 退出时统一 `Pipeline::stop` + 设置保存。
 
-use crate::pipeline::Pipeline;
+use crate::pipeline::{transcript_shared, Pipeline};
 use lt_proto::{Cmd, Settings, UiEvent, UiMsg};
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
@@ -159,7 +159,29 @@ impl AppShell {
                 self.ui.app_state.settings.mic_device = dev;
                 self.persist_settings();
             }
-            // 其余命令 M4 后续波次接线（增量 ASR/ApplySettings）
+            // 面板"应用"全量重放（原版 settings_changed → main 逐项应用）：
+            // VAD 参数热更新 + 翻译目标语言/超时 + 转录开关 + 落盘
+            Cmd::ApplySettings(s) => {
+                let s = *s;
+                if let Some(p) = &self.pipeline {
+                    p.update_vad_settings(lt_pipeline::VadSettings {
+                        mode: s.vad_mode.clone(),
+                        threshold: s.vad_threshold as f64,
+                        energy_threshold: s.energy_threshold as f64,
+                        min_speech_duration: s.min_speech_duration as f64,
+                        max_speech_duration: s.max_speech_duration as f64,
+                        silence_mode: s.silence_mode.clone(),
+                        silence_duration: s.silence_duration as f64,
+                    });
+                    p.set_translator_target_language(&s.target_language);
+                    p.set_translator_timeout(s.timeout);
+                }
+                transcript_shared().set_enabled(s.auto_save_transcript);
+                self.ui.app_state.settings = s;
+                self.persist_settings();
+                tracing::info!("设置已应用");
+            }
+            // 其余命令 M4 后续波次接线（增量 ASR 开关）
             other => tracing::debug!("命令待后续接线: {other:?}"),
         }
     }

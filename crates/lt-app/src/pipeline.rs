@@ -267,6 +267,8 @@ pub struct Pipeline {
     /// 运行时翻译器切换通道（UI 域命令 → ASR 线程空闲分支应用；
     /// 原版对应 _switch_translator / set_target_language / set_timeout）
     tl_switch: Option<crossbeam_channel::Sender<TlSwitch>>,
+    /// VAD 参数热更新槽（面板"应用"→ capture 线程）
+    vad_update: Arc<std::sync::Mutex<Option<lt_pipeline::VadSettings>>>,
     threads: Vec<std::thread::JoinHandle<()>>,
 }
 
@@ -288,6 +290,11 @@ pub(crate) enum TlSwitch {
         whisper_model_size: String,
         language: String,
     },
+}
+
+/// 转录写盘共享句柄（面板"应用"热切换 enabled；与 Pipeline 内部同源）
+pub fn transcript_shared() -> Arc<lt_pipeline::transcript::TranscriptWriter> {
+    Pipeline::transcript_handle()
 }
 
 impl Pipeline {
@@ -323,6 +330,8 @@ impl Pipeline {
         )?;
 
         // ── capture 线程：VAD 状态机 ──
+        let vad_update: Arc<std::sync::Mutex<Option<lt_pipeline::VadSettings>>> =
+            Arc::new(std::sync::Mutex::new(None));
         let vad_settings = vad_settings_from(settings);
         let confidence = lt_pipeline::vad::make_confidence_source(
             &settings.vad_mode,
@@ -345,6 +354,7 @@ impl Pipeline {
             let paused = paused.clone();
             let segment_queue = segment_queue.clone();
             let proxy = proxy.clone();
+            let vad_update_capture = vad_update.clone();
             std::thread::Builder::new().name("lt-capture".into()).spawn(move || {
                 // 原版 _capture_loop：monitor 直接跨线程信号（此处经 proxy 发 UI 事件，
                 // vad 转换为 UI 侧 f32），段直接塞 _asr_queue 等价队列（满丢旧）
@@ -359,6 +369,7 @@ impl Pipeline {
                         }));
                     },
                     paused,
+                    vad_update: vad_update_capture,
                 };
                 loop_.run(&mut vad, &stop);
             })?;
@@ -382,7 +393,16 @@ impl Pipeline {
         }
 
         tracing::info!("管道已启动（capture + VAD + ASR + 翻译）");
-        Ok(Self { backend, stop, paused, pending, tl, tl_switch: Some(tl_switch_tx), threads })
+        Ok(Self {
+            backend,
+            stop,
+            paused,
+            pending,
+            tl,
+            tl_switch: Some(tl_switch_tx),
+            vad_update,
+            threads,
+        })
     }
 
     /// 运行时切换翻译模型（原版 _switch_translator 的用户可见路径；
@@ -440,6 +460,12 @@ impl Pipeline {
             lt_proto::MicDeviceChoice::Named(n) => Some(n),
         };
         self.backend.set_mic_device(dev);
+    }
+
+    /// VAD 参数热更新（原版面板 apply → vad_processor.update_settings）：
+    /// 塞入信号槽，capture 线程下一 chunk 应用
+    pub fn update_vad_settings(&self, s: lt_pipeline::VadSettings) {
+        *self.vad_update.lock().unwrap() = Some(s);
     }
 
     #[allow(dead_code)]
