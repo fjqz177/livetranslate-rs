@@ -428,6 +428,8 @@ impl MultiWindowApp {
             UiMsg::Tray(_t) => {}
             // 管道域命令由 lt-app::AppShell.user_event 处理（本层无 Pipeline）
             UiMsg::Cmd(_) => {}
+            // catch-all 为未来新增事件防黑洞（当前枚举已全覆盖则不可达）
+            #[allow(unreachable_patterns)]
             UiMsg::Event(e) => match e {
                 // 监视条数据（capture 线程每 chunk 一条 → 节流重绘）
                 lt_proto::UiEvent::UpdateMonitor { rms, vad, mic_rms } => {
@@ -540,6 +542,17 @@ impl MultiWindowApp {
                     self.app_state.cancel_setup_tick();
                     self.app_state.schedule_setup_tick(Duration::from_millis(500));
                     self.redraw_setup();
+                }
+                // 日志行（常驻桥接线程全程转发 → 日志窗；级别过滤在窗口状态内）
+                lt_proto::UiEvent::LogLine { level, target, msg } => {
+                    if self.app_state.logwin.push(crate::state::LogLineEntry {
+                        time: chrono::Local::now().format("%H:%M:%S").to_string(),
+                        level,
+                        target,
+                        msg,
+                    }) {
+                        self.redraw(WinId::Log);
+                    }
                 }
                 // ── 模型加载对话框打开（标题固定 "LiveTranslate"）──
                 lt_proto::UiEvent::ModelLoadStart(label) => {

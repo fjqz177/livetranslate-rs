@@ -155,6 +155,51 @@ impl HeightAnim {
     }
 }
 
+/// 日志窗单行（原版 QTextEdit maximumBlockCount=2000 的条目）
+#[derive(Debug, Clone)]
+pub struct LogLineEntry {
+    /// "HH:MM:SS"（UI 侧收到即盖时戳，原版 formatter datefmt）
+    pub time: String,
+    /// Python logging 数值语义（10=DEBUG 20=INFO 30=WARN 40=ERROR）
+    pub level: u8,
+    pub target: String,
+    pub msg: String,
+}
+
+/// 日志窗 UI 状态：环形 2000 行 + 显示开关（原版 _show_debug / _auto_scroll）
+#[derive(Default)]
+pub struct LogWindowState {
+    pub lines: std::collections::VecDeque<LogLineEntry>,
+    /// 默认只显示 INFO+；开启后后续 DEBUG 行也进入（原版语义：不回溯历史）
+    pub show_debug: bool,
+    pub auto_scroll: bool,
+}
+
+impl LogWindowState {
+    pub const MAX_LINES: usize = 2000;
+
+    /// 追加一行（级别过滤在此做：`level < INFO 且未开 debug` → 丢弃，
+    /// 与原版 _append_log 的早退一致；返回是否实际追加）
+    pub fn push(&mut self, mut entry: LogLineEntry) -> bool {
+        const INFO: u8 = 20;
+        if entry.level < INFO && !self.show_debug {
+            return false;
+        }
+        if entry.time.is_empty() {
+            entry.time = chrono::Local::now().format("%H:%M:%S").to_string();
+        }
+        self.lines.push_back(entry);
+        if self.lines.len() > Self::MAX_LINES {
+            self.lines.pop_front();
+        }
+        true
+    }
+
+    pub fn clear(&mut self) {
+        self.lines.clear();
+    }
+}
+
 /// 悬浮窗 UI 伴生状态（全部仅 UI 线程触达）
 #[derive(Default)]
 pub struct OverlayUiState {
@@ -307,6 +352,8 @@ pub struct AppState {
     pub actions: Vec<(WinId, WinAction)>,
     /// 右键"清空列表"请求（帧后消费）
     pub clear_request: bool,
+    /// 日志窗状态（M4.5）
+    pub logwin: LogWindowState,
     /// ASR 设备标签（"SenseVoice Small" 等；不可用时 "ASR unavailable"）
     pub asr_label: Option<String>,
     /// 启动流状态机（首启向导/缺模型下载/Ready）
@@ -355,6 +402,7 @@ impl AppState {
             overlay: OverlayUiState::default(),
             actions: Vec::new(),
             clear_request: false,
+            logwin: LogWindowState::default(),
             asr_label: None,
             startup: flow,
             load_dialog: None,
@@ -643,6 +691,43 @@ mod tests {
         st.update_translation(7, String::new(), 0.0);
         let m = st.messages.last().unwrap();
         assert_eq!(m.translation.as_deref(), Some(""));
+    }
+
+    #[test]
+    fn logwin_filters_debug_by_default_and_caps_at_2000() {
+        let mut lw = LogWindowState::default();
+        assert!(!lw.push(LogLineEntry {
+            time: String::new(),
+            level: 10,
+            target: "t".into(),
+            msg: "debug line".into(),
+        }));
+        assert!(lw.lines.is_empty(), "DEBUG 默认被过滤");
+
+        assert!(lw.push(LogLineEntry {
+            time: String::new(),
+            level: 20,
+            target: "t".into(),
+            msg: "info line".into(),
+        }));
+        assert_eq!(lw.lines.len(), 1);
+        assert_eq!(lw.lines[0].time.len(), 8, "空时戳自动盖 HH:MM:SS");
+
+        lw.show_debug = true;
+        assert!(lw.push(LogLineEntry {
+            time: "x".into(),
+            level: 10,
+            target: "t".into(),
+            msg: "debug2".into(),
+        }));
+        assert_eq!(lw.lines.len(), 2);
+
+        // 环形 2000：满后丢最旧
+        for i in 0..2100u32 {
+            lw.push(LogLineEntry { time: "x".into(), level: 20, target: "t".into(), msg: format!("{i}") });
+        }
+        assert_eq!(lw.lines.len(), 2000);
+        assert_ne!(lw.lines[0].msg, "0");
     }
 
     #[test]

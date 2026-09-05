@@ -7,6 +7,7 @@
 use crate::state::{AppState, WinId};
 use egui::Ui;
 
+pub mod logwin;
 pub mod overlay;
 pub mod setup;
 
@@ -16,7 +17,7 @@ pub fn dispatch(win: WinId, ui: &mut Ui, state: &mut AppState) {
         WinId::Overlay => overlay::overlay_ui(ui, state),
         WinId::Subtitle => subtitle_ui(ui, state),
         WinId::Panel => panel_ui(ui, state),
-        WinId::Log => log_ui(ui, state),
+        WinId::Log => logwin::log_ui(ui, state),
         // 启动流对话框（首启向导/缺模型下载/模型加载按 state 内部阶段再分派）
         WinId::Setup => setup::setup_ui(ui, state),
     }
@@ -69,8 +70,3 @@ fn panel_ui(ui: &mut Ui, _state: &mut AppState) {
     });
 }
 
-/// 日志窗占位（M4.5：2000 行环形缓冲 + 级别过滤 + 内容高亮）
-fn log_ui(ui: &mut Ui, _state: &mut AppState) {
-    ui.heading("Log");
-    ui.label("(M4：2000 行环形缓冲 + 级别过滤 + 内容高亮)");
-}

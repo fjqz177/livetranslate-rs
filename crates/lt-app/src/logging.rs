@@ -79,9 +79,10 @@ where
         event: &tracing::Event<'_>,
         _ctx: tracing_subscriber::layer::Context<'_, S>,
     ) {
-        // 广播只发 INFO 及以上（TRACE/DEBUG 量太大；日志窗 show_debug 开关 M4 再扩展）
+        // 广播发 DEBUG 及以上（TRACE 量太大不广播；日志窗默认过滤 DEBUG，
+        // show_debug 开关控制显示——过滤在窗口侧做，与原版 handler level=DEBUG 一致）
         let level = *event.metadata().level();
-        if matches!(level, tracing::Level::TRACE | tracing::Level::DEBUG) {
+        if matches!(level, tracing::Level::TRACE) {
             return;
         }
         let mut v = MsgVisitor::default();
@@ -92,6 +93,26 @@ where
             msg: v.msg,
         });
     }
+}
+
+/// 常驻日志桥接线程（交接卡缺口 #4）：启动即订阅广播 hub，全程把 LogLine
+/// 事件转发到 UI（原版 LogWindow handler 常驻 root logger 的等价物）。
+pub fn spawn_bridge(proxy: winit::event_loop::EventLoopProxy<lt_proto::UiMsg>) {
+    let mut rx = subscribe();
+    std::thread::Builder::new()
+        .name("lt-logbridge".into())
+        .spawn(move || loop {
+            match rx.blocking_recv() {
+                Ok(ev) => {
+                    let _ = proxy.send_event(lt_proto::UiMsg::Event(ev));
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    tracing::debug!("日志桥接丢弃 {n} 行（订阅端积压）");
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+            }
+        })
+        .ok();
 }
 
 fn level_u8(l: tracing::Level) -> u8 {

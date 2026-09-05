@@ -1,0 +1,103 @@
+//! 日志窗全量复刻（对照原版 log_window.py）：
+//! 深色只读文本区（Consolas 9pt，#1e1e1e/#d4d4d4）+ 底部控件行
+//! （自动滚动 / 显示 DEBUG / 清空）；级别配色 + ASR/Translate/Segment
+//! 内容高亮三色；环形 2000 行；级别过滤在追加期做（show_debug 不回溯历史）。
+
+use crate::state::{AppState, LogLineEntry};
+use egui::{Color32, RichText, ScrollArea, Ui};
+
+/// 原版配色
+const BG: Color32 = Color32::from_rgb(0x1e, 0x1e, 0x1e);
+const DEBUG_GRAY: Color32 = Color32::from_rgb(0x80, 0x80, 0x80);
+const INFO: Color32 = Color32::from_rgb(0xd4, 0xd4, 0xd4);
+const WARN: Color32 = Color32::from_rgb(0xdc, 0xdc, 0xaa);
+const ERROR: Color32 = Color32::from_rgb(0xf4, 0x47, 0x47);
+/// 内容高亮三色（ASR 行青绿 / Translate 行蓝 / Speech segment 行橙棕）
+const HL_ASR: Color32 = Color32::from_rgb(0x4e, 0xc9, 0xb0);
+const HL_TL: Color32 = Color32::from_rgb(0x9c, 0xdc, 0xfe);
+const HL_SEG: Color32 = Color32::from_rgb(0xce, 0x91, 0x78);
+
+/// 行着色（对照原版 _append_log：先按级别取色，再按内容覆盖高亮。
+/// 注：原版 "Translate:" 匹配串与实际日志行 "Translate (x ms):" 不符，
+/// 该规则在原版即为死分支——1:1 保留原文案）
+fn line_color(entry: &LogLineEntry) -> Color32 {
+    match entry.level {
+        10 => DEBUG_GRAY,
+        30 => WARN,
+        40..=50 => ERROR,
+        _ => INFO,
+    }
+    // 内容高亮在渲染层追加（见下 highlight()）
+}
+
+fn highlight(msg: &str, base: Color32) -> Color32 {
+    if msg.contains("ASR [") {
+        HL_ASR
+    } else if msg.contains("Translate:") {
+        HL_TL
+    } else if msg.contains("Speech segment") {
+        HL_SEG
+    } else {
+        base
+    }
+}
+
+pub fn log_ui(ui: &mut Ui, state: &mut AppState) {
+    // 文本区（深色背景）
+    egui::Frame::NONE
+        .fill(BG)
+        .inner_margin(4.0)
+        .show(ui, |ui| {
+            let max = ui.available_height() - 28.0;
+            ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .max_height(max)
+                .show(ui, |ui| {
+                    let lines: Vec<(String, Color32)> = state
+                        .logwin
+                        .lines
+                        .iter()
+                        .map(|e| {
+                            let base = highlight(&e.msg, line_color(e));
+                            (
+                                format!("{} [{}] {}: {}", e.time, level_name(e.level), e.target, e.msg),
+                                base,
+                            )
+                        })
+                        .collect();
+                    for (text, color) in lines {
+                        ui.label(RichText::new(text).monospace().color(color).size(12.0));
+                    }
+                    if state.logwin.auto_scroll {
+                        ui.scroll_to_cursor(Some(egui::Align::BOTTOM));
+                    }
+                });
+        });
+
+    // 控件行（原版布局：文本区在下？——原版先 text 后 controls，此处同序）
+    ui.horizontal(|ui| {
+        ui.add(egui::Checkbox::new(
+            &mut state.logwin.auto_scroll,
+            RichText::new(lt_i18n::t("auto_scroll")).size(12.0),
+        ));
+        ui.add(egui::Checkbox::new(
+            &mut state.logwin.show_debug,
+            RichText::new(lt_i18n::t("show_debug")).size(12.0),
+        ));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.button(lt_i18n::t("clear")).clicked() {
+                state.logwin.clear();
+            }
+        });
+    });
+}
+
+fn level_name(level: u8) -> &'static str {
+    match level {
+        0 => "TRACE",
+        10 => "DEBUG",
+        20 => "INFO",
+        30 => "WARNING",
+        _ => "ERROR",
+    }
+}

@@ -63,7 +63,9 @@ fn main() -> anyhow::Result<()> {
     app.kick_ticks();
 
     let proxy = event_loop.create_proxy();
-    // 后台命令线程：下载编排 + 日志桥接（M2.5）；其余命令 M4 接线
+    // 常驻日志桥接（缺口 #4）：广播 hub → LogLine 事件（日志窗数据源）
+    logging::spawn_bridge(proxy.clone());
+    // 后台命令线程：下载编排 + 下载期日志转发（M2.5）
     backend::spawn(cmd_rx, proxy.clone(), first_launch, initial_settings.clone(), missing);
 
     let mut shell = shell::AppShell::new(
