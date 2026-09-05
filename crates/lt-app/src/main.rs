@@ -1,9 +1,9 @@
-//! LiveTranslate 主入口（M0.8 装配 + M2.5 启动流）。
+//! LiveTranslate 主入口。
 //!
-//! 启动流（对齐原版 main()）：
-//! - 无 settings → 首启向导（hub 按语言默认/代理三选/15s 倒计时自动下载）；
-//! - 有 settings 但模型缺失 → 下载对话框（取消即退出）；
-//! - 就绪 → 立即启动管道；向导/下载流程在 DownloadSucceeded 时启动（AppShell）。
+//! 启动流（对齐新版原版 2026-09-01 less-is-more 决策，first-launch-flow.md）：
+//! **没有首启向导、没有缺模型下载门**——打开即进主界面并启动管道；
+//! 模型未缓存时管道发 AsrUnavailable（悬浮窗显示 unavailable），用户经
+//! 设置 → 识别页按需下载（StartDownload 命令复用 M2.5 下载管线）。
 //! `--asr-worker` 为 worker 子进程入口。
 
 mod backend;
@@ -14,7 +14,7 @@ mod shell;
 use lt_proto::{Cmd, UiMsg};
 
 fn main() -> anyhow::Result<()> {
-    // worker 子进程入口：--asr-worker <config-json>（M2.3 起实装 SenseVoice）
+    // worker 子进程入口：--asr-worker <config-json>（sensevoice + whisper）
     if let Some(cfg) = std::env::args().skip_while(|a| a != "--asr-worker").nth(1) {
         return asr_worker_entry(&cfg);
     }
@@ -24,55 +24,46 @@ fn main() -> anyhow::Result<()> {
 
     ensure_single_instance()?;
 
-    let settings_opt = lt_models::settings_io::load()?;
-    let initial_settings = settings_opt.clone().unwrap_or_default();
+    // 无 settings 文件 → 全默认值（直进主界面；模型缺失走识别页按需下载）
+    let initial_settings = lt_models::settings_io::load()?.unwrap_or_default();
 
-    // 启动流判定（原版：SETTINGS_FILE 不存在 → 向导；否则 get_missing_models
-    // 非空 → 下载对话框；silero 内嵌恒不缺 D-5）
-    let (first_launch, missing) = match &settings_opt {
-        None => (true, Vec::new()),
-        Some(s) => {
-            let models_dir = lt_models::paths::models_dir(s.models_dir.as_deref())?;
-            (
-                false,
-                lt_models::cache::missing_models(
-                    &models_dir,
-                    &s.asr_engine,
-                    &s.funasr_model,
-                    &s.whisper_model_size,
-                ),
-            )
-        }
-    };
-    let ready_now = !first_launch && missing.is_empty();
-    let flow = lt_ui::startup_flow(
-        first_launch,
-        missing.iter().map(|m| m.display.clone()).collect(),
-    );
-
-    lt_i18n::set_lang(&initial_settings.ui_lang);
+    // ui_lang="system" → 系统语言解析（新版 general_tab 的 resolve_ui_lang 语义）
+    let ui_lang = initial_settings.ui_lang.clone();
+    lt_i18n::set_lang(if ui_lang == "system" {
+        lt_i18n::detect_system_lang()
+    } else {
+        &ui_lang
+    });
     logging::init()?;
 
     let event_loop = winit::event_loop::EventLoop::<UiMsg>::with_user_event().build()?;
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<Cmd>();
     let mut app = lt_ui::MultiWindowApp::new(
-        lt_ui::AppState::with_startup(initial_settings.clone(), flow),
+        lt_ui::AppState::new(initial_settings.clone()),
         &event_loop,
         Some(cmd_tx),
     )?;
     app.kick_ticks();
 
     let proxy = event_loop.create_proxy();
-    // 常驻日志桥接（缺口 #4）：广播 hub → LogLine 事件（日志窗数据源）
+    // 常驻日志桥接：广播 hub → LogLine 事件（日志窗数据源）
     logging::spawn_bridge(proxy.clone());
-    // 后台命令线程：下载编排 + 下载期日志转发（M2.5）
-    backend::spawn(cmd_rx, proxy.clone(), first_launch, initial_settings.clone(), missing);
+    // 后台命令线程：下载编排（识别页/面板触发）+ 下载期日志转发。
+    // 启动时快照缺失清单：向导流程已废除，此清单仅供"当前所选模型未缓存"
+    // 场景的识别页下载按钮消费（fresh install 一次命中）。
+    let missing = lt_models::paths::models_dir(initial_settings.models_dir.as_deref())
+        .map(|dir| {
+            lt_models::cache::missing_models(
+                &dir,
+                &initial_settings.asr_engine,
+                &initial_settings.funasr_model,
+                &initial_settings.whisper_model_size,
+            )
+        })
+        .unwrap_or_default();
+    backend::spawn(cmd_rx, proxy.clone(), false, initial_settings.clone(), missing);
 
-    let mut shell = shell::AppShell::new(
-        app,
-        proxy,
-        ready_now.then(|| initial_settings.clone()),
-    );
+    let mut shell = shell::AppShell::new(app, proxy, Some(initial_settings.clone()));
 
     let result = event_loop.run_app(&mut shell);
 

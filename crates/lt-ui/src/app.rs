@@ -1130,26 +1130,26 @@ impl ApplicationHandler<UiMsg> for MultiWindowApp {
                 }
             }
             WindowEvent::Moved(_) => {
-                if id == WinId::Overlay {
-                    // 拖动/移动结束防抖保存（原版 moveEvent → _schedule_pos_save）
-                    self.app_state.schedule_pos_save(self.overlay_geo());
+                match id {
+                    WinId::Overlay => {
+                        // 拖动/移动结束防抖保存（原版 moveEvent → _schedule_pos_save）
+                        self.app_state.schedule_pos_save(self.overlay_geo());
+                    }
+                    WinId::Subtitle => {
+                        // 字幕窗移动防抖保存（原版 mouseReleaseEvent → position_changed）
+                        self.app_state.schedule_subtitle_pos_save(self.subtitle_pos());
+                    }
+                    _ => {}
                 }
                 // 外部移动（DPI 上下文变化/挂起恢复）后 DXGI 表面可能失配白屏：
                 // 以当前尺寸强制重配置（幂等；尺寸未变时为廉价空转）
                 let sz = self.window(id).inner_size();
-                if let (Ok(w), Ok(h)) = (u32::try_from(sz.width), u32::try_from(sz.height)) {
-                    if w > 0 && h > 0 {
-                        if let (Ok(w), Ok(h)) = (w.try_into(), h.try_into()) {
-                            self.painter
-                                .on_window_resized(Self::viewport_of(id), w, h);
-                        }
-                        self.window(id).request_redraw();
+                if sz.width > 0 && sz.height > 0 {
+                    if let (Ok(w), Ok(h)) = (sz.width.try_into(), sz.height.try_into()) {
+                        self.painter.on_window_resized(Self::viewport_of(id), w, h);
                     }
+                    self.window(id).request_redraw();
                 }
-            }
-            WindowEvent::Moved(_) if id == WinId::Subtitle => {
-                // 字幕窗移动防抖保存（原版 mouseReleaseEvent → position_changed）
-                self.app_state.schedule_subtitle_pos_save(self.subtitle_pos());
             }
             WindowEvent::ScaleFactorChanged { .. } => {
                 // surface 重配置由 Painter 在下一帧处理；请求重绘即可
@@ -1244,11 +1244,6 @@ impl ApplicationHandler<UiMsg> for MultiWindowApp {
             .unwrap_or_else(|| Instant::now() + Duration::from_secs(3600));
         event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
     }
-}
-
-/// 尺寸是否非零（最小化时为 0，跳过表面重配置）
-fn size_nonzero(size: winit::dpi::PhysicalSize<u32>) -> bool {
-    size.width > 0 && size.height > 0
 }
 
 /// 窗口清屏色：透明窗口必须清成全透明，否则出现残留底色
