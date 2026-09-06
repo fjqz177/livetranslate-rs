@@ -109,15 +109,11 @@ pub fn overlay_ui(ui: &mut Ui, state: &mut AppState) {
 // ── DragHandle（原版 DragHandle） ──
 
 fn drag_handle(ui: &mut Ui, state: &mut AppState, compact: bool, opa_pct: u32) {
-    let hdr = &state.settings.style;
-    let header_fill = fade(
-        parse_color(&hdr.header_color, Color32::from_rgb(0x1a, 0x1a, 0x2e)),
-        hdr.header_opacity,
-        opa_pct,
-    );
+    // 原版 DragHandle 是 QWidget 子类且未设 WA_StyledBackground/paintEvent，
+    // 其 QSS 背景（含 apply_style 的 header_color）从未被渲染——头部区域即
+    // 容器黑玻璃贯穿。header_color/header_opacity 字段与样式页控件 1:1 保留，
+    // 仅绘制不消费（对齐原版实际行为，D-17）。
     egui::Frame::NONE
-        .fill(header_fill)
-        .corner_radius(CornerRadius::same(4))
         .inner_margin(egui::Margin::symmetric(8, 2))
         .show(ui, |ui| {
             row1(ui, state, compact, opa_pct);

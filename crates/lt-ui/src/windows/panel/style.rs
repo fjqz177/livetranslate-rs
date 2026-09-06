@@ -156,8 +156,6 @@ fn style_preview(ui: &mut Ui, state: &AppState, pal: &Palette) {
     let st = &state.settings.style;
     let bg = crate::style::parse_color(&st.bg_color, Color32::BLACK)
         .gamma_multiply(st.bg_opacity.clamp(0, 255) as f32 / 255.0);
-    let header = crate::style::parse_color(&st.header_color, Color32::from_rgb(0x1a, 0x1a, 0x2e))
-        .gamma_multiply(st.header_opacity.clamp(0, 255) as f32 / 255.0);
     egui::Frame::NONE
         .fill(bg)
         .corner_radius(egui::CornerRadius::same(st.border_radius.clamp(0, 30) as u8))
@@ -165,16 +163,7 @@ fn style_preview(ui: &mut Ui, state: &AppState, pal: &Palette) {
         .inner_margin(egui::Margin::same(8))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            let header_rect = egui::Rect::from_min_size(ui.cursor().left_top(), egui::vec2(ui.available_width(), 20.0));
-            ui.painter().rect_filled(header_rect, 4.0, header);
-            ui.painter().text(
-                egui::pos2(header_rect.left() + 8.0, header_rect.center().y),
-                egui::Align2::LEFT_CENTER,
-                "LiveTranslate",
-                egui::FontId::proportional(11.0),
-                crate::style::parse_color(&st.timestamp_color, Color32::GRAY),
-            );
-            ui.add_space(22.0);
+            // 头部色与悬浮窗一致不渲染（原版 QSS 对 QWidget 子类不生效，D-17）
             ui.label(
                 RichText::new(format!("{} / こんにちは", lt_i18n::t("subwin_original")))
                     .size(st.original_font_size.clamp(6, 24) as f32)
