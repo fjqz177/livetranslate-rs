@@ -2,7 +2,8 @@
 //!
 //! 运行 `cargo run -p lt-pipeline --example audio_check`：
 //! - 打印输出/输入设备列表与当前默认输出
-//! - 实采 5s：静音期 chunk 稀疏（loopback 无事件）、有声期 chunk ≈31/s
+//! - 实采 5s：轮询采集下静音期仍持续产出（chunk ≈31/s，静音块 RMS≈0）、
+//!   有声期 RMS 明显非零
 //! - 如听到本机在放音，RMS 应明显非零
 
 use lt_pipeline::audio::{wasapi_win::WasapiBackend, BoundedDropQueue, AudioBackend, TARGET_RATE};
