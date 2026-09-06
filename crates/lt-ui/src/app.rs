@@ -31,6 +31,8 @@ struct HostedWindow {
     id: WinId,
     window: Arc<Window>,
     state: egui_winit::State,
+    /// 面板首次显示前需定位（主屏偏上居中），定位后置位
+    needs_position: bool,
 }
 
 pub struct MultiWindowApp {
@@ -227,7 +229,12 @@ impl MultiWindowApp {
             None,
             None,
         );
-        self.windows.push(HostedWindow { id, window, state });
+        self.windows.push(HostedWindow {
+            id,
+            window,
+            state,
+            needs_position: id == WinId::Panel,
+        });
         if visible {
             self.window(id).request_redraw();
         }
@@ -394,6 +401,24 @@ impl MultiWindowApp {
     fn set_visible(&mut self, id: WinId, vis: bool) {
         if let Some(hw) = self.find_mut(id) {
             if vis {
+                // 面板首次显示时主屏偏上居中（Windows 对话框惯例；避免固定
+                // 左上角与用户日常悬浮窗位置重叠被遮挡）。窗口显示后定位，
+                // 规避创建期（隐藏态）set_outer_position 被 Windows 初始化
+                // 级联位置覆盖的问题。
+                if hw.needs_position {
+                    hw.needs_position = false;
+                    if let Some(mon) = hw
+                        .window
+                        .primary_monitor()
+                        .or_else(|| hw.window.current_monitor())
+                    {
+                        let (mp, ms) = (mon.position(), mon.size());
+                        let inner = hw.window.inner_size();
+                        let x = mp.x + ((ms.width as i32 - inner.width as i32) / 2).max(0);
+                        let y = mp.y + ((ms.height as i32 - inner.height as i32) / 4).max(0);
+                        hw.window.set_outer_position(winit::dpi::PhysicalPosition::new(x, y));
+                    }
+                }
                 hw.window.set_visible(true);
                 hw.window.focus_window();
                 hw.window.request_redraw();
