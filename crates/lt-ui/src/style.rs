@@ -195,6 +195,53 @@ pub fn stabilize_widget_strokes(v: &mut egui::Visuals) {
     v.widgets.active.corner_radius = radius;
 }
 
+// ── 滚动条样式（WP-C） ──
+//
+// egui 0.36 默认 floating 细条（2px 静止 + hover 展开 + fade 动画）抓取困难；
+// floating_allocated_width=6 配 VisibleWhenNeeded 时滚动条出现/消失会让内容区
+// 6px 跳变 reflow（"卡一下"）。两套定制均保证：条可见期间占位恒定、静止即可
+// 见可抓，hover 只加深不消失。
+
+/// 深色窗（悬浮窗对齐原版 QSS：6px 白色半透明圆角条 + 透明槽；
+/// 日志/向导/基准窗同款）。foreground_color=true → 柄色取 fg_stroke.color。
+pub fn dark_scroll_style() -> egui::style::ScrollStyle {
+    let mut s = egui::style::ScrollStyle::floating();
+    s.bar_width = 8.0;
+    s.floating_width = 6.0;
+    s.floating_allocated_width = 6.0;
+    s.handle_min_length = 16.0;
+    s.foreground_color = true;
+    // 静止即 35% 白柄（≈原版 rgba(255,255,255,60) 观感），交互加深；槽恒透明
+    s.dormant_handle_opacity = 0.35;
+    s.active_handle_opacity = 0.55;
+    s.interact_handle_opacity = 0.9;
+    s.dormant_background_opacity = 0.0;
+    s.active_background_opacity = 0.0;
+    s.interact_background_opacity = 0.0;
+    s
+}
+
+/// 面板滚动条（浅色现代细条：静止 5px 浅灰柄无槽，hover 展开、柄转淡蓝，
+/// 完全浮动不占布局——`floating_allocated_width=0` 使内容宽度与滚动条
+/// 出现与否彻底解耦，零 reflow）。foreground_color=false → 柄色取
+/// widgets bg_fill（inactive #E1E1E1 / hovered #E5F1FB）。
+pub fn panel_scroll_style() -> egui::style::ScrollStyle {
+    let mut s = egui::style::ScrollStyle::floating();
+    s.bar_width = 10.0;
+    s.floating_width = 5.0;
+    s.floating_allocated_width = 0.0;
+    s.handle_min_length = 20.0;
+    s.bar_inner_margin = 2.0;
+    s.foreground_color = false;
+    s.dormant_handle_opacity = 1.0;
+    s.active_handle_opacity = 1.0;
+    s.interact_handle_opacity = 0.8;
+    s.dormant_background_opacity = 0.0;
+    s.active_background_opacity = 0.4;
+    s.interact_background_opacity = 0.5;
+    s
+}
+
 // ── 原版字面强调色（不随预设变化） ──
 
 /// 源语言标签（原版 #6cf）

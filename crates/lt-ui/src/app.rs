@@ -237,18 +237,19 @@ impl MultiWindowApp {
         // 按窗口注入 visuals（egui pass 串行执行，帧前 set 对本 pass 生效）：
         // 控制面板 = Windows 原生浅色（原版 PyQt6 默认控件）；其余窗口深色。
         // 三态描边/字重统一（消 hover 文字微移，WP-B）对各主题幂等。
-        ctx.set_visuals(match id {
-            WinId::Panel => {
-                let mut v = crate::windows::panel::panel_visuals();
-                crate::style::stabilize_widget_strokes(&mut v);
-                v
-            }
-            _ => {
-                let mut v = egui::Visuals::dark();
-                crate::style::stabilize_widget_strokes(&mut v);
-                v
-            }
-        });
+        // 滚动条按窗型定制（WP-C）：面板浅色细条零占位零 reflow，深色窗
+        // 白色半透明细条（悬浮窗对齐原版 QSS 6px 白条）。
+        let mut visuals = match id {
+            WinId::Panel => crate::windows::panel::panel_visuals(),
+            _ => egui::Visuals::dark(),
+        };
+        crate::style::stabilize_widget_strokes(&mut visuals);
+        ctx.set_visuals(visuals);
+        let scroll = match id {
+            WinId::Panel => crate::style::panel_scroll_style(),
+            _ => crate::style::dark_scroll_style(),
+        };
+        ctx.all_styles_mut(move |s| s.spacing.scroll = scroll);
 
         // 取输入（借 windows），随后 UI 闭包只借 app_state，避免借用冲突
         let input = {

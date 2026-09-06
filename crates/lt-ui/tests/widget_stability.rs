@@ -60,7 +60,7 @@ fn combo_box_text_does_not_shift_on_hover() {
             .width(120.0)
             .selected_text("hunyuan-mt-chimera-7b")
             .show_ui(ui, |ui| {
-                ui.selectable_label(false, "hunyuan-mt-chimera-7b");
+                let _ = ui.selectable_label(false, "hunyuan-mt-chimera-7b");
             });
     };
     let t0 = text_bbox(&ctx, egui::pos2(10.0, 10.0), &draw);
