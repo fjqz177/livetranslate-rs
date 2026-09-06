@@ -301,6 +301,46 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
             mark_settings_dirty(state);
         }
         hint_line(ui, pal, &lt_i18n::t("sensevoice_padding_tooltip"));
+
+        // ── 下载源（原版 _hub_combo：ms/hf 二选一，_auto_save 落盘）──
+        ui.add_space(4.0);
+        let hubs = [lt_i18n::t("hub_modelscope"), lt_i18n::t("hub_huggingface")];
+        let hub_idx = if state.settings.hub == "hf" { 1 } else { 0 };
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(format!("{} ", lt_i18n::t("label_hub"))).color(pal.text));
+            egui::ComboBox::from_id_salt("panel_hub")
+                .selected_text(hubs[hub_idx].clone())
+                .width(240.0)
+                .show_ui(ui, |ui| {
+                    for (i, label) in hubs.iter().enumerate() {
+                        if ui.selectable_label(hub_idx == i, label.clone()).clicked() && hub_idx != i {
+                            state.settings.hub = if i == 1 { "hf".into() } else { "ms".into() };
+                            mark_settings_dirty(state);
+                        }
+                    }
+                });
+        });
+
+        // ── 界面语言（原版 _ui_lang_combo：["English","中文"]，index 0=en 1=zh；
+        //     写 settings.ui_lang 防抖落盘，重启生效）──
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(format!("{} ", lt_i18n::t("label_ui_lang"))).color(pal.text));
+            let zh = lt_i18n::t("lang_zh");
+            let langs = ["English", zh.as_str()]; // 与原版 addItem(["English","中文"]) 顺序一致
+            let lang_idx = if state.settings.ui_lang == "zh" { 1 } else { 0 };
+            egui::ComboBox::from_id_salt("panel_ui_lang_vad")
+                .selected_text(langs[lang_idx].to_string())
+                .width(240.0)
+                .show_ui(ui, |ui| {
+                    for (i, label) in langs.iter().enumerate() {
+                        if ui.selectable_label(lang_idx == i, (*label).to_string()).clicked() && lang_idx != i {
+                            state.settings.ui_lang = if i == 1 { "zh".into() } else { "en".into() };
+                            mark_settings_dirty(state);
+                        }
+                    }
+                });
+        });
+        hint_line(ui, pal, &lt_i18n::t("ui_lang_restart_hint"));
     });
 
     // ── 设备组（原版 asr_group 的 audio/mic 行 + 刷新按钮；Rust 版独立成卡）──

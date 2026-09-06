@@ -22,8 +22,8 @@ pub const BENCH_SRC_LANGS: [&str; 6] = ["ja", "en", "zh", "ko", "fr", "de"];
 pub const BENCH_TGT_LANGS: [&str; 8] = ["zh", "en", "ja", "ko", "fr", "de", "es", "ru"];
 
 /// 输出区底色/文字色（原版 QTextEdit 样式 background #1e1e2e / color #cdd6f4）
-const LOG_BG: Color32 = Color32::from_rgb(0x1e, 0x1e, 0x2e);
-const LOG_FG: Color32 = Color32::from_rgb(0xcd, 0xd6, 0xf4);
+pub const LOG_BG: Color32 = Color32::from_rgb(0x1e, 0x1e, 0x2e);
+pub const LOG_FG: Color32 = Color32::from_rgb(0xcd, 0xd6, 0xf4);
 
 // ── 纯逻辑（单测覆盖） ──
 
@@ -152,6 +152,11 @@ fn lang_combo(ui: &mut Ui, id: &str, index: &mut usize, langs: &[&str]) {
 
 /// 开始基准（原版 _run_benchmark）：清空输出 → 后台线程测试，
 /// on_line 经 event_tx 回流 LogLine{target:"benchmark"}。
+/// Tab 版/工具窗版共用入口（原版 Tab 版跑全部模型，勾选表已对位）
+pub fn start_benchmark_public(state: &mut AppState) {
+    start_benchmark(state);
+}
+
 fn start_benchmark(state: &mut AppState) {
     if state.bench_running {
         return;

@@ -1,108 +1,84 @@
-//! 控制面板（M4.3 框架 + M4.4 全部七页；对照原版 ui/panel/）：
+//! 控制面板（对照原版 control_panel.py 的实测行为，2026-09-06 走查对齐）：
 //!
-//! - 框架（panel.py）：左侧 200px 导航列表（品牌行 + 7 页项，选中高亮）+
-//!   右侧页栈（每页 = 标题 + 一行提示 + 可滚动内容，高内容页滚动不撑破窗口，
-//!   等价原版 page_header / make_scroll_page）；内容列居中限宽（§3.5.4）。
-//! - 分组卡片（_chrome.py 深色主题）：圆角描边组框 + 组标题，双主题调色板
-//!   取自原版 DARK_QSS/LIGHT_QSS 字面色。
+//! - 框架：顶部 QTabWidget 式 Tab 条（7 Tab：VAD/ASR、翻译、样式、字幕、
+//!   基准测试、缓存、更新日志）+ 白色内容页 + 按需滚动（make_scroll_area）。
+//! - 视觉：Windows 原生浅色（原版未做 QSS 换肤的 PyQt6 默认浅色控件），
+//!   调色板 [`Palette::NATIVE`]；整体 visuals 由宿主在 Panel 帧前经
+//!   [`panel_visuals`] 注入（悬浮窗等深色窗口不受影响——各窗口独立 egui pass）。
+//! - 分组：QGroupBox 式直角细边框组框 + 嵌入标题（[`group_card`]）。
 //! - 设置流（panel.py `_auto_save`）：控件直接改 `AppState.settings` 对应字段，
 //!   300ms 防抖后经 [`lt_proto::Cmd::ApplySettings`] 整体重放（热应用 + 落盘，
 //!   原版 settings_changed 语义）；引擎/模型/语言类即时命令不走防抖。
 //!
-//! 页实现：常规 [`general`] / 翻译 [`translation`] / 识别 [`vad`] /
-//! 字幕 [`subtitle_page`] / 样式（悬浮窗预设，[`style`]）/
-//! 数据与存储 [`data`] / 诊断 [`diagnostics`] / 关于 [`about`]。
+//! 页实现：VAD/ASR [`vad`] / 翻译 [`translation`] / 样式 [`style`] /
+//! 字幕 [`subtitle_page`] / 基准测试 [`benchmark_tab`] / 缓存 [`data`] /
+//! 更新日志 [`changelog_tab`]。
 
-mod autostart;
-pub mod about;
+pub mod benchmark_tab;
+pub mod changelog_tab;
 pub mod data;
-pub mod diagnostics;
-pub mod general;
 pub mod style;
 pub mod subtitle_page;
 pub mod translation;
 pub mod vad;
 
-use crate::state::{AppState, PanelPage, ThemeMode};
+use crate::state::{AppState, PanelPage};
 use egui::{Color32, Frame, RichText, ScrollArea, Stroke, Ui};
-/// 组框描边/内边距等常量（原版 QGroupBox border-radius 10 / padding 12 10 10 10）
 use lt_proto::Settings;
 
-/// 组框圆角（原版 QGroupBox border-radius: 10px）
-const CARD_RADIUS: f32 = 10.0;
-/// 内容列最大宽（原版 _stack.setMaximumWidth(960)，§3.5.4 居中限宽）
-const CONTENT_MAX_W: f32 = 960.0;
-/// 导航项高度（原版 QListWidgetItem sizeHint 38px）
-const NAV_ITEM_H: f32 = 34.0;
+/// Tab 条页签高度（原版 QTabBar 页签视觉高度）
+const TAB_H: f32 = 26.0;
 
-/// 主题调色板（原版 _chrome.py DARK_QSS / LIGHT_QSS 的字面色子集）
+/// Windows 原生浅色调色板（PyQt6 Windows 默认控件字面色，2026-09-06 实拍取色）
 #[derive(Debug, Clone, Copy)]
 pub struct Palette {
-    /// 窗口底（ControlPanel background）
+    /// 窗口底 / Tab 条区（#F0F0F0）
     pub window_bg: Color32,
-    /// 卡片底（QGroupBox background）
+    /// Tab 页内容区底（#FFFFFF）
+    pub page_bg: Color32,
+    /// 组框底（与页底同色，QGroupBox 默认透出页底）
     pub card: Color32,
-    /// 卡片描边（QGroupBox border）
+    /// 组框/页签边框（QGroupBox 默认灰线）
     pub card_stroke: Color32,
-    /// 主文本（QLabel color）
+    /// 主文本（近黑）
     pub text: Color32,
-    /// 标题文本（pageTitle color）
+    /// 标题文本
     pub title: Color32,
-    /// 弱化文本（pageHint/hintLabel color）
+    /// 弱化文本（禁用/提示）
     pub weak: Color32,
-    /// 导航悬停底（panelNav::item:hover background）
+    /// 悬停底（Windows hover #E5F1FB）
     pub hover: Color32,
-    /// 导航选中底（panelNav::item:selected background）
+    /// 选中底（下拉高亮 #CCE8FF）
     pub selected: Color32,
-    /// 选中/强调（Highlight #4C8DFF）
+    /// 强调（Windows 蓝 #0078D4：滑条/勾选/聚焦边框）
     pub accent: Color32,
-    /// 状态色（QLabel[status=ok/warn/error]）
+    /// 状态色
     pub ok: Color32,
     pub warn: Color32,
     pub err: Color32,
 }
 
 impl Palette {
-    /// 按 egui 当前主题取调色板（主题由常规页外观组经 ctx.set_theme 切换，
-    /// 与原版 apply_app_theme 应用级生效一致）
-    pub fn resolve(ui: &Ui) -> Self {
-        if ui.ctx().theme() == egui::Theme::Light {
-            Palette::LIGHT
-        } else {
-            Palette::DARK
-        }
+    /// 面板恒浅色（原版无主题切换，QTabWidget 原生浅色）
+    pub fn resolve(_ui: &Ui) -> Self {
+        Palette::NATIVE
     }
 
-    /// 原版 DARK_QSS 字面色
-    pub const DARK: Palette = Palette {
-        window_bg: Color32::from_rgb(0x0E, 0x11, 0x16),
-        card: Color32::from_rgb(0x10, 0x14, 0x1B),
-        card_stroke: Color32::from_rgb(0x23, 0x2A, 0x35),
-        text: Color32::from_rgb(0xE6, 0xED, 0xF3),
-        title: Color32::from_rgb(0xF2, 0xF4, 0xF7),
-        weak: Color32::from_rgb(0x9A, 0xA3, 0xB2),
-        hover: Color32::from_rgb(0x16, 0x1B, 0x22),
-        selected: Color32::from_rgb(0x1B, 0x26, 0x35),
-        accent: Color32::from_rgb(0x4C, 0x8D, 0xFF),
-        ok: Color32::from_rgb(0x3F, 0xB9, 0x50),
-        warn: Color32::from_rgb(0xDB, 0xAB, 0x09),
-        err: Color32::from_rgb(0xF8, 0x51, 0x49),
-    };
-
-    /// 原版 LIGHT_QSS 字面色
-    pub const LIGHT: Palette = Palette {
-        window_bg: Color32::from_rgb(0xF6, 0xF8, 0xFA),
+    /// Windows 原生浅色（原版截图实拍取色）
+    pub const NATIVE: Palette = Palette {
+        window_bg: Color32::from_rgb(0xF0, 0xF0, 0xF0),
+        page_bg: Color32::from_rgb(0xFF, 0xFF, 0xFF),
         card: Color32::from_rgb(0xFF, 0xFF, 0xFF),
-        card_stroke: Color32::from_rgb(0xD1, 0xD9, 0xE0),
-        text: Color32::from_rgb(0x1F, 0x23, 0x28),
-        title: Color32::from_rgb(0x1F, 0x23, 0x28),
-        weak: Color32::from_rgb(0x57, 0x60, 0x6A),
-        hover: Color32::from_rgb(0xEB, 0xEF, 0xF3),
-        selected: Color32::from_rgb(0xD9, 0xE6, 0xFF),
-        accent: Color32::from_rgb(0x09, 0x69, 0xDA),
-        ok: Color32::from_rgb(0x1A, 0x7F, 0x37),
+        card_stroke: Color32::from_rgb(0xC9, 0xC9, 0xC9),
+        text: Color32::from_rgb(0x1A, 0x1A, 0x1A),
+        title: Color32::from_rgb(0x1A, 0x1A, 0x1A),
+        weak: Color32::from_rgb(0x6D, 0x6D, 0x6D),
+        hover: Color32::from_rgb(0xE5, 0xF1, 0xFB),
+        selected: Color32::from_rgb(0xCC, 0xE8, 0xFF),
+        accent: Color32::from_rgb(0x00, 0x78, 0xD4),
+        ok: Color32::from_rgb(0x10, 0x7C, 0x10),
         warn: Color32::from_rgb(0x9A, 0x67, 0x00),
-        err: Color32::from_rgb(0xCF, 0x22, 0x2E),
+        err: Color32::from_rgb(0xC4, 0x1E, 0x3A),
     };
 }
 
@@ -128,8 +104,7 @@ pub fn active_model_config(s: &Settings) -> Option<lt_proto::ModelConfig> {
     s.models.get(s.active_model).or_else(|| s.models.first()).cloned()
 }
 
-// ── 打开目录/链接（原版 TabBase.open_path / QDesktopServices.openUrl；
-//    工程内无既有打开工具 → std::process::Command 现成模式）──
+// ── 打开目录/链接（原版 TabBase.open_path / QDesktopServices.openUrl）──
 
 /// 用系统文件管理器打开目录（原版 open_path：Windows explorer / 其他 xdg-open）。
 /// 失败仅记日志（按钮路径已 mkdir 兜底，失败面极窄）。
@@ -158,140 +133,111 @@ pub fn open_url(url: &str) {
 
 /// 面板 UI 总入口（windows::dispatch 按 WinId::Panel 分派到这里）
 pub fn panel_ui(ui: &mut Ui, state: &mut AppState) {
-    // 主题收敛：深色为默认（原版 DEFAULT_THEME = dark，应用级生效）。
-    // 主题存 PanelUiState 内存态（settings 契约缺 theme 键，lt-proto 不动）。
-    let want = match state.panel.theme {
-        ThemeMode::Dark => egui::ThemePreference::Dark,
-        ThemeMode::Light => egui::ThemePreference::Light,
-    };
-    let active = match ui.ctx().theme() {
-        egui::Theme::Dark => egui::ThemePreference::Dark,
-        egui::Theme::Light => egui::ThemePreference::Light,
-    };
-    if active != want {
-        ui.ctx().set_theme(want);
-    }
     let pal = Palette::resolve(ui);
 
-    // 全窗底色（等价 ControlPanel WA_StyledBackground + QSS background）
+    // 全窗底色（QTabWidget 外围 #F0F0F0）
+    let full = ui.available_rect_before_wrap();
+    ui.painter().rect_filled(full, 0.0, pal.window_bg);
+
+    // Tab 条（原版 QTabWidget North 页签行）
+    ui.add_space(4.0);
+    tab_strip(ui, state, &pal);
+
+    // Tab 页内容区：白底 + 灰边框（pane），内容按需滚动（make_scroll_area）
+    let pane = ui.available_rect_before_wrap();
+    ui.painter().rect_filled(pane, 0.0, pal.page_bg);
     ui.painter()
-        .rect_filled(ui.available_rect_before_wrap(), 0.0, pal.window_bg);
+        .rect_stroke(pane, 0.0, Stroke::new(1.0, pal.card_stroke), egui::StrokeKind::Inside);
 
-    // ── 左侧导航（原版 nav_column：brand + caption + 200px QListWidget）──
-    egui::Panel::left("panel_nav")
-        .resizable(false)
-        .exact_size(200.0)
-        .frame(Frame::NONE.fill(pal.window_bg))
+    let page = state.panel.page;
+    ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded)
         .show(ui, |ui| {
-            ui.add_space(14.0);
-            ui.label(RichText::new("LiveTranslate").strong().size(15.0).color(pal.title));
-            ui.label(RichText::new(lt_i18n::t("settings")).size(11.0).color(pal.weak));
+            Frame::NONE
+                .inner_margin(egui::Margin::same(12))
+                .show(ui, |ui| match page {
+                    PanelPage::VadAsr => vad::page(ui, state, &pal),
+                    PanelPage::Translation => translation::page(ui, state, &pal),
+                    PanelPage::Style => style::page(ui, state, &pal),
+                    PanelPage::Subtitle => subtitle_page::page(ui, state, &pal),
+                    PanelPage::Benchmark => benchmark_tab::page(ui, state, &pal),
+                    PanelPage::Cache => data::page(ui, state, &pal),
+                    PanelPage::Changelog => changelog_tab::page(ui, state, &pal),
+                });
             ui.add_space(12.0);
-            // 导航项：先分配整行矩形，再绘制底色与文本（原版 QListWidget item
-            // ::selected #1B2635 / :hover #161B22，圆角 6、左右缩进 12）
-            for page in PanelPage::ALL {
-                let selected = state.panel.page == page;
-                let (rect, resp) =
-                    ui.allocate_exact_size(egui::vec2(ui.available_width(), NAV_ITEM_H), egui::Sense::click());
-                let fill = if selected {
-                    pal.selected
-                } else if resp.hovered() {
-                    pal.hover
-                } else {
-                    pal.window_bg
-                };
-                let item_rect = rect.shrink2(egui::vec2(12.0, 2.0));
-                ui.painter().rect_filled(item_rect, 6.0, fill);
-                ui.painter().text(
-                    egui::pos2(item_rect.left() + 8.0, item_rect.center().y),
-                    egui::Align2::LEFT_CENTER,
-                    lt_i18n::t(page.nav_key()),
-                    egui::FontId::proportional(13.0),
-                    if selected { pal.title } else { pal.weak },
-                );
-                if resp.clicked() {
-                    // 原版 _on_nav_changed：切栈；数据页缓存扫描在页内惰性触发
-                    state.panel.page = page;
-                }
-            }
         });
+}
 
-    // ── 右侧内容区（原版 _stack：页头 + 滚动内容，§3.5）──
-    egui::CentralPanel::default()
-        .frame(Frame::NONE.fill(pal.window_bg).inner_margin(egui::Margin::same(16)))
-        .show(ui, |ui| {
-            let page = state.panel.page;
-            // 识别页页头右侧带"性能基准"按钮（原版 _build_recognition_page 的 header_row）
-            if page == PanelPage::Recognition {
-                ui.horizontal(|ui| {
-                    page_header(ui, &pal, page);
-                    if ui
-                        .add(
-                            egui::Button::new(RichText::new(lt_i18n::t("btn_open_benchmark")).size(12.5))
-                                .corner_radius(6.0),
-                        )
-                        .clicked()
-                    {
-                        // 原版 BenchmarkDialog.exec()：打开独立工具窗（app.rs 显示）
-                        state.enqueue_action(crate::state::WinId::Panel, crate::state::WinAction::ShowBenchmark);
-                    }
-                });
+/// 顶部 Tab 条（原版 QTabBar：选中=白底带边框且与下方内容区相连；
+/// 未选中=#E9E9E9 灰底；hover 淡蓝）
+fn tab_strip(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
+    ui.horizontal(|ui| {
+        ui.add_space(4.0);
+        for page in PanelPage::ALL {
+            let selected = state.panel.page == page;
+            let label = lt_i18n::t(page.tab_key());
+            let font = egui::FontId::proportional(12.5);
+            // 预测文本宽定页签宽（Qt 页签 = 文字 + 左右 padding）
+            let probe = ui.painter().layout_no_wrap(label.clone(), font.clone(), Color32::WHITE);
+            let w = probe.rect.width() + 20.0;
+            let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, TAB_H), egui::Sense::click());
+            let fill = if selected {
+                pal.page_bg
+            } else if resp.hovered() {
+                pal.hover
             } else {
-                page_header(ui, &pal, page);
+                Color32::from_rgb(0xE9, 0xE9, 0xE9)
+            };
+            ui.painter().rect_filled(rect, 3.0, fill);
+            if selected {
+                // 选中页签三边描边（底边与内容区相连不描）
+                ui.painter().rect_stroke(
+                    rect,
+                    3.0,
+                    Stroke::new(1.0, pal.card_stroke),
+                    egui::StrokeKind::Outside,
+                );
             }
-            ui.add_space(4.0);
-            // 高内容页滚动（原版 make_scroll_page：内容滚动、页面 sizeHint 有界）
-            ScrollArea::vertical()
-                .auto_shrink([false, false])
-                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded)
-                .show(ui, |ui| {
-                    // 内容列居中限宽（原版 content_box addStretch×1 + maxWidth 960）
-                    let w = ui.available_width().min(CONTENT_MAX_W);
-                    let x0 = ui.cursor().left() + ((ui.available_width() - w) * 0.5).max(0.0);
-                    let rect =
-                        egui::Rect::from_min_size(egui::pos2(x0, ui.cursor().top()), egui::vec2(w, ui.available_height()));
-                    let mut col = ui.new_child(egui::UiBuilder::new().max_rect(rect));
-                    match page {
-                        PanelPage::General => general::page(&mut col, state, &pal),
-                        PanelPage::Translation => translation::page(&mut col, state, &pal),
-                        PanelPage::Recognition => vad::page(&mut col, state, &pal),
-                        PanelPage::Subtitles => subtitle_page::page(&mut col, state, &pal),
-                        PanelPage::Data => data::page(&mut col, state, &pal),
-                        PanelPage::Diagnostics => diagnostics::page(&mut col, state, &pal),
-                        PanelPage::About => about::page(&mut col, state, &pal),
-                    }
-                    let used = col.min_rect();
-                    ui.advance_cursor_after_rect(used);
-                });
-        });
+            ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, label, font, pal.text);
+            if resp.clicked() {
+                state.panel.page = page;
+            }
+        }
+    });
 }
 
-/// 页头：标题 + 一行提示（原版 _tab_base.page_header）
-fn page_header(ui: &mut Ui, pal: &Palette, page: PanelPage) {
-    ui.add_space(2.0);
-    ui.label(RichText::new(lt_i18n::t(page.nav_key())).strong().size(18.0).color(pal.title));
-    ui.label(RichText::new(lt_i18n::t(page.hint_key())).size(12.0).color(pal.weak));
-    ui.add_space(4.0);
-}
-
-/// 分组卡片：组标题 + 圆角描边组框（原版 QGroupBox + DARK/LIGHT_QSS 字面色）
+/// 分组框：QGroupBox 式直角细边框，标题嵌在框顶线上（白底遮线成缺口）
 pub fn group_card(ui: &mut Ui, pal: &Palette, title: &str, add: impl FnOnce(&mut Ui)) {
-    ui.add_space(8.0);
-    ui.label(RichText::new(title).strong().size(12.5).color(pal.title));
-    ui.add_space(4.0);
-    Frame::NONE
-        .fill(pal.card)
+    ui.add_space(12.0);
+    let title_font = egui::FontId::proportional(12.5);
+    let out = Frame::NONE
         .stroke(Stroke::new(1.0, pal.card_stroke))
-        .corner_radius(egui::CornerRadius::same(CARD_RADIUS as u8))
-        .inner_margin(egui::Margin::same(12))
+        .inner_margin(egui::Margin::same(10))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             add(ui);
         });
-    ui.add_space(4.0);
+    // 标题盖在框顶线上（底色=页底遮断线，等价 QGroupBox 标题缺口）
+    let probe =
+        ui.painter().layout_no_wrap(format!(" {title} "), title_font.clone(), Color32::WHITE);
+    let tw = probe.rect.width() + 6.0;
+    let tr = egui::Rect::from_min_size(
+        egui::pos2(out.response.rect.left() + 10.0, out.response.rect.top() - 8.0),
+        egui::vec2(tw, 16.0),
+    );
+    ui.painter().rect_filled(tr, 0.0, pal.card);
+    ui.painter().text(
+        egui::pos2(tr.left() + 3.0, tr.center().y),
+        egui::Align2::LEFT_CENTER,
+        title,
+        title_font,
+        pal.title,
+    );
+    ui.add_space(2.0);
 }
 
-/// 表单行：标签 + 控件（原版 QGridLayout：col0 标签、col1 控件 ≥180px）
+/// 表单行：标签 + 控件（原版 QGridLayout：col0 标签、col1 控件右列统一宽度）
 pub fn form_row(ui: &mut Ui, label: &str, add_control: impl FnOnce(&mut Ui)) {
     ui.horizontal(|ui| {
         let label_w = 130.0_f32.min(ui.available_width() * 0.4);
@@ -311,7 +257,7 @@ pub fn hint_line(ui: &mut Ui, pal: &Palette, text: &str) {
     ui.label(RichText::new(text).size(11.5).color(pal.weak));
 }
 
-/// 颜色字段行（原版 _ColorButton：色块预览 + "#rrggbb" 文本输入；rfd 无颜色
+/// 颜色字段行（原版 QColor 色块 + "#rrggbb" 文本输入；rfd 无颜色
 /// 对话框 → 文本编辑承载）。非法值：色块灰底红框提示，字符串原样保留
 /// （契约自由格式，overlay 侧 parse_color 有回退）。返回是否发生变更。
 pub fn color_field(ui: &mut Ui, id: &str, value: &mut String) -> bool {
@@ -322,14 +268,14 @@ pub fn color_field(ui: &mut Ui, id: &str, value: &mut String) -> bool {
                 // from_hex 对 8 位 hex 也接受；normalize 已截到 6 位
                 Some(hex) => {
                     if let Ok(c) = egui::Color32::from_hex(&hex) {
-                        ui.painter().rect_filled(rect, 3.0, c);
+                        ui.painter().rect_filled(rect, 0.0, c);
                     }
                 }
                 None => {
-                    ui.painter().rect_filled(rect, 3.0, egui::Color32::GRAY);
+                    ui.painter().rect_filled(rect, 0.0, egui::Color32::GRAY);
                     ui.painter().rect_stroke(
                         rect,
-                        3.0,
+                        0.0,
                         Stroke::new(1.5, egui::Color32::RED),
                         egui::StrokeKind::Inside,
                     );
@@ -358,30 +304,58 @@ pub fn import_settings_json(text: &str) -> Result<Settings, String> {
     Ok(Settings::from_value_compatible(v))
 }
 
+/// Panel 窗专用 visuals：Windows 原生浅色控件（宿主在该窗口帧前注入，
+/// 与悬浮窗深色互不影响——两窗各自独立 egui pass）。
+pub fn panel_visuals() -> egui::Visuals {
+    let mut v = egui::Visuals::light();
+    v.panel_fill = Palette::NATIVE.window_bg;
+    v.window_fill = Palette::NATIVE.window_bg;
+    v.extreme_bg_color = Palette::NATIVE.page_bg; // 输入框/文本区底
+    v.faint_bg_color = Color32::from_rgb(0xF7, 0xF7, 0xF7);
+    v.selection.bg_fill = Palette::NATIVE.selected;
+    v.selection.stroke = Stroke::new(1.0, Palette::NATIVE.accent);
+
+    // 普通控件（按钮）：#E1E1E1 底 + #ADADAD 边框（Windows 按钮）
+    v.widgets.inactive.weak_bg_fill = Color32::from_rgb(0xE1, 0xE1, 0xE1);
+    v.widgets.inactive.bg_fill = Color32::from_rgb(0xE1, 0xE1, 0xE1);
+    v.widgets.inactive.fg_stroke = Stroke::new(1.0, Palette::NATIVE.text);
+    v.widgets.inactive.bg_stroke = Stroke::new(1.0, Color32::from_rgb(0xAD, 0xAD, 0xAD));
+    v.widgets.inactive.corner_radius = egui::CornerRadius::same(2);
+
+    // 悬停：#E5F1FB 底 + Windows 蓝边框
+    v.widgets.hovered.weak_bg_fill = Palette::NATIVE.hover;
+    v.widgets.hovered.bg_fill = Palette::NATIVE.hover;
+    v.widgets.hovered.fg_stroke = Stroke::new(1.0, Palette::NATIVE.text);
+    v.widgets.hovered.bg_stroke = Stroke::new(1.0, Palette::NATIVE.accent);
+    v.widgets.hovered.corner_radius = egui::CornerRadius::same(2);
+
+    // 按下：#CCE4F7 底 + 深蓝边框
+    v.widgets.active.weak_bg_fill = Color32::from_rgb(0xCC, 0xE4, 0xF7);
+    v.widgets.active.bg_fill = Color32::from_rgb(0xCC, 0xE4, 0xF7);
+    v.widgets.active.fg_stroke = Stroke::new(1.0, Palette::NATIVE.text);
+    v.widgets.active.bg_stroke = Stroke::new(1.0, Color32::from_rgb(0x00, 0x54, 0x99));
+    v.widgets.active.corner_radius = egui::CornerRadius::same(2);
+
+    // 非交互（标签/文本）
+    v.widgets.noninteractive.weak_bg_fill = Color32::TRANSPARENT;
+    v.widgets.noninteractive.bg_fill = Color32::TRANSPARENT;
+    v.widgets.noninteractive.fg_stroke = Stroke::new(1.0, Palette::NATIVE.text);
+    v.widgets
+        .noninteractive
+        .bg_stroke = Stroke::new(1.0, Palette::NATIVE.card_stroke);
+
+    v.window_stroke = Stroke::new(1.0, Palette::NATIVE.card_stroke);
+    v.window_corner_radius = egui::CornerRadius::same(0);
+    v.menu_corner_radius = egui::CornerRadius::same(0);
+    v.text_cursor.stroke = Stroke::new(2.0, Palette::NATIVE.accent);
+    v
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// 常规页界面语言三选项（原版 general_tab：system/zh/en + data 载荷）
-    #[test]
-    fn ui_lang_table_and_index_mapping() {
-        assert_eq!(
-            general::UI_LANGS.map(|(code, _)| code),
-            ["system", "zh", "en"],
-            "原版 addItem 顺序：跟随系统/中文/英文"
-        );
-        // 非法/缺省值回退"跟随系统"（原版 stored not in (...) → "system"）
-        assert_eq!(general::ui_lang_index_for("zh"), 1);
-        assert_eq!(general::ui_lang_index_for("en"), 2);
-        assert_eq!(general::ui_lang_index_for("system"), 0);
-        assert_eq!(general::ui_lang_index_for("bogus"), 0);
-        // 索引 → 设置值往返
-        for (code, _) in general::UI_LANGS {
-            assert_eq!(general::UI_LANGS[general::ui_lang_index_for(code)].0, code);
-        }
-    }
-
-    /// 导出 → 导入往返一致；legacy 键经 from_value_compatible 迁移
+    /// 设置导出 → 导入往返一致；legacy 键经 from_value_compatible 迁移
     #[test]
     fn settings_export_import_roundtrip() {
         let s = Settings {
@@ -408,13 +382,39 @@ mod tests {
         assert!(import_settings_json("[1,2,3]").is_err());
     }
 
-    /// 无头渲染冒烟：7 个页各跑两帧（egui 即时模式布局收敛需两帧），
-    /// 不 panic 且每帧产出图元；设备枚举（识别页）在测试线程真实执行。
+    /// Tab 键齐全：7 页标题 t() 均非键名本身（yaml 同步检查）
+    #[test]
+    fn all_tab_titles_resolve() {
+        for page in PanelPage::ALL {
+            let label = lt_i18n::t(page.tab_key());
+            assert_ne!(label, page.tab_key().to_string(), "{} 键应存在于 yaml", page.tab_key());
+        }
+    }
+
+    /// Tab 顺序 = 原版 addTab 顺序（control_panel.py:170-180）
+    #[test]
+    fn tab_order_matches_original() {
+        assert_eq!(
+            PanelPage::ALL.map(|p| p.tab_key()),
+            [
+                "tab_vad_asr",
+                "tab_translation",
+                "tab_style",
+                "tab_subtitle",
+                "tab_benchmark",
+                "tab_cache",
+                "tab_changelog",
+            ]
+        );
+    }
+
+    /// 无头渲染冒烟：7 个 Tab 各跑两帧（egui 即时模式布局收敛需两帧），
+    /// 不 panic 且每帧产出图元；设备枚举（VAD/ASR 页）在测试线程真实执行。
     #[test]
     fn panel_ui_smoke_renders_all_pages_headless() {
         let ctx = egui::Context::default();
         let mut st = AppState::new(Settings::default());
-        // 识别页强制走设备枚举 + 缓存探测双分支（mlt 保存值 → Unavailable 提示）
+        // VAD/ASR 页强制走设备枚举 + 缓存探测双分支（mlt 保存值 → Unavailable 提示）
         st.settings.funasr_model = "funasr-mlt-nano-2512".into();
         for page in PanelPage::ALL {
             st.panel.page = page;
@@ -425,9 +425,12 @@ mod tests {
                 out.textures_delta.clear();
             }
         }
-        // 常规页控件值 ↔ 设置字段联动（语言下拉映射在 UI 外已单测；
-        // 此处锁页栈切换 + 防抖登记 → 节拍 → ApplySettings 快照的 UI 外闭环）
-        st.panel.page = PanelPage::General;
+    }
+
+    /// 设置防抖登记 → 节拍消费闭环（UI 外）
+    #[test]
+    fn panel_apply_debounce_tick_roundtrip() {
+        let mut st = AppState::new(Settings::default());
         lt_i18n::set_lang("zh");
         st.schedule_panel_apply();
         let due = st.panel.apply_due_at.expect("登记后应有到期时刻");

@@ -628,7 +628,7 @@ mod tests {
     fn line_editor_modal_smoke_renders_headless() {
         let ctx = egui::Context::default();
         let mut st = AppState::new(lt_proto::Settings::default());
-        st.panel.page = crate::state::PanelPage::Subtitles;
+        st.panel.page = crate::state::PanelPage::Subtitle;
         st.panel.line_editor =
             Some(LineEditState::new_edit(0, &st.settings.subtitle_mode.lines[0]));
         for _ in 0..2 {

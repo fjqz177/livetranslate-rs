@@ -71,6 +71,16 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
                 reset_style(&mut state.settings.style);
                 mark_settings_dirty(state);
             }
+            // 原版样式 Tab 同行右侧"重置窗口位置"（_on_reset_positions → reset_positions 信号）
+            if ui
+                .add(
+                    egui::Button::new(RichText::new(lt_i18n::t("btn_reset_positions")).size(12.5))
+                        .corner_radius(6.0),
+                )
+                .clicked()
+            {
+                state.enqueue_action(crate::state::WinId::Panel, crate::state::WinAction::ResetPositions);
+            }
         });
         ui.add_space(4.0);
         style_preview(ui, state, pal);

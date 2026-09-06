@@ -864,54 +864,42 @@ pub fn normalize_hex_color(s: &str) -> Option<String> {
     }
 }
 
-/// 面板页序（原版 _pages 的固定顺序：常规/翻译/识别/字幕/数据与存储/诊断/关于）
+/// 面板页序（原版 ControlPanel addTab 固定顺序：VAD/ASR、翻译、样式、字幕、
+/// 基准测试、缓存、更新日志；实测原版无"常规/诊断/关于"页）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PanelPage {
     #[default]
-    General,
+    VadAsr,
     Translation,
-    Recognition,
-    Subtitles,
-    Data,
-    Diagnostics,
-    About,
+    Style,
+    Subtitle,
+    Benchmark,
+    Cache,
+    Changelog,
 }
 
 impl PanelPage {
-    /// 原版 _pages 顺序（panel.py:190-198）
+    /// 原版 tabs.addTab 顺序（control_panel.py:170-180）
     pub const ALL: [PanelPage; 7] = [
-        PanelPage::General,
+        PanelPage::VadAsr,
         PanelPage::Translation,
-        PanelPage::Recognition,
-        PanelPage::Subtitles,
-        PanelPage::Data,
-        PanelPage::Diagnostics,
-        PanelPage::About,
+        PanelPage::Style,
+        PanelPage::Subtitle,
+        PanelPage::Benchmark,
+        PanelPage::Cache,
+        PanelPage::Changelog,
     ];
 
-    /// 左侧导航 i18n 键（原版 nav_* 键；yaml 无 nav_vad，识别页真实键为 nav_recognition）
-    pub fn nav_key(self) -> &'static str {
+    /// Tab 标题 i18n 键（原版 addTab 的 t("tab_*")）
+    pub fn tab_key(self) -> &'static str {
         match self {
-            PanelPage::General => "nav_general",
-            PanelPage::Translation => "nav_translation",
-            PanelPage::Recognition => "nav_recognition",
-            PanelPage::Subtitles => "nav_subtitles",
-            PanelPage::Data => "nav_data",
-            PanelPage::Diagnostics => "nav_diagnostics",
-            PanelPage::About => "nav_about",
-        }
-    }
-
-    /// 页头提示 i18n 键（原版 page_header(title, t("page_*_hint"))）
-    pub fn hint_key(self) -> &'static str {
-        match self {
-            PanelPage::General => "page_general_hint",
-            PanelPage::Translation => "page_translation_hint",
-            PanelPage::Recognition => "page_recognition_hint",
-            PanelPage::Subtitles => "page_subtitles_hint",
-            PanelPage::Data => "page_data_hint",
-            PanelPage::Diagnostics => "page_diagnostics_hint",
-            PanelPage::About => "nav_about",
+            PanelPage::VadAsr => "tab_vad_asr",
+            PanelPage::Translation => "tab_translation",
+            PanelPage::Style => "tab_style",
+            PanelPage::Subtitle => "tab_subtitle",
+            PanelPage::Benchmark => "tab_benchmark",
+            PanelPage::Cache => "tab_cache",
+            PanelPage::Changelog => "tab_changelog",
         }
     }
 }
@@ -1181,7 +1169,8 @@ impl AppState {
         let mut visible = std::collections::HashMap::new();
         visible.insert(WinId::Overlay, !startup_pending);
         visible.insert(WinId::Subtitle, !startup_pending && settings.subtitle_mode.enabled);
-        visible.insert(WinId::Panel, !startup_pending);
+        // 原版启动只开悬浮窗；控制面板由悬浮窗"设置"/托盘打开（on_toggle_panel）
+        visible.insert(WinId::Panel, false);
         visible.insert(WinId::Log, false); // 原版：启动即建但隐藏
         // Setup 对话框窗口：仅启动流进行中初始可见（运行期 load_dialog 单独控制）
         visible.insert(WinId::Setup, startup_pending);
@@ -1793,41 +1782,34 @@ mod tests {
 
     // ── 面板（M4.3）：页序 / 防抖 / 页键 ──
 
-    /// 页序对照原版 _pages（panel.py:190-198）固定 7 页
+    /// 页序对照原版 tabs.addTab（control_panel.py:170-180）固定 7 Tab
     #[test]
     fn panel_pages_order_matches_original() {
         assert_eq!(
             PanelPage::ALL,
             [
-                PanelPage::General,
+                PanelPage::VadAsr,
                 PanelPage::Translation,
-                PanelPage::Recognition,
-                PanelPage::Subtitles,
-                PanelPage::Data,
-                PanelPage::Diagnostics,
-                PanelPage::About,
+                PanelPage::Style,
+                PanelPage::Subtitle,
+                PanelPage::Benchmark,
+                PanelPage::Cache,
+                PanelPage::Changelog,
             ]
         );
-        // 导航键与 yaml 真实键对齐（t() 缺键回退 key 本身 → 不等即键缺失）
+        // Tab 标题键与 yaml 真实键对齐（t() 缺键回退 key 本身 → 不等即键缺失）
         for page in PanelPage::ALL {
-            assert_ne!(lt_i18n::t(page.nav_key()), page.nav_key(), "nav 键缺失: {}", page.nav_key());
-        }
-        for page in PanelPage::ALL {
-            assert_ne!(lt_i18n::t(page.hint_key()), page.hint_key(), "hint 键缺失: {}", page.hint_key());
+            assert_ne!(lt_i18n::t(page.tab_key()), page.tab_key(), "tab 键缺失: {}", page.tab_key());
         }
     }
 
-    /// 面板默认值：深色主题（原版 DEFAULT_THEME = dark）、首页常规、无设备缓存
+    /// 面板默认值：首页 VAD/ASR（原版第一个 addTab）、无设备缓存
     #[test]
     fn panel_state_defaults_match_original_chrome() {
         let st = AppState::new(Settings::default());
-        assert_eq!(st.panel.page, PanelPage::General);
-        assert_eq!(st.panel.theme, ThemeMode::Dark);
-        assert_eq!(st.panel.autostart, None);
+        assert_eq!(st.panel.page, PanelPage::VadAsr);
         assert!(st.panel.devices.is_none());
         assert!(st.panel.apply_due_at.is_none());
-        assert!(!st.panel.start_hidden);
-        assert!(!st.panel.reduce_motion);
     }
 
     /// 防抖：登记后 300ms 到期触发一次；到期前不触发

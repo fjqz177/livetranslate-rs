@@ -55,12 +55,8 @@ impl MultiWindowApp {
         app_state.cmd_tx = cmd_tx;
         let ctx = Context::default();
         install_cjk_fonts(&ctx);
-        // 面板主题收敛为应用级默认（原版 ControlPanel 构造时 _apply_chrome：
-        // DEFAULT_THEME = dark；浅色随常规页切换，ctx 全窗口生效）
-        ctx.set_theme(match app_state.panel.theme {
-            crate::state::ThemeMode::Dark => egui::ThemePreference::Dark,
-            crate::state::ThemeMode::Light => egui::ThemePreference::Light,
-        });
+        // 主题按窗口注入（run_frame 内：Panel=Windows 原生浅色，其余=深色），
+        // 不再全局 set_theme——悬浮窗/字幕窗保持深色（原版面板即原生浅色）。
         let painter = pollster::block_on(Painter::new(
             ctx.clone(),
             egui_wgpu::WgpuConfiguration::default(),
@@ -105,8 +101,8 @@ impl MultiWindowApp {
         // 字幕窗宽度取配置（原版 setFixedWidth(window_width)，高度自适应）
         let sub_w = self.app_state.settings.subtitle_mode.window_width;
         self.create_window(event_loop, WinId::Subtitle, (sub_w, 160))?;
-        // 面板尺寸对齐原版 ControlPanel（resize 920×660 / minimumSize 760×560）
-        self.create_window(event_loop, WinId::Panel, (920, 660))?;
+        // 面板尺寸对齐原版 ControlPanel（resize 520×650 / minimumSize 480×420）
+        self.create_window(event_loop, WinId::Panel, (520, 650))?;
         self.create_window(event_loop, WinId::Log, (900, 500))?;
         // 启动流对话框（原版 QDialog：常规装饰窗口；可见性 = 启动流进行中）
         self.create_window(event_loop, WinId::Setup, (560, 420))?;
@@ -157,8 +153,8 @@ impl MultiWindowApp {
             attrs = attrs.with_min_inner_size(winit::dpi::LogicalSize::new(480.0, 200.0));
         }
         if id == WinId::Panel {
-            // 原版 setMinimumSize(760, 560)
-            attrs = attrs.with_min_inner_size(winit::dpi::LogicalSize::new(760.0, 560.0));
+            // 原版 setMinimumSize(480, 420)
+            attrs = attrs.with_min_inner_size(winit::dpi::LogicalSize::new(480.0, 420.0));
         }
         if id == WinId::Subtitle {
             // 原版 setFixedWidth：宽度固定（高度自适应）→ 禁用户拖拽缩放
@@ -225,6 +221,13 @@ impl MultiWindowApp {
         let ctx = self.ctx.clone();
         let viewport = Self::viewport_of(id);
         let ppp = self.windows[pos].window.scale_factor() as f32;
+
+        // 按窗口注入 visuals（egui pass 串行执行，帧前 set 对本 pass 生效）：
+        // 控制面板 = Windows 原生浅色（原版 PyQt6 默认控件）；其余窗口深色
+        ctx.set_visuals(match id {
+            WinId::Panel => crate::windows::panel::panel_visuals(),
+            _ => egui::Visuals::dark(),
+        });
 
         // 取输入（借 windows），随后 UI 闭包只借 app_state，避免借用冲突
         let input = {
