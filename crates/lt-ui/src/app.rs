@@ -177,8 +177,20 @@ impl MultiWindowApp {
                 });
                 if visible_on_monitor {
                     let _ = window.request_inner_size(winit::dpi::LogicalSize::new(w as f64, h as f64));
-                    window.set_outer_position(winit::dpi::LogicalPosition::new(x as f64, y as f64));
+                    window.set_outer_position(winit::dpi::PhysicalPosition::new(x as f64, y as f64));
                 }
+            } else if let Some(mon) = event_loop
+                .primary_monitor()
+                .or_else(|| event_loop.available_monitors().next())
+            {
+                // 原版首启默认位：x=avail.right-620-20, y=avail.bottom-500-60（工作区坐标）；
+                // winit 无 work-area API，任务栏高度按 48 逻辑 px 估
+                let s = mon.scale_factor() as f32;
+                let mp = mon.position();
+                let ms = mon.size();
+                let x = mp.x + (ms.width as f32 - (620.0 + 20.0) * s) as i32;
+                let y = mp.y + (ms.height as f32 - (500.0 + 60.0 + 48.0) * s) as i32;
+                window.set_outer_position(winit::dpi::PhysicalPosition::new(x, y));
             }
         }
         // 字幕窗恢复保存位置（原版 _setup_ui：window_x/y 多屏可见才用，否则 (100,100)）
@@ -1269,6 +1281,20 @@ fn clear_color_for(id: WinId) -> [f32; 4] {
 /// 中文字体缺失时仍安装符号兜底；全部缺失保持默认（英文界面仍可用）。
 fn install_cjk_fonts(ctx: &Context) {
     let mut fonts = egui::FontDefinitions::default();
+    // Consolas 置 Monospace 族首：原版悬浮窗 chrome（标题/统计行/等宽数字）全 Consolas，
+    // 中文字形回落雅黑——与 Qt QFont("Consolas",…) 的逐字回退行为一致
+    match std::fs::read(r"C:\Windows\Fonts\consola.ttf") {
+        Ok(bytes) => {
+            fonts
+                .font_data
+                .insert("mono".to_string(), egui::FontData::from_owned(bytes).into());
+            if let Some(list) = fonts.families.get_mut(&egui::FontFamily::Monospace) {
+                list.insert(0, "mono".to_string());
+            }
+            tracing::info!("Consolas 已加载（Monospace 族首）");
+        }
+        Err(_) => tracing::warn!("未找到 Consolas，等宽区域回退默认字体"),
+    }
     let mut cjk_loaded = false;
     let candidates = [
         r"C:\Windows\Fonts\msyh.ttc",   // 微软雅黑（原版默认字体）
@@ -1280,10 +1306,13 @@ fn install_cjk_fonts(ctx: &Context) {
             fonts
                 .font_data
                 .insert("cjk".to_string(), egui::FontData::from_owned(bytes).into());
-            for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
-                if let Some(list) = fonts.families.get_mut(&family) {
-                    list.insert(0, "cjk".to_string());
-                }
+            // 雅黑居 Proportional 族首；Monospace 族仅作中文回落（追加族尾，
+            // 保证拉丁/数字仍命中 Consolas）
+            if let Some(list) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
+                list.insert(0, "cjk".to_string());
+            }
+            if let Some(list) = fonts.families.get_mut(&egui::FontFamily::Monospace) {
+                list.push("cjk".to_string());
             }
             tracing::info!("CJK 字体已加载: {path}");
             cjk_loaded = true;
