@@ -744,12 +744,23 @@ fn run_asr_thread(
                                     let _ = proxy.send_event(UiMsg::Event(UiEvent::AsrDevice(format!(
                                         "{display} [cpu]"
                                     ))));
-                                    tracing::info!("引擎已切换: {engine}/{funasr_model}");
+                                    // 日志按引擎打实际模型键（whisper 打 funasr_model 会误导诊断）
+                                    let model_key = if engine == "whisper" {
+                                        whisper_model_size.as_str()
+                                    } else {
+                                        funasr_model.as_str()
+                                    };
+                                    tracing::info!("引擎已切换: {engine}/{model_key}");
                                 }
                             }
                             None => {
                                 let _ = proxy.send_event(UiMsg::Event(UiEvent::AsrUnavailable));
-                                tracing::warn!("引擎切换目标不可用（未缓存/未知）: {engine}/{funasr_model}");
+                                let model_key = if engine == "whisper" {
+                                    whisper_model_size.as_str()
+                                } else {
+                                    funasr_model.as_str()
+                                };
+                                tracing::warn!("引擎切换目标不可用（未缓存/未知）: {engine}/{model_key}");
                             }
                         }
                     }
