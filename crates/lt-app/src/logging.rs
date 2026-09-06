@@ -2,7 +2,9 @@
 
 use lt_proto::UiEvent;
 use std::io::Write;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{fmt, Layer};
@@ -33,7 +35,9 @@ pub fn init() -> anyhow::Result<()> {
     let file_layer = fmt::layer()
         .with_ansi(false)
         .with_writer(FileMaker(Mutex::new(file)))
-        .with_filter(tracing_subscriber::filter::LevelFilter::DEBUG);
+        // naga（wgpu 着色器编译器）首帧编译会同步刷 ~2500 条 DEBUG，既拖慢首绘
+        // 又会灌满广播环，静音到 warn（与原版行为无关的第三方噪音）
+        .with_filter(tracing_subscriber::EnvFilter::new("debug,naga=warn"));
     let stdout_layer = fmt::layer()
         .with_ansi(false)
         .with_filter(tracing_subscriber::filter::LevelFilter::INFO);
@@ -70,6 +74,11 @@ impl Write for LineWriter {
 /// 广播层：把事件转成 UiEvent::LogLine 发给订阅者
 struct BroadcastLayer;
 
+/// 桥接线程专用 target。Lagged 通知若再入广播环，会在积压未清时立刻触发
+/// 下一轮 Lagged → 通知 → Lagged 确定性死循环（实测 ~27 万行/秒刷爆文件与
+/// CPU），故通知用该 target 只落文件/控制台，广播层按它旁路。
+const BRIDGE_TARGET: &str = "lt_log_bridge";
+
 impl<S> tracing_subscriber::Layer<S> for BroadcastLayer
 where
     S: tracing::Subscriber,
@@ -85,6 +94,9 @@ where
         if matches!(level, tracing::Level::TRACE) {
             return;
         }
+        if event.metadata().target() == BRIDGE_TARGET {
+            return;
+        }
         let mut v = MsgVisitor::default();
         event.record(&mut v);
         let _ = hub().send(UiEvent::LogLine {
@@ -93,6 +105,21 @@ where
             msg: v.msg,
         });
     }
+}
+
+/// 被限频吞掉的累计丢弃行数（仅桥接线程读写）
+static LAG_PENDING: AtomicU64 = AtomicU64::new(0);
+/// 上次丢弃通知时刻（限频 1 次/秒，防通知洪泛）
+static LAST_LAG_REPORT: OnceLock<Mutex<Option<Instant>>> = OnceLock::new();
+
+fn lag_report_due() -> bool {
+    let cell = LAST_LAG_REPORT.get_or_init(|| Mutex::new(None));
+    let mut last = cell.lock().unwrap();
+    let due = last.is_none_or(|t| t.elapsed() >= Duration::from_secs(1));
+    if due {
+        *last = Some(Instant::now());
+    }
+    due
 }
 
 /// 常驻日志桥接线程（交接卡缺口 #4）：启动即订阅广播 hub，全程把 LogLine
@@ -107,7 +134,11 @@ pub fn spawn_bridge(proxy: winit::event_loop::EventLoopProxy<lt_proto::UiMsg>) {
                     let _ = proxy.send_event(lt_proto::UiMsg::Event(ev));
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                    tracing::debug!("日志桥接丢弃 {n} 行（订阅端积压）");
+                    LAG_PENDING.fetch_add(n as u64, Ordering::Relaxed);
+                    if lag_report_due() {
+                        let total = LAG_PENDING.swap(0, Ordering::Relaxed);
+                        tracing::debug!(target: BRIDGE_TARGET, "日志桥接丢弃 {total} 行（订阅端积压）");
+                    }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
             }

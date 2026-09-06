@@ -28,11 +28,11 @@ pub struct CaptureLoop<F> {
 }
 
 impl<F: Fn(f32, f64, Option<f32>) + Send> CaptureLoop<F> {
-    /// 阻塞运行至 `running` 置 false。
+    /// 阻塞运行至 `running`（= stop 标志）置 true。
     /// `vad` 由调用方构造（含置信度源与设置），跨重启复用。
     pub fn run<C: ConfidenceSource>(&self, vad: &mut VadProcessor<C>, running: &AtomicBool) {
         let silence_chunk = vec![0.0f32; CHUNK_SAMPLES];
-        while running.load(Ordering::Relaxed) {
+        while !running.load(Ordering::Relaxed) {
             // 应用挂起的 VAD 参数（原版 vad_processor.update_settings）
             if let Some(s) = self.vad_update.lock().unwrap().take() {
                 vad.update_settings(&s);
@@ -123,7 +123,8 @@ mod tests {
         paused: Arc<AtomicBool>,
         vad: VadProcessor<C>,
     ) -> (std::thread::JoinHandle<()>, Arc<AtomicBool>) {
-        let running = Arc::new(AtomicBool::new(true));
+        // 正确语义：running=stop 标志，false 运行、true 停止（对齐 Pipeline::stop）
+        let running = Arc::new(AtomicBool::new(false));
         let lp = CaptureLoop {
             chunk_rx: q,
             segment_tx: seg_tx,
@@ -164,7 +165,7 @@ mod tests {
             assert_eq!(*rms, 0.5);
             assert_eq!(*mic_rms, Some(0.25));
         }
-        running.store(false, Ordering::Relaxed);
+        running.store(true, Ordering::Relaxed);
         let _ = h.join();
     }
 
@@ -180,7 +181,7 @@ mod tests {
         std::thread::sleep(Duration::from_millis(200));
         assert!(seg_tx.is_empty(), "暂停时不应产出任何段");
         assert!(monitors.lock().unwrap().is_empty(), "暂停时不应有任何监视回调");
-        running.store(false, Ordering::Relaxed);
+        running.store(true, Ordering::Relaxed);
         let _ = h.join();
     }
 
@@ -196,7 +197,7 @@ mod tests {
             vad.process_chunk(&chunk);
         }
         assert!(vad.is_speaking());
-        let running = Arc::new(AtomicBool::new(true));
+        let running = Arc::new(AtomicBool::new(false));
         let lp = CaptureLoop {
             chunk_rx: q,
             segment_tx: seg_tx.clone(),
@@ -212,7 +213,7 @@ mod tests {
         };
         assert_eq!(source, SegmentSource::VadFlush);
         assert!(seg.len() >= 40 * 512);
-        running.store(false, Ordering::Relaxed);
+        running.store(true, Ordering::Relaxed);
         let _ = h.join();
     }
 }

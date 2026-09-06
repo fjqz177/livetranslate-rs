@@ -6,8 +6,9 @@
 //! - 麦克风先排空到 16k mono 缓冲，随 loopback chunk 等长混合（不足补零）
 //! - 读错误 → 0.5s 后重启流；重启后清空 chunk 队列
 //!
-//! 差异（D 系记录）：原版用 pyaudiowpatch 轮询读；此处 loopback 用事件驱动 +
-//! 50ms 超时（loopback 静音期无事件，与原版"读不满 chunk 则空转"等价）。
+//! 差异（D 系记录）：原版用 pyaudiowpatch 轮询读；此处 loopback 同为轮询排空
+//! ——WASAPI 回环采集不支持事件驱动（Initialize 带 EVENTCALLBACK 能成功但
+//! 缓冲永远不进数据，实测 RMS 恒 0），无数据时空转 sleep 5ms（=原版 0.005s）。
 
 use super::{mix_with_mic, resample_linear, to_mono, BoundedDropQueue, CHUNK_DURATION, CHUNK_SAMPLES, TARGET_RATE};
 use anyhow::Context as _;
@@ -21,8 +22,8 @@ use wasapi::{initialize_mta, DeviceEnumerator, Direction, SampleType, StreamMode
 const CHUNK_SECS: f64 = CHUNK_DURATION;
 /// 默认输出设备轮询间隔（原版 DEVICE_CHECK_INTERVAL）
 const DEVICE_CHECK_INTERVAL: Duration = Duration::from_secs(2);
-/// 事件等待切片：兼顾重启响应与空闲开销
-const EVENT_WAIT_MS: u32 = 50;
+/// loopback 无新数据空转间隔（原版 _read_loop 尾部 sleep(0.005)）
+const POLL_IDLE_MS: u64 = 5;
 
 /// 控制面 → 采集线程命令
 #[derive(Debug)]
@@ -160,7 +161,6 @@ fn find_device_by_name(
 struct LoopStream {
     audio_client: wasapi::AudioClient,
     capture: wasapi::AudioCaptureClient,
-    event: wasapi::Handle,
     /// native 帧/chunk（= round(native_rate * CHUNK_SECS)，对齐原版 native_chunk）
     native_chunk_frames: usize,
     blockalign: usize,
@@ -200,13 +200,13 @@ fn open_loopback(target: Option<&str>) -> anyhow::Result<LoopStream> {
     let mut audio_client = device.get_iaudioclient()?;
     let fmt: WaveFormat = audio_client.get_mixformat()?;
     let (def_time, _min) = audio_client.get_device_period()?;
-    // render 设备 + Capture 方向 = loopback（crate 自动加 AUDCLNT_STREAMFLAGS_LOOPBACK）
-    let mode = StreamMode::EventsShared {
+    // render 设备 + Capture 方向 = loopback（crate 自动加 AUDCLNT_STREAMFLAGS_LOOPBACK）；
+    // 必须轮询模式：回环流的事件句柄永不触发且缓冲不进数据（见模块头 D 系记录）
+    let mode = StreamMode::PollingShared {
         autoconvert: false,
         buffer_duration_hns: def_time,
     };
     audio_client.initialize_client(&fmt, &Direction::Capture, &mode)?;
-    let event = audio_client.set_get_eventhandle()?;
     let capture = audio_client.get_audiocaptureclient()?;
     audio_client.start_stream()?;
 
@@ -219,7 +219,6 @@ fn open_loopback(target: Option<&str>) -> anyhow::Result<LoopStream> {
     Ok(LoopStream {
         audio_client,
         capture,
-        event,
         native_chunk_frames: (native_rate as f64 * CHUNK_SECS).round() as usize,
         blockalign: fmt.get_blockalign() as usize,
         sample_type: fmt.get_subformat().unwrap_or(SampleType::Float),
@@ -473,8 +472,7 @@ fn read_loop(
                     continue;
                 }
                 Some(s) => {
-                    // 事件等待（loopback 静音期无事件 → 超时即无新数据）
-                    let _ = s.event.wait_for_event(EVENT_WAIT_MS);
+                    // 轮询排空（回环无事件通知；5ms 空转对齐原版 sleep(0.005)）
                     let drained = (|| -> anyhow::Result<bool> {
                         while read_packet(s)? {}
                         Ok(true)
@@ -497,6 +495,7 @@ fn read_loop(
                         if let Some(m) = &mut mic {
                             drain_mic(m, &mut mic_buf);
                         }
+                        std::thread::sleep(Duration::from_millis(POLL_IDLE_MS));
                         continue;
                     }
                 }
