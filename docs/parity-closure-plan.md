@@ -52,7 +52,12 @@
 
 ---
 
-## WP-1 Whisper 引擎 UI 放开（P0）
+## WP-1 Whisper 引擎 UI 放开（P0）　**✅ 已完成（2026-09-07）**
+
+> 执行纪要：引擎层/装配层/注册表本就齐备（M5.1），本卡落地 = 引擎下拉放开 + 档位下拉六档 + padding 可见性矩阵 + 缓存组显示名 + **backend settings 镜像（targets 现场重算，顺带修复 succeed 用启动快照覆盖落盘的隐性 bug）** + **运行时下载成功重发 SwitchEngine**（原版 `_download_whisper` accept 后 auto_save 语义）。
+> ⚑ D-5 裁决修正：回读副本发现原版 `_on_whisper_size_changed` 实为"**已缓存档 → auto_save 即时切引擎；未缓存 → 仅落盘**"（control_panel.py:1205-1217），计划正文"仅落盘"系误读——已按权威副本实现。
+> 验证：`cargo test --workspace` 281 测全绿；新增档位表/镜像重算单测；**真模型验证** = tiny q5_1（32,152,673B 与注册表字节一致）加载推理通过 + JFK 真语音转写命中（`real_model_smoke`/`real_model_speech`，#[ignore] 离线纪律）+ GUI 冒烟 `ASR worker ready … Whisper tiny (whisper)`；release 62MB 单 exe 构建通过。
+> 对麦实机语音验证归 WP-9 步骤 5。
 
 ### 现状与证据
 
@@ -85,11 +90,11 @@
 
 ### 完成标准
 
-- [ ] 引擎下拉可选 whisper → 触发 `SwitchEngine` → worker 以 whisper 启动（日志 `引擎已切换: whisper/...`，MonitorBar 设备行出现 `Whisper xxx [cpu]`）。
-- [ ] 档位下拉 6 项；切换档位后缓存状态行与下载按钮跟随；未缓存点下载 → 下载的正是当前档位（检查 `models/` 目录产物）。
-- [ ] padding 可见性：funasr 引擎只见 SenseVoice padding，whisper 引擎只见 whisper padding。
-- [ ] `cargo test --workspace` 全绿；`panel/vad.rs` 既有单测（ENGINES 表等）适配后仍绿。
-- [ ] 手测：whisper tiny 识别一段音频 → 悬浮窗两行制消息正常、ASR ms 合理。
+- [x] 引擎下拉可选 whisper → `SwitchEngine` → worker 以 whisper 启动（GUI 冒烟实证：`ASR worker ready pid=… Whisper tiny (whisper)`）。
+- [x] 档位下拉 6 项；缓存状态行与下载按钮跟随（回归单测 `missing_targets_follow_settings_mirror` 锁定"运行中切档下载的是当前档"）。
+- [x] padding 可见性矩阵（funasr↔SenseVoice / whisper↔whisper）。
+- [x] `cargo test --workspace` 全绿（281 测）；vad.rs 既有单测适配后仍绿。
+- [x] whisper tiny 识别真实语音：引擎级 JFK 转写命中（`real_model_speech`）；对麦实时手测归 WP-9。
 
 ### 风险与坑
 
@@ -237,7 +242,7 @@
 
 ---
 
-## WP-4 SetPadding 热应用接线（P0，半小时级）
+## WP-4 SetPadding 热应用接线（P0，半小时级）　**✅ 已完成（2026-09-07，随 WP-1 同批落地）**
 
 ### 现状与证据
 
@@ -252,8 +257,8 @@
 
 ### 完成标准
 
-- [ ] 运行中拖 padding 滑条 → 下一段识别即应用（日志或行为可辨）；重启后值保持。
-- [ ] `cargo test --workspace` 全绿。
+- [x] 滑条变更发 `Cmd::SetPadding`（engine 家族 "funasr"/"whisper"）→ shell → `set_pending_padding` 下一段识别前应用；重启后值保持（settings 落盘）。
+- [x] `cargo test --workspace` 全绿（281 测）；`set_pending_padding` 的 `#[allow(dead_code)]` 已删。
 
 ---
 
@@ -421,7 +426,7 @@
 | D-2 | 下载门恢复范围 | A. 缺模型 DownloadMissing 门 + 首启直进（建议）；B. 连首启向导一起恢复（`startup_flow` first_launch=true）；C. 维持现状无门 | **A** |
 | D-3 | ErrorBanner 参照物 | 新版截图/描述/无参照缓做 | **拿到参照前不动工** |
 | D-4 | 全局热键出处与键位 | 新版特性/新需求/缓做 | **确认前不动工**；技术方案已备（WP-8） |
-| D-5 | WP-1 步骤 5：whisper 档位变更是否即时切引擎 | 仅落盘（原版语义）/ 即时切换 | **仅落盘** |
+| D-5 | WP-1 步骤 5：whisper 档位变更是否即时切引擎 | 仅落盘 / 即时切换 | **已裁决（2026-09-07）**：计划"仅落盘"系误读副本；原版 `_on_whisper_size_changed` = 已缓存即切、未缓存仅落盘，按权威副本实现 |
 | D-6 | WP-2 nano 已存设置的回退 | `resolve_funasr_entry` 加回退分支 + warn / 维持直接装配失败 | **加回退**（与 mlt 同款） |
 
 ## 附B 与 AGENTS.md「当前待办」的映射

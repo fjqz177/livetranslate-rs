@@ -85,6 +85,14 @@ impl AppShell {
                 tracing::info!("源语言: {lang}");
                 self.persist_settings();
             }
+            // padding 挂起热应用（原版 _set_asr_padding）；settings 字段已由面板写入
+            Cmd::SetPadding { engine, secs } => {
+                if let Some(p) = &self.pipeline {
+                    p.set_pending_padding(&engine, secs);
+                }
+                tracing::info!("padding 挂起: {engine} {secs}s（下一段识别生效）");
+                self.persist_settings();
+            }
             Cmd::SetTargetLanguage(lang) => {
                 if let Some(p) = self.pipeline.as_mut() {
                     p.set_translator_target_language(&lang);
@@ -212,7 +220,21 @@ impl ApplicationHandler<UiMsg> for AppShell {
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UiMsg) {
         // 编排先于 UI：下载成功 → 管道启动（UI 转场由 MultiWindowApp 处理）
         if let UiMsg::Event(UiEvent::DownloadSucceeded { settings }) = &event {
-            self.start_pipeline((**settings).clone());
+            if !self.started {
+                self.start_pipeline((**settings).clone());
+            } else {
+                // 运行时下载完成（原版 _download_whisper accept 后 _auto_save →
+                // 引擎切换）：以当前设置重发引擎切换，worker 用刚下载的模型装配，
+                // 同时解除未缓存切换时的 AsrUnavailable 待命态
+                let s = self.ui.app_state.settings.clone();
+                self.handle_cmd(Cmd::SwitchEngine {
+                    engine: s.asr_engine,
+                    funasr_model: s.funasr_model,
+                    whisper_model_size: s.whisper_model_size,
+                    hub: s.hub,
+                    language: s.asr_language,
+                });
+            }
         }
         // UI 回流的管道域命令（backend 不持有 Pipeline，经 proxy 回环至此）
         if let UiMsg::Cmd(cmd) = &event {

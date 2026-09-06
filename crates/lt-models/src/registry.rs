@@ -81,7 +81,7 @@ pub const WHISPER_ENTRIES: [ModelEntry; 6] = [
     ModelEntry { key: "small", display: "small", hf: Some("ggerganov/whisper.cpp"), ms: None, always_hf: true, estimated_bytes: 190_085_487, files: &["ggml-small-q5_1.bin"] },
     ModelEntry { key: "medium", display: "medium", hf: Some("ggerganov/whisper.cpp"), ms: None, always_hf: true, estimated_bytes: 539_212_467, files: &["ggml-medium-q5_0.bin"] },
     ModelEntry { key: "large-v3", display: "large-v3", hf: Some("ggerganov/whisper.cpp"), ms: None, always_hf: true, estimated_bytes: 1_081_140_203, files: &["ggml-large-v3-q5_0.bin"] },
-    ModelEntry { key: "turbo", display: "turbo (快档)", hf: Some("ggerganov/whisper.cpp"), ms: None, always_hf: true, estimated_bytes: 574_041_195, files: &["ggml-large-v3-turbo-q5_0.bin"] },
+    ModelEntry { key: "turbo", display: "turbo", hf: Some("ggerganov/whisper.cpp"), ms: None, always_hf: true, estimated_bytes: 574_041_195, files: &["ggml-large-v3-turbo-q5_0.bin"] },
 ];
 
 /// 合法 funasr 模型键（与 lt_proto::FUNASR_MODELS 对齐）

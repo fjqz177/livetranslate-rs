@@ -49,19 +49,9 @@ fn main() -> anyhow::Result<()> {
     // 常驻日志桥接：广播 hub → LogLine 事件（日志窗数据源）
     logging::spawn_bridge(proxy.clone());
     // 后台命令线程：下载编排（识别页/面板触发）+ 下载期日志转发。
-    // 启动时快照缺失清单：向导流程已废除，此清单仅供"当前所选模型未缓存"
-    // 场景的识别页下载按钮消费（fresh install 一次命中）。
-    let missing = lt_models::paths::models_dir(initial_settings.models_dir.as_deref())
-        .map(|dir| {
-            lt_models::cache::missing_models(
-                &dir,
-                &initial_settings.asr_engine,
-                &initial_settings.funasr_model,
-                &initial_settings.whisper_model_size,
-            )
-        })
-        .unwrap_or_default();
-    backend::spawn(cmd_rx, proxy.clone(), false, initial_settings.clone(), missing);
+    // 下载目标不在此快照：backend 维护 settings 镜像，StartDownload 时按当前
+    // 引擎/档位现场重算（运行中切换后下载的才是所选模型，M5.1）。
+    backend::spawn(cmd_rx, proxy.clone(), false, initial_settings.clone());
 
     let mut shell = shell::AppShell::new(app, proxy, Some(initial_settings.clone()));
 

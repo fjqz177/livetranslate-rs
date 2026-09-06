@@ -273,4 +273,71 @@ mod tests {
         engine.set_input_padding(0.0).expect("set_padding");
         let _ = engine.transcribe(&audio, true).expect("推理2");
     }
+
+    /// 真语音转写端到端（默认跳过）：LT_WHISPER_MODEL（ggml .bin）+
+    /// LT_WHISPER_SPEECH_WAV（16kHz 单声道 16-bit PCM wav，如 whisper.cpp 仓
+    /// samples/jfk.wav）→ 断言英文转写命中预期关键词、语言检测为 en。
+    /// 运行：`LT_WHISPER_MODEL=... LT_WHISPER_SPEECH_WAV=... \
+    ///        cargo test -p lt-asr real_model_speech -- --ignored`
+    #[test]
+    #[ignore = "需真实模型与语音样本：设 LT_WHISPER_MODEL/LT_WHISPER_SPEECH_WAV 后 --ignored 运行"]
+    fn real_model_speech() {
+        let (Ok(model), Ok(wav_path)) =
+            (std::env::var("LT_WHISPER_MODEL"), std::env::var("LT_WHISPER_SPEECH_WAV"))
+        else {
+            return; // 未提供 → 静默跳过
+        };
+        let audio = read_wav_mono_16k(Path::new(&wav_path)).expect("读取 wav");
+        assert!(audio.len() > 16000, "语音样本应长于 1s: {} 样本", audio.len());
+
+        let mut engine = WhisperEngine::load(Path::new(&model), Some(0.0), "auto").expect("加载");
+        let res = engine.transcribe(&audio, false).expect("推理");
+        let text = res.text.to_lowercase();
+        assert!(
+            text.contains("fellow americans") || text.contains("my fellow"),
+            "转写未命中预期关键词: {text:?}"
+        );
+        assert_eq!(res.language, "en", "auto 检测应为 en");
+    }
+
+    /// 最小 WAV 读取（测试专用）：仅支持 PCM 单声道 16kHz/16-bit → f32 归一化。
+    /// jfk.wav（whisper.cpp 仓 samples）即该格式。
+    fn read_wav_mono_16k(path: &Path) -> Result<Vec<f32>, String> {
+        let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+        if &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
+            return Err("非 RIFF/WAVE".into());
+        }
+        let mut pos = 12usize;
+        let (mut rate, mut channels, mut bits) = (0u32, 0u16, 0u16);
+        let mut pcm: Option<Vec<i16>> = None;
+        while pos + 8 <= bytes.len() {
+            let id = &bytes[pos..pos + 4];
+            let size = u32::from_le_bytes(bytes[pos + 4..pos + 8].try_into().unwrap()) as usize;
+            let body = &bytes[pos + 8..(pos + 8 + size).min(bytes.len())];
+            match id {
+                b"fmt " => {
+                    channels = u16::from_le_bytes(body[2..4].try_into().unwrap());
+                    rate = u32::from_le_bytes(body[4..8].try_into().unwrap());
+                    bits = u16::from_le_bytes(body[14..16].try_into().unwrap());
+                }
+                b"data" => {
+                    pcm = Some(
+                        body.chunks_exact(2)
+                            .map(|c| i16::from_le_bytes(c.try_into().unwrap()))
+                            .collect(),
+                    );
+                }
+                _ => {}
+            }
+            pos += 8 + size + (size & 1); // chunk 按字对齐
+        }
+        if rate != 16000 || channels != 1 || bits != 16 {
+            return Err(format!("仅支持 16kHz/单声道/16-bit，实为 {rate}Hz/{channels}ch/{bits}bit"));
+        }
+        Ok(pcm
+            .ok_or("缺少 data chunk")?
+            .into_iter()
+            .map(|s| s as f32 / 32768.0)
+            .collect())
+    }
 }

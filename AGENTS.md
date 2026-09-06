@@ -2,7 +2,7 @@
 
 ## 项目定位
 
-Python(PyQt6) 实时音频翻译应用 LiveTranslate 的 **Rust 1:1 重写**（main 分支施工中；M0–M5.3 已完成：278 测全绿，release 59MB 单 exe 分发演练通过）。
+Python(PyQt6) 实时音频翻译应用 LiveTranslate 的 **Rust 1:1 重写**（main 分支施工中；M0–M5.3 已完成，M5.1 whisper 已全链放开：281 测全绿，release 59MB 单 exe 分发演练通过）。
 
 - **复刻权威 = 工作区内 `LiveTranslate/` 原版代码副本**（gitignored，扁平结构；2026-09-06 用户明确：与 `D:\biancheng\LiveTranslate`、`LiveTranslate-NG` 等外部仓库无关）。改 GUI 前先回读副本对应 Python 模块：`main.py`、`subtitle_overlay.py`、`subtitle_window.py`、`control_panel.py`、`vad_processor.py` 等（均在副本根目录）。
 - **权威文档**：`RESEARCH.md`（选型结论、刻意偏差 D-1~D-16、风险 R-1~R-13）与 `PLAN.md`（施工图：契约全表 §3、算法规格 §5、经验教训 §6、风险预案 §8、验收清单 §9）。GUI 对齐方案见 `docs/ui-realign-plan.md`（五阶段）。
@@ -53,8 +53,9 @@ cargo run -p lt-app               # GUI 冒烟
 - i18n：zh/en 两份 yaml 必须同步修改。
 - 子代理分工：general-purpose/Explore 建议设 glm-5.3-flash 做执行/检索；架构承重墙（Win32、下载器、算法移植、CRT/链接问题）由主线程亲自做。
 
-## 当前待办（2026-09-06 截点）
+## 当前待办（2026-09-07 截点）
 
 - ErrorBanner（新版悬浮窗错误分类条）、全局热键（hotkeys_group）、M6 interim 装配接线（算法层 `interim.rs` 已完成 37 测，待 VAD Arc 共享拓扑对齐原版 `_vad_lock`）。
-- FunASR Nano 实装（目前仅注册表占位）、StartDownload targets 动态化、CI。
+- FunASR Nano 实装（目前仅注册表占位）、CI。
+- ~~StartDownload targets 动态化~~ 已完成（2026-09-07：backend settings 镜像现场重算，随 whisper 放开落地）。
 - M6 调优三件（启动<2s / 空闲 CPU<1% / 8h 长跑）与内存回收实测；端到端语音复验（需实机非静音时段）。

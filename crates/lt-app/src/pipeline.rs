@@ -482,7 +482,6 @@ impl Pipeline {
 
     /// UI 线程调用：按引擎家族（"funasr"/"whisper"）挂起 padding；ASR 线程在下一次
     /// transcribe 前应用（原版 _set_asr_padding + _apply_pending_asr_settings）
-    #[allow(dead_code)]
     pub fn set_pending_padding(&self, engine_family: &str, secs: f32) {
         self.pending.set_padding(engine_family, secs);
     }

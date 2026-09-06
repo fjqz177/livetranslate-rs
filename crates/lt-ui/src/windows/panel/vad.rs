@@ -5,8 +5,9 @@
 //! 与原版的差异（Rust 版语义）：
 //! - vad_engine.py 的"引擎运行时装/uv sync/一键安装"区块为 Python 打包专属
 //!   （frozen 构建 + 引擎 venv），Rust 版无此概念 → 整块省略，仅保留状态提示行；
-//! - whisper 引擎未实装（M5）：下拉项灰显 + engine_status_not_implemented 提示；
-//!   vad_whisper.py 的本地 GGML 枚举/下载对话框随 M5；
+//! - whisper 引擎 M5.1 已放开：档位下拉 = 原版 _WHISPER_SIZES 五档 + turbo（D-15）；
+//!   vad_whisper.py 的本地 GGML 枚举/下载对话框不做——`whisper_model_size` 直接
+//!   接受本地路径（settings 手填，`resolve_whisper_model` 文件直通），枚举入口另卡；
 //! - vad_tab.py 的下载源折叠组（hub/镜像/代理）本批不做（下载按钮读 settings 默认值）；
 //! - D-14：funasr-mlt-nano-2512 无上游 ONNX 转换 → 模型下拉灰显；
 //! - "性能基准"按钮在页头（mod.rs），点击仅记日志（窗口随 M4.4 接入）。
@@ -74,6 +75,49 @@ pub fn funasr_model_items() -> Vec<FunasrModelItem> {
 /// settings.funasr_model → 下拉索引（非法值回退 sensevoice-small，对齐 sanitize）
 pub fn funasr_index_for(model: &str) -> usize {
     funasr_model_items().iter().position(|m| m.key == model).unwrap_or(0)
+}
+
+/// Whisper 档位下拉项（原版 _populate_whisper_models 的 builtin 部分：
+/// _WHISPER_SIZES 五档 + turbo（D-15）；显示名取注册表 display）
+pub struct WhisperTierItem {
+    pub key: &'static str,
+    pub display: String,
+    /// 纯 CPU 实时性弱档（large-v3）→ 下拉下方 hint 行提示
+    pub slow: bool,
+}
+
+/// whisper 档位表（顺序 = 注册表 WHISPER_ENTRIES，本地路径不进下拉）
+pub fn whisper_tier_items() -> Vec<WhisperTierItem> {
+    lt_models::registry::WHISPER_ENTRIES
+        .iter()
+        .map(|e| WhisperTierItem {
+            key: e.key,
+            display: e.display.to_string(),
+            slow: e.key == "large-v3",
+        })
+        .collect()
+}
+
+/// settings.whisper_model_size → builtin 档下拉索引；本地 GGML 路径/未知值 → None
+/// （下拉无选中态，当前值展示走 [`whisper_tier_display_for`]）
+pub fn whisper_tier_index_for(size: &str) -> Option<usize> {
+    lt_models::registry::WHISPER_ENTRIES.iter().position(|e| e.key == size)
+}
+
+/// 档位当前值显示：builtin → 注册表 display；本地路径 → "本地: 文件名"
+/// （原版 whisper_local_prefix 语义；非路径垃圾值原样兜底）
+pub fn whisper_tier_display_for(size: &str) -> String {
+    if let Some(i) = whisper_tier_index_for(size) {
+        return lt_models::registry::WHISPER_ENTRIES[i].display.to_string();
+    }
+    let name = std::path::Path::new(size)
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    if name.is_empty() {
+        return size.to_string();
+    }
+    format!("{}: {name}", lt_i18n::t("whisper_local_prefix"))
 }
 
 /// 识别语言下拉项（原版 `f"{code} - {label}"`；auto 显示名走 t("asr_lang_auto")）
@@ -213,7 +257,7 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
 
     // ── ASR 引擎（原版 asr_group）──
     group_card(ui, pal, &lt_i18n::t("group_asr_engine"), |ui| {
-        // 引擎下拉：funasr 可选；whisper 灰显"未实装(M5)"占位
+        // 引擎下拉：funasr/whisper 双引擎可选（M5.1 放开灰显；whisper worker 已实装）
         let eng_idx = engine_index_for(&engine);
         ui.horizontal(|ui| {
             ui.label(RichText::new(format!("{} ", lt_i18n::t("label_engine"))).color(pal.text));
@@ -224,10 +268,7 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
                     for (i, (id, _, _)) in ENGINES.iter().enumerate() {
                         let selected = i == eng_idx;
                         let label = engine_display(id);
-                        if *id == "whisper" && !selected {
-                            // 未实装引擎：灰显占位，不可选中（M5 接入后放开）
-                            ui.add_enabled(false, egui::Button::selectable(false, label));
-                        } else if ui.selectable_label(selected, label).clicked() && !selected {
+                        if ui.selectable_label(selected, label).clicked() && !selected {
                             state.settings.asr_engine = (*id).to_string();
                             send_switch_engine(state);
                         }
@@ -287,20 +328,67 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
             }
         }
 
-        // ── Padding（原版 QDoubleSpinBox 0-5/0.1 步进/后缀 s/0=关闭；
-        //     经 300ms 防抖 ApplySettings 落盘，引擎装载时读取）──
+        // Whisper 档位（原版 _whisper_size_combo；仅 whisper 引擎显示）。
+        // 变更语义对齐原版 _on_whisper_size_changed：新档已缓存 → 即时切引擎；
+        // 未缓存 → 仅落盘（缓存组下载完成后经 DownloadSucceeded 重发切换）
+        if engine == "whisper" {
+            let tiers = whisper_tier_items();
+            let sel_idx = whisper_tier_index_for(&state.settings.whisper_model_size);
+            ui.add_space(2.0);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(format!("{} ", lt_i18n::t("label_whisper_model"))).color(pal.text));
+                egui::ComboBox::from_id_salt("panel_whisper_model")
+                    .selected_text(whisper_tier_display_for(&state.settings.whisper_model_size))
+                    .width(240.0)
+                    .show_ui(ui, |ui| {
+                        for (i, item) in tiers.iter().enumerate() {
+                            if ui
+                                .selectable_label(sel_idx == Some(i), item.display.clone())
+                                .clicked()
+                                && sel_idx != Some(i)
+                            {
+                                state.settings.whisper_model_size = item.key.to_string();
+                                mark_settings_dirty(state);
+                                let cached = lt_models::paths::models_dir(
+                                    state.settings.models_dir.as_deref(),
+                                )
+                                .map(|d| lt_models::cache::is_whisper_cached(&d, item.key))
+                                .unwrap_or(false);
+                                if cached {
+                                    send_switch_engine(state);
+                                }
+                            }
+                        }
+                    });
+            });
+            if tiers.iter().any(|t| t.slow && t.key == state.settings.whisper_model_size) {
+                hint_line(ui, pal, &lt_i18n::t("whisper_slow_hint"));
+            }
+        }
+
+        // ── Padding（原版 QDoubleSpinBox 0-5/0.1 步进/后缀 s/0=关闭；可见性矩阵
+        //     对齐原版 _on_engine_changed_whisper_vis：SenseVoice padding 仅 funasr、
+        //     whisper padding 仅 whisper；变更经 Cmd::SetPadding 挂起热应用 +
+        //     300ms 防抖 ApplySettings 落盘）──
         ui.add_space(4.0);
-        let mut sv = state.settings.sensevoice_pad_seconds;
-        if drag_secs(ui, "panel_pad_sensevoice", &lt_i18n::t("label_sensevoice_padding"), &mut sv, 0.0..=5.0, true) {
-            state.settings.sensevoice_pad_seconds = sv;
-            mark_settings_dirty(state);
+        if is_funasr {
+            let mut sv = state.settings.sensevoice_pad_seconds;
+            if drag_secs(ui, "panel_pad_sensevoice", &lt_i18n::t("label_sensevoice_padding"), &mut sv, 0.0..=5.0, true) {
+                state.settings.sensevoice_pad_seconds = sv;
+                state.send_cmd(lt_proto::Cmd::SetPadding { engine: "funasr".into(), secs: sv });
+                mark_settings_dirty(state);
+            }
+            hint_line(ui, pal, &lt_i18n::t("sensevoice_padding_tooltip"));
         }
-        let mut wv = state.settings.whisper_pad_seconds;
-        if drag_secs(ui, "panel_pad_whisper", &lt_i18n::t("label_whisper_padding"), &mut wv, 0.0..=5.0, true) {
-            state.settings.whisper_pad_seconds = wv;
-            mark_settings_dirty(state);
+        if engine == "whisper" {
+            let mut wv = state.settings.whisper_pad_seconds;
+            if drag_secs(ui, "panel_pad_whisper", &lt_i18n::t("label_whisper_padding"), &mut wv, 0.0..=5.0, true) {
+                state.settings.whisper_pad_seconds = wv;
+                state.send_cmd(lt_proto::Cmd::SetPadding { engine: "whisper".into(), secs: wv });
+                mark_settings_dirty(state);
+            }
+            hint_line(ui, pal, &lt_i18n::t("whisper_padding_tooltip"));
         }
-        hint_line(ui, pal, &lt_i18n::t("sensevoice_padding_tooltip"));
 
         // ── 下载源（原版 _hub_combo：ms/hf 二选一，_auto_save 落盘）──
         ui.add_space(4.0);
@@ -557,7 +645,7 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
             let model_display = if state.settings.asr_engine == "funasr" {
                 funasr_model_items()[funasr_index_for(&state.settings.funasr_model)].display.clone()
             } else {
-                format!("whisper-{}", state.settings.whisper_model_size)
+                whisper_tier_display_for(&state.settings.whisper_model_size)
             };
             ui.label(RichText::new(model_display).color(pal.text));
             match status {
@@ -649,11 +737,9 @@ fn apply_mic_setting(state: &mut AppState, setting: Option<String>) {
 }
 
 /// 引擎状态提示（原版 _refresh_engine_status 的 Rust 化简版）：
-/// whisper → 未实装；模型未缓存 → needs-model 文案；已缓存 → 可用文案。
+/// 按当前引擎模型缓存判定 → 已缓存 = 可用；未缓存 = needs-model（识别页缓存组
+/// 可下载；mlt 等无条目模型同样落此文案，与既有 funasr 行为一致）
 fn engine_status(state: &AppState, engine: &str, pal: &Palette) -> (String, egui::Color32) {
-    if engine == "whisper" {
-        return (lt_i18n::t("engine_status_not_implemented"), egui::Color32::GRAY);
-    }
     let models_dir = lt_models::paths::models_dir(state.settings.models_dir.as_deref())
         .unwrap_or_else(|_| std::env::temp_dir());
     match model_cache_status(
@@ -695,7 +781,7 @@ mod tests {
 
     // ── 引擎 / 模型 / 语言表 ──
 
-    /// 引擎表：r8 双引擎、显示名可解析、whisper 灰显占位（M5）
+    /// 引擎表：r8 双引擎、显示名可解析（whisper M5.1 起可选，无灰显特判）
     #[test]
     fn engine_table_and_display_fallback() {
         assert_eq!(ENGINES.map(|(id, _, _)| id), ["funasr", "whisper"]);
@@ -733,6 +819,37 @@ mod tests {
         assert_eq!(funasr_index_for("bogus"), 0);
         // 已存 mlt 时索引仍指到灰显项（展示但不可改选其它后再选回）
         assert_eq!(funasr_index_for("funasr-mlt-nano-2512"), 2);
+    }
+
+    /// Whisper 档位表：顺序同注册表（5 原版档 + turbo，D-15）、large-v3 唯一慢速提示档
+    #[test]
+    fn whisper_tier_items_order_and_hints() {
+        let items = whisper_tier_items();
+        assert_eq!(items.iter().map(|t| t.key).collect::<Vec<_>>(), [
+            "tiny", "base", "small", "medium", "large-v3", "turbo"
+        ]);
+        assert!(items.iter().all(|t| !t.display.is_empty()), "显示名不允许空串");
+        let slow: Vec<_> = items.iter().filter(|t| t.slow).map(|t| t.key).collect();
+        assert_eq!(slow, ["large-v3"], "large-v3 应是唯一慢速提示档");
+    }
+
+    /// 档位索引/显示名：builtin 命中、本地路径 → None + "本地: 文件名"、垃圾值兜底
+    #[test]
+    fn whisper_tier_selection_semantics() {
+        assert_eq!(whisper_tier_index_for("tiny"), Some(0));
+        assert_eq!(whisper_tier_index_for("turbo"), Some(5));
+        assert_eq!(whisper_tier_index_for("D:/models/ggml-tiny.bin"), None, "本地路径不在下拉");
+        assert_eq!(whisper_tier_index_for(""), None);
+        // builtin 显示名 = 注册表 display（turbo 已去中文注记，双语中性）
+        assert_eq!(whisper_tier_display_for("base"), "base");
+        assert_eq!(whisper_tier_display_for("turbo"), "turbo");
+        // 本地路径：本地前缀 + 文件 stem（不含目录与扩展名）
+        let d = whisper_tier_display_for("C:/x/my-model.bin");
+        assert!(d.starts_with("本地: ") || d.starts_with("Local: "), "应带本地前缀: {d}");
+        assert!(d.contains("my-model"), "应含文件 stem: {d}");
+        // 无文件名的空值原样兜底（不 panic、非本地分支）；任意垃圾值至少包含原值
+        assert_eq!(whisper_tier_display_for(""), "");
+        assert!(whisper_tier_display_for("??").contains("??"));
     }
 
     /// 识别语言下拉：30 项、"code - 名"格式、auto 显示名走 i18n、未知码回退 0

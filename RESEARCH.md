@@ -255,7 +255,7 @@ EventLoop::with_user_event()
 
 - 原版：CTranslate2，`Systran/faster-whisper-{tiny,base,small,medium,large-v3}`，`beam_size=5`，`compute_type`（CPU 自动降 int8），word_timestamps 可选。
 - **r8 决策背景**：r2 曾把 Whisper 也并入 sherpa-onnx 统一栈；复核发现两条硬证据后改变结论——① sherpa 官方确认 Whisper 仅支持 greedy 解码且无计划支持 beam（discussion #671），与原版 beam_size=5 构成确定差异；② issue #2900 报告 sherpa whisper（多语 tiny，中文）CER 0.81 vs faster-whisper 0.25 的 3 倍差距，issue 关闭无根因无修复。Whisper 是用户主动选择的"准确档"，质量未经验证不可接受。**whisper.cpp（`whisper-rs` 绑定）是参考级实现**：完整 OpenAI 解码策略（beam/temperature fallback/token suppression）、CPU 性能最强（ggml 内核 + 量化）、生态最成熟——恰是用户偏好的"权威库"模式。
-- 模型源：**`ggml-org/whisper-{tiny,base,small,medium,large-v3}`** + **`ggml-org/whisper-large-v3-turbo`**（r8 用户决定增加 turbo 快档，约 809MB、速度接近 medium、质量接近 large-v3）。一律走 HF（与原版"whisper 永远走 HF"语义一致）。仓内含 fp16 与量化（`-q5_0`/`-q8_0`）变体，默认取量化档（对应原版 CPU 自动降 int8）。
+- 模型源：r8 预估 `ggml-org/whisper-*` 六仓 + turbo 仓；**M5 首日核实修订**：六仓已全部转私有（API 401）→ 统一官方单仓 **`ggerganov/whisper.cpp`**（HF/hf-mirror 公开可下）。一律走 HF（与原版"whisper 永远走 HF"语义一致）。量化默认档（M5 核实仓内实际）：tiny/base/small 仅 q5_1，medium/large-v3/turbo 为 q5_0（原版 CPU 自动降 int8 的对应物）。
 - 参数对齐：`beam_size=5` 直接设置（whisper.cpp 原生支持）；language/task 设置；word_timestamps 支持（token 级）。R-8 就此解决。
 - 本地自定义模型：扫描 `models/**` 下 **GGML `.bin` 文件**（whisper.cpp 可直接加载验证），UI 语义不变（"Whisper Local: xxx"）。
 - 架构影响：`AsrEngine` trait 后的 whisper 实现换为 whisper.cpp，worker/下载/UI 均无感知；sherpa-onnx 保留承载 SenseVoice/Nano。二进制 +3~4MB、多一条原生构建链（whisper-rs 经 cc 编译，MSVC 验证成熟）——为质量对齐支付的明确代价。
@@ -302,9 +302,9 @@ funasr-nano-2512:  { display: "Fun-ASR-Nano", experimental: true,          # r8 
                      hf: "csukuangfj/sherpa-onnx-funasr-nano-int8-2025-12-30",   # 实现期核对文档页并甄别真 nano 包
                      ms: 同左, bytes: ~1.1GB, padding: false, heuristics_lang: true }
 funasr-mlt-nano:   { display: "Fun-ASR-MLT-Nano", ui: 置灰, status: 待上游转换 }
-whisper-tiny..large-v3 + turbo: { hf: "ggml-org/whisper-{tiny,base,small,medium,large-v3,large-v3-turbo}",
-                     always_hf: true, files: "GGML *.bin（默认量化 q5_0/q8_0 档）",
-                     bytes: {tiny ~78M, base ~148M, small ~488M, medium ~1.53G, large-v3 ~3.1G, turbo ~809M} }
+whisper-tiny..large-v3 + turbo: { hf: "ggerganov/whisper.cpp"（M5 修订：单仓，ggml-org 六仓已私有）,
+                     always_hf: true, files: "GGML 量化档（tiny/base/small=q5_1，medium/large-v3/turbo=q5_0）",
+                     bytes: {tiny 31.5M, base 59.7M, small 190M, medium 539M, large-v3 1.08G, turbo 574M}（M5 实测仓内字节数） }
 # anime-whisper 移除（D-13，r8 确认）
 ```
 全部引擎 CPU 推理；无 compute_type/device 概念（见 §6.3 的 UI 简化）。引擎枚举：`whisper | funasr`（funasr 下 3 个模型选项，见 D-14）。whisper 栈 = whisper.cpp，sherpa 栈 = SenseVoice/Nano（D-16）。

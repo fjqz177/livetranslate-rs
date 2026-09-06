@@ -6,6 +6,10 @@
 //! 专用线程），把 Downloader 事件与 tracing 广播行统一转发为
 //! [`UiEvent::DownloadProgress`] 日志流；成功写设置并发
 //! [`UiEvent::DownloadSucceeded`]（向导=13 键默认块，原版 `_check_done`）。
+//!
+//! settings 镜像（M5.1）：拦截 PersistSettings/ApplySettings/SwitchEngine 先更新
+//! 本地镜像再照旧转发 UI 循环——StartDownload 据此现场重算缺失清单，运行中
+//! 切换的引擎/档位即时生效（启动快照会下错模型）；下载成功落盘同用镜像值。
 
 use crate::logging;
 use lt_models::cache::MissingModel;
@@ -16,20 +20,41 @@ use std::time::Duration;
 use winit::event_loop::EventLoopProxy;
 
 /// 启动后台命令线程（进程生命期常驻；通道关闭即退出）
-pub fn spawn(
-    cmd_rx: Receiver<Cmd>,
-    proxy: EventLoopProxy<UiMsg>,
-    first_launch: bool,
-    settings: Settings,
-    missing: Vec<MissingModel>,
-) {
+pub fn spawn(cmd_rx: Receiver<Cmd>, proxy: EventLoopProxy<UiMsg>, first_launch: bool, settings: Settings) {
     std::thread::Builder::new()
         .name("lt-backend".into())
         .spawn(move || {
+            let mut settings = settings;
             while let Ok(cmd) = cmd_rx.recv() {
                 match cmd {
                     Cmd::StartDownload { hub, proxy: proxy_mode } => {
+                        let missing = current_missing(&settings);
                         run_download(&proxy, first_launch, &settings, &missing, &hub, &proxy_mode);
+                    }
+                    // 镜像更新后照旧转发（设置真值在 UI 循环/AppState）
+                    Cmd::PersistSettings(s) => {
+                        settings = *s;
+                        let _ =
+                            proxy.send_event(UiMsg::Cmd(Cmd::PersistSettings(Box::new(settings.clone()))));
+                    }
+                    Cmd::ApplySettings(s) => {
+                        settings = *s;
+                        let _ =
+                            proxy.send_event(UiMsg::Cmd(Cmd::ApplySettings(Box::new(settings.clone()))));
+                    }
+                    Cmd::SwitchEngine { engine, funasr_model, whisper_model_size, hub, language } => {
+                        settings.asr_engine = engine.clone();
+                        settings.funasr_model = funasr_model.clone();
+                        settings.whisper_model_size = whisper_model_size.clone();
+                        settings.hub = hub.clone();
+                        settings.asr_language = language.clone();
+                        let _ = proxy.send_event(UiMsg::Cmd(Cmd::SwitchEngine {
+                            engine,
+                            funasr_model,
+                            whisper_model_size,
+                            hub,
+                            language,
+                        }));
                     }
                     // 下载对话框失败后的关闭按钮（原版 reject → sys.exit(0)）
                     Cmd::Stop => quit(&proxy),
@@ -140,6 +165,21 @@ fn run_download(
     }
 }
 
+/// 当前设置的缺失模型清单（StartDownload 现场重算；本地 GGML 路径不触发下载）。
+/// models_dir 不可用 → 空（run_download 内同样探测并报"模型目录不可用"）。
+fn current_missing(settings: &Settings) -> Vec<MissingModel> {
+    lt_models::paths::models_dir(settings.models_dir.as_deref())
+        .map(|dir| {
+            lt_models::cache::missing_models(
+                &dir,
+                &settings.asr_engine,
+                &settings.funasr_model,
+                &settings.whisper_model_size,
+            )
+        })
+        .unwrap_or_default()
+}
+
 /// 成功收尾：写设置（向导=13 键默认块，原版 _check_done 的 settings dict）→ 通知 UI
 fn succeed(proxy: &EventLoopProxy<UiMsg>, first_launch: bool, settings: &Settings, hub_s: &str, proxy_s: &str) {
     let final_settings = if first_launch {
@@ -239,5 +279,50 @@ mod tests {
             format_event(&DownloadEvent::Log("x".into())),
             "x"
         );
+    }
+
+    /// 下载目标现场重算：跟随 settings 镜像的引擎/档位（M5.1 快照 bug 回归测试）。
+    /// 场景：启动时 funasr/sensevoice-small 未缓存（快照非空），运行中切 whisper/tiny
+    /// → StartDownload 必须下载 whisper tiny，而不是启动快照里的 sensevoice。
+    #[test]
+    fn missing_targets_follow_settings_mirror() {
+        let dir = std::env::temp_dir().join(format!("lt_backend_mirror_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut s = Settings::default();
+        s.models_dir = Some(dir.clone());
+
+        // funasr/sensevoice-small 未缓存 → 1 条目标
+        s.asr_engine = "funasr".into();
+        s.funasr_model = "sensevoice-small".into();
+        let miss = current_missing(&s);
+        assert_eq!(miss.len(), 1, "sensevoice-small 未缓存应有 1 条目标");
+        assert!(!miss[0].always_hf, "sensevoice 双 hub 可选");
+        assert!(miss[0].hub_ms.is_some() && miss[0].hub_hf.is_some());
+
+        // 运行中切 whisper/tiny（快照方案会仍返回 sensevoice）→ 目标变为 whisper tiny
+        s.asr_engine = "whisper".into();
+        s.whisper_model_size = "tiny".into();
+        let miss = current_missing(&s);
+        assert_eq!(miss.len(), 1);
+        assert!(miss[0].always_hf, "whisper 走 always_hf 单仓");
+        assert_eq!(miss[0].hub_hf, Some("ggerganov/whisper.cpp"));
+        assert_eq!(miss[0].hub_ms, None);
+        assert_eq!(miss[0].files, &["ggml-tiny-q5_1.bin"]);
+
+        // whisper 档位切到本地 GGML 路径 → 不触发下载
+        s.whisper_model_size = "D:/models/ggml-tiny.bin".into();
+        assert!(current_missing(&s).is_empty(), "本地路径不触发下载");
+
+        // 已缓存 → 空（伪造半体积以上文件命中阈值）
+        s.whisper_model_size = "tiny".into();
+        let snap = lt_models::paths::models_dir(s.models_dir.as_deref())
+            .unwrap()
+            .join("huggingface/hub/models--ggerganov--whisper.cpp/snapshots/main");
+        std::fs::create_dir_all(&snap).unwrap();
+        let est = lt_models::registry::whisper_entry_for("tiny").unwrap().estimated_bytes;
+        std::fs::write(snap.join("ggml-tiny-q5_1.bin"), vec![0u8; (est / 2 + 1) as usize]).unwrap();
+        assert!(current_missing(&s).is_empty(), "tiny 已缓存应无目标");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
