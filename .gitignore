@@ -1,2 +1,4 @@
 /target
 LiveTranslate/
+# 实机走查截图涉个人隐私，禁止入库（docs/ui-audit 已从 git 历史清除）
+docs/ui-audit/

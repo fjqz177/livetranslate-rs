@@ -1,7 +1,7 @@
 # GUI 对齐原版改造方案（UI Realign Plan）
 
 > 依据：2026-09-06 同机实测走查。同一台机器（Windows 10 / 2560x1600 / DPI 150%）先后运行 Python 原版（`LiveTranslate/main.py`，PyQt6）与 Rust 版（`target/release/livetranslate.exe`），逐窗口截图比对，并对存疑处回读双方源码交叉验证。
-> 证据截图：`docs/ui-audit/`（文件名 `01_py_*` = 原版，`2x_rs_*` = Rust 版，`30_py_readme_running_zh.png` = 原版运行态官方效果图）。
+> 证据截图：实机走查截图不入仓库（涉个人隐私，走查后已删除）；本方案结论以文字与源码为准。
 
 ---
 
