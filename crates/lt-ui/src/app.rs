@@ -235,10 +235,19 @@ impl MultiWindowApp {
         let ppp = self.windows[pos].window.scale_factor() as f32;
 
         // 按窗口注入 visuals（egui pass 串行执行，帧前 set 对本 pass 生效）：
-        // 控制面板 = Windows 原生浅色（原版 PyQt6 默认控件）；其余窗口深色
+        // 控制面板 = Windows 原生浅色（原版 PyQt6 默认控件）；其余窗口深色。
+        // 三态描边/字重统一（消 hover 文字微移，WP-B）对各主题幂等。
         ctx.set_visuals(match id {
-            WinId::Panel => crate::windows::panel::panel_visuals(),
-            _ => egui::Visuals::dark(),
+            WinId::Panel => {
+                let mut v = crate::windows::panel::panel_visuals();
+                crate::style::stabilize_widget_strokes(&mut v);
+                v
+            }
+            _ => {
+                let mut v = egui::Visuals::dark();
+                crate::style::stabilize_widget_strokes(&mut v);
+                v
+            }
         });
 
         // 取输入（借 windows），随后 UI 闭包只借 app_state，避免借用冲突

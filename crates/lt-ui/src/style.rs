@@ -173,6 +173,28 @@ pub fn preset_style(name: &str) -> Style {
     s
 }
 
+// ── 全局控件三态稳定（WP-B，消 hover 文字微移） ──
+
+/// egui 0.36 按钮内边距公式 = `button_padding − bg_stroke.width`
+/// （egui widget_style.rs button_style）。dark/light 默认三态描边宽度不一致
+/// （inactive 0 / hovered·active 1）→ hover 时内容区每边扩 1px、文字横移
+/// 0.5px；fg_stroke 宽 1.0→1.5 还会让文字 hover 变粗。
+///
+/// 以 inactive 态为基准把 hovered/active 的描边与字重拉齐：静止外观不变，
+/// hover 反馈只剩底色/字色变化（对齐原版 QSS hover 语义 = 只变底色字色，
+/// 不动布局不变粗）。
+pub fn stabilize_widget_strokes(v: &mut egui::Visuals) {
+    let stroke_w = v.widgets.inactive.bg_stroke.width;
+    v.widgets.hovered.bg_stroke.width = stroke_w;
+    v.widgets.active.bg_stroke.width = stroke_w;
+    let fg_w = v.widgets.inactive.fg_stroke.width;
+    v.widgets.hovered.fg_stroke.width = fg_w;
+    v.widgets.active.fg_stroke.width = fg_w;
+    let radius = v.widgets.inactive.corner_radius;
+    v.widgets.hovered.corner_radius = radius;
+    v.widgets.active.corner_radius = radius;
+}
+
 // ── 原版字面强调色（不随预设变化） ──
 
 /// 源语言标签（原版 #6cf）
