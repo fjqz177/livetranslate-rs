@@ -46,6 +46,7 @@ cargo run -p lt-app               # GUI 冒烟
 8. 字幕窗 30% 黑底叠白窗呈现的 179 灰是正常 alpha 合成，勿误判为渲染 bug。
 9. C 盘满会使测试 TEMP 报 StorageFull、GDI+ Save 失败（假死）——临时把 TMPDIR 指 D 盘。
 10. 实机走查时 egui 窗口 PrintWindow 会抓到旧帧，必须全屏截图验收。
+11. **edition 2021 的 if-let scrutinee 临时值自死锁**（WP-3 实锤）：`if let Some(x) = shared_lock.lock().unwrap().method() { … } else { 再 lock 同一把 }` 的 MutexGuard 临时值存活到整个 if-let 语句结束（含 else 分支）→ 同线程二次加锁永久死锁。共享锁 + 分支派发一律先 `let v = lock.lock().unwrap().method();` 绑定再分支。
 
 ## 约定
 
@@ -55,7 +56,8 @@ cargo run -p lt-app               # GUI 冒烟
 
 ## 当前待办（2026-09-07 截点）
 
-- ErrorBanner（新版悬浮窗错误分类条）、全局热键（hotkeys_group）、M6 interim 装配接线（算法层 `interim.rs` 已完成 37 测，待 VAD Arc 共享拓扑对齐原版 `_vad_lock`）。
-- FunASR Nano 实装（目前仅注册表占位）、CI。
+- ErrorBanner（新版悬浮窗错误分类条）、全局热键（hotkeys_group）——两者在 Python 权威副本中不存在，出处待用户裁决（parity-closure-plan WP-8 / D-3、D-4）。
+- ~~M6 interim 装配接线~~ 已完成（2026-09-07：VAD 共享拓扑 + ASR 分流 + 全链热应用接线，290 测全绿，loopback 端到端实证，见 parity-closure-plan WP-3 执行纪要）。
+- FunASR Nano 置灰防坑（WP-2 第 1 步，1 小时级）、CI。
 - ~~StartDownload targets 动态化~~ 已完成（2026-09-07：backend settings 镜像现场重算，随 whisper 放开落地）。
-- M6 调优三件（启动<2s / 空闲 CPU<1% / 8h 长跑）与内存回收实测；端到端语音复验（需实机非静音时段）。
+- M6 调优三件（启动<2s / 空闲 CPU<1% / 8h 长跑）与内存回收实测；端到端语音复验（需实机非静音时段，interim 已可对照开/关）。

@@ -307,6 +307,9 @@ pub struct InterimState {
     pub last_samples: usize,
     /// 上次 interim 检查的时间戳（原版 `_last_interim_check_time`，perf_counter 秒）
     pub last_check_time: f64,
+    /// 本轮语音内已有增量提交（原版 `_interim_active`；vad_flush 到来时为真则
+    /// 收尾段走回声剥离 + pending 拼接语义，随后随 [`Self::reset`] 复位）
+    pub active: bool,
 }
 
 impl InterimState {
@@ -605,12 +608,14 @@ mod tests {
             pending: "好的。".into(),
             last_samples: 32_000,
             last_check_time: 123.5,
+            active: true,
         };
         st.reset();
         assert_eq!(st.committed_tail, "");
         assert_eq!(st.pending, "");
         assert_eq!(st.last_samples, 0);
         assert_eq!(st.last_check_time, 0.0);
+        assert!(!st.active);
         // 默认值与 reset 后一致
         assert_eq!(st.committed_tail, InterimState::default().committed_tail);
     }

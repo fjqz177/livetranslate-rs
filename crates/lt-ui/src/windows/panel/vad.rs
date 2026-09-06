@@ -602,14 +602,18 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
             mark_settings_dirty(state);
         }
 
-        // 增量识别 + 间隔（原版 _incremental_asr_cb / _interim_interval_spin；
-        // 热应用命令 Cmd::IncrementalAsr 待 M4.4 接线，本批先落盘）
+        // 增量识别 + 间隔（原版 _incremental_asr_cb / _interim_interval_spin：
+        // 变更即时发 Cmd::IncrementalAsr 热应用 + 300ms 防抖 ApplySettings 落盘）
         let mut inc = state.settings.incremental_asr;
         if ui
             .add(egui::Checkbox::new(&mut inc, RichText::new(lt_i18n::t("label_incremental_asr")).color(pal.text)))
             .changed()
         {
             state.settings.incremental_asr = inc;
+            state.send_cmd(lt_proto::Cmd::IncrementalAsr {
+                enabled: inc,
+                interval: state.settings.interim_interval,
+            });
             mark_settings_dirty(state);
         }
         let mut itv = state.settings.interim_interval;
@@ -626,6 +630,10 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
         }
         if itv_changed {
             state.settings.interim_interval = itv;
+            state.send_cmd(lt_proto::Cmd::IncrementalAsr {
+                enabled: inc,
+                interval: itv,
+            });
             mark_settings_dirty(state);
         }
     });

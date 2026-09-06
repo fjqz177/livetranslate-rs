@@ -1,14 +1,20 @@
 //! 管道装配（M2.6；原版 main.py 启动流等价）：
 //!
 //! 音频线程（wasapi 后端内部）→ 16k mono chunk 满丢旧队列
-//! → capture 线程（CaptureLoop：RMS/VAD 监视 + VAD 状态机 + 超时静音推进），
-//!   与原版 _capture_loop 一致、无中间分流线程：
+//! → capture 线程（CaptureLoop：RMS/VAD 监视 + VAD 状态机 + 超时静音推进
+//!   + 增量触发判定），与原版 _capture_loop 一致、无中间分流线程：
 //!     - monitor 数据：capture 线程内经 EventLoopProxy 直接推 UI
 //!       （等价原版跨线程调 update_monitor，每 chunk ≈31/s）
 //!     - 语音段：capture 线程直接入满丢旧段队列（等价原版 _enqueue_asr）
-//! → ASR 线程：段队列空闲时做 RSS 回收（原版 _asr_loop queue.Empty 分支）；
-//!   AsrManager.transcribe（独占）→ 段级三层过滤（空/纯标点 → 噪声 → 语言，
-//!   对照原版 main.py `_process_segment`）→ AddMessage
+//!     - 增量触发：VAD 独占改共享（Arc<Mutex>，锁粒度=单次方法调用，对齐
+//!       原版 _vad_lock）；条件满足塞 Interim 空标记，不在 capture 线程跑 ASR
+//!
+//! → ASR 线程：Manager 独占 + 段处理；空闲时 RSS 回收（原版 _asr_loop
+//!   queue.Empty 分支）+ 翻译器切换命令。
+//!   分流（原版 _asr_loop）：Interim 标记 → 排空重复 → 锁 VAD peek/识别/裁剪
+//!   （`_do_interim_asr`）；VadFlush → interim 激活时走回声剥离+pending 拼接
+//!   收尾（`_process_interim_final`），否则段级三层过滤（`_process_segment`，
+//!   空/纯标点 → 噪声 → 语言）→ AddMessage
 //!   → 同语言直接回空译文；否则提交翻译线程池（M3；原版 _tl_executor，
 //!   max_workers=8）→ UpdateStreaming/UpdateTranslation/UpdateStats。
 //!
@@ -17,11 +23,18 @@
 use lt_asr::{AsrManager, WorkerConfig};
 use lt_models::registry;
 use lt_pipeline::audio::wasapi_win::WasapiBackend;
-use lt_pipeline::{AudioBackend, BoundedDropQueue, CaptureLoop, SegmentSource, VadProcessor, VadSettings};
+use lt_pipeline::interim::{
+    is_short_utterance, pending_merge, split_sentences, strip_committed_overlap, trim_samples,
+    InterimState,
+};
+use lt_pipeline::{
+    AudioBackend, BoundedDropQueue, CaptureLoop, InterimControl, SegmentSource, VadProcessor,
+    VadSettings,
+};
 use lt_proto::{UiEvent, UiMsg};
 use lt_translate::Translator;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use winit::event_loop::EventLoopProxy;
 
@@ -269,6 +282,8 @@ pub struct Pipeline {
     tl_switch: Option<crossbeam_channel::Sender<TlSwitch>>,
     /// VAD 参数热更新槽（面板"应用"→ capture 线程）
     vad_update: Arc<std::sync::Mutex<Option<lt_pipeline::VadSettings>>>,
+    /// 增量识别控制块（与 capture/ASR 线程共享；set_interim 热应用）
+    interim: Arc<InterimControl>,
     threads: Vec<std::thread::JoinHandle<()>>,
 }
 
@@ -347,6 +362,12 @@ impl Pipeline {
         vad.update_settings(&vad_settings);
 
         let segment_queue = Arc::new(BoundedDropQueue::<(SegmentSource, Vec<f32>)>::new(SEGMENT_QUEUE_CAP));
+        // VAD 共享拓扑（原版 _vad_lock）：capture 写、ASR 线程增量识别时
+        // peek/trim/speech_samples 读，锁粒度 = 单次方法调用
+        let vad = Arc::new(Mutex::new(vad));
+        let interim = Arc::new(InterimControl::default());
+        // 启动即按持久化设置就位（原版 _incremental_enabled/_interim_interval 随启动初始化）
+        interim.set(settings.incremental_asr, settings.interim_interval);
         let mut threads = Vec::new();
         {
             let stop = stop.clone();
@@ -354,6 +375,8 @@ impl Pipeline {
             let segment_queue = segment_queue.clone();
             let proxy = proxy.clone();
             let vad_update_capture = vad_update.clone();
+            let vad = vad.clone();
+            let interim = interim.clone();
             std::thread::Builder::new().name("lt-capture".into()).spawn(move || {
                 // 原版 _capture_loop：monitor 直接跨线程信号（此处经 proxy 发 UI 事件，
                 // vad 转换为 UI 侧 f32），段直接塞 _asr_queue 等价队列（满丢旧）
@@ -369,8 +392,9 @@ impl Pipeline {
                     },
                     paused,
                     vad_update: vad_update_capture,
+                    interim,
                 };
-                loop_.run(&mut vad, &stop);
+                loop_.run(&vad, &stop);
             })?;
         }
 
@@ -386,8 +410,14 @@ impl Pipeline {
             let settings = settings.clone();
             let pending = pending.clone();
             let tl = tl.clone();
+            let vad = vad.clone();
+            let interim = interim.clone();
             threads.push(std::thread::Builder::new().name("lt-asr-main".into()).spawn(move || {
-                run_asr_thread(&settings, segment_queue, pending, stop, proxy, tl, tl_switch_rx);
+                run_asr_thread(
+                    &settings,
+                    AsrThreadCtx { segment_queue, vad, interim, pending, stop, proxy, tl_switch: tl_switch_rx },
+                    tl,
+                );
             })?);
         }
 
@@ -400,6 +430,7 @@ impl Pipeline {
             tl,
             tl_switch: Some(tl_switch_tx),
             vad_update,
+            interim,
             threads,
         })
     }
@@ -465,6 +496,14 @@ impl Pipeline {
     /// 塞入信号槽，capture 线程下一 chunk 应用
     pub fn update_vad_settings(&self, s: lt_pipeline::VadSettings) {
         *self.vad_update.lock().unwrap() = Some(s);
+    }
+
+    /// 增量识别开关/间隔热应用（原版 _incremental_asr_cb → _incremental_enabled/
+    /// _interim_interval）：写共享控制块，capture 线程下一 chunk 生效；
+    /// 关闭时清进度计数，重开从零起算
+    pub fn set_interim(&self, enabled: bool, interval: f32) {
+        self.interim.set(enabled, interval);
+        tracing::info!("增量识别: {enabled}（间隔 {interval}s）");
     }
 
     #[allow(dead_code)]
@@ -625,18 +664,30 @@ fn build_worker_config(
     }
 }
 
-/// ASR 线程：模型就绪则循环识别；未缓存则发 AsrUnavailable 后待命
-fn run_asr_thread(
-    settings: &lt_proto::Settings,
+/// ASR 线程上下文（Pipeline::start 一次性装配的共享件）
+struct AsrThreadCtx {
     segment_queue: Arc<BoundedDropQueue<(SegmentSource, Vec<f32>)>>,
+    /// 与 capture 线程共享的 VAD（增量识别锁内 peek/trim，原版 _vad_lock）
+    vad: Arc<Mutex<VadProcessor>>,
+    /// 增量识别跨线程控制块（capture 写触发时间、本线程写消费进度）
+    interim: Arc<InterimControl>,
     pending: lt_asr::AsrPendingHandle,
     stop: Arc<AtomicBool>,
     proxy: EventLoopProxy<UiMsg>,
-    mut tl: Option<Arc<TlRig>>,
     tl_switch: crossbeam_channel::Receiver<TlSwitch>,
+}
+
+/// ASR 线程：模型就绪则循环识别；未缓存则发 AsrUnavailable 后待命
+fn run_asr_thread(
+    settings: &lt_proto::Settings,
+    ctx: AsrThreadCtx,
+    mut tl: Option<Arc<TlRig>>,
 ) {
+    let AsrThreadCtx { segment_queue, vad, interim, pending, stop, proxy, tl_switch } = ctx;
     // 目标语言的运行时快照（同语言判定用；TlSwitch::TargetLanguage 同步更新）
     let mut target_language = settings.target_language.clone();
+    // 增量识别会话状态（原版 _interim_* 字段；跨段存活，vad_flush 复位）
+    let mut interim_state = InterimState::default();
     // 构造 worker 配置（当前仅 sensevoice；whisper M5）
     let models_dir = match lt_models::paths::models_dir(settings.models_dir.as_deref()) {
         Ok(d) => d,
@@ -768,77 +819,294 @@ fn run_asr_thread(
             }
             continue;
         };
-        let _ = source;
-        if audio.is_empty() {
-            continue;
-        }
-        let seg_seconds = audio.len() as f64 / lt_pipeline::TARGET_RATE as f64;
-        let t0 = std::time::Instant::now();
-        match manager.transcribe(&audio, false) {
-            Ok(result) => {
-                // 段级三层过滤（原版 _process_segment：空/纯标点 → 噪声 → 语言）
-                if let Some(reason) =
-                    reject_segment(&result.text, seg_seconds, &settings.asr_language, &result.language)
-                {
-                    match reason {
-                        REJECT_LANGUAGE => {
-                            // 预览按字符截断，避免切坏 UTF-8 边界
-                            let preview: String = result.text.chars().take(60).collect();
-                            tracing::info!(
-                                "语言过滤: 期望 {:?} 但识别为 {:?}，丢弃: {preview}",
-                                settings.asr_language,
-                                result.language
-                            );
-                        }
-                        REJECT_NOISE => tracing::debug!(
-                            "噪声过滤: {seg_seconds:.1}s 段仅产出 {:?}",
-                            result.text
-                        ),
-                        _ => tracing::debug!("ASR 返回空/纯标点结果，跳过: {:?}", result.text),
-                    }
+        match source {
+            SegmentSource::Interim => {
+                // 增量通道（原版 main.py:1720-1724）：排空重复标记 → 锁 VAD
+                // peek/识别/裁剪 → 更新消费进度（capture 线程的 elapsed 由此起算）
+                drain_interim_duplicates(&segment_queue);
+                run_interim_pass(
+                    &mut manager,
+                    &vad,
+                    &mut interim_state,
+                    settings,
+                    &target_language,
+                    tl.as_deref(),
+                    &proxy,
+                );
+                let samples = { vad.lock().unwrap().speech_samples() };
+                interim.last_interim_samples.store(samples as u64, Ordering::Relaxed);
+            }
+            SegmentSource::VadFlush => {
+                if audio.is_empty() {
                     continue;
                 }
-                let asr_ms = t0.elapsed().as_secs_f64() * 1000.0;
-                let timestamp = chrono::Local::now().format("%H:%M:%S").to_string();
-                let id = uuid::Uuid::new_v4().as_u128() as u64;
-                let original_text = result.text;
-                let source_lang = result.language;
-                let _ = proxy.send_event(UiMsg::Event(UiEvent::AddMessage {
-                    id,
-                    timestamp: timestamp.clone(),
-                    original: original_text.clone(),
-                    lang: source_lang.clone(),
-                    asr_ms,
-                }));
-
-                // ── 翻译分流（原版 _process_segment 尾部；字幕窗 extra_langs 随 M4 接入）──
-                if let Some(rig) = &tl {
-                    rig.stats.asr_count.fetch_add(1, Ordering::Relaxed);
-                    rig.transcript.write_original(id, &timestamp, &original_text);
-                    if source_lang == target_language {
-                        tracing::info!("Same language ({source_lang}), no translation");
-                        rig.transcript.finalize_no_translation(id);
-                        let _ = proxy.send_event(UiMsg::Event(UiEvent::UpdateTranslation {
-                            id,
-                            text: String::new(),
-                            tl_ms: 0.0,
-                        }));
-                        let _ = proxy.send_event(UiMsg::Event(rig.stats.snapshot_event()));
-                    } else {
-                        rig.submit_translation(&proxy, id, original_text, source_lang);
+                let seg_seconds = audio.len() as f64 / lt_pipeline::TARGET_RATE as f64;
+                let t0 = std::time::Instant::now();
+                match manager.transcribe(&audio, false) {
+                    Ok(result) => {
+                        let asr_ms = t0.elapsed().as_secs_f64() * 1000.0;
+                        if interim_state.active {
+                            // 收尾段（原版 _process_interim_final 的 Ok(result) 分支）：
+                            // 回声剥离 → pending 前置拼接 → 噪声过滤 → 提交
+                            commit_interim_final(
+                                &mut interim_state,
+                                settings,
+                                &target_language,
+                                tl.as_deref(),
+                                &proxy,
+                                &result.text,
+                                &result.language,
+                                asr_ms,
+                                seg_seconds,
+                            );
+                        } else if let Some(reason) = reject_segment(
+                            &result.text,
+                            seg_seconds,
+                            &settings.asr_language,
+                            &result.language,
+                        ) {
+                            // 段级三层过滤（原版 _process_segment：空/纯标点 → 噪声 → 语言）
+                            match reason {
+                                REJECT_LANGUAGE => {
+                                    // 预览按字符截断，避免切坏 UTF-8 边界
+                                    let preview: String = result.text.chars().take(60).collect();
+                                    tracing::info!(
+                                        "语言过滤: 期望 {:?} 但识别为 {:?}，丢弃: {preview}",
+                                        settings.asr_language,
+                                        result.language
+                                    );
+                                }
+                                REJECT_NOISE => tracing::debug!(
+                                    "噪声过滤: {seg_seconds:.1}s 段仅产出 {:?}",
+                                    result.text
+                                ),
+                                _ => tracing::debug!("ASR 返回空/纯标点结果，跳过: {:?}", result.text),
+                            }
+                        } else {
+                            commit_text(
+                                settings,
+                                &target_language,
+                                tl.as_deref(),
+                                &proxy,
+                                &result.text,
+                                &result.language,
+                                asr_ms,
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("ASR 段识别失败: {e}");
+                        if e.unavailable() {
+                            let _ = proxy.send_event(UiMsg::Event(UiEvent::AsrUnavailable));
+                        }
                     }
                 }
-            }
-            Err(e) => {
-                tracing::warn!("ASR 段识别失败: {e}");
-                if e.unavailable() {
-                    let _ = proxy.send_event(UiMsg::Event(UiEvent::AsrUnavailable));
-                }
+                // 无论走哪支，处理完收尾段后复位全部增量状态（原版 main.py:1715-1719）
+                interim_state.reset();
+                interim.last_interim_samples.store(0, Ordering::Relaxed);
+                interim.last_check_ms.store(0, Ordering::Relaxed);
             }
         }
     }
     manager.shutdown();
     tracing::info!("ASR 线程退出");
+}
+
+/// 排空队列头部连续的 interim 标记（原版 `_drain_interim_duplicates`）：
+/// 标记积压时只处理最早一枚（调用方已弹出），其余直接丢弃——重复识别同一
+/// 缓冲只产出空结果，纯烧 CPU。首个非 interim 项回插队首保序。
+fn drain_interim_duplicates(queue: &BoundedDropQueue<(SegmentSource, Vec<f32>)>) {
+    while let Some((source, audio)) = queue.try_pop() {
+        match source {
+            SegmentSource::Interim => continue,
+            other => {
+                queue.push_front((other, audio));
+                break;
+            }
+        }
+    }
+}
+
+/// 增量通道（对照原版 `_do_interim_asr` 逐条）：锁 VAD peek → 短缓冲跳过 →
+/// 识别 → 回声剥离 → 分句 → 提交前 n-1 句（短句 ≤8 字母数字进 pending 拼接）
+/// → 比例裁剪已消费音频 → 更新 tail/active。返回是否提交了句子。
+fn run_interim_pass(
+    manager: &mut AsrManager,
+    vad: &Arc<Mutex<VadProcessor>>,
+    st: &mut InterimState,
+    settings: &lt_proto::Settings,
+    target_language: &str,
+    tl: Option<&TlRig>,
+    proxy: &EventLoopProxy<UiMsg>,
+) -> bool {
+    // ① 锁内 peek，立即解锁（原版 with self._vad_lock: peek_buffer）
+    let peek = vad.lock().unwrap().peek_buffer();
+    let Some((audio, duration)) = peek else {
+        return false;
+    };
+    if duration < 1.5 {
+        return false;
+    }
+    // ② 识别（原版 use_word_ts=False：词级时间戳对重复增量通道太贵）
+    let t0 = Instant::now();
+    let Ok(result) = manager.transcribe(&audio, false) else {
+        tracing::warn!("Interim ASR 识别失败，跳过本轮（收尾段不受影响）");
+        return false;
+    };
+    let asr_ms = t0.elapsed().as_secs_f64() * 1000.0;
+    let full_raw = result.text.trim();
+    if full_raw.is_empty() || !full_raw.chars().any(|c| c.is_alphanumeric()) {
+        return false;
+    }
+    // ③ 回声剥离（与上次提交的尾部重叠）
+    let full_text = strip_committed_overlap(full_raw, &st.committed_tail);
+    if full_text.is_empty() {
+        return false;
+    }
+    // ④ 分句；仅一句 → 末句仍在说，不提交
+    let sentences = split_sentences(&full_text, &result.language);
+    if sentences.len() <= 1 {
+        return false;
+    }
+    let complete = &sentences[..sentences.len() - 1];
+    let committed_text: String = complete.concat();
+    if committed_text.trim().is_empty() {
+        return false;
+    }
+    // ⑤ 比例裁剪量（原版 use_word_ts=False 分支；公式已在 interim::trim_samples 移植）
+    let trim = trim_samples(
+        audio.len(),
+        committed_text.chars().count(),
+        full_text.chars().count(),
+        lt_pipeline::TARGET_RATE as usize,
+    );
+    // ⑥ 提交完整句；短句进 pending 等下句前置拼接（无分隔符，原版同）
+    let mut committed = false;
+    for sent in complete {
+        let text = sent.trim();
+        if text.is_empty() {
+            continue;
+        }
+        if is_short_utterance(text) {
+            st.pending = pending_merge(&st.pending, text);
+            tracing::debug!("Interim 短句缓冲: {text:?}，pending={:?}", st.pending);
+            continue;
+        }
+        let text = pending_merge(&st.pending, text);
+        st.pending.clear();
+        commit_text(settings, target_language, tl, proxy, &text, &result.language, asr_ms);
+        committed = true;
+    }
+    if !committed {
+        return false;
+    }
+    // ⑦ 裁剪已消费音频 + 记录 tail（末 50 字符）+ 置 active
+    if trim > 0 {
+        vad.lock().unwrap().trim_front(trim);
+    }
+    let tail_start = committed_text
+        .char_indices()
+        .rev()
+        .nth(49)
+        .map(|(i, _)| i)
+        .unwrap_or(0);
+    st.committed_tail = committed_text[tail_start..].to_string();
+    st.active = true;
+    tracing::info!(
+        "Interim ASR: committed {} sentence(s), trimmed {:.2}s",
+        complete.len(),
+        trim as f64 / lt_pipeline::TARGET_RATE as f64
+    );
+    true
+}
+
+/// 收尾段提交（原版 `_process_interim_final` 的 Ok(result) 分支 1:1）：
+/// 回声剥离 → pending 前置拼接 → 空/纯标点检查 → 噪声过滤（与 _process_segment
+/// 同阈值，但 interim 完整句不含此层）→ 走 [`commit_text`]（内部再做空/语言过滤，
+/// 对齐原版 `_process_segment_text` 的重复防线）。Err 分支在调用方（≈原版异常
+/// 路径：不冲刷 pending，随复位丢弃）。
+#[allow(clippy::too_many_arguments)]
+fn commit_interim_final(
+    st: &mut InterimState,
+    settings: &lt_proto::Settings,
+    target_language: &str,
+    tl: Option<&TlRig>,
+    proxy: &EventLoopProxy<UiMsg>,
+    raw_text: &str,
+    lang: &str,
+    asr_ms: f64,
+    seg_seconds: f64,
+) {
+    let stripped = strip_committed_overlap(raw_text.trim(), &st.committed_tail);
+    let mut text = pending_merge(&st.pending, &stripped);
+    st.pending.clear();
+    text = text.trim().to_string();
+    let alnum = text.chars().filter(|c| c.is_alphanumeric()).count();
+    if text.is_empty() || alnum == 0 {
+        return;
+    }
+    if seg_seconds >= 2.0 && alnum <= 3 {
+        tracing::debug!("噪声过滤: {seg_seconds:.1}s 段仅产出 {text:?}，跳过");
+        return;
+    }
+    commit_text(settings, target_language, tl, proxy, &text, lang, asr_ms);
+}
+
+/// 提交一条已确定文本（原版 `_process_segment_text` 尾部等价）：AddMessage →
+/// 统计/转写落盘 → 同语言直显空译文或提交翻译。开头复做空/纯标点与语言过滤
+/// （原版 `_process_segment_text` 即如此；vad_flush 整段路径调用前已过三层过滤，
+/// 此处检查冗余但无害——1:1 保留原版的双层防线）。
+#[allow(clippy::too_many_arguments)]
+fn commit_text(
+    settings: &lt_proto::Settings,
+    target_language: &str,
+    tl: Option<&TlRig>,
+    proxy: &EventLoopProxy<UiMsg>,
+    text: &str,
+    lang: &str,
+    asr_ms: f64,
+) {
+    let original_text = text.trim();
+    if original_text.is_empty() || !original_text.chars().any(|c| c.is_alphanumeric()) {
+        tracing::debug!("ASR 返回空/纯标点结果，跳过: {original_text:?}");
+        return;
+    }
+    if settings.asr_language != "auto" && lang != settings.asr_language {
+        // 预览按字符截断，避免切坏 UTF-8 边界
+        let preview: String = original_text.chars().take(60).collect();
+        tracing::info!(
+            "语言过滤: 期望 {:?} 但识别为 {:?}，丢弃: {preview}",
+            settings.asr_language,
+            lang
+        );
+        return;
+    }
+    let timestamp = chrono::Local::now().format("%H:%M:%S").to_string();
+    let id = uuid::Uuid::new_v4().as_u128() as u64;
+    let _ = proxy.send_event(UiMsg::Event(UiEvent::AddMessage {
+        id,
+        timestamp: timestamp.clone(),
+        original: original_text.to_string(),
+        lang: lang.to_string(),
+        asr_ms,
+    }));
+
+    // ── 翻译分流（原版 _process_segment_text 尾部；字幕窗 extra_langs 随 M4 接入）──
+    let Some(rig) = tl else { return };
+    rig.stats.asr_count.fetch_add(1, Ordering::Relaxed);
+    rig.transcript.write_original(id, &timestamp, original_text);
+    if lang == target_language {
+        tracing::info!("Same language ({lang}), no translation");
+        rig.transcript.finalize_no_translation(id);
+        let _ = proxy.send_event(UiMsg::Event(UiEvent::UpdateTranslation {
+            id,
+            text: String::new(),
+            tl_ms: 0.0,
+        }));
+        let _ = proxy.send_event(UiMsg::Event(rig.stats.snapshot_event()));
+    } else {
+        rig.submit_translation(proxy, id, original_text.to_string(), lang.to_string());
+    }
 }
 
 #[cfg(test)]

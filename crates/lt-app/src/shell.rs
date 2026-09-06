@@ -93,6 +93,15 @@ impl AppShell {
                 tracing::info!("padding 挂起: {engine} {secs}s（下一段识别生效）");
                 self.persist_settings();
             }
+            // 增量识别热应用（原版 _incremental_asr_cb → _incremental_enabled/
+            // _interim_interval）；settings 字段已由面板写入
+            Cmd::IncrementalAsr { enabled, interval } => {
+                if let Some(p) = &self.pipeline {
+                    p.set_interim(enabled, interval);
+                }
+                tracing::info!("增量识别: {enabled}（间隔 {interval}s）");
+                self.persist_settings();
+            }
             Cmd::SetTargetLanguage(lang) => {
                 if let Some(p) = self.pipeline.as_mut() {
                     p.set_translator_target_language(&lang);
@@ -183,13 +192,16 @@ impl AppShell {
                     });
                     p.set_translator_target_language(&s.target_language);
                     p.set_translator_timeout(s.timeout);
+                    // 增量识别重放（原版 settings_changed 同步 _incremental_enabled/
+                    // _interim_interval，main.py:321-323）
+                    p.set_interim(s.incremental_asr, s.interim_interval);
                 }
                 transcript_shared().set_enabled(s.auto_save_transcript);
                 self.ui.app_state.settings = s;
                 self.persist_settings();
                 tracing::info!("设置已应用");
             }
-            // 其余命令 M4 后续波次接线（增量 ASR 开关）
+            // 其余命令后续波次接线
             other => tracing::debug!("命令待后续接线: {other:?}"),
         }
     }

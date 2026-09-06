@@ -130,7 +130,28 @@
 
 ---
 
-## WP-3 interim 增量识别接线（P0，体感差距最大）
+## WP-3 interim 增量识别接线（P0，体感差距最大）　**✅ 已完成（2026-09-07）**
+
+> 执行纪要：A 拓扑 = `SegmentSource::{VadFlush, Interim}` + `InterimControl` 原子控制块
+> （enabled/interval_bits/last_interim_samples/last_check_ms，`Pipeline::start` 按
+> settings 初始化、`set_interim` 热应用）+ capture/ASR 两线程共享 `Arc<Mutex<VadProcessor>>`
+> （锁粒度=单次方法调用）；B 分流 = `run_interim_pass`（`_do_interim_asr` 逐条）+
+> `commit_interim_final`（`_process_interim_final` Ok 分支）+ `commit_text`（
+> `_process_segment_text` 尾部抽取，vad_flush 与 interim 句共用，零契约扩展）+
+> `drain_interim_duplicates`（BoundedDropQueue 新增 try_pop/push_front 回插保序）；
+> C 接线 = 面板复选框/间隔发 `Cmd::IncrementalAsr` + shell 分支 + ApplySettings 全量
+> 重放补 set_interim（对齐原版 settings_changed 同步两键）；`InterimState` 补 `active`
+> 字段（原版 `_interim_active`）。
+> **施工大坑（已入 AGENTS.md 坑 11）**：edition 2021 下 `if let Some(x) = vad.lock()
+> .unwrap().process_chunk(..) { } else { 触发判定再锁 vad }` 的 scrutinee MutexGuard
+> 临时值存活到整个 if-let 语句结束（含 else）→ 同线程自死锁。修复 = 先 `let seg = ..;`
+> 绑定再分支；超时分支同款锁内 push 一并消除。真值表+集成单测（4 个）当场抓住。
+> 验证：`cargo test --workspace` **290 测全绿**（基线 285 + 新增 5：触发真值表、
+> InterimControl.set 清进度、interim 标记集成×2、队列 try_pop/push_front）；
+> **实机端到端冒烟**（loopback 播放三连 jfk.wav，增量间隔 1s）：三次
+> `Interim ASR: committed`、消息时间戳渐次出现（07:30:31→07:31:01 横跨播放期）、
+> 比例裁剪 2.55s/3.72s/2.56s、转写落盘正常；**关闭增量回归**：0 次提交、消息只在
+> 整段收尾出现。对麦真人语音复验仍归 WP-9 步骤 5。
 
 ### 现状与证据
 

@@ -189,6 +189,22 @@ impl<T> BoundedDropQueue<T> {
         }
     }
 
+    /// 立即取出不等待；None = 空（对应原版 get_nowait）
+    pub fn try_pop(&self) -> Option<T> {
+        self.inner.lock().pop_front()
+    }
+
+    /// 回插队首（原版 `_drain_interim_duplicates` 排空重复标记后把首个非 interim
+    /// 项 put 回队首的等价物；满时丢弃队尾一条以保队首项位）
+    pub fn push_front(&self, v: T) {
+        let mut q = self.inner.lock();
+        if q.len() >= self.cap {
+            q.pop_back();
+        }
+        q.push_front(v);
+        self.cv.notify_one();
+    }
+
     pub fn len(&self) -> usize {
         self.inner.lock().len()
     }
@@ -355,6 +371,29 @@ mod tests {
         assert_eq!(q.pop_timeout(Duration::from_millis(1)), None);
         q.clear();
         assert!(q.is_empty());
+    }
+
+    #[test]
+    fn try_pop_and_push_front_preserve_order() {
+        // 排空重复标记场景：弹出后回插队首，FIFO 顺序不变（原版 put 回语义）
+        let q: BoundedDropQueue<u32> = BoundedDropQueue::new(4);
+        for i in [10, 20, 30] {
+            q.push(i);
+        }
+        assert_eq!(q.try_pop(), Some(10));
+        assert_eq!(q.try_pop(), Some(20));
+        assert_eq!(q.try_pop(), Some(30));
+        assert_eq!(q.try_pop(), None);
+        q.push_front(20);
+        assert_eq!(q.try_pop(), Some(20));
+        // 满时 push_front 丢队尾保队首
+        let full: BoundedDropQueue<u32> = BoundedDropQueue::new(2);
+        full.push(1);
+        full.push(2);
+        full.push_front(0);
+        assert_eq!(full.try_pop(), Some(0));
+        assert_eq!(full.try_pop(), Some(1));
+        assert_eq!(full.try_pop(), None);
     }
 
     #[test]
