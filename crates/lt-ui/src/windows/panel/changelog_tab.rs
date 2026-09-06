@@ -10,7 +10,7 @@
 
 use super::{group_card, Palette};
 use crate::state::AppState;
-use egui::{Color32, RichText, ScrollArea, Ui};
+use egui::{Color32, RichText, Ui};
 
 const ZH_MD: &str = include_str!("../../../../../assets/i18n/CHANGELOG_zh.md");
 const EN_MD: &str = include_str!("../../../../../assets/i18n/CHANGELOG_en.md");
@@ -23,17 +23,17 @@ pub fn changelog_text(lang: &str) -> &'static str {
     }
 }
 
-/// 更新日志 Tab UI 总入口（panel_ui 按 PanelPage::Changelog 分派）
+/// 更新日志 Tab UI 总入口（panel_ui 按 PanelPage::Changelog 分派）。
+/// 已知偏差：原版是 group 框内 QTextBrowser 自滚；此处直接流式排布、由
+/// 面板整页 ScrollArea 滚动——嵌套 ScrollArea 会叠加双层滚动条占位宽
+/// （6px×2）造成文本 wrap 宽度与可见宽度错位、行尾被裁（实机走查修复）。
 pub fn page(ui: &mut Ui, _state: &mut AppState, _pal: &Palette) {
     let text = changelog_text(&lt_i18n::get_lang());
     group_card(ui, _pal, &lt_i18n::t("group_changelog"), |ui| {
-        ScrollArea::vertical()
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                let min_h = (ui.available_height() - 8.0).max(300.0);
-                ui.set_min_height(min_h);
-                render_markdown(ui, text);
-            });
+        // wrapped 行宽收 10px 安全量：ScrollArea 的 wrap 分配宽与 clip 缘存在
+        // 滚动条占位微差，行尾字符会被裁（实机走查 2026-09-07）
+        ui.set_max_width(ui.available_width() - 10.0);
+        render_markdown(ui, text);
     });
 }
 
@@ -56,7 +56,9 @@ fn render_markdown(ui: &mut Ui, text: &str) {
             continue;
         }
         if let Some(item) = trimmed.strip_prefix("- ") {
-            ui.horizontal(|ui| {
+            // 必须用 wrapped 容器：horizontal 给 child 无限可用宽，内层
+            // 永不换行 → 文本横向溢出贴边裁切（实机走查 2026-09-07）
+            ui.horizontal_wrapped(|ui| {
                 ui.label(RichText::new("•").size(12.5));
                 inline_rich(ui, item, 12.5);
             });

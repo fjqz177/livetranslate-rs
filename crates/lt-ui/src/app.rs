@@ -101,8 +101,21 @@ impl MultiWindowApp {
         // 字幕窗宽度取配置（原版 setFixedWidth(window_width)，高度自适应）
         let sub_w = self.app_state.settings.subtitle_mode.window_width;
         self.create_window(event_loop, WinId::Subtitle, (sub_w, 160))?;
-        // 面板尺寸对齐原版 ControlPanel（resize 520×650 / minimumSize 480×420）
-        self.create_window(event_loop, WinId::Panel, (520, 650))?;
+        // 面板尺寸对齐原版实机 ≈535×781（Qt 布局 minimumSizeHint 把
+        // resize(520,650) 顶开，2026-09-07 实测 524×775——7 页表单在 781 高
+        // 下整页放下、不出滚动条）。小屏按工作区高度钳制（winit 无 work-area
+        // API，任务栏按 48 逻辑 px 估），下限 650（minimumSize 480×420 不变）
+        let panel_h = event_loop
+            .primary_monitor()
+            .or_else(|| event_loop.available_monitors().next())
+            .map(|m| {
+                let s = m.scale_factor() as f32;
+                (m.size().height as f32 / s - 48.0) as u32
+            })
+            .map(|avail| 781.min(avail))
+            .unwrap_or(781)
+            .max(650);
+        self.create_window(event_loop, WinId::Panel, (535, panel_h))?;
         self.create_window(event_loop, WinId::Log, (900, 500))?;
         // 启动流对话框（原版 QDialog：常规装饰窗口；可见性 = 启动流进行中）
         self.create_window(event_loop, WinId::Setup, (560, 420))?;
