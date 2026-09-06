@@ -308,21 +308,7 @@ impl MultiWindowApp {
             }
             m::OVERLAY_TOGGLE => {
                 let vis = !self.window(WinId::Overlay).is_visible().unwrap_or(false);
-                if let Some(t) = &self.tray {
-                    let text = if vis {
-                        lt_i18n::t("tray_hide_overlay")
-                    } else {
-                        lt_i18n::t("tray_show_overlay")
-                    };
-                    let _ = t.handles.overlay_toggle.set_text(text);
-                    // 首次隐藏提示（原版 tray.showMessage 气泡；tray-icon 0.24
-                    // 无气泡 API → 降级为日志，已知偏差，待 Shell_NotifyIcon 直调）
-                    if !vis && !self.overlay_hide_notified {
-                        self.overlay_hide_notified = true;
-                        tracing::info!("{}", lt_i18n::t("hide_tray_hint"));
-                    }
-                }
-                self.set_visible(WinId::Overlay, vis);
+                self.set_overlay_visible_with_hint(vis);
             }
             m::SHOW_PANEL => {
                 let vis = !self.window(WinId::Panel).is_visible().unwrap_or(false);
@@ -381,6 +367,26 @@ impl MultiWindowApp {
             }
         }
         self.app_state.visible.insert(id, vis);
+    }
+
+    /// 悬浮窗显隐统一入口（托盘 OVERLAY_TOGGLE 与主面板"隐藏"按钮共用；
+    /// 原版 on_toggle_overlay：托盘菜单文字翻转 + 首次隐藏气泡提示）
+    fn set_overlay_visible_with_hint(&mut self, vis: bool) {
+        if let Some(t) = &self.tray {
+            let text = if vis {
+                lt_i18n::t("tray_hide_overlay")
+            } else {
+                lt_i18n::t("tray_show_overlay")
+            };
+            let _ = t.handles.overlay_toggle.set_text(text);
+            // 首次隐藏提示（原版 tray.showMessage 气泡；tray-icon 0.24
+            // 无气泡 API → 降级为日志，已知偏差，待 Shell_NotifyIcon 直调）
+            if !vis && !self.overlay_hide_notified {
+                self.overlay_hide_notified = true;
+                tracing::info!("{}", lt_i18n::t("hide_tray_hint"));
+            }
+        }
+        self.set_visible(WinId::Overlay, vis);
     }
 
     /// 应用悬浮窗置顶/任务栏窗口 flags（穿透轮询 M4 接入）
@@ -704,7 +710,8 @@ impl MultiWindowApp {
                     let _ = window.drag_resize_window(ResizeDirection::SouthEast);
                 }
                 WinAction::Hide => {
-                    self.set_visible(win, false);
+                    // 原版 hide_clicked → on_toggle_overlay(False)：托盘文字翻转 + 首次气泡
+                    self.set_overlay_visible_with_hint(false);
                 }
                 WinAction::ShowPanel => {
                     self.set_visible(WinId::Panel, true);
@@ -1257,10 +1264,12 @@ fn clear_color_for(id: WinId) -> [f32; 4] {
     }
 }
 
-/// 安装中文字体（微软雅黑）到 egui 字体族首位。
-/// 未找到字体文件时保持默认（英文界面仍可用）。
+/// 安装中文字体（微软雅黑）到 egui 字体族首位，并追加符号字体兜底
+/// （✓ ✗ ▲ ▼ 等原版界面字符在 egui 默认字体与雅黑中均无字形）。
+/// 中文字体缺失时仍安装符号兜底；全部缺失保持默认（英文界面仍可用）。
 fn install_cjk_fonts(ctx: &Context) {
     let mut fonts = egui::FontDefinitions::default();
+    let mut cjk_loaded = false;
     let candidates = [
         r"C:\Windows\Fonts\msyh.ttc",   // 微软雅黑（原版默认字体）
         r"C:\Windows\Fonts\msyh.ttf",
@@ -1277,9 +1286,24 @@ fn install_cjk_fonts(ctx: &Context) {
                 }
             }
             tracing::info!("CJK 字体已加载: {path}");
-            ctx.set_fonts(fonts);
-            return;
+            cjk_loaded = true;
+            break;
         }
     }
-    tracing::warn!("未找到中文字体文件，界面将回退默认字体");
+    if !cjk_loaded {
+        tracing::warn!("未找到中文字体文件，界面将回退默认字体");
+    }
+    // 符号兜底追加族尾（仅补缺字，不影响常规渲染）
+    if let Ok(bytes) = std::fs::read(r"C:\Windows\Fonts\seguisym.ttf") {
+        fonts
+            .font_data
+            .insert("symbol".to_string(), egui::FontData::from_owned(bytes).into());
+        for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+            if let Some(list) = fonts.families.get_mut(&family) {
+                list.push("symbol".to_string());
+            }
+        }
+        tracing::info!("符号字体已加载: seguisym.ttf");
+    }
+    ctx.set_fonts(fonts);
 }

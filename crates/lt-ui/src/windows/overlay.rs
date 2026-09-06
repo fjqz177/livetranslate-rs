@@ -102,7 +102,8 @@ fn drag_handle(ui: &mut Ui, state: &mut AppState, compact: bool, opa_pct: u32) {
         });
 }
 
-/// 行1：拖动标题 + 操作按钮（高度 24）
+/// 行1：拖动标题 + 操作按钮（高度 24；按钮顺序=原版 row1：
+/// 隐藏/字幕/启停/清除/完整/设置/退出）
 fn row1(ui: &mut Ui, state: &mut AppState, compact: bool, _opa_pct: u32) {
     ui.horizontal(|ui| {
         ui.set_min_height(22.0);
@@ -123,6 +124,11 @@ fn row1(ui: &mut Ui, state: &mut AppState, compact: bool, _opa_pct: u32) {
             .drag_started()
         {
             state.enqueue_action(WinId::Overlay, WinAction::Drag);
+        }
+
+        // 隐藏（原版 hide_btn：隐藏悬浮窗，托盘"显示悬浮窗"可恢复 + 首次气泡提示）
+        if ui.add(small_btn(lt_i18n::t("hide"), BTN_FILL, BTN_STROKE, BTN_TEXT)).clicked() {
+            state.enqueue_action(WinId::Overlay, WinAction::Hide);
         }
 
         // 字幕按钮（紧凑模式隐藏；开启时绿底，原版 set_subtitle_checked）
@@ -406,13 +412,7 @@ fn messages_area(ui: &mut Ui, state: &mut AppState, compact: bool, opa_pct: u32)
         .auto_shrink([false, false])
         .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded)
         .show(ui, |ui| {
-            if state.messages.is_empty() {
-                ui.label(
-                    RichText::new("waiting for audio…")
-                        .color(opa(Color32::from_rgb(0x99, 0x99, 0x99), opa_pct))
-                        .italics(),
-                );
-            }
+            // 原版空态为纯黑空白（无占位文本）
             for msg in &state.messages {
                 let mut export: Option<String> = None;
                 let mut clear = false;
@@ -551,10 +551,10 @@ fn small_btn(label: String, fill: Color32, stroke_col: Color32, text_col: Color3
         .min_size(Vec2::new(0.0, 20.0))
 }
 
-/// 行1 按钮组预留宽度（拖动区让位；完整=7 按钮、紧凑=5 按钮，
-/// 每按钮≈46 逻辑 px：两字中文 24 + 内边距/描边/间距，留 10px 余量）
+/// 行1 按钮组预留宽度（拖动区让位；完整=7 按钮含隐藏、紧凑=5 按钮
+/// （隐藏/启停/完整/设置/退出；字幕与清空隐藏），每按钮≈46 逻辑 px + 余量）
 fn button_reserved(compact: bool) -> f32 {
-    if compact { 240.0 } else { 332.0 }
+    if compact { 240.0 } else { 380.0 }
 }
 
 /// 右下角尺寸手柄（原版 QSizeGrip 16×16：三条斜线 + 拖动）

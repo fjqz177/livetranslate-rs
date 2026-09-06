@@ -458,6 +458,7 @@ btn_open_repo: "Repository"
 btn_open_issues: "Report an issue (GitHub Issues)"
 group_license: "License & Privacy"
 about_license_text: "The app code is MIT-licensed. Recognition models (SenseVoice, Whisper, …) are third-party and follow their own licenses. Settings and transcripts stay on this machine; diagnostics archives are auto-redacted (no keys, paths or subtitle content)."
+group_benchmark: "Benchmark"
 group_changelog: "Changelog"
 # Error & status copy (§3.6 final table, same-source as zh.yaml)
 err_401: "The translation API rejected the request (401). Check your API key or switch providers."

@@ -105,7 +105,7 @@ fn inline_rich(ui: &mut Ui, text: &str, size: f32) {
                                 .color(Color32::from_rgb(0x8A, 0x5A, 0x00)),
                         );
                     }
-                    rest = &after[end + 2..];
+                    rest = &after[end + mark_len(is_bold)..];
                 }
                 None => {
                     // 未闭合：字面输出剩余部分
@@ -115,6 +115,11 @@ fn inline_rich(ui: &mut Ui, text: &str, size: f32) {
             }
         }
     });
+}
+
+/// 标记闭合后的跳过长度（** 2 字节 / ` 1 字节；错切多字节 UTF-8 会 panic）
+fn mark_len(is_bold: bool) -> usize {
+    if is_bold { 2 } else { 1 }
 }
 
 #[cfg(test)]
@@ -127,6 +132,23 @@ mod tests {
         assert!(changelog_text("zh").contains("更新日志") || changelog_text("zh").contains("## "));
         assert!(changelog_text("en").contains("## "));
         assert!(changelog_text("fr").starts_with('#'), "非 zh 回退 en");
+    }
+
+    /// 全量无头渲染 zh/en changelog 不 panic（回归：inline_rich 对
+    /// `code` 标记按 1 字节跳过，此前统一 +2 切进中文 UTF-8 边界崩溃）
+    #[test]
+    fn changelog_full_render_headless_no_panic() {
+        for lang in ["zh", "en"] {
+            let ctx = egui::Context::default();
+            let text = changelog_text(lang);
+            for _ in 0..2 {
+                let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                    egui::ScrollArea::vertical().show(ui, |ui| render_markdown(ui, text));
+                });
+                // epaint debug 断言要求消费纹理增量（无渲染器 → 显式丢弃）
+                out.textures_delta.clear();
+            }
+        }
     }
 
     /// 渲染规则：`# 文件标题`行不产出版本日期；`## `行是日期标题

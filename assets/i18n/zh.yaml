@@ -460,6 +460,7 @@ btn_open_repo: "项目主页"
 btn_open_issues: "反馈问题 (GitHub Issues)"
 group_license: "许可与隐私"
 about_license_text: "本软件代码以 MIT 许可发布。识别模型（SenseVoice、Whisper 等）由第三方提供并遵循其各自许可证，详情见模型来源。设置与转录数据仅保存在本机；诊断打包已自动脱敏（不含密钥、路径与字幕内容）。"
+group_benchmark: "基准测试"
 group_changelog: "更新日志"
 # 错误与状态文案（§3.6 终稿表，与 en.yaml 同源）
 err_401: "翻译请求被拒绝（401）。请检查 API Key 是否正确，或更换服务商。"

@@ -193,6 +193,14 @@ impl Settings {
             self.models.push(ModelConfig::default());
             fixed.push("models: 空 → 填充默认占位模型".into());
         }
+        // legacy 显示名迁移（原版悬浮窗/托盘显示 name；旧占位 name="default"
+        // 时代码以 model 字段为真名）→ name=="default" 且 model 有值时以 model 为准
+        for m in &mut self.models {
+            if m.name == "default" && !m.model.is_empty() && m.model != "default" {
+                m.name = m.model.clone();
+                fixed.push(format!("model name: 'default' → '{}'", m.name));
+            }
+        }
         if self.active_model >= self.models.len() {
             fixed.push(format!("active_model: {} 越界 → 0", self.active_model));
             self.active_model = 0;
@@ -239,7 +247,8 @@ pub struct ModelConfig {
 impl Default for ModelConfig {
     fn default() -> Self {
         Self {
-            name: "default".into(),
+            // 原版 _ensure_models：无已存模型时 name=model（悬浮窗/托盘显示模型名而非"default"）
+            name: "hunyuan-mt-chimera-7b".into(),
             api_base: "http://127.0.0.1:1234/v1".into(),
             api_key: String::new(),
             model: "hunyuan-mt-chimera-7b".into(),

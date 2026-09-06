@@ -60,14 +60,7 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     ui.set_min_height(min_h);
-                    if state.bench_lines.is_empty() {
-                        ui.label(
-                            RichText::new(lt_i18n::t("benchmark_pending_m44"))
-                                .monospace()
-                                .size(11.5)
-                                .color(Color32::from_rgb(0x88, 0x88, 0x99)),
-                        );
-                    }
+                    // 原版空态为空白输出区
                     for line in &state.bench_lines {
                         if line == "__DONE__" {
                             continue;
