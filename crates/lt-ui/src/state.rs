@@ -962,9 +962,10 @@ impl DownloadErrKind {
 pub enum DownloadUiState {
     /// 无下载（未开始/已成功/被替换）
     Idle,
-    /// 下载进行中：done/total 供进度条（total=0 表示未知，显示日志模式）；
+    /// 下载进行中：按**当前文件**显示进度（DL-3——file/k/n 来自 backend 机器段，
+    /// done_bytes/total_bytes 为精确字节；total_bytes=0 表示未知，走日志模式）；
     /// log 为进度/日志行环形缓冲（上限 200）
-    Downloading { done_bytes: u64, total_bytes: u64, log: Vec<String> },
+    Downloading { file: String, k: u32, n: u32, done_bytes: u64, total_bytes: u64, log: Vec<String> },
     /// 下载失败：kind 供分类提示，detail 为原始错误串，log 为失败前日志
     Failed { kind: DownloadErrKind, detail: String, log: Vec<String> },
 }
@@ -988,6 +989,18 @@ impl DownloadUiState {
                 log.remove(0);
             }
             log.push(line);
+        }
+    }
+
+    /// 机器段进度写入（DL-3）：精确字节整体覆盖，文件切换时进度自然归零；
+    /// 非 Downloading 态（成功竞态晚到事件等）忽略
+    pub fn apply_progress(&mut self, file: String, k: u32, n: u32, done: u64, total: u64) {
+        if let Self::Downloading { file: cur, k: ck, n: cn, done_bytes, total_bytes, .. } = self {
+            *cur = file;
+            *ck = k;
+            *cn = n;
+            *done_bytes = done;
+            *total_bytes = total;
         }
     }
 }
@@ -1659,6 +1672,35 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// DL-3：apply_progress 整体覆盖（精确字节），文件切换自然归零；
+    /// 非 Downloading 态忽略晚到事件
+    #[test]
+    fn apply_progress_overwrites_and_ignores_non_downloading() {
+        let mut st = AppState::new(Settings::default());
+        st.download = DownloadUiState::Downloading {
+            file: "model.int8.onnx".into(),
+            k: 1,
+            n: 2,
+            done_bytes: 200_000_000,
+            total_bytes: 239_000_000,
+            log: vec![],
+        };
+        // 第二个文件开始：进度随新文件归零（机器段为权威值）
+        st.download.apply_progress("tokens.txt".into(), 2, 2, 1_048_576, 2_097_152);
+        match &st.download {
+            DownloadUiState::Downloading { file, k, n, done_bytes, total_bytes, .. } => {
+                assert_eq!(file, "tokens.txt");
+                assert_eq!((*k, *n), (2, 2));
+                assert_eq!((*done_bytes, *total_bytes), (1_048_576, 2_097_152));
+            }
+            other => panic!("{other:?}"),
+        }
+        // 成功回 Idle 后的晚到事件不生效
+        st.download = DownloadUiState::Idle;
+        st.download.apply_progress("x".into(), 1, 1, 1, 1);
+        assert_eq!(st.download, DownloadUiState::Idle);
+    }
 
     fn msg(id: u64) -> OverlayMessage {
         OverlayMessage {

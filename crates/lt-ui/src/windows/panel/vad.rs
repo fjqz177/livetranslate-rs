@@ -673,30 +673,24 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
             };
             ui.label(RichText::new(model_display).color(pal.text));
             match &state.download {
-                // ── 下载进行中：进度条 + 最近日志行（P0-1 修复——有反馈）──
-                DownloadUiState::Downloading { done_bytes, total_bytes, log } => {
-                    let pct = if *total_bytes > 0 {
-                        ((*done_bytes as f64 / *total_bytes as f64) * 100.0) as u32
+                // ── 下载进行中：按当前文件显示「文件名（k/n）」+ 精确字节进度
+                //    （DL-3：机器段驱动；total 未知 → 明确文案的日志模式）──
+                DownloadUiState::Downloading { file, k, n, done_bytes, total_bytes, log } => {
+                    let known = *total_bytes > 0;
+                    let head = if known {
+                        let pct = (*done_bytes as f64 / *total_bytes as f64 * 100.0) as u32;
+                        format!("{} {file}（{k}/{n}）{pct}%", lt_i18n::t("downloading"))
                     } else {
-                        0
+                        format!("{} {file}（{k}/{n}）", lt_i18n::t("downloading"))
                     };
-                    let label = if *total_bytes > 0 {
-                        format!("{} {:.1}%", lt_i18n::t("downloading"), pct as f32)
-                    } else {
-                        lt_i18n::t("downloading").to_string()
-                    };
-                    ui.label(RichText::new(label).color(pal.accent));
+                    ui.label(RichText::new(head).color(pal.accent));
                     ui.horizontal(|ui| {
-                        ui.add(
-                            egui::ProgressBar::new(if *total_bytes > 0 {
-                                *done_bytes as f32 / *total_bytes as f32
-                            } else {
-                                0.0
-                            })
-                            .desired_width(160.0)
-                            .desired_height(10.0),
-                        );
-                        if *total_bytes > 0 {
+                        if known {
+                            ui.add(
+                                egui::ProgressBar::new(*done_bytes as f32 / *total_bytes as f32)
+                                    .desired_width(160.0)
+                                    .desired_height(10.0),
+                            );
                             ui.label(
                                 RichText::new(format!(
                                     "{} / {}",
@@ -705,6 +699,12 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
                                 ))
                                 .size(11.0)
                                 .color(pal.weak),
+                            );
+                        } else {
+                            ui.label(
+                                RichText::new(lt_i18n::t("download_size_unknown"))
+                                    .size(11.0)
+                                    .color(pal.weak),
                             );
                         }
                     });
@@ -865,6 +865,9 @@ fn start_download(state: &mut AppState) {
     };
     log.push(lt_i18n::t("download_starting").to_string());
     state.download = DownloadUiState::Downloading {
+        file: String::new(),
+        k: 0,
+        n: 0,
         done_bytes: 0,
         total_bytes: 0,
         log,

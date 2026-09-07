@@ -746,10 +746,13 @@ impl MultiWindowApp {
                         StartupFlow::Wizard(w) => push_log_line(&mut w.log, line),
                         StartupFlow::DownloadMissing { log, .. } => push_log_line(log, line),
                         StartupFlow::Ready => {
-                            // D-19 直进主界面 → 运行期下载：进度写识别页
-                            // 缓存卡片的下载状态机（P0-1 修复——进度不再被吞）
-                            self.app_state.download.push_log(line.clone());
-                            self.update_download_progress(&line);
+                            // D-19 直进主界面 → 运行期下载：进度写识别页缓存卡片。
+                            // DL-3：人读段进卡片日志，\t 机器段（精确字节）驱动进度条
+                            let (human, prog) = split_progress_line(&line);
+                            if let Some((file, k, n, done, total)) = prog {
+                                self.app_state.download.apply_progress(file, k, n, done, total);
+                            }
+                            self.app_state.download.push_log(human.to_string());
                             self.redraw(WinId::Panel);
                         }
                     }
@@ -854,23 +857,6 @@ impl MultiWindowApp {
     fn redraw(&mut self, id: WinId) {
         if let Some(hw) = self.find(id) {
             hw.window.request_redraw();
-        }
-    }
-
-    /// 从下载进度日志行解析已下/总量（backend format_event 的固定形态：
-    /// `[{repo}] {file} {done} / {total}` 或 `[{repo}] {file} {done}`；
-    /// 非进度行（完成/跳过/快照）不更新）
-    fn update_download_progress(&mut self, line: &str) {
-        let Some((done, total)) = parse_progress_tokens(line) else {
-            return;
-        };
-        if let DownloadUiState::Downloading { done_bytes, total_bytes, .. } =
-            &mut self.app_state.download
-        {
-            *done_bytes = done;
-            if *total_bytes == 0 {
-                *total_bytes = total;
-            }
         }
     }
 
@@ -1442,27 +1428,29 @@ impl ApplicationHandler<UiMsg> for MultiWindowApp {
 /// 解析下载进度行末端的 "done / total" 字节对（backend format_event 形态：
 /// `[{repo}] {file} 238.4 MB / 410.3 MB`——人性化单位，含 B/KB/MB/GB）。
 /// 非进度行（无 "/" 分隔或不可解析）→ None。
-fn parse_progress_tokens(line: &str) -> Option<(u64, u64)> {
-    // 只扫最后一个 " / " 分隔（done/total 恒在行尾）
-    let marker = " / ";
-    let idx = line.rfind(marker)?;
-    let done = parse_human_size(line[..idx].split_whitespace().last()?)?;
-    let total = parse_human_size(line[idx + marker.len()..].split_whitespace().next()?)?;
-    Some((done, total))
-}
-
-/// "238.4 MB" / "512 B" / "2.89 GB" → 字节（对齐 backend format_size）
-fn parse_human_size(s: &str) -> Option<u64> {
-    let (num, unit) = s.split_once(' ')?;
-    let v: f64 = num.parse().ok()?;
-    let mul = match unit {
-        "B" => 1.0,
-        "KB" => 1024.0,
-        "MB" => 1024.0 * 1024.0,
-        "GB" => 1024.0 * 1024.0 * 1024.0,
-        _ => return None,
+/// 进度行拆分（DL-3，替代 F3 病灶 parse_progress_tokens）：backend format_event
+/// 的固定形态 `"{人读段}\t{file}\t{k} {n} {done_bytes} {total_bytes}"`（total 未知
+/// 为 0）。返回 (人读段, 机器段)；无 `\t` 或机器段非法（旧格式行/任意日志行）
+/// → (原文, None)。
+fn split_progress_line(line: &str) -> (&str, Option<(String, u32, u32, u64, u64)>) {
+    let Some((human, rest)) = line.split_once('\t') else {
+        return (line, None);
     };
-    Some((v * mul) as u64)
+    let Some((file, data)) = rest.split_once('\t') else {
+        return (human, None);
+    };
+    let mut it = data.split_whitespace();
+    let (Some(k), Some(n), Some(done), Some(total), None) =
+        (it.next(), it.next(), it.next(), it.next(), it.next())
+    else {
+        return (human, None);
+    };
+    match (k.parse(), n.parse(), done.parse(), total.parse()) {
+        (Ok(k), Ok(n), Ok(done), Ok(total)) => {
+            (human, Some((file.to_string(), k, n, done, total)))
+        }
+        _ => (human, None),
+    }
 }
 
 /// 窗口清屏色。
@@ -1539,3 +1527,44 @@ fn apply_window_region(window: &Window, w: u32, h: u32, radius_px: u32) {
     }
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// DL-3：机器段（精确字节）解析——人读段原样保留，file/k/n/done/total 就位
+    #[test]
+    fn split_progress_line_parses_machine_segment() {
+        let line = "[a/b] m.onnx 1.0 KB / 2.0 KB\tm.onnx\t1 2 1024 2048";
+        let (human, prog) = split_progress_line(&line);
+        assert_eq!(human, "[a/b] m.onnx 1.0 KB / 2.0 KB");
+        assert_eq!(prog, Some(("m.onnx".into(), 1, 2, 1024, 2048)));
+        // total 未知以 0 表示
+        let (_, prog) = split_progress_line("[a/b] m.onnx 4.0 KB\tm.onnx\t2 2 4096 0");
+        assert_eq!(prog.map(|p| p.4), Some(0));
+        // >4GB 大文件不溢出
+        let (_, prog) = split_progress_line("[r] f 5.0 GB\tf\t1 1 5368709120 5368709120");
+        assert_eq!(prog.map(|p| p.3), Some(5_368_709_120));
+    }
+
+    /// DL-3/F3 回归：旧格式行（无机器段）与任意日志行 → 原文透传、无进度数据，
+    /// 不再走"取 token 拿到单位词"的必败解析
+    #[test]
+    fn split_progress_line_ignores_legacy_and_foreign_lines() {
+        for s in [
+            "[a/b] m.onnx 1.0 KB / 2.0 KB",
+            "[a/b] m.onnx 下载完成",
+            "[a/b] 快照就绪: C:/x",
+            "已存在，跳过 x",
+            "",
+        ] {
+            let (human, prog) = split_progress_line(s);
+            assert_eq!(human, s);
+            assert!(prog.is_none(), "{s}");
+        }
+        // 机器段字段缺失/非法
+        assert!(split_progress_line("h\tf\t1 2 3").1.is_none());
+        assert!(split_progress_line("h\tf\t1 2 x 4").1.is_none());
+        assert!(split_progress_line("h\tf\t1 2 3 4 5").1.is_none());
+    }
+}

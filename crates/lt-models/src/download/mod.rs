@@ -42,8 +42,8 @@ pub enum ProxyMode {
 /// 下载事件（→ 日志窗 / 下载对话框）
 #[derive(Debug, Clone)]
 pub enum DownloadEvent {
-    /// 单文件进度（total 未知时为 None）
-    Progress { repo: String, file: String, done: u64, total: Option<u64> },
+    /// 单文件进度（total 未知时为 None；k/n = 当前第 k 个文件/清单共 n 个，DL-3）
+    Progress { repo: String, file: String, k: usize, n: usize, done: u64, total: Option<u64> },
     /// 单文件完成
     FileDone { repo: String, file: String },
     /// 全部完成（快照目录）
@@ -216,7 +216,8 @@ impl Downloader {
         let client = self.http_client()?;
         let dir = self.snapshot_dir(hub, repo);
         std::fs::create_dir_all(&dir).map_err(disk_err)?;
-        for (file, min_bytes) in files {
+        let n = files.len();
+        for (idx, (file, min_bytes)) in files.iter().enumerate() {
             let target = dir.join(file);
             match skip_decision(&target, *min_bytes) {
                 SkipDecision::Skip => {
@@ -235,7 +236,8 @@ impl Downloader {
                 SkipDecision::Missing => {}
             }
             self.emit(tx, DownloadEvent::Log(format!("[{repo}] 开始下载 {file}")));
-            self.download_one(&client, hub, repo, file, &target, tx)?;
+            // k 从 1 起（UI 显示「第 k/n 个文件」）
+            self.download_one(&client, hub, repo, file, &target, idx + 1, n, tx)?;
             self.emit(tx, DownloadEvent::FileDone { repo: repo.into(), file: (*file).into() });
         }
         self.emit(tx, DownloadEvent::Done { repo: repo.into(), dir: dir.clone() });
@@ -250,6 +252,8 @@ impl Downloader {
         repo: &str,
         file: &str,
         target: &Path,
+        k: usize,
+        n: usize,
         tx: Option<&Sender<DownloadEvent>>,
     ) -> Result<(), DlError> {
         let incomplete = incomplete_path(target);
@@ -261,7 +265,7 @@ impl Downloader {
                 self.emit(tx, DownloadEvent::Log(msg));
                 std::thread::sleep(backoff);
             }
-            match self.try_download(client, hub, repo, file, target, &incomplete, tx) {
+            match self.try_download(client, hub, repo, file, target, &incomplete, k, n, tx) {
                 Ok(()) => return Ok(()),
                 Err(e) => {
                     // DL-2/F5 快速失败：永久性错误（404 仓库缺失/401 私有/磁盘）不再退避
@@ -283,6 +287,8 @@ impl Downloader {
         file: &str,
         target: &Path,
         incomplete: &Path,
+        k: usize,
+        n: usize,
         tx: Option<&Sender<DownloadEvent>>,
     ) -> Result<(), DlError> {
         if let Some(p) = target.parent() {
@@ -356,7 +362,7 @@ impl Downloader {
                 f.write_all(&buf[..n]).map_err(disk_err)?;
                 written += n as u64;
                 if written - done >= PROGRESS_STEP {
-                    self.progress(tx, repo, file, written, total);
+                    self.progress(tx, repo, file, k, n, written, total);
                     done = written;
                 }
             }
@@ -375,7 +381,7 @@ impl Downloader {
             }
             drop(f);
             finalize_incomplete(incomplete, target)?;
-            self.progress(tx, repo, file, written, total.or(Some(written)));
+            self.progress(tx, repo, file, k, n, written, total.or(Some(written)));
             return Ok(());
         }
     }
@@ -391,12 +397,14 @@ impl Downloader {
         tx: Option<&Sender<DownloadEvent>>,
         repo: &str,
         file: &str,
+        k: usize,
+        n: usize,
         done: u64,
         total: Option<u64>,
     ) {
         self.emit(
             tx,
-            DownloadEvent::Progress { repo: repo.into(), file: file.into(), done, total },
+            DownloadEvent::Progress { repo: repo.into(), file: file.into(), k, n, done, total },
         );
     }
 }

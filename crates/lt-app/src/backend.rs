@@ -227,13 +227,19 @@ fn line(proxy: &EventLoopProxy<UiMsg>, s: &str) {
     let _ = proxy.send_event(UiMsg::Event(UiEvent::DownloadProgress(s.to_string())));
 }
 
-/// 下载事件 → 对话框日志行（进度走日志流，原版 UI 形态）
+/// 下载事件 → 对话框日志行（进度走日志流，原版 UI 形态）。
+/// DL-3（docs/download-overhaul.md DEC-2）：进度行尾部附 `\t` 机器段
+/// `"{file}\t{k} {n} {done_bytes} {total_bytes}"`（total 未知为 0），UI 按
+/// 精确字节驱动进度条；人读段保持原样进日志，旧格式行（无 `\t`）被 UI 忽略。
 fn format_event(ev: &DownloadEvent) -> String {
     match ev {
-        DownloadEvent::Progress { repo, file, done, total } => match total {
-            Some(t) => format!("[{repo}] {file} {} / {}", format_size(*done), format_size(*t)),
-            None => format!("[{repo}] {file} {}", format_size(*done)),
-        },
+        DownloadEvent::Progress { repo, file, k, n, done, total } => {
+            let human = match total {
+                Some(t) => format!("[{repo}] {file} {} / {}", format_size(*done), format_size(*t)),
+                None => format!("[{repo}] {file} {}", format_size(*done)),
+            };
+            format!("{human}\t{file}\t{k} {n} {done} {}", total.unwrap_or(0))
+        }
         DownloadEvent::FileDone { repo, file } => format!("[{repo}] {file} 下载完成"),
         DownloadEvent::Done { repo, dir } => format!("[{repo}] 快照就绪: {}", dir.display()),
         DownloadEvent::Log(s) => s.clone(),
@@ -279,10 +285,24 @@ mod tests {
             format_event(&DownloadEvent::Progress {
                 repo: "a/b".into(),
                 file: "m.onnx".into(),
+                k: 1,
+                n: 2,
                 done: 1024,
                 total: Some(2048)
             }),
-            "[a/b] m.onnx 1.0 KB / 2.0 KB"
+            "[a/b] m.onnx 1.0 KB / 2.0 KB\tm.onnx\t1 2 1024 2048",
+            "DL-3：人读段 + \\t 机器段（精确字节，total 未知为 0）"
+        );
+        assert_eq!(
+            format_event(&DownloadEvent::Progress {
+                repo: "a/b".into(),
+                file: "m.onnx".into(),
+                k: 2,
+                n: 2,
+                done: 4096,
+                total: None
+            }),
+            "[a/b] m.onnx 4.0 KB\tm.onnx\t2 2 4096 0"
         );
         assert_eq!(
             format_event(&DownloadEvent::Log("x".into())),
