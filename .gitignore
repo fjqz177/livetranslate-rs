@@ -2,3 +2,5 @@
 LiveTranslate/
 # 实机走查截图涉个人隐私，禁止入库（docs/ui-audit 已从 git 历史清除）
 docs/ui-audit/
+# archify 交互式架构图产物（HTML/PNG 校验图），禁止入库（docs/architecture 已从 git 历史移除）
+docs/architecture/

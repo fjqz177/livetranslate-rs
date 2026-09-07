@@ -52,6 +52,7 @@ cargo run -p lt-app               # GUI 冒烟
 ## 约定
 
 - **自主中文 commit**：每个里程碑/任务卡完成且测试全绿即提交，格式 `feat(scope): 中文主题`（沿用历史风格，如 `feat(m4-panel-gaps): …`）。多代理并行期提交前必须 `git status`/`git diff` 复核——历史教训：stash 手术曾把他人暂存文件混入我方提交（af0ff58）。
+- **docs 提交时机（2026-09-07 整改归档）**：① 计划/调研/决策文档定稿即独立 `docs(scope)` 提交，且必须先于对应实现提交；② 计划完成标记/提交索引随工作包提交同步，禁止事后补 docs 提交；③ 收尾不用 `git add -A`/`git add .`，逐项显式 pathspec，提交前核对「提交主题 vs 文件清单」；④ 生成副产物不入库——`docs/architecture/`（archify 校验图）与 `docs/ui-audit/` 已 gitignore。
 - i18n：zh/en 两份 yaml 必须同步修改。
 - **字体策略（D-17，2026-09-07 用户裁决）**：仓库自洽为硬保证——内嵌思源（中英韩）+ 等宽 MonoCJK（chrome）+ 符号 NotoSansSymbols2（✗ 等）三字体覆盖全部 UI 字符（`assets/fonts/`，均 OFL 1.1，SOURCES.md 有来源/sha256），任何系统字体缺失都不方块；系统字体（Consolas/注册表扫描/用户自选）仅锦上添花，**不读取系统符号字体（seguisym 已移出）；系统字体缺失不报错不阻断，回退内嵌**；体积：字体以 brotli 压缩资产入库（~12.7MB），运行时一次性解压（启动 ~100ms 级，字形零损失），解压后 FontData::from_static 零拷贝；行级字体键（style.original/translation_font_family、subtitle.lines[].font_family）空串 = 跟随 `subtitle_font_family`（级联），显式族名 = 独立指定；系统字体列表来自 HKLM+HKCU 注册表扫描（`lt-ui/src/fonts.rs`），选择器在样式页「字体」组与字幕行编辑处（搜索/刷新/预览/缺字提示）；改字体键 → 立即 `fonts::apply_fonts(ui.ctx(), …)`（共享单 Context 全窗口下一帧生效）+ `mark_settings_dirty` 防抖落盘；**渲染侧禁用 `FontFamily::Name` 臆造**——未注册族名经 `font_family_for` 回落 Proportional。
 - 子代理分工：general-purpose/Explore 建议设 glm-5.3-flash 做执行/检索；架构承重墙（Win32、下载器、算法移植、CRT/链接问题）由主线程亲自做。
