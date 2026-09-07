@@ -27,7 +27,7 @@
 | i18n / 资源 | zh/en YAML、changelog、图标、**Silero VAD 模型**全部 `include_str!/include_bytes!` 内嵌 |
 | 发行 | **单一 CPU exe**（约 35–65MB，无 GPU 变体、无 CUDA 运行时要求）；MSVC 工具链 |
 
-**当前主要风险**（r8 后）：① ort 与 sherpa-onnx 各自静态捆绑一份 ONNX Runtime 的符号共存（R-4，M0 首日验证）；② FunASR Nano 实验性质量（R-3，r8 随 D-14 恢复为**用户已知情接受**的风险）；③ egui 多窗口 + 托盘工程细节（R-6）；④ ModelScope files 接口未实测（R-5，低）；⑤ async-openai 流式 byot 入口待确认（R-13，低）。Anime-Whisper（R-2）与 sherpa whisper 质量（R-8）已分别随 D-13 裁剪与 D-16 换栈消除。CPU 性能不列入主风险——SenseVoice int8 单段 <1s（§3.2），弱机 whisper 性能另见 R-11。
+**当前主要风险**（r8 后）：① ort 与 sherpa-onnx 各自静态捆绑一份 ONNX Runtime 的符号共存（R-4，M0 首日验证）；② FunASR Nano 实验性质量（R-3，r8 随 D-14 恢复为**用户已知情接受**的风险）；③ egui 多窗口 + 托盘工程细节（R-6）；④ ModelScope files 接口未实测（R-5，低）；⑤ async-openai 流式 byot 入口待确认（R-13，低）；⑥ 系统字体依存（R-14，已由 D-17 内嵌兜底+机器无关化测试化解）。Anime-Whisper（R-2）与 sherpa whisper 质量（R-8）已分别随 D-13 裁剪与 D-16 换栈消除。CPU 性能不列入主风险——SenseVoice int8 单段 <1s（§3.2），弱机 whisper 性能另见 R-11。
 
 ### 0.1 r3 复核记录（2026-09-05，对照 Python 源码逐项复核）
 
@@ -131,6 +131,7 @@
 | D-14 | **FunASR Nano / MLT 恢复为实验性**（r8 用户决定，取代 D-13 的 nano 裁剪部分）：`funasr_model` 下拉恢复 3 项 1:1 结构——sensevoice-small（默认）/ funasr-nano-2512（标实验性）/ funasr-mlt-nano-2512（置灰，待上游转换）；UI+文档明示 CPU 慢（2-4s/段）与转换质量告警；不移植 Qwen3 下载链路 | 用户决定（r8） |
 | D-15 | **Whisper 档位增加 turbo**（r8 用户决定）：6 档 = tiny/base/small/medium/large-v3/turbo（`ggml-org/whisper-large-v3-turbo`，~809MB，速度≈medium 质量≈large-v3）；large-v3 保留但 UI 标注 CPU 慢 | 用户决定（r8），超出原版的增补 |
 | D-16 | **whisper 引擎使用 whisper.cpp（GGML）而非 sherpa 统一栈**（r8，经用户授权的补充调研后采纳）：动因是 sherpa whisper 确认仅 greedy（官方 #671 无计划支持 beam）+ 未解的 3 倍 CER 告警（#2900）；代价 = 第二条原生构建链 + GGML 格式 + 二进制 ~3-4MB | 质量对齐优先（r8） |
+| D-17 | **字体默认统一内嵌思源黑体（Noto Sans CJK SC = Source Han Sans SC，OFL 1.1）+ 行级级联**（2026-09-07 用户裁决）：① 界面/悬浮窗/字幕行字体默认全部指向内嵌思源（契约默认值从原版 "Microsoft YaHei" 改为空串=跟随）；② 新增 Rust 专属键 `ui_font_family`/`subtitle_font_family`（原版无对应设置，默认 "Noto Sans CJK SC"）；③ 主设置键整体切换界面/字幕字体，行级键可独立覆盖（空串=跟随；旧文件显式 "Microsoft YaHei" 仍被尊重=原版导入 1:1）；④ 系统字体经注册表扫描 + 选择器（搜索/刷新/预览），内嵌思源恒为链尾兜底（缺任何系统字体都不方块）；⑤ 渲染差异：思源与雅黑文字度量不同，视觉 parity 检查需按 D-17 重基线（docs/visual-parity-plan.md 复核项）。相关实施文档：docs/font-system-plan.md | 用户 2026-09-07 裁决（全盘默认思源 + UI/字幕独立可调） |
 
 ---
 
@@ -561,6 +562,7 @@ muda 菜单树（含 4 个动态子菜单 + 单选组 + checkbox 同步），图
 | R-11 | **纯 CPU 下弱机性能**：whisper medium/large int8 在低主频 CPU 可能跟不上实时 | 中 | 默认引擎 SenseVoice int8（CPU 单段 <1s，覆盖绝大多数场景）；whisper 档位体积/速度提示引导选 tiny/small/turbo（turbo 档是弱机要质量的最优解，D-15）（r4：远程 ASR 兜底已随功能裁剪移除） |
 | R-12 | sherpa-onnx sys crate 构建脚本从 GitHub releases 下载预编译库（国内网络/CI 不稳） | 低 | 缓存vendor 目录 + `SHERPA_ONNX_LIB_DIR` 手动指定；CI 加缓存 |
 | R-13 | async-openai `byot` 的**流式**入口（create_stream 的 byot 变体）具体方法名/签名待实现期确认（README 只明示了 `create_byot`） | 低 | M3 首日验证；若流式无 byot 变体，回退方案：流式路径用 `serde_json::Value` 直接 POST `/chat/completions`（约 40 行，仅此一条窄路径手写）；非流式路径无影响 |
+| R-14 | 系统字体依存风险（D-17 引入内嵌兜底后的残余）：① 用户选中的系统字体不存在/被卸载 → 未注册族名回落全局链（内嵌思源兜底，不方块）；② 字体度量差异（思源 vs 雅黑 vs 用户自选）带来视觉对齐波动 → D-17 已归档，视觉检查按新基线；③ 注册表扫描范围 = HKLM+HKCU（第三方字体管理器自装字体不覆盖，选择器不出现）；④ TTC 字体仅取 face 0（与既有 msyh.ttc 语义一致） | 低-中 | D-17 实施（docs/font-system-plan.md）：内嵌链字形覆盖测试机器无关化；选择器缺字提示；扫描失败降级仅内嵌 |
 
 ---
 

@@ -179,3 +179,13 @@ WP-A、WP-B 互不依赖可并行（不同文件域）；WP-C 依赖 WP-B 的注
 | 无头实验 | egui 0.36.1 hover 前后 Button galley rect dx=dy=0（覆写样式下）；margin 公式源码定位 widget_style.rs:161-166 |
 | 原版代码 | DragHandle QSS 未渲染机制（无 paintEvent/无 WA_StyledBackground）；apply_style 调用链 main.py:287/1884；面板 resize(520,650) vs 实机 781 |
 | egui 源码 | ScrollStyle::floating 默认（style.rs:584）；floating_allocated_width=6；line_scroll_speed=40（input_state/mod.rs:106-112）；CursorMoved→repaint（egui-winit lib.rs:352）|
+
+## 7. D-17 字体基线复核项（2026-09-07 追加）
+
+字体系统改造（docs/font-system-plan.md，D-17）后全默认渲染改内嵌思源黑体（Noto Sans CJK SC），
+与原版微软雅黑**文字度量不同**（字号/换行断点/行高观感），以下既有验收量需按新基线重走：
+
+- 面板 535×781 与行控件换行位置（固定尺寸不变，仅文字宽度微差）；
+- 悬浮窗/字幕窗行宽与换行阈值（subtitle.rs wrap_greedy 以实际 FontId 度量，自动一致）；
+- 样式页预览卡与悬浮窗实测色值不受影响（仅字形变化）；
+- 若用户显式选回"微软雅黑"（系统扫描列表），该机器渲染回到原版度量（parity 可局部复现）。

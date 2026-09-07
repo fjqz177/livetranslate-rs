@@ -542,3 +542,15 @@ fn build_definitions(settings: &Settings, system: &[SystemFont], cache: &mut Fon
 - 施工总图：`PLAN.md`
 - 字体相关既有方案：`docs/overlay-realign-plan.md`、`docs/visual-parity-plan.md`
 - 本计划执行纪要（完成后追加）：`docs/font-system-plan.md` 底部"执行纪要"段（每 WP 一行：commit 号 + 测试数 + 遗留项）
+
+---
+
+## 9. 执行纪要（2026-09-07 施工）
+
+| WP | commit | 测试数 | 遗留项 |
+|---|---|---|---|
+| W-1 资产 | `ddfa8ae` | —（纯资产） | 无（SOURCES.md 已记来源/sha256/OFL） |
+| W-2 契约 | `8be585a` | 294 | 无；`style_and_subtitle_defaults_match_original` 已按 D-17 改断言 |
+| W-3 字体模块+选择器 | `a2ae876` | 303 | 行级选择器在模态内即时预览依赖上次 apply（提交后生效），可接受；字体列表未做虚拟化（搜索框缓解） |
+| W-4 渲染真实化 | `29155a6` | 303 | chrome（Overlay 头/统计行）保持 Consolas 不动（原版 1:1）；TTC 系统字体仅 face 0 |
+| W-5 文档 | 随本提交 | 303 | docs/font-system-plan.md 附录 A 决策点三项均已按用户裁决落地，无未决 |

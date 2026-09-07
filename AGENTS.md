@@ -18,7 +18,7 @@ Python(PyQt6) 实时音频翻译应用 LiveTranslate 的 **Rust 1:1 重写**（m
 ## 构建与测试
 
 ```bash
-cargo test --workspace            # 全量测试（当前 278 测），收工前提
+cargo test --workspace            # 全量测试（当前 303 测），收工前提
 cargo build --release -p lt-app   # 单 exe（约 59MB；onnxruntime.dll + silero_vad.onnx 内嵌，启动解压到配置目录）
 cargo run -p lt-app               # GUI 冒烟
 ```
@@ -46,12 +46,14 @@ cargo run -p lt-app               # GUI 冒烟
 8. 字幕窗 30% 黑底叠白窗呈现的 179 灰是正常 alpha 合成，勿误判为渲染 bug。
 9. C 盘满会使测试 TEMP 报 StorageFull、GDI+ Save 失败（假死）——临时把 TMPDIR 指 D 盘。
 10. 实机走查时 egui 窗口 PrintWindow 会抓到旧帧，必须全屏截图验收。
-11. **edition 2021 的 if-let scrutinee 临时值自死锁**（WP-3 实锤）：`if let Some(x) = shared_lock.lock().unwrap().method() { … } else { 再 lock 同一把 }` 的 MutexGuard 临时值存活到整个 if-let 语句结束（含 else 分支）→ 同线程二次加锁永久死锁。共享锁 + 分支派发一律先 `let v = lock.lock().unwrap().method();` 绑定再分支。
+11. **edition 2021 的 if-let scrutinee 临时值自死锁**（WP-3 实锤）：
+12. **字体 Name 族未注册会 panic**（epaint `FontsImpl::font`）：`FontFamily::Name(族名)` 只允许出现在 `FontsState::resolved`（已注册者）；渲染一律经 `fonts::font_family_for` 取，不得直接构造。`if let Some(x) = shared_lock.lock().unwrap().method() { … } else { 再 lock 同一把 }` 的 MutexGuard 临时值存活到整个 if-let 语句结束（含 else 分支）→ 同线程二次加锁永久死锁。共享锁 + 分支派发一律先 `let v = lock.lock().unwrap().method();` 绑定再分支。
 
 ## 约定
 
 - **自主中文 commit**：每个里程碑/任务卡完成且测试全绿即提交，格式 `feat(scope): 中文主题`（沿用历史风格，如 `feat(m4-panel-gaps): …`）。多代理并行期提交前必须 `git status`/`git diff` 复核——历史教训：stash 手术曾把他人暂存文件混入我方提交（af0ff58）。
 - i18n：zh/en 两份 yaml 必须同步修改。
+- **字体策略（D-17，2026-09-07 用户裁决）**：默认全盘统一内嵌思源黑体（NotoSansCJKsc-Regular.otf，OFL 1.1，见 `assets/fonts/`），任何系统字体缺失都不方块（内嵌恒为链尾兜底）；行级字体键（style.original/translation_font_family、subtitle.lines[].font_family）空串 = 跟随 `subtitle_font_family`（级联），显式族名 = 独立指定；系统字体列表来自 HKLM+HKCU 注册表扫描（`lt-ui/src/fonts.rs`），选择器在样式页「字体」组与字幕行编辑处（搜索/刷新/预览/缺字提示）；改字体键 → 立即 `fonts::apply_fonts(ui.ctx(), …)`（共享单 Context 全窗口下一帧生效）+ `mark_settings_dirty` 防抖落盘；**渲染侧禁用 `FontFamily::Name` 臆造**——未注册族名经 `font_family_for` 回落 Proportional。
 - 子代理分工：general-purpose/Explore 建议设 glm-5.3-flash 做执行/检索；架构承重墙（Win32、下载器、算法移植、CRT/链接问题）由主线程亲自做。
 
 ## 当前待办（2026-09-07 截点）
