@@ -357,9 +357,11 @@ pub fn subtitle_ui(ui: &mut Ui, state: &mut AppState) {
             None => {}
         }
 
-        // 6) 绘制：背景三态（原版 _apply_background；自动隐藏只淡文本不淡背景，1:1 保留）
+        // 6) 绘制：背景（原版 _apply_background；自动隐藏只淡文本不淡背景，1:1 保留）。
+        // 整窗 alpha 由宿主 LWA_ALPHA（=bg_opacity，见 app.rs subtitle_layered_alpha）
+        // 承担，这里画不透明色——半透明填充在品红键控清除区上会混出色偏
         if sm.bg_opacity > 0 {
-            ui.painter().rect_filled(full, sm.border_radius as f32, with_alpha(&sm.bg_color, sm.bg_opacity));
+            ui.painter().rect_filled(full, sm.border_radius as f32, parse_color(&sm.bg_color, Color32::BLACK));
         }
         let opacity = sub.current_opacity(now);
         let content_left = full.left() + MARGIN_H;

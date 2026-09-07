@@ -24,18 +24,11 @@ fn pt(size: u32) -> f32 {
     size as f32 * 4.0 / 3.0
 }
 
-/// 两级透明乘算：Qt rgba alpha（0-255）× 整窗不透明度（百分比）。
-/// 等价原版 QSS `rgba(r,g,b,alpha)` + `setWindowOpacity(pct/100)` 叠加；
-/// egui Color32 为预乘 alpha 空间，全分量同乘系数即正确合成。
-fn fade(c: Color32, alpha_0_255: u32, opacity_pct: u32) -> Color32 {
-    let k = (alpha_0_255.min(255) as u16 * opacity_pct.min(100) as u16 / 100) as u16;
-    let m = |v: u8| (v as u16 * k / 255) as u8;
-    Color32::from_rgba_premultiplied(m(c.r()), m(c.g()), m(c.b()), m(c.a()))
-}
-
-/// 按整窗不透明度百分比淡出（alpha=255 特例）。
-fn opa(c: Color32, opacity_pct: u32) -> Color32 {
-    fade(c, 255, opacity_pct)
+/// 整窗不透明度已由宿主提升为 LWA_ALPHA（见 app.rs apply_layered —— 等价
+/// setWindowOpacity 作用到整窗）；控件级不再乘 window_opacity，保留恒等以便
+/// 调用点签名不动（历史遗留 opa_pct 参数）。
+fn opa(c: Color32, _opacity_pct: u32) -> Color32 {
+    c
 }
 
 /// 原版字面色
@@ -68,11 +61,9 @@ pub fn overlay_ui(ui: &mut Ui, state: &mut AppState) {
     let st = &state.settings.style;
     let opa_pct = st.window_opacity;
     let compact = state.overlay.mode == OverlayMode::Compact;
-    let bg = fade(
-        parse_color(&st.bg_color, Color32::from_rgb(15, 15, 25)),
-        st.bg_opacity,
-        st.window_opacity,
-    );
+    // 背景画成不透明色：整窗 alpha 由宿主 LWA_ALPHA（bg_opacity × window_opacity
+    // 的单层等价）承担——半透明填充在键控品红清除区上会混出色偏，必须不透明
+    let bg = parse_color(&st.bg_color, Color32::from_rgb(15, 15, 25));
     let radius = st.border_radius as f32;
 
     // 动画驱动：进行中则每帧请求窗口高度调整 + 重绘
@@ -567,7 +558,7 @@ fn message_block(
 }
 
 /// 按钮统一外观（原版 _BTN_CSS：11px 字号、20px 高、圆角 3、padding 0-6；
-/// 填充/描边/文字统一乘整窗不透明度，等价 setWindowOpacity 作用到按钮）
+/// 整窗不透明度由宿主 LWA_ALPHA 统一乘，控件不再自乘——opa 恒等）
 fn small_btn(
     label: String,
     fill: Color32,
@@ -588,23 +579,24 @@ fn button_reserved(compact: bool) -> f32 {
     if compact { 240.0 } else { 380.0 }
 }
 
-/// 右下角尺寸手柄（原版 QSizeGrip 16×16：三条斜线 + 拖动）
+/// 右下角尺寸手柄（原版 QSizeGrip 16×16 的小点串斜纹；拖动生效）
 fn resize_grip(ui: &mut Ui, state: &mut AppState) {
     let rect = egui::Rect::from_min_size(
         ui.clip_rect().right_bottom() - Vec2::new(16.0, 16.0),
         Vec2::new(16.0, 16.0),
     );
-    let col = ui.visuals().widgets.inactive.fg_stroke.color;
+    // 原版 Windows 暗色 QSizeGrip：沿对角线 3 组小点（每组 2 点），微灰不抢眼
+    let col = Color32::from_rgba_premultiplied(0x78, 0x78, 0x80, 0x64);
     let painter = ui.painter();
     for i in 0..3 {
-        let off = 3.0 + i as f32 * 4.0;
-        painter.line_segment(
-            [
-                egui::pos2(rect.right() - off, rect.bottom()),
-                egui::pos2(rect.right(), rect.bottom() - off),
-            ],
-            Stroke::new(1.2, col),
-        );
+        let off = 3.5 + i as f32 * 3.5;
+        for dx in [0.0, 2.5] {
+            painter.circle_filled(
+                egui::pos2(rect.right() - off + dx, rect.bottom() - off),
+                1.2,
+                col,
+            );
+        }
     }
     if ui
         .interact(rect, ui.id().with("ov_grip"), Sense::click_and_drag())

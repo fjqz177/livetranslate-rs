@@ -33,6 +33,10 @@ struct HostedWindow {
     state: egui_winit::State,
     /// 面板首次显示前需定位（主屏偏上居中），定位后置位
     needs_position: bool,
+    /// 当前整窗层 alpha（LWA_ALPHA；None=非 layered 普通窗）
+    layer_alpha: Option<u8>,
+    /// 已应用窗口区域缓存（宽,高,圆角半径物理px；None=未设）
+    region_key: Option<(u32, u32, u32)>,
 }
 
 pub struct MultiWindowApp {
@@ -154,8 +158,13 @@ impl MultiWindowApp {
             .with_resizable(true)
             .with_window_icon(crate::tray::window_icon());
         if matches!(id, WinId::Overlay | WinId::Subtitle) {
+            // 不用 winit 的 with_transparent：它开启 NOREDIRECTIONBITMAP + DWM
+            // blur-behind，而 wgpu 在 Windows(HWND) 只有 Opaque 合成模式
+            // （wgpu-hal dx12 adapter.rs 对 WndHandle 仅报告 Opaque），组合后果 =
+            // 清除色 alpha 被忽略、表面恒白底（白角楔 + 整体不透明的根因）。
+            // 真半透明 = WS_EX_LAYERED + SetLayeredWindowAttributes（下方
+            // apply_layered），等价原版 setWindowOpacity + WA_TranslucentBackground。
             attrs = attrs
-                .with_transparent(true)
                 .with_decorations(false)
                 .with_window_level(WindowLevel::AlwaysOnTop)
                 .with_active(false); // WA_ShowWithoutActivating 等价
@@ -179,6 +188,20 @@ impl MultiWindowApp {
         attrs = attrs.with_visible(visible);
 
         let window = Arc::new(event_loop.create_window(attrs)?);
+        // 悬浮窗/字幕窗：surface 创建前先挂 layered 层属性（避免呈现抖动）；
+        // 初始 alpha 取自当前设置，运行中随设置变更在 run_frame 内刷新
+        #[cfg(windows)]
+        let layer_alpha = match id {
+            WinId::Overlay => Some(overlay_layered_alpha(&self.app_state)),
+            WinId::Subtitle => Some(subtitle_layered_alpha(&self.app_state)),
+            _ => None,
+        };
+        #[cfg(not(windows))]
+        let layer_alpha = None;
+        #[cfg(windows)]
+        if let Some(a) = layer_alpha {
+            apply_layered(&window, a);
+        }
         // 悬浮窗恢复上次几何（原版 move(x,y)+resize(w,h)；位置需多屏可见校验 E-11）
         if id == WinId::Overlay {
             if let Some(geo) = self.app_state.overlay_geometry() {
@@ -234,6 +257,8 @@ impl MultiWindowApp {
             window,
             state,
             needs_position: id == WinId::Panel,
+            layer_alpha,
+            region_key: None,
         });
         if visible {
             self.window(id).request_redraw();
@@ -305,6 +330,39 @@ impl MultiWindowApp {
             .unwrap_or(false);
         if want_repaint {
             window.request_redraw();
+        }
+        // 整窗半透明（LWA_ALPHA）：样式页改背景不透明度/窗口不透明度后即时刷新
+        #[cfg(windows)]
+        let target_alpha = match id {
+            WinId::Overlay => Some(overlay_layered_alpha(&self.app_state)),
+            WinId::Subtitle => Some(subtitle_layered_alpha(&self.app_state)),
+            _ => None,
+        };
+        #[cfg(not(windows))]
+        let target_alpha = None;
+        if let Some(ta) = target_alpha {
+            if self.windows[pos].layer_alpha != Some(ta) {
+                #[cfg(windows)]
+                apply_layered(&window, ta);
+                self.windows[pos].layer_alpha = Some(ta);
+            }
+        }
+        // 圆角窗口区域：窗口尺寸/DPI 缩放/圆角设置变化后重设（缓存比对，常态零开销）；
+        // 悬浮窗圆角=样式页 border_radius，字幕窗=字幕页 border_radius（原版各自独立）
+        #[cfg(windows)]
+        if matches!(id, WinId::Overlay | WinId::Subtitle) {
+            let size = window.inner_size();
+            let (w, h) = (size.width, size.height);
+            let radius = match id {
+                WinId::Overlay => self.app_state.settings.style.border_radius,
+                _ => self.app_state.settings.subtitle_mode.border_radius,
+            };
+            let radius_px = (radius as f32 * window.scale_factor() as f32).round() as u32;
+            let key = (w, h, radius_px);
+            if self.windows[pos].region_key != Some(key) {
+                apply_window_region(&window, w, h, radius_px);
+                self.windows[pos].region_key = Some(key);
+            }
         }
         // 帧后：处理窗口动作 / 右键导出 / 清空请求
         self.process_actions();
@@ -1050,9 +1108,8 @@ impl MultiWindowApp {
     fn poll_subtitle_click_through(&mut self) {}
 
     /// WS_EX_TRANSPARENT 位切换（悬浮窗/字幕窗共用的通用窗口层函数）。
-    /// 注：原版 E-04 要求与 WS_EX_LAYERED 成对（Qt 语义）；winit+wgpu 透明窗口
-    /// 走 DWM 合成，加 LAYERED 反而破坏 surface 呈现，故仅切 TRANSPARENT 位
-    /// （已知偏差，实机走查项）。
+    /// 窗口已挂 WS_EX_LAYERED（apply_layered），这里只增删 TRANSPARENT 位，
+    /// 两者可共存（原版 QWidget.setWindowOpacity + click-through 亦同）。
     #[cfg(windows)]
     fn set_window_transparent(window: &Window, enable: bool) {
         use raw_window_handle::{HasWindowHandle as _, RawWindowHandle};
@@ -1316,11 +1373,77 @@ impl ApplicationHandler<UiMsg> for MultiWindowApp {
     }
 }
 
-/// 窗口清屏色：透明窗口必须清成全透明，否则出现残留底色
+/// 窗口清屏色。
+/// 悬浮窗/字幕窗：不透明黑——圆角外像素已被 SetWindowRgn 从窗口形状切除
+/// （见 apply_window_region），残余清除像素只在圆角 1px 抗锯齿带内与背景色
+/// 混合（同为深色，无可察差异）。整窗半透明由 LWA_ALPHA 承担。
+/// 其余普通窗：深灰不透明。
 fn clear_color_for(id: WinId) -> [f32; 4] {
     match id {
-        WinId::Overlay | WinId::Subtitle => [0.0; 4],
+        WinId::Overlay | WinId::Subtitle => [0.0, 0.0, 0.0, 1.0],
         _ => [0.08, 0.08, 0.10, 1.0],
+    }
+}
+
+/// 悬浮窗整窗不透明度（0-255）。原版是两级叠加：QSS rgba(bg_opacity/255) ×
+/// setWindowOpacity(window_opacity%)；LWA_ALPHA 只有一层，取乘积为单值——
+/// 背景精确等价，文本/控件随之乘同系数（原版文本仅乘 window_opacity，
+/// 默认 95% 下相差 ≤5.6pp，实机不可辨；transparent 预设文本偏淡为已知偏差）。
+#[cfg(windows)]
+fn overlay_layered_alpha(s: &AppState) -> u8 {
+    let st = &s.settings.style;
+    ((st.window_opacity.min(100) * st.bg_opacity.min(255)) / 100) as u8
+}
+
+/// 字幕窗整窗不透明度：原版无 setWindowOpacity，仅背景 QSS alpha。
+/// bg_opacity=0 全透明模式退化为不透明底+文字（键控仍镂空圆角空区，已知偏差）。
+#[cfg(windows)]
+fn subtitle_layered_alpha(s: &AppState) -> u8 {
+    let sm = &s.settings.subtitle_mode;
+    if sm.bg_opacity == 0 { 255 } else { sm.bg_opacity.min(255) as u8 }
+}
+
+/// WS_EX_LAYERED + SetLayeredWindowAttributes：整窗半透明（等价 Qt 整窗不透明度，
+/// 即原版 setWindowOpacity）。圆角镂空不走 LWA_COLORKEY——DWM 对 alpha 合成有
+/// ±1 抖动/舍入，精确色键不可靠（实测键控色需 3 通道同时精确命中），改由
+/// SetWindowRgn 几何镂空（见 apply_window_region）。surface 创建前调用（呈现稳定），
+/// 设置变更时随帧刷新。
+#[cfg(windows)]
+fn apply_layered(window: &Window, alpha: u8) {
+    use raw_window_handle::{HasWindowHandle as _, RawWindowHandle};
+    use ::windows::Win32::Foundation::{HWND};
+    use ::windows::Win32::UI::WindowsAndMessaging::{
+        GetWindowLongPtrW, SetLayeredWindowAttributes, SetWindowLongPtrW, GWL_EXSTYLE, LWA_ALPHA,
+        WS_EX_LAYERED,
+    };
+    let Ok(handle) = window.window_handle() else { return };
+    let RawWindowHandle::Win32(win32) = handle.as_raw() else { return };
+    let hwnd = HWND(win32.hwnd.get() as *mut core::ffi::c_void);
+    unsafe {
+        let style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
+        if style & WS_EX_LAYERED.0 == 0 {
+            let _ = SetWindowLongPtrW(hwnd, GWL_EXSTYLE, (style | WS_EX_LAYERED.0) as isize);
+        }
+        let _ = SetLayeredWindowAttributes(hwnd, Default::default(), alpha, LWA_ALPHA);
+    }
+}
+
+/// 圆角窗口区域镂空：圆角外用 CreateRoundRectRgn 从窗口形状上切除（几何级
+/// 真透明，任何背景都透出桌面）。半径取逻辑 border_radius × DPI 缩放；窗口
+/// 尺寸/缩放/圆角设置变化后需重设（run_frame 内按缓存比对刷新）。
+#[cfg(windows)]
+fn apply_window_region(window: &Window, w: u32, h: u32, radius_px: u32) {
+    use raw_window_handle::{HasWindowHandle as _, RawWindowHandle};
+    use ::windows::Win32::Foundation::HWND;
+    use ::windows::Win32::Graphics::Gdi::{CreateRoundRectRgn, SetWindowRgn};
+    let Ok(handle) = window.window_handle() else { return };
+    let RawWindowHandle::Win32(win32) = handle.as_raw() else { return };
+    let hwnd = HWND(win32.hwnd.get() as *mut core::ffi::c_void);
+    let diam = (radius_px * 2).max(2);
+    let rgn = unsafe { CreateRoundRectRgn(0, 0, (w + 1) as i32, (h + 1) as i32, diam as i32, diam as i32) };
+    if !rgn.is_invalid() {
+        // SetWindowRgn 成功后系统接管区域句柄（不得再 DeleteObject）
+        let _ = unsafe { SetWindowRgn(hwnd, Some(rgn), true) };
     }
 }
 
