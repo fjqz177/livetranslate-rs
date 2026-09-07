@@ -1,14 +1,13 @@
-//! 缓存探测（原版 model_manager.py 探测逻辑 1:1，经验 E-10）：
-//! - HF snapshot 取"字典序最后"而非 mtime
-//! - 完整性：所有文件 stat 可解 + 总量过阈值（funasr 50MB / whisper 半体积）
+//! 缓存探测（原版 model_manager.py 探测语义的阶段二改造，DL-1 / docs/download-overhaul.md DEC-1）：
+//! - 完整性 = 注册表 manifest 逐文件「存在 + len ≥ 下限」（files_min_bytes），
+//!   取代原版「递归体积 ≥ 阈值」启发式——半截 .incomplete / 空文件 / 占位估计
+//!   都不再可能被判「已缓存」（假阴性=多下一次可自愈，假阳性=死局）
+//! - HF snapshot 取"字典序最后"且**含完整 manifest**（E-10 沿革）
 //! - 双 hub 或语义（MS 或 HF 任一缓存即命中，避免重复下载）
 
 use crate::paths::{hf_cache_root, ms_cache_root};
 use crate::registry::{self, ModelEntry};
 use std::path::{Path, PathBuf};
-
-/// funasr 缓存完整性下限（原版 min_bytes 默认 50MB）
-const FUNASR_MIN_BYTES: u64 = 50_000_000;
 
 /// HF repo 缓存根下某 repo 的 snapshots 目录
 fn hf_snapshots(models_dir: &Path, repo: &str) -> Option<PathBuf> {
@@ -34,54 +33,35 @@ pub fn hf_style_snapshot(models_dir: &Path, hub: crate::download::Hub, repo: &st
     }
 }
 
-/// HF repo 是否"存在且下载完成"（E-10：统计可解析文件总字节；
-/// 忽略孤儿 .incomplete blob；损坏符号链接视为不完整）
-pub fn hf_repo_complete(models_dir: &Path, repo: &str, min_bytes: u64) -> bool {
-    let Some(snap_root) = hf_snapshots(models_dir, repo) else {
-        return false;
-    };
-    let Ok(entries) = std::fs::read_dir(&snap_root) else {
-        return false;
-    };
-    for snap in entries.flatten() {
-        if !snap.path().is_dir() {
-            continue;
-        }
-        let (mut total, mut broken) = (0u64, false);
-        if let Ok(files) = walk_files(snap.path()) {
-            for f in files {
-                match f.metadata() {
-                    Ok(m) => total += m.len(),
-                    Err(_) => {
-                        broken = true;
-                        break;
-                    }
-                }
-            }
-        } else {
-            broken = true;
-        }
-        if !broken && total >= min_bytes {
-            return true;
-        }
-    }
-    false
+/// manifest 完整性：目录内注册表清单逐文件「存在 + len ≥ 下限」。
+/// 只认清单文件——`.incomplete` 等旁支产物天然不参与（DL-1，灭 F1）。
+pub fn dir_has_manifest(dir: &Path, files: &[&str], mins: &[u64]) -> bool {
+    files.iter().zip(mins.iter()).all(|(f, min)| {
+        dir.join(f).metadata().is_ok_and(|m| m.is_file() && m.len() >= *min)
+    })
 }
 
-fn walk_files(root: PathBuf) -> std::io::Result<Vec<PathBuf>> {
-    let mut out = Vec::new();
-    let mut stack = vec![root];
-    while let Some(dir) = stack.pop() {
-        for e in std::fs::read_dir(dir)?.flatten() {
-            let p = e.path();
-            if p.is_dir() {
-                stack.push(p);
-            } else {
-                out.push(p);
-            }
-        }
-    }
-    Ok(out)
+/// HF repo 下含完整 manifest 的字典序最后快照（None = 无完整快照）。
+pub fn hf_manifest_snapshot(
+    models_dir: &Path,
+    repo: &str,
+    files: &[&str],
+    mins: &[u64],
+) -> Option<PathBuf> {
+    let snap_root = hf_snapshots(models_dir, repo)?;
+    let mut snaps: Vec<PathBuf> = std::fs::read_dir(snap_root)
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .collect();
+    snaps.sort();
+    snaps.into_iter().rev().find(|s| dir_has_manifest(s, files, mins))
+}
+
+/// HF repo 是否"存在且下载完成"（manifest 语义；MS/HF 双 hub 或的上 HF 侧）。
+pub fn hf_repo_cached(models_dir: &Path, repo: &str, entry: &ModelEntry) -> bool {
+    hf_manifest_snapshot(models_dir, repo, entry.files, entry.files_min_bytes).is_some()
 }
 
 /// ModelScope 缓存路径：优先本版下载器布局（models/{org}--{name}/snapshots/<字典序最后>），
@@ -112,47 +92,18 @@ pub fn ms_model_path(models_dir: &Path, repo: &str) -> PathBuf {
     ms_root.join(org).join(name)
 }
 
-/// 双 hub 或：MS 路径存在 或 HF 缓存完整（funasr 系；原版 is_asr_cached funasr 分支）
+/// 双 hub 或：MS 路径 manifest 齐全 或 HF 存在完整 manifest 快照
+/// （funasr 系；DL-1 后两 hub 同一 manifest 标准，不再有阈值分裂）
 pub fn is_funasr_cached(models_dir: &Path, entry: &ModelEntry) -> bool {
     let ms_ok = entry
         .ms
-        .map(|repo| {
-            // MS 侧与 HF 侧同阈值（原版 MS 分支只查 exists 过松，半截文件会
-            // 误判已缓存——登记为收紧偏差；阈值取 min(估计半体积, 50MB) 与
-            // HF 侧 min_bytes 同量级）
-            let d = ms_model_path(models_dir, repo);
-            dir_size_gte(&d, ms_threshold(entry))
-        })
+        .map(|repo| dir_has_manifest(&ms_model_path(models_dir, repo), entry.files, entry.files_min_bytes))
         .unwrap_or(false);
     let hf_ok = entry
         .hf
-        .map(|repo| hf_repo_complete(models_dir, repo, FUNASR_MIN_BYTES))
+        .map(|repo| hf_repo_cached(models_dir, repo, entry))
         .unwrap_or(false);
     ms_ok || hf_ok
-}
-
-/// MS 侧体积阈值：与 HF 侧同量级（半体积下限，避免整目录统计小于 50MB 的
-/// 裸仓被误判——下半体积 + 50MB 双取下限，保守投"尚完整"）
-fn ms_threshold(entry: &ModelEntry) -> u64 {
-    (entry.estimated_bytes / 2).max(FUNASR_MIN_BYTES).max(1)
-}
-
-/// 目录内可解析文件总字节 ≥ 阈值（坏链接/读取失败按"未完成"处理）
-fn dir_size_gte(dir: &Path, min_bytes: u64) -> bool {
-    let Ok(files) = walk_files(dir.to_path_buf()) else {
-        return false;
-    };
-    let mut total = 0u64;
-    for f in files {
-        match f.metadata() {
-            Ok(m) => total += m.len(),
-            Err(_) => return false,
-        }
-        if total >= min_bytes {
-            return true;
-        }
-    }
-    false
 }
 
 /// whisper 档位 → 模型 .bin 绝对路径。
@@ -175,9 +126,8 @@ pub fn whisper_model_path(models_dir: &Path, size: &str) -> Option<PathBuf> {
     snaps.into_iter().rev().map(|snap| snap.join(file)).find(|f| f.is_file())
 }
 
-/// whisper 档位缓存：GGML 单文件，阈值 = 估计体积一半（原版语义；
-/// estimated_bytes 已按仓内实际量化文件校准，完整下载必过阈）；
-/// 非 builtin 值视为本地路径，存在即缓存。
+/// whisper 档位缓存：GGML 单文件，下限 = 注册表 files_min_bytes[0]（实测半体积，
+/// 完整下载必过阈）；非 builtin 值视为本地路径，存在即缓存。
 pub fn is_whisper_cached(models_dir: &Path, size: &str) -> bool {
     if registry::whisper_repo(size).is_none() {
         // 本地 GGML 路径
@@ -187,7 +137,7 @@ pub fn is_whisper_cached(models_dir: &Path, size: &str) -> bool {
         return false;
     };
     let entry = registry::whisper_entry_for(size).expect("注册表已核");
-    let min = (entry.estimated_bytes / 2).max(1);
+    let min = entry.files_min_bytes.first().copied().unwrap_or(1);
     p.metadata().is_ok_and(|m| m.len() >= min)
 }
 
@@ -211,6 +161,8 @@ pub struct MissingModel {
     pub hub_ms: Option<&'static str>,
     pub always_hf: bool,
     pub files: &'static [&'static str],
+    /// 每个清单文件的字节数下限（与 files 等长；下载器跳过校验共用，DL-2）
+    pub files_min_bytes: &'static [u64],
     /// 估计体积（注册表 calibrated；UI 进度条总量与「未缓存 ≈X」共用）
     pub estimated_bytes: u64,
 }
@@ -237,6 +189,7 @@ pub fn missing_models(
                     hub_ms: entry.ms,
                     always_hf: entry.always_hf,
                     files: entry.files,
+                    files_min_bytes: entry.files_min_bytes,
                     estimated_bytes: entry.estimated_bytes,
                 }]
             }
@@ -253,6 +206,7 @@ pub fn missing_models(
                 hub_ms: entry.ms,
                 always_hf: entry.always_hf,
                 files: entry.files,
+                files_min_bytes: entry.files_min_bytes,
                 estimated_bytes: entry.estimated_bytes,
             }]
         }
@@ -260,28 +214,18 @@ pub fn missing_models(
     }
 }
 
-/// 本地模型目录（已缓存时返回 snapshot 路径；未缓存 None）。
-/// 双 hub 优先级：MS（国内快）→ HF。
+/// 本地模型目录（已缓存时返回 manifest 完整的 snapshot 路径；未缓存 None）。
+/// 双 hub 优先级：MS（国内快）→ HF；两 hub 同一 manifest 标准（DL-1 灭 F13：
+/// 原实现 MS 侧只查 exists、HF 侧取字典序最后不验内容，均可能拿到半截目录）。
 pub fn local_model_dir(models_dir: &Path, entry: &ModelEntry) -> Option<PathBuf> {
     if let Some(repo) = entry.ms {
         let p = ms_model_path(models_dir, repo);
-        if p.exists() {
+        if dir_has_manifest(&p, entry.files, entry.files_min_bytes) {
             return Some(p);
         }
     }
     if let Some(repo) = entry.hf {
-        if let Some(snap_root) = hf_snapshots(models_dir, repo) {
-            let mut snaps: Vec<PathBuf> = std::fs::read_dir(&snap_root)
-                .ok()?
-                .flatten()
-                .map(|e| e.path())
-                .filter(|p| p.is_dir())
-                .collect();
-            snaps.sort();
-            if let Some(last) = snaps.pop() {
-                return Some(last);
-            }
-        }
+        return hf_manifest_snapshot(models_dir, repo, entry.files, entry.files_min_bytes);
     }
     None
 }
@@ -304,28 +248,110 @@ mod tests {
     }
 
     #[test]
-    fn hf_complete_requires_threshold_and_resolvable_files() {
-        let dir = tmpdir("hf");
-        let repo = "csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17";
-        let snap = hf_cache_root(&dir).join("models--csukuangfj--sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17").join("snapshots").join("rev1");
-        // 小于 50MB → 不算完整
-        write(&snap.join("model.int8.onnx"), 10_000_000);
-        assert!(!hf_repo_complete(&dir, repo, FUNASR_MIN_BYTES));
-        // 过 50MB → 完整
+    fn incomplete_only_snapshot_is_not_cached() {
+        // DL-1/F1①：仅 .incomplete（哪怕 150MB）→ 未缓存（原实现计入体积误判已缓存）
+        let dir = tmpdir("f1a");
+        let entry = registry::funasr_entry("sensevoice-small").unwrap();
+        let snap = hf_cache_root(&dir)
+            .join("models--csukuangfj--sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17")
+            .join("snapshots")
+            .join("main");
+        write(&snap.join("model.int8.onnx.incomplete"), 150_000_000);
+        assert!(!is_funasr_cached(&dir, &entry));
+        assert!(local_model_dir(&dir, &entry).is_none());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn incomplete_plus_partial_manifest_not_cached() {
+        // DL-1/F1②（死局复现用例）：.incomplete 150MB + 完整 tokens.txt 同快照
+        // → 未缓存。原实现 sum ≥ 50MB 判「已缓存」，重试即假成功。
+        let dir = tmpdir("f1b");
+        let entry = registry::funasr_entry("sensevoice-small").unwrap();
+        let snap = hf_cache_root(&dir)
+            .join("models--csukuangfj--sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17")
+            .join("snapshots")
+            .join("main");
+        write(&snap.join("model.int8.onnx.incomplete"), 150_000_000);
+        write(&snap.join("tokens.txt"), 4_096);
+        assert!(!is_funasr_cached(&dir, &entry));
+        assert!(!is_asr_cached(&dir, "funasr", "sensevoice-small"));
+        assert!(missing_models(&dir, "funasr", "sensevoice-small", "").len() == 1,
+            "必须仍报缺失（可重试真下载），不得假成功");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn manifest_complete_both_hubs_cached() {
+        // DL-1/F1③：双 hub 各自 manifest 齐全即命中（或语义），且阈值不再随 hub 分裂
+        let entry = registry::funasr_entry("sensevoice-small").unwrap();
+        // MS 侧（本版下载器布局）
+        let dir = tmpdir("f1c_ms");
+        let ms_snap = ms_cache_root(&dir).join("models").join("pengzhendong--sherpa-onnx-sense-voice-zh-en-ja-ko-yue").join("snapshots").join("master");
+        write(&ms_snap.join("model.int8.onnx"), 60_000_000);
+        write(&ms_snap.join("tokens.txt"), 4_096);
+        assert!(is_funasr_cached(&dir, &entry));
+        assert_eq!(local_model_dir(&dir, &entry).unwrap(), ms_snap);
+        let _ = fs::remove_dir_all(&dir);
+        // HF 侧
+        let dir = tmpdir("f1c_hf");
+        let hf_snap = hf_cache_root(&dir)
+            .join("models--csukuangfj--sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17")
+            .join("snapshots").join("main");
+        write(&hf_snap.join("model.int8.onnx"), 60_000_000);
+        write(&hf_snap.join("tokens.txt"), 4_096);
+        assert!(is_funasr_cached(&dir, &entry));
+        assert_eq!(local_model_dir(&dir, &entry).unwrap(), hf_snap);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn manifest_missing_or_undersized_file_not_cached() {
+        // DL-1/F1④：缺一文件 / 文件低于下限（tokens.txt ≥ 1KB）都判未缓存
+        let dir = tmpdir("f1d");
+        let entry = registry::funasr_entry("sensevoice-small").unwrap();
+        let snap = hf_cache_root(&dir)
+            .join("models--csukuangfj--sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17")
+            .join("snapshots").join("main");
         write(&snap.join("model.int8.onnx"), 60_000_000);
-        assert!(hf_repo_complete(&dir, repo, FUNASR_MIN_BYTES));
+        assert!(!is_funasr_cached(&dir, &entry), "缺 tokens.txt");
+        write(&snap.join("tokens.txt"), 512);
+        assert!(!is_funasr_cached(&dir, &entry), "tokens.txt 低于 1KB 下限");
+        write(&snap.join("tokens.txt"), 4_096);
+        assert!(is_funasr_cached(&dir, &entry));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn local_model_dir_skips_incomplete_newer_snapshot() {
+        // DL-1/F1⑤：较新快照含 .incomplete 不完整 → 回退较旧完整快照（MS/HF 两 hub 各验）
+        let dir = tmpdir("f1e");
+        let entry = registry::funasr_entry("sensevoice-small").unwrap();
+        let snaps = hf_cache_root(&dir)
+            .join("models--csukuangfj--sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17")
+            .join("snapshots");
+        write(&snaps.join("rev_old").join("model.int8.onnx"), 60_000_000);
+        write(&snaps.join("rev_old").join("tokens.txt"), 4_096);
+        write(&snaps.join("zzz_new").join("model.int8.onnx.incomplete"), 150_000_000);
+        write(&snaps.join("zzz_new").join("tokens.txt"), 4_096);
+        let got = local_model_dir(&dir, &entry).expect("应回退旧完整快照");
+        assert!(got.ends_with("rev_old"), "got={got:?}");
         let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn hf_broken_snapshot_falls_through() {
+        // 沿革保留：快照含 .incomplete/坏文件不影响其他快照判定（manifest 语义天然成立）
         let dir = tmpdir("hfbrk");
         let repo = "a/b";
         let snaps = hf_cache_root(&dir).join("models--a--b").join("snapshots");
         write(&snaps.join("rev_old").join("f.bin"), 60_000_000);
-        // rev_new 含 .incomplete（截断文件小于阈值）
         write(&snaps.join("rev_new").join("f.bin.incomplete"), 1_000);
-        assert!(hf_repo_complete(&dir, repo, FUNASR_MIN_BYTES));
+        let entry_files = ["f.bin"];
+        let entry_mins = [1];
+        assert!(hf_manifest_snapshot(&dir, repo, &entry_files, &entry_mins)
+            .expect("旧快照应命中")
+            .ends_with("rev_old"));
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -344,12 +370,11 @@ mod tests {
     fn is_asr_cached_dual_hub_or() {
         let dir = tmpdir("dual");
         assert!(!is_asr_cached(&dir, "funasr", "sensevoice-small"));
-        // MS 侧命中（pengzhendong 镜像仓，M2 核对）；体积 ≥ 50MB 阈值
-        //（P2-8 收紧：原版只查 exists，半截文件会误判已缓存）
-        write(
-            &ms_cache_root(&dir).join("pengzhendong").join("sherpa-onnx-sense-voice-zh-en-ja-ko-yue").join("model.int8.onnx"),
-            130_000_000,
-        );
+        // MS 侧命中（pengzhendong 镜像仓，M2 核对）——manifest 需两文件齐全且过下限
+        //（DL-1 前：体积 ≥ 50MB 单文件即判已缓存，半截仓会误判）
+        let ms_dir = ms_cache_root(&dir).join("pengzhendong").join("sherpa-onnx-sense-voice-zh-en-ja-ko-yue");
+        write(&ms_dir.join("model.int8.onnx"), 130_000_000);
+        write(&ms_dir.join("tokens.txt"), 4_096);
         assert!(is_asr_cached(&dir, "funasr", "sensevoice-small"));
         let _ = fs::remove_dir_all(&dir);
     }
@@ -361,8 +386,9 @@ mod tests {
         let miss = missing_models(&dir, "funasr", "sensevoice-small", "");
         assert_eq!(miss.len(), 1);
         assert_eq!(miss[0].display, "SenseVoice Small");
-        // 缺失条目带估计体积（进度条总量源）
+        // 缺失条目带估计体积（进度条总量源）+ manifest 下限（下载器跳过校验源）
         assert!(miss[0].estimated_bytes > 0, "estimated_bytes 应填充");
+        assert_eq!(miss[0].files_min_bytes.len(), miss[0].files.len(), "下限须与清单等长");
         // mlt 键回退后同样报 sensevoice-small 缺失（D-14）
         let miss = missing_models(&dir, "funasr", "funasr-mlt-nano-2512", "");
         assert_eq!(miss[0].display, "SenseVoice Small");
@@ -371,11 +397,10 @@ mod tests {
         assert_eq!(miss.len(), 1);
         assert_eq!(miss[0].display, "Whisper tiny");
         assert!(missing_models(&dir, "whisper", "", "D:/my/model.bin").is_empty());
-        // MS 侧命中（≥50MB 阈值）→ funasr 不再缺失
-        write(
-            &ms_cache_root(&dir).join("pengzhendong").join("sherpa-onnx-sense-voice-zh-en-ja-ko-yue").join("model.int8.onnx"),
-            130_000_000,
-        );
+        // MS 侧 manifest 齐全（≥50MB + tokens）→ funasr 不再缺失
+        let ms_dir = ms_cache_root(&dir).join("pengzhendong").join("sherpa-onnx-sense-voice-zh-en-ja-ko-yue");
+        write(&ms_dir.join("model.int8.onnx"), 130_000_000);
+        write(&ms_dir.join("tokens.txt"), 4_096);
         assert!(missing_models(&dir, "funasr", "sensevoice-small", "").is_empty());
         let _ = fs::remove_dir_all(&dir);
     }
@@ -424,7 +449,6 @@ mod tests {
 
 #[cfg(test)]
 mod probe_tmp {
-    use super::*;
     #[test]
     fn probe_real_cache() {
         let md = std::path::Path::new("C:/Users/fjqz177/.config/livetranslate/models");
@@ -436,7 +460,6 @@ mod probe_tmp {
 
 #[cfg(test)]
 mod probe_settings_tmp {
-    use super::*;
     #[test]
     fn probe_load_from_smoke_dir() {
         std::env::set_var("LIVETRANSLATE_CONFIG_DIR", "C:/Users/fjqz177/.zcode/tmp/lt_smoke");

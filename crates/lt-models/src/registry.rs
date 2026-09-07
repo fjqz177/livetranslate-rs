@@ -14,10 +14,15 @@ pub struct ModelEntry {
     pub ms: Option<&'static str>,
     /// 该模型必须从 HF 下载（MS 无对应仓库）
     pub always_hf: bool,
-    /// 体积估计（进度条/半体积阈值用）
+    /// 体积估计（进度条/「未缓存 ≈X」展示用；不参与完整性判定）
     pub estimated_bytes: u64,
-    /// 完整性所需的核心文件（缓存探测用）
+    /// 完整性所需的核心文件（下载清单 = 缓存探测目标）
     pub files: &'static [&'static str],
+    /// 每个清单文件的字节数下限（与 files 等长 zip；0 = 仅要求存在）。
+    /// 探测语义（DL-1，docs/download-overhaul.md DEC-1）：manifest 逐文件
+    /// 「存在 + len ≥ 下限」，取代原版体积阈值启发式——下限刻意取远低于
+    /// 实际值（假阴性 = 多下一次，可自愈；假阳性 = 判已缓存却加载失败）。
+    pub files_min_bytes: &'static [u64],
 }
 
 /// SenseVoice（sherpa-onnx 转换包：model.int8.onnx 239MB + tokens.txt）。
@@ -30,9 +35,12 @@ pub const SENSEVOICE_SMALL: ModelEntry = ModelEntry {
     always_hf: false,
     estimated_bytes: 250_000_000,
     files: &["model.int8.onnx", "tokens.txt"],
+    files_min_bytes: &[50_000_000, 1_024],
 };
 
-/// funasr-nano（M5 实装；注册表占位）
+/// funasr-nano（M5 实装；注册表占位）。
+/// 【WP-A 待核】estimated_bytes 为占位值；下限 50MB 按「远低于实际」取值，
+/// nano 实装时经 HF API 核对实际字节数后校准（沿 whisper【M5 首日核实】先例）。
 pub const FUNASR_NANO: ModelEntry = ModelEntry {
     key: "funasr-nano-2512",
     display: "Fun-ASR-Nano",
@@ -41,6 +49,7 @@ pub const FUNASR_NANO: ModelEntry = ModelEntry {
     always_hf: false,
     estimated_bytes: 1_100_000_000,
     files: &["model.int8.onnx", "tokens.txt"],
+    files_min_bytes: &[50_000_000, 1_024],
 };
 
 /// whisper 各档统一 HF repo。
@@ -74,14 +83,14 @@ pub fn whisper_ggml_file(size: &str) -> Option<&'static str> {
 
 /// whisper 静态表（always HF；量化默认档）。
 /// estimated_bytes = 仓内实际文件字节数（HF API tree/main 实测，2026-09-06）；
-/// 半体积阈值据此判定完整性（fp16 体积 78M~3.1G 与量化文件无关，故不沿用）。
+/// files_min_bytes = 实测半体积（完整下载必过阈）。
 pub const WHISPER_ENTRIES: [ModelEntry; 6] = [
-    ModelEntry { key: "tiny", display: "tiny", hf: Some("ggerganov/whisper.cpp"), ms: None, always_hf: true, estimated_bytes: 32_152_673, files: &["ggml-tiny-q5_1.bin"] },
-    ModelEntry { key: "base", display: "base", hf: Some("ggerganov/whisper.cpp"), ms: None, always_hf: true, estimated_bytes: 59_707_625, files: &["ggml-base-q5_1.bin"] },
-    ModelEntry { key: "small", display: "small", hf: Some("ggerganov/whisper.cpp"), ms: None, always_hf: true, estimated_bytes: 190_085_487, files: &["ggml-small-q5_1.bin"] },
-    ModelEntry { key: "medium", display: "medium", hf: Some("ggerganov/whisper.cpp"), ms: None, always_hf: true, estimated_bytes: 539_212_467, files: &["ggml-medium-q5_0.bin"] },
-    ModelEntry { key: "large-v3", display: "large-v3", hf: Some("ggerganov/whisper.cpp"), ms: None, always_hf: true, estimated_bytes: 1_081_140_203, files: &["ggml-large-v3-q5_0.bin"] },
-    ModelEntry { key: "turbo", display: "turbo", hf: Some("ggerganov/whisper.cpp"), ms: None, always_hf: true, estimated_bytes: 574_041_195, files: &["ggml-large-v3-turbo-q5_0.bin"] },
+    ModelEntry { key: "tiny", display: "tiny", hf: Some("ggerganov/whisper.cpp"), ms: None, always_hf: true, estimated_bytes: 32_152_673, files: &["ggml-tiny-q5_1.bin"], files_min_bytes: &[16_076_336] },
+    ModelEntry { key: "base", display: "base", hf: Some("ggerganov/whisper.cpp"), ms: None, always_hf: true, estimated_bytes: 59_707_625, files: &["ggml-base-q5_1.bin"], files_min_bytes: &[29_853_812] },
+    ModelEntry { key: "small", display: "small", hf: Some("ggerganov/whisper.cpp"), ms: None, always_hf: true, estimated_bytes: 190_085_487, files: &["ggml-small-q5_1.bin"], files_min_bytes: &[95_042_743] },
+    ModelEntry { key: "medium", display: "medium", hf: Some("ggerganov/whisper.cpp"), ms: None, always_hf: true, estimated_bytes: 539_212_467, files: &["ggml-medium-q5_0.bin"], files_min_bytes: &[269_606_233] },
+    ModelEntry { key: "large-v3", display: "large-v3", hf: Some("ggerganov/whisper.cpp"), ms: None, always_hf: true, estimated_bytes: 1_081_140_203, files: &["ggml-large-v3-q5_0.bin"], files_min_bytes: &[540_570_101] },
+    ModelEntry { key: "turbo", display: "turbo", hf: Some("ggerganov/whisper.cpp"), ms: None, always_hf: true, estimated_bytes: 574_041_195, files: &["ggml-large-v3-turbo-q5_0.bin"], files_min_bytes: &[287_020_597] },
 ];
 
 /// 合法 funasr 模型键（与 lt_proto::FUNASR_MODELS 对齐）
@@ -165,5 +174,21 @@ mod tests {
         // mlt 无上游 ONNX 转换（D-14）→ None，运行时回退 sensevoice-small
         assert!(funasr_entry("funasr-mlt-nano-2512").is_none());
         assert!(funasr_entry("bogus").is_none());
+    }
+
+    #[test]
+    fn manifest_min_bytes_parallel_to_files() {
+        // DL-1⑥：files 与 files_min_bytes 必须等长（探测 zip 依赖）；
+        // whisper 下限 = 实测半体积；funasr 下限远低于实际（防假阴性重下循环）
+        for e in WHISPER_ENTRIES.iter() {
+            assert_eq!(e.files.len(), e.files_min_bytes.len(), "{}", e.key);
+            assert_eq!(e.files_min_bytes[0], e.estimated_bytes / 2, "{}", e.key);
+        }
+        for e in [SENSEVOICE_SMALL.clone(), FUNASR_NANO.clone()] {
+            assert_eq!(e.files.len(), e.files_min_bytes.len(), "{}", e.key);
+            assert!(e.files_min_bytes[0] >= 1 && e.files_min_bytes[1] >= 1, "{}", e.key);
+            // 主文件下限必须远低于估计体积（下限是"远未完成"防线，不是完整性度量）
+            assert!(e.files_min_bytes[0] * 2 < e.estimated_bytes, "{}", e.key);
+        }
     }
 }

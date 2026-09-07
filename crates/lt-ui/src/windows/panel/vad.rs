@@ -1148,15 +1148,15 @@ mod tests {
             model_cache_status(&dir, "funasr", "sensevoice-small", ""),
             CacheStatus::Missing(sensevoice_bytes)
         );
-        // MS 镜像仓写入文件且体积 ≥ 半体积阈值 → 命中（P2-8 收紧：
-        // 原语义仅 exists，半截文件会误判已缓存）
-        let hit = lt_models::paths::ms_cache_root(&dir)
+        // MS 镜像仓写入完整 manifest（下限过阈）→ 命中（DL-1 起 manifest 逐文件校验：
+        // 旧版单文件过体积阈值即判已缓存，半截仓会误判）
+        let ms_dir = lt_models::paths::ms_cache_root(&dir)
             .join("pengzhendong")
-            .join("sherpa-onnx-sense-voice-zh-en-ja-ko-yue")
-            .join("model.int8.onnx");
-        std::fs::create_dir_all(hit.parent().unwrap()).unwrap();
+            .join("sherpa-onnx-sense-voice-zh-en-ja-ko-yue");
+        std::fs::create_dir_all(&ms_dir).unwrap();
         let half_min = (sensevoice_bytes / 2).max(50_000_000);
-        std::fs::write(&hit, vec![0u8; half_min as usize + 1]).unwrap();
+        std::fs::write(ms_dir.join("model.int8.onnx"), vec![0u8; half_min as usize + 1]).unwrap();
+        std::fs::write(ms_dir.join("tokens.txt"), vec![0u8; 4_096]).unwrap();
         assert_eq!(
             model_cache_status(&dir, "funasr", "sensevoice-small", ""),
             CacheStatus::Cached(sensevoice_bytes)

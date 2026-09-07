@@ -1413,18 +1413,25 @@ mod tests {
 
     #[test]
     fn funasr_branch_unchanged_via_ms_cache() {
-        // 守护既有 funasr 路径：MS 侧命中（pengzhendong 镜像）→ 正常装配 sensevoice
+        // 守护既有 funasr 路径：MS 侧 manifest 齐全（pengzhendong 镜像布局）→ 正常装配
+        // sensevoice。（DL-1 起 local_model_dir 需 manifest 完整——旧版空目录即命中，
+        // 装配到半截目录只会在引擎加载时爆，正是 download-overhaul F13。）
         let dir = tmp_models_dir("funasr");
         let ms = lt_models::paths::ms_cache_root(&dir)
             .join("pengzhendong")
             .join("sherpa-onnx-sense-voice-zh-en-ja-ko-yue");
         std::fs::create_dir_all(&ms).unwrap();
+        std::fs::write(ms.join("model.int8.onnx"), vec![0u8; 60_000_000]).unwrap();
+        std::fs::write(ms.join("tokens.txt"), vec![0u8; 4_096]).unwrap();
         let got = build_worker_config(&dir, "funasr", "sensevoice-small", 0.4, "auto", "tiny", 0.5);
         let (cfg, display) = got.expect("MS 缓存命中应可装配");
         assert_eq!(cfg.engine, "sensevoice");
         assert_eq!(display, "SenseVoice Small");
         assert_eq!(cfg.pad_seconds, Some(0.4)); // funasr 用 sensevoice pad
         assert!(cfg.options.get("model_dir").is_some());
+        // manifest 不齐（缺 tokens.txt）→ 不得装配（防半截目录进引擎）
+        std::fs::remove_file(ms.join("tokens.txt")).unwrap();
+        assert!(build_worker_config(&dir, "funasr", "sensevoice-small", 0.4, "auto", "tiny", 0.5).is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
