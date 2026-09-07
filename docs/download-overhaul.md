@@ -1,6 +1,6 @@
 # 模型下载链路审计与改造方案（docs/download-overhaul.md）
 
-> 状态：**阶段二活跃文档**（2026-09-08 审计定稿）。审计范围：`lt-models`（download/cache/registry）+ `lt-app`（backend/shell 编排）+ `lt-ui`（四态卡片/进度渲染）。
+> 状态：**阶段二活跃文档**（2026-09-08 审计定稿并**施工完成**：DL-1~6 全部落地 + clippy 清理，334 测全绿；实机冒烟=真实缓存 manifest 命中 → ASR worker ready）。审计范围：`lt-models`（download/cache/registry）+ `lt-app`（backend/shell 编排）+ `lt-ui`（四态卡片/进度渲染）。
 > 结论：骨架合理（断点续传/双 hub 同约定布局/失败前缀分类/四态卡片），但存在 **2 高危 + 1 功能失效 + 4 中 + 6 低** 共 13 项问题。
 > 施工包 DL-1~DL-6：P0 = DL-1/2/3（约 1.5 天），P1 = DL-4/5，P2 = DL-6。**DL-1 是 asr-engine-expansion WP-A（nano 实装）的前置**。
 
@@ -121,7 +121,7 @@ let total = parse_human_size(line[idx + marker.len()..].split_whitespace().next(
 
 ## 5. 工作包
 
-### DL-1（P0）探测 manifest 化 —— 灭 F1/F2/F13，WP-A 前置（0.5d）
+### DL-1（P0，✗ e1b73ea）探测 manifest 化 —— 灭 F1/F2/F13，WP-A 前置
 
 | 项 | 内容 |
 |---|---|
@@ -130,7 +130,7 @@ let total = parse_human_size(line[idx + marker.len()..].split_whitespace().next(
 | vad.rs | `model_cache_status` 无接口变化，自动受益 |
 | 测试 | ①仅 `.incomplete` 目录 → 未缓存（F1 回归）；②`.incomplete` 150MB + 完整 tokens.txt → 未缓存；③双 hub 各自 manifest 齐全 → 已缓存；④manifest 缺一文件 → 未缓存；⑤`local_model_dir` 跳过含 .incomplete 的较新快照回退旧快照；⑥注册表 min 字段一致性 |
 
-### DL-2（P0）下载器完整性与快速失败 —— 灭 F4/F5（0.5d）
+### DL-2（P0，✗ 96aab45）下载器完整性与快速失败 —— 灭 F4/F5
 
 | 项 | 内容 |
 |---|---|
@@ -140,7 +140,7 @@ let total = parse_human_size(line[idx + marker.len()..].split_whitespace().next(
 | 快速失败 | 内部 `DlError { err, retryable }`：`KIND_NET`、HTTP 5xx/429、`KIND_LENGTH`（续传可救）→ retryable；HTTP 其余 4xx（404/401/403…）→ 立即失败不再退避。分类前缀契约（`[net]/[http]/[http-404]/[disk]/[length]`）不变 |
 | 测试 | 重试分类纯函数表测（404/401→false；429/500/net/length→true）；跳过校验（足额跳过/不足重下）；rename 目标已存在路径；`incomplete_path` 既有测试保留 |
 
-### DL-3（P0）进度协议精确化（不扩契约）—— 灭 F3/F10（0.5d）
+### DL-3（P0，✗ dff0a5e）进度协议精确化（不扩契约）—— 灭 F3/F10
 
 | 项 | 内容 |
 |---|---|
@@ -149,7 +149,7 @@ let total = parse_human_size(line[idx + marker.len()..].split_whitespace().next(
 | 状态 | `DownloadUiState::Downloading { file: String, k: u32, n: u32, done_bytes, total_bytes, log }`；卡片显示「{file}（k/n）」+ 进度条按**当前文件**；`total_bytes == 0` 走日志模式（明确文案，非 0% 假条）。文件切换由 backend 数据自然携带，bar 随文件归零且标签可见，消除「回跳」误解 |
 | 测试 | 新解析器表测：标准行 / total 未知 / 0 字节边界 / >4GB / 无 `\t` 的旧式与外来行忽略；`Downloading` 状态机推进测试 |
 
-### DL-4（P1）会话化下载线程 + 取消 + 落盘归一 —— 灭 F6/F7（1d）
+### DL-4（P1，✗ 92c5d46）会话化下载线程 + 取消 + 落盘归一 —— 灭 F6/F7（F9 drain 顺带落地）
 
 | 项 | 内容 |
 |---|---|
@@ -160,7 +160,7 @@ let total = parse_human_size(line[idx + marker.len()..].split_whitespace().next(
 | UI | 失败/下载中卡片增「取消」按钮（Downloading 态）；`DownloadCancelled` → 卡片回 Idle + 提示「已取消，进度已保留」；i18n zh/en 同步加键 |
 | 测试 | 会话互斥（在途拒二次启动）；cancel 闭包立即 true → 不发任何 HTTP 即返回；UI 状态机 Downloading→Cancelled→Idle；backend 收 CancelDownload 置位 |
 
-### DL-5（P1）hub 缺失回落机制（落地 D-21 机制半）—— 灭 F8（0.5d）
+### DL-5（P1，✗ 17f5271）hub 缺失回落机制（落地 D-21 机制半）—— 灭 F8；编排下沉 `Downloader::download_model` + `hub_chain`（lt-models，可 mock 集成测）
 
 | 项 | 内容 |
 |---|---|
@@ -168,7 +168,7 @@ let total = parse_human_size(line[idx + marker.len()..].split_whitespace().next(
 | 纯函数 | `next_hub(hub, entry, err_kind) -> Option<Hub>` 独立可测 |
 | 测试 | `next_hub` 表测（双 hub 404→回落；always_hf→None；net 错误→回落；已回退过→None）；端到端回落走手动 S9 |
 
-### DL-6（P2）杂项收尾 —— 灭 F9/F11/F12（0.5d）
+### DL-6（P2，✗ 14889a2）杂项收尾 —— 灭 F11/F12（F9 已随 DL-4；另有 clippy 清理 6852da6）
 
 | 项 | 内容 |
 |---|---|
@@ -182,7 +182,10 @@ let total = parse_human_size(line[idx + marker.len()..].split_whitespace().next(
 
 DL-1⑥ 项注册表一致性 / ①~⑤ 探测六项；DL-2 分类表测 / 跳过校验 / rename 竞态；DL-3 解析表测（≥5 用例）/ 状态机；DL-4 会话互斥 / cancel 即停 / 状态机三态 / backend 置位；DL-5 `next_hub` 表测（≥4 用例）。合并即 ≥16。
 
-### 6.2 手动验收场景（实机，全过才算收口）
+### 6.2 验收场景（自动化覆盖状态标注；**S1/S6 的全程真实网络走查留给用户实机**）
+
+> 已自动化：S2（进度协议单测+mock）/ S3（404 快败 ≤3s 断言）/ S4（取消零请求+断点续传 mock）/ S5（逻辑层：会话化+落盘归一单测）/ S7（全跳过零网络）/ S8（半截重下 mock）/ S9（MS 404 回落 HF mock）。
+> 实机冒烟（2026-09-08）：真实缓存 manifest 命中 → 管道启动 → `ASR worker ready SenseVoice Small`。
 
 | # | 场景 | 预期 |
 |---|---|---|
@@ -212,12 +215,14 @@ DL-1⑥ 项注册表一致性 / ①~⑤ 探测六项；DL-2 分类表测 / 跳�
 - 每卡完成前提：`cargo test --workspace` 全绿 + 对应手动场景抽测；禁 `git add -A`，逐 pathspec。
 - 文档状态行随卡同步（本文档 §5 各包完成后标注 ✗ + commit hash）。
 
-## 9. 新偏差登记（提案，落地时回写 `docs/archive/rewrite-research.md` §1.5）
+## 9. 新偏差登记（已随实现落地；沿 D-18~D-21 先例记录于本活跃文档）
 
 | 提案编号 | 内容 | 与原版关系 |
 |---|---|---|
-| D-22（提案） | 缓存完整性探测从原版体积阈值（min_bytes 50MB/半体积）改为注册表 manifest 逐文件校验 | 行为收紧：原版阈值启发式存在本方案 F1/F2 同类误判 |
-| D-23（提案） | 下载可取消（`Cmd::CancelDownload`/`UiEvent::DownloadCancelled`），取消保留续传现场 | 新增能力：原版下载对话框无取消按钮 |
+| D-22 | 缓存完整性探测从原版体积阈值（min_bytes 50MB/半体积）改为注册表 manifest 逐文件校验 | 行为收紧：原版阈值启发式存在本方案 F1/F2 同类误判 |
+| D-23 | 下载可取消（`Cmd::CancelDownload`/`UiEvent::DownloadCancelled`），取消保留续传现场 | 新增能力：原版下载对话框无取消按钮 |
 | —— | hub 缺失回落不占新编号：D-21 已裁决，DL-5 为其机制落地 | —— |
 
-> 编号冲突规则：若 asr-engine-expansion WP-B 先于本方案落地并占用 D-22，则顺延；最终以回写归档决策史时登记为准。
+> 编号已占用：asr-engine-expansion WP-B 届时自 **D-24** 起编号。
+> 收尾追加：clippy 清理（6852da6）——`FileJob` 聚合下载参数、注册表不变量升编译期断言、`DownloadUiState` derive Default。
+> release 单 exe 构建验证通过；exe 体积 ~72MB（含 whisper.cpp 内核等既有内容，本次改造未引入新依赖）。
