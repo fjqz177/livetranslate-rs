@@ -659,12 +659,27 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
     group_card(ui, pal, &lt_i18n::t("group_model_cache"), |ui| {
         let models_dir = lt_models::paths::models_dir(state.settings.models_dir.as_deref())
             .unwrap_or_else(|_| std::env::temp_dir());
-        let status = model_cache_status(
-            &models_dir,
-            &state.settings.asr_engine,
-            &state.settings.funasr_model,
-            &state.settings.whisper_model_size,
+        // DL-6/F12：探测结果缓存 2s（探测键变化即失效），下载事件在 app.rs 侧
+        // 失效——识别页每帧渲染不再递归扫盘
+        let probe_key = format!(
+            "{}|{}|{}",
+            state.settings.asr_engine,
+            state.settings.funasr_model,
+            state.settings.whisper_model_size
         );
+        let status = match &state.panel.cache_probe {
+            Some((at, key, s)) if *key == probe_key && at.elapsed().as_millis() < 2_000 => *s,
+            _ => {
+                let s = model_cache_status(
+                    &models_dir,
+                    &state.settings.asr_engine,
+                    &state.settings.funasr_model,
+                    &state.settings.whisper_model_size,
+                );
+                state.panel.cache_probe = Some((std::time::Instant::now(), probe_key, s));
+                s
+            }
+        };
         ui.horizontal(|ui| {
             let model_display = if state.settings.asr_engine == "funasr" {
                 funasr_model_items()[funasr_index_for(&state.settings.funasr_model)].display.clone()

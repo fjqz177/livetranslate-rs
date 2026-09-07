@@ -1031,6 +1031,9 @@ pub struct PanelUiState {    /// 当前页（原版 _nav.currentRow + _stack.set
     pub autostart: Option<bool>,
     /// 设备枚举缓存（None=未枚举；识别页首次显示或点"刷新"时重建）
     pub devices: Option<DeviceCache>,
+    /// 模型缓存探测缓存（DL-6/F12：识别页每帧渲染不再扫盘——2s TTL，
+    /// 探测键（engine|model）变化或下载事件到达时失效）
+    pub cache_probe: Option<(std::time::Instant, String, crate::windows::panel::vad::CacheStatus)>,
     /// 设置防抖到期时刻（原版 _save_timer singleShot：每次变更重置到 now+300ms
     /// → 300ms 内连发合并为最后一次的 deadline；到期由 PanelApply 节拍消费）
     pub apply_due_at: Option<Instant>,

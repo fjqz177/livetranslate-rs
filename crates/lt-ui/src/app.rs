@@ -781,6 +781,8 @@ impl MultiWindowApp {
                             };
                             log.push(failed_line.clone());
                             self.app_state.download = DownloadUiState::Failed { kind, detail, log };
+                            // DL-6/F12：磁盘内容已变，探测缓存失效
+                            self.app_state.panel.cache_probe = None;
                             self.redraw(WinId::Panel);
                         }
                     }
@@ -798,6 +800,8 @@ impl MultiWindowApp {
                         };
                         log.push(lt_i18n::t("download_cancelled_title").to_string());
                         self.app_state.download = DownloadUiState::Cancelled { log };
+                        // DL-6/F12：磁盘内容已变，探测缓存失效
+                        self.app_state.panel.cache_probe = None;
                         self.redraw(WinId::Panel);
                     }
                 }
@@ -821,9 +825,10 @@ impl MultiWindowApp {
                             *finished = true;
                         }
                         StartupFlow::Ready => {
-                            // 运行期下载成功：卡片回到已缓存（磁盘探测下一帧
-                            // 自然翻转）+ 引擎热切换由 AppShell 处理
+                            // 运行期下载成功：卡片回到已缓存（探测缓存已失效，
+                            // 下一次渲染重扫磁盘翻转）+ 引擎热切换由 AppShell 处理
                             self.app_state.download = DownloadUiState::Idle;
+                            self.app_state.panel.cache_probe = None;
                             self.redraw(WinId::Panel);
                         }
                     }
