@@ -19,7 +19,14 @@ fn main() -> anyhow::Result<()> {
     let hub = if entry.ms.is_some() { Hub::Ms } else { Hub::Hf };
     println!("下载 {key}（{repo}，{:?}，{} 个文件）…", hub, entry.files.len());
 
-    let specs: Vec<(&str, u64)> = entry.files.iter().copied().zip(entry.files_min_bytes.iter().copied()).collect();
+    let specs: Vec<(&str, u64, &str)> = entry
+        .files
+        .iter()
+        .copied()
+        .zip(entry.files_min_bytes.iter().copied())
+        .zip(entry.files_sha256.iter().copied())
+        .map(|((f, min), sha)| (f, min, sha))
+        .collect();
     let dir = dl.download_files(hub, repo, &specs, &AtomicBool::new(false), Some(&tx))?;
     drop(tx);
     for ev in rx.try_iter() {
