@@ -20,7 +20,7 @@
 | **无真实 MS 源模型的下载语义** | **D-24（2026-09-08 用户裁决，r2.1 修订）：诚实回退，不伪造** | 注册表 `ms` 字段只填真实存在的 ModelScope 仓，无则 `None`；`always_hf` 语义 =「仅 HF 源」，所选 hub=ms 时链路**直达 HF 且自动经 hf-mirror 镜像**（选 hub=hf 则官方直连——端点由所选 hub 决定，不新增设置键），禁止把非 MS 链接塞进 ms 字段或做特殊标记（现注册表错误条目即反例）；`hub_chain` 现有实现已满足，需补端点映射常量 + backend 一行接线 + UI 诚实提示 |
 | **hf-mirror 可用性** | **实测通过，镜像备选路线全部封存** | 产品下载器全链路（hub_chain→直链→206 续传→manifest 校验）963MB 用时 47.3s、均速 20.4 MB/s，六文件与 HF API 逐字节一致；ModelScope 侧无官方 nano 源，zengshuishui 等社区镜像不采信 |
 | **缓存完整性硬化（原 WP-C）** | **取消——已被 DL-1 消化** | `cache.rs:38-42 dir_has_manifest` 逐文件「存在+达下限」对多文件模型天然成立，注册表填对清单即得，无需新代码 |
-| **Qwen3-ASR-0.6B 接入** | **可行，turnkey，按 §4（r3）立即施工（WP-B；spike 降级为验收程序）** | 目标仓定案 `csukuangfj2/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25`（HF 实测六文件 987,015,347B；MS 无源走 D-24）；binding 1.13.7 字段 + v1.13.7 原生支持 + 官方参数基线全核实；拓扑 B-α 已拍板；CPU RTF 0.077–0.168@2线程；**无 language 参数（纯 auto-LID）** |
+| **Qwen3-ASR-0.6B 接入** | **✗ 可行且已实装（WP-B，2026-09-08，r3.1）** | 目标仓 `csukuangfj2/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25`（HF 实测六文件 987,015,347B + sha256 逐字节校验）；B1~B12 全落地，349 测全绿；S0 实测：加载 2.9s、线程定 3（RTF 0.459/0.312/0.280@1/2/3）、本机 RTF 0.23–0.36（≥3× 实时）、五语样例 LID 全对；GUI 冒烟 worker ready 零告警；**无 language 参数（纯 auto-LID）**；D-25 登记 |
 | Qwen3-ASR-1.7B | **不可行，不接（r3 复核维持）** | sherpa-onnx 官方未支持（#3535 2026-09-08 仍 open）；HF 社区已有自转换 1.7B 包（ilmina/thieunv 等）但非官方不采信；纯 CPU AR 解码实时性无保障 |
 | funasr-mlt-nano-2512 | **维持置灰（D-14，不变）** | 无官方转换；MS 亦无源（r2 实测）；社区包质量未验证 |
 
@@ -259,7 +259,21 @@ API 面（binding+原生同版本）、模型面（官方包实测 963MB/RTF 0.1
 
 ---
 
-## 4. WP-B：Qwen3-ASR-0.6B 实装（r3 动工定稿；spike 0.5 天 + 实装 1–1.5 天）
+## 4. WP-B：Qwen3-ASR-0.6B 实装（✗ r3.1 施工完成 2026-09-08；spike 0.5 天 + 实装 1–1.5 天）
+
+> **r3.1（2026-09-08）：✗ WP-B 施工完成。** B1~B12 + S0 全部落地，349 测全绿（21 套件），新码 clippy 零告警；S0 结论与引擎级验收、GUI 冒烟数据见 §4.8。施工顺序：缓存预置（hf-mirror 54s，sha256 校验）→ S0 spike（线程/格式定案）→ B1~B12 代码 → 验收。施工期补漏一处：模型缓存卡片 `model_display` 对 qwen3 误显 whisper 档位名（vad.rs，随 B9 修）。
+
+### 4.8 验收结果（r3.1 实测回填，2026-09-08）
+
+- **单测**：`cargo test --workspace` 21 套件全绿（**349 测**，较 WP-A 净增 8：registry 不变量 / sanitize 放行 / 缓存探测语义（含 tokenizer 子目录缺失） / pipeline qwen3 分派与 model_key / qwen3 引擎 postprocess+set_language+load / manager qwen3 家族 / UI 三值表与共享后处理）；新码 clippy 零告警（存量告警均在旧码）。
+- **S0-① 加载**：v1.13.7 原生库加载成功，**2.9s**（release；真实缓存 941MB 包）——「binding 有字段 ≠ 原生支持」风险正式关闭。
+- **S0-② 输出格式**：官方样例全部**纯文本、无标签残留**、自动标点；cantonese.wav 与 transcript.txt 参照高度一致；绕口令（raokouling）局部错字属预期难度。
+- **S0-③ 本机 RTF/内存**：**0.23–0.36 @3线程**（官方口径 0.077–0.168@2线程为其机型；本机 RTX4060-Laptop+i7 场景仍 ≥3× 实时，满足直播字幕）；debug/release RTF 几乎一致（ORT 主导，Rust opt level 不影响解码路径）；GUI 冒烟 worker 常驻 **1060MB**（回收阈值 基线+2048MB 天然覆盖）。
+- **S0-④ 线程定案**：1/2/3 线程 → RTF **0.459/0.312/0.280**，单调改善 → `NUM_THREADS=3`（官方 mic 示例同为 3）。
+- **LID**：zh/zh/zh/ja/en 五语判定全对（启发式与 sherpa 输出无关，纯文本侧）。
+- **GUI 端到端冒烟**（临时 config，settings.json `asr_engine=qwen3` + models_dir 指真实缓存）：管道自启 → worker 拉起 → 日志 `ASR worker ready … Qwen3-ASR-0.6B (qwen3)`，**全程 0 WARN / 0 ERROR**。
+- **观察点登记（不预做）**：codeswitch.wav 的法/意/西段被模型转写为英文（Qwen3-ASR 上游语码切换行为，非引擎缺陷）；长段 max_total_len 边界未触发（VAD 8s 上限保护）。
+- **施工注记**：test_wavs 混有 44.1kHz 样例 → 生产管线采集侧恒 16k 不受影响，探针内置线性重采样；smoke 用的 settings.json 若含非法 JSON，`load()` 在日志初始化前静默回退默认（旧行为，非本 WP 缺陷，冒烟时已用正斜杠路径规避）。
 
 ### 4.0 拍板与编号
 
@@ -397,8 +411,8 @@ manifest 六文件（HF API `?blobs=true` 实测；即注册表下载清单）�
 
 ```
 ✗ WP-A  nano 实装 + 注册表修正 + D-24 端点映射接线 + A8 UI    ≈ 1 天   ← 已完工（r2.2，§3.5）
-WP-B  S0 spike（qwen3 加载/格式/RTF/线程，验收程序化）          0.5 天   ← §4.4，结论回填 §4.2/§4.6
-WP-B  qwen3 实装（B-α 已拍板，B1~B12）                          1–1.5 天 ← §4.5，可立即开工
+✗ WP-B  S0 spike（加载/格式/RTF/线程：3 线程定案）             0.5 天   ← 已完工（§4.8）
+✗ WP-B  qwen3 实装（B-α，B1~B12）                              1 天     ← 已完工（r3.1，§4.8）
 ─── 每步收尾 cargo test --workspace 全绿 + 自主中文 commit
 ```
 
