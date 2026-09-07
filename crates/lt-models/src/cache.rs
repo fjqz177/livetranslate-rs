@@ -9,12 +9,17 @@ use crate::paths::{hf_cache_root, ms_cache_root};
 use crate::registry::{self, ModelEntry};
 use std::path::{Path, PathBuf};
 
+/// HF repo 缓存目录（`huggingface/hub/models--{org}--{name}`）——目录名拼装
+/// 的单一来源：数据页扫描/缓存卡路径一律经此构造，手写 format 串会漂移
+/// （AH-6/H10；qwen3 曾因漏改数据页扫描而应用内不可见）
+pub fn hf_repo_dir(models_dir: &Path, repo: &str) -> PathBuf {
+    let (org, name) = repo.split_once('/').unwrap_or((repo, ""));
+    hf_cache_root(models_dir).join(format!("models--{org}--{name}"))
+}
+
 /// HF repo 缓存根下某 repo 的 snapshots 目录
 fn hf_snapshots(models_dir: &Path, repo: &str) -> Option<PathBuf> {
-    let (org, name) = repo.split_once('/')?;
-    let p = hf_cache_root(models_dir)
-        .join(format!("models--{org}--{name}"))
-        .join("snapshots");
+    let p = hf_repo_dir(models_dir, repo).join("snapshots");
     p.is_dir().then_some(p)
 }
 
@@ -22,12 +27,10 @@ fn hf_snapshots(models_dir: &Path, repo: &str) -> Option<PathBuf> {
 /// HF → `huggingface/hub/models--{org}--{name}/snapshots/{rev}`，
 /// MS → `modelscope/models/{org}--{name}/snapshots/{rev}`
 pub fn hf_style_snapshot(models_dir: &Path, hub: crate::download::Hub, repo: &str, rev: &str) -> PathBuf {
-    let (org, name) = repo.split_once('/').unwrap_or((repo, ""));
     match hub {
-        crate::download::Hub::Hf => {
-            hf_cache_root(models_dir).join(format!("models--{org}--{name}")).join("snapshots").join(rev)
-        }
+        crate::download::Hub::Hf => hf_repo_dir(models_dir, repo).join("snapshots").join(rev),
         crate::download::Hub::Ms => {
+            let (org, name) = repo.split_once('/').unwrap_or((repo, ""));
             ms_cache_root(models_dir).join("models").join(format!("{org}--{name}")).join("snapshots").join(rev)
         }
     }
@@ -142,7 +145,10 @@ pub fn is_whisper_cached(models_dir: &Path, size: &str) -> bool {
 }
 
 /// 统一入口（对齐原版 is_asr_cached(engine, model, hub)；
-/// hub 仅影响下载顺序，探测双 hub 都查）
+/// hub 仅影响下载顺序，探测双 hub 都查）。
+/// 注（AH-6/H10）：生产路径各有专用判定（funasr `is_funasr_cached` / whisper
+/// `is_whisper_cached`+`whisper_model_path` / 装配 `local_model_dir`），本函数
+/// 现为测试与人工核验入口——引擎分派臂勿以它为唯一参照。
 pub fn is_asr_cached(models_dir: &Path, engine: &str, model: &str) -> bool {
     match engine {
         "funasr" => registry::funasr_entry(model).is_some_and(|e| is_funasr_cached(models_dir, &e)),

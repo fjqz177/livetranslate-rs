@@ -1437,6 +1437,28 @@ mod tests {
 
     // ── TlRig::from_settings：翻译装置构建（M3 装配） ──
 
+    /// AH-6/H10 分派臂防线：`ASR_ENGINES` 里每个引擎在缓存齐全时都必须能
+    /// 装配——新增引擎若漏改 build_worker_config（`_ => None` 盲兜），此测试
+    /// 立即红。qwen3 曾漏改数据页扫描（H9），证明分派臂漂移是现实风险。
+    #[test]
+    fn every_registered_engine_assembles_when_cached() {
+        let dir = tmp_models_dir("all_engines");
+        sparse_manifest(&dir, &registry::SENSEVOICE_SMALL);
+        sparse_manifest(&dir, &registry::FUNASR_NANO);
+        sparse_manifest(&dir, &registry::QWEN3_ASR);
+        write_tiny_cache(&dir);
+        for engine in lt_proto::settings::ASR_ENGINES {
+            let got = match engine {
+                "funasr" => build_worker_config(&dir, engine, "sensevoice-small", 0.5, "auto", "", 0.5),
+                "whisper" => build_worker_config(&dir, engine, "", 0.5, "auto", "tiny", 0.5),
+                "qwen3" => build_worker_config(&dir, engine, "", 0.5, "auto", "", 0.5),
+                other => panic!("引擎 {other:?} 未接入 build_worker_config 分派（AH-6/H10）"),
+            };
+            assert!(got.is_some(), "引擎 {engine} 缓存齐全时应可装配");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn tl_rig_builds_from_default_settings() {
         let settings = lt_proto::Settings::default();

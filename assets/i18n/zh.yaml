@@ -447,9 +447,8 @@ model_experimental: "（实验性）"
 group_model_cache: "模型缓存"
 model_not_cached: "未缓存"
 model_mlt_disabled_hint: "上游尚未发布该模型的 ONNX 转换，暂不可选。"
-model_nano_hf_only: "该模型暂无 ModelScope 源，将自动经 HF 镜像（hf-mirror.com）下载。"
+model_hf_only_hint: "该模型暂无 ModelScope 源，将自动经 HF 镜像（hf-mirror.com）下载。"
 engine_display_qwen3: "Qwen3-ASR（多语种，实验性）"
-model_qwen3_hf_only: "该模型暂无 ModelScope 源，将自动经 HF 镜像（hf-mirror.com）下载。"
 qwen3_lang_auto_hint: "Qwen3-ASR 恒自动检测源语言，识别语言选择对其无效。"
 
 # 后续里程碑页占位

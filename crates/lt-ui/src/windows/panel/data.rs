@@ -13,7 +13,6 @@
 use super::{group_card, hint_line, mark_settings_dirty, Palette};
 use crate::state::{AppState, CacheEntry};
 use egui::{RichText, Ui};
-use lt_models::paths::hf_cache_root;
 
 // ── 缓存扫描（原版 get_cache_entries + dir_size 的 Rust 化） ──
 
@@ -38,42 +37,54 @@ pub fn dir_size(path: &std::path::Path) -> u64 {
 /// 按注册表扫描已缓存模型目录（原版 get_cache_entries 语义：
 /// funasr 双 hub 各记一条 "(ModelScope)"/"(HuggingFace)"；whisper 六档共用
 /// 单仓 → 合并为一条；无任何命中 → 空表）。
+///
+/// AH-6/H10：清单从注册表派生（含 qwen3——此前手写清单漏掉该条目，
+/// 941MB 模型在应用内不可见不可删），目录名经 `cache::hf_repo_dir` 单一
+/// 拼装源，不再手写 `models--` 格式串。
 pub fn scan_cache_entries(models_dir: &std::path::Path) -> Vec<CacheEntry> {
     let mut out: Vec<CacheEntry> = Vec::new();
-    // funasr 系（注册表键序；mlt 无上游条目自然跳过）
-    for key in lt_models::registry::FUNASR_KEYS {
-        let Some(entry) = lt_models::registry::funasr_entry(key) else { continue };
-        if let Some(repo) = entry.ms {
+    let mut push_entry = |display: &str, ms: Option<&'static str>, hf: Option<&'static str>| {
+        if let Some(repo) = ms {
             let p = lt_models::cache::ms_model_path(models_dir, repo);
             if p.exists() {
                 out.push(CacheEntry {
-                    name: format!("{} (ModelScope)", entry.display),
+                    name: format!("{display} (ModelScope)"),
                     path: p,
                     size: 0,
                 });
             }
         }
-        if let Some(repo) = entry.hf {
-            let (org, name) = repo.split_once('/').unwrap_or((repo, ""));
-            let p = hf_cache_root(models_dir).join(format!("models--{org}--{name}"));
+        if let Some(repo) = hf {
+            let p = lt_models::cache::hf_repo_dir(models_dir, repo);
             if p.exists() {
                 out.push(CacheEntry {
-                    name: format!("{} (HuggingFace)", entry.display),
+                    name: format!("{display} (HuggingFace)"),
                     path: p,
                     size: 0,
                 });
             }
         }
+    };
+    // funasr 系（注册表键序；mlt 无上游条目自然跳过）
+    for key in lt_models::registry::FUNASR_KEYS {
+        if let Some(entry) = lt_models::registry::funasr_entry(key) {
+            push_entry(entry.display, entry.ms, entry.hf);
+        }
     }
-    // whisper：六档共用 ggerganov/whisper.cpp 单仓（Rust 版下载布局 always HF）
-    // → 合并为一条，避免原版按档多条对同一目录重复计数
-    let whisper_hf = hf_cache_root(models_dir).join("models--ggerganov--whisper.cpp");
-    if whisper_hf.exists() {
-        out.push(CacheEntry {
-            name: "Whisper (HuggingFace)".into(),
-            path: whisper_hf,
-            size: 0,
-        });
+    // qwen3（单一模型，B-α）
+    let qwen3 = lt_models::registry::qwen3_entry();
+    push_entry(qwen3.display, qwen3.ms, qwen3.hf);
+    // whisper：六档共用单仓（Rust 版下载布局 always HF）→ 合并为一条，
+    // 避免按档多条对同一目录重复计数；仓 id 取自注册表
+    if let Some(repo) = lt_models::registry::whisper_repo("tiny") {
+        let p = lt_models::cache::hf_repo_dir(models_dir, repo);
+        if p.exists() {
+            out.push(CacheEntry {
+                name: "Whisper (HuggingFace)".into(),
+                path: p,
+                size: 0,
+            });
+        }
     }
     for e in &mut out {
         e.size = dir_size(&e.path);
@@ -295,7 +306,7 @@ fn remove_entry(e: &CacheEntry) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lt_models::paths::ms_cache_root;
+    use lt_models::paths::{hf_cache_root, ms_cache_root};
     use std::fs;
     use std::path::PathBuf;
 
@@ -357,6 +368,20 @@ mod tests {
         // 删除条目路径可用（remove_dir_all 目标即扫描路径）
         let wh_entry = entries.iter().find(|e| e.name.starts_with("Whisper")).unwrap();
         assert!(wh_entry.path.exists());
+
+        // AH-6/H9 回归钉：qwen3 必须在扫描清单内——此前手写清单漏掉该条目，
+        // 941MB 模型在数据页不可见、不可删（含"删除全部"）
+        let q = lt_models::registry::qwen3_entry();
+        let (org, name) = q.hf.expect("qwen3 须有 HF 源").split_once('/').unwrap();
+        let qh = hf_cache_root(&dir).join(format!("models--{org}--{name}"));
+        fs::create_dir_all(&qh).unwrap();
+        fs::write(qh.join("conv_frontend.onnx"), vec![0u8; 1234]).unwrap();
+        let entries = scan_cache_entries(&dir);
+        let q_entry = entries
+            .iter()
+            .find(|e| e.name.starts_with("Qwen3-ASR-0.6B"))
+            .expect("qwen3 缓存必须对数据页可见（AH-6/H9）");
+        assert_eq!(q_entry.size, 1234);
         let _ = fs::remove_dir_all(&dir);
     }
 

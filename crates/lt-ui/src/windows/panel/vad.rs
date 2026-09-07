@@ -441,19 +441,20 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
                     }
                 });
         });
-        // D-24：hub=ms 但所选模型无真实 MS 源（nano / qwen3）→ 诚实提示自动经 HF 镜像下载
+        // D-24/AH-6：hub=ms 但所选模型无真实 MS 源 → 诚实提示自动经 HF 镜像下载。
+        // 判定从注册表派生（entry.ms.is_none()），不再手写引擎/模型键清单
+        // （H10：硬编码清单漏过 whisper 档）；本地 GGML 路径自然不提示
         if state.settings.hub == "ms" {
-            let hf_only_key = if state.settings.asr_engine == "funasr"
-                && state.settings.funasr_model == "funasr-nano-2512"
-            {
-                Some("model_nano_hf_only")
-            } else if state.settings.asr_engine == "qwen3" {
-                Some("model_qwen3_hf_only")
-            } else {
-                None
+            let hf_only = match state.settings.asr_engine.as_str() {
+                "funasr" => lt_models::registry::funasr_entry(&state.settings.funasr_model)
+                    .is_some_and(|e| e.ms.is_none()),
+                "whisper" => lt_models::registry::whisper_entry_for(&state.settings.whisper_model_size)
+                    .is_some_and(|e| e.ms.is_none()),
+                "qwen3" => lt_models::registry::qwen3_entry().ms.is_none(),
+                _ => false,
             };
-            if let Some(key) = hf_only_key {
-                hint_line(ui, pal, &lt_i18n::t(key));
+            if hf_only {
+                hint_line(ui, pal, &lt_i18n::t("model_hf_only_hint"));
             }
         }
 
