@@ -131,7 +131,14 @@ fn run_download(
                 let Some(repo) = repo else {
                     return Err((m.display.clone(), anyhow::anyhow!("该 hub 无仓库")));
                 };
-                if let Err(e) = dl.download_files(hub_eff, repo, m.files, Some(&tx)) {
+                // 清单 = (文件名, 字节数下限)：下载器跳过校验与探测 manifest 同源（DL-2）
+                let specs: Vec<(&str, u64)> = m
+                    .files
+                    .iter()
+                    .copied()
+                    .zip(m.files_min_bytes.iter().copied())
+                    .collect();
+                if let Err(e) = dl.download_files(hub_eff, repo, &specs, Some(&tx)) {
                     return Err((m.display.clone(), e));
                 }
             }

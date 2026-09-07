@@ -13,7 +13,7 @@ fn main() -> anyhow::Result<()> {
     let repo = "pengzhendong/sherpa-onnx-sense-voice-zh-en-ja-ko-yue";
 
     let (tx, rx) = channel();
-    let dir = dl.download_files(Hub::Ms, repo, &["tokens.txt"], Some(&tx))?;
+    let dir = dl.download_files(Hub::Ms, repo, &[("tokens.txt", 1)], Some(&tx))?;
 
     for ev in rx.try_iter() {
         match ev {

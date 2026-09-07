@@ -1,11 +1,14 @@
-//! 双 hub 模型下载器（PLAN §2.10；原版 hf-hub/modelscope SDK 的自控替代，M-01）。
+//! 双 hub 模型下载器（PLAN §2.10；原版 hf-hub/modelscope SDK 的自控替代，M-01；
+//! DL-2 改造见 docs/download-overhaul.md）。
 //!
 //! - 布局自控（写入与 [`crate::cache`] 探测共用同一约定）：
 //!   MS → `modelscope/models/{org}--{name}/snapshots/master/{path}`
 //!   HF → `huggingface/hub/models--{org}--{name}/snapshots/main/{path}`
-//! - 断点续传：先写 `{file}.incomplete`（带 Range 续传），完成 rename；
+//! - 断点续传：先写 `{file}.incomplete`（带 Range 续传），完成 sync + rename；
 //!   服务端忽略 Range 返 200 时从头重写，416 时删除陈旧 .incomplete 重下。
-//! - 重试 3 次指数退避（1s/4s/16s）；代理三模式；进度事件走 channel。
+//! - 清单带字节数下限：已存在且达下限才跳过，半截残留自动重下（DL-2/F4）。
+//! - 快速失败：404/401 等 4xx 立即返回不退避；net/length/5xx/429 才重试
+//!   3 次指数退避（1s/4s/16s）（DL-2/F5）；代理三模式；进度事件走 channel。
 //!
 //! 用阻塞式 reqwest（专用线程），不用异步管道（D 系偏差：简单且可测）。
 
@@ -59,40 +62,84 @@ const BACKOFFS: [Duration; 3] = [
 /// 进度事件节流：累计增量超过此值才发一条
 const PROGRESS_STEP: u64 = 256 * 1024;
 
-// ── 失败分类前缀（契约仍为 String：DownloadFailed(String) 不变；UI 端
-//    按前缀分流「网络/仓库缺失/磁盘」提示，未知/无前缀回落第 3 类）──
+// ── 失败分类（DL-2 类型化；Display 仍带 `[net] `/`[http] `/`[http-404] ` 等前缀，
+//    契约不变：DownloadFailed 仍是 String，UI 端按前缀分流提示，未知/无前缀回落
+//    第 3 类）──
 
-/// 网络层失败（reqwest：超时/连接拒绝/DNS/TLS）
-pub const KIND_NET: &str = "net";
-/// HTTP 4xx/5xx（含 404 仓库缺失、限流、服务端错误）
-pub const KIND_HTTP: &str = "http";
-/// 磁盘/IO 失败（创建目录、写入、rename）
-pub const KIND_DISK: &str = "disk";
-/// 长度校验失败（下载不完整）
-pub const KIND_LENGTH: &str = "length";
-
-/// 前缀码文本：`[net] ...`（UI 侧 lt_ui::panel::vad::parse_download_kind 解析）
-pub fn kind_prefix(kind: &str) -> String {
-    format!("[{kind}] ")
+/// 失败分类
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FailKind {
+    /// 网络层失败（reqwest：超时/连接拒绝/DNS/TLS/读取中断）
+    Net,
+    /// HTTP 状态码非 2xx（含 404 仓库缺失、限流、服务端错误）
+    Http(u16),
+    /// 磁盘/IO 失败（创建目录、写入、rename）
+    Disk,
+    /// 长度校验失败（下载不完整）
+    Length,
+    /// 用户取消（保留 .incomplete 续传现场；DL-4）
+    Cancelled,
 }
 
-/// HTTP 状态码 → 分类键：404 单列（仓库缺失，建议切下载源），其余 4xx/5xx 归 http
-fn http_kind(status: reqwest::StatusCode) -> &'static str {
-    if status == reqwest::StatusCode::NOT_FOUND {
-        "http-404"
-    } else {
-        KIND_HTTP
+impl FailKind {
+    pub fn prefix(self) -> &'static str {
+        match self {
+            FailKind::Net => "net",
+            FailKind::Http(404) => "http-404",
+            FailKind::Http(_) => "http",
+            FailKind::Disk => "disk",
+            FailKind::Length => "length",
+            FailKind::Cancelled => "cancel",
+        }
+    }
+
+    /// 是否值得退避重试（DL-2/F5 快速失败）：网络中断与长度不完整可续传重试；
+    /// 5xx/429 属服务端暂时性；其余 4xx（404 缺失/401 私有/403 禁止）、磁盘、
+    /// 取消均为永久态，立即返回不再白等 1/4/16s。
+    pub fn retryable(self) -> bool {
+        match self {
+            FailKind::Net | FailKind::Length => true,
+            FailKind::Http(s) => s >= 500 || s == 429,
+            FailKind::Disk | FailKind::Cancelled => false,
+        }
+    }
+
+    /// 是否值得换另一 hub 回落（DL-5）：仓库缺失或网络不可达才回落；
+    /// 磁盘/长度/取消等问题换源无解。
+    pub fn fallback_candidate(self) -> bool {
+        matches!(self, FailKind::Net | FailKind::Http(404))
     }
 }
 
-/// 磁盘/IO 错误 → 带 [disk] 前缀的 anyhow
-fn disk_err(e: std::io::Error) -> anyhow::Error {
-    anyhow::anyhow!("{}磁盘 I/O 失败: {e}", kind_prefix(KIND_DISK))
+/// 下载错误（Display = `"[{前缀}] {message}"`，与既有失败前缀契约兼容）
+#[derive(Debug)]
+pub struct DlError {
+    pub kind: FailKind,
+    message: String,
 }
 
-/// 网络错误 → 带 [net] 前缀的 anyhow
-fn net_err(e: reqwest::Error) -> anyhow::Error {
-    anyhow::anyhow!("{}网络请求失败: {e}", kind_prefix(KIND_NET))
+impl DlError {
+    fn new(kind: FailKind, message: impl Into<String>) -> Self {
+        Self { kind, message: message.into() }
+    }
+}
+
+impl std::fmt::Display for DlError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "[{}] {}", self.kind.prefix(), self.message)
+    }
+}
+
+impl std::error::Error for DlError {}
+
+/// 磁盘/IO 错误 → 带 [disk] 前缀
+fn disk_err(e: std::io::Error) -> DlError {
+    DlError::new(FailKind::Disk, format!("磁盘 I/O 失败: {e}"))
+}
+
+/// 网络错误 → 带 [net] 前缀
+fn net_err(e: reqwest::Error) -> DlError {
+    DlError::new(FailKind::Net, format!("网络请求失败: {e}"))
 }
 
 pub struct Downloader {
@@ -157,22 +204,35 @@ impl Downloader {
     }
 
     /// 下载 repo 的文件清单到快照目录，返回快照目录。
-    /// 目标文件已存在则跳过（幂等）。
+    /// 清单为 `(文件名, 字节数下限)`：已存在且达下限 → 跳过（幂等）；
+    /// 存在但不足（半截/损坏残留）→ 删除重下（DL-2/F4）。
     pub fn download_files(
         &self,
         hub: Hub,
         repo: &str,
-        files: &[&str],
+        files: &[(&str, u64)],
         tx: Option<&Sender<DownloadEvent>>,
     ) -> anyhow::Result<PathBuf> {
         let client = self.http_client()?;
         let dir = self.snapshot_dir(hub, repo);
-        std::fs::create_dir_all(&dir)?;
-        for file in files {
+        std::fs::create_dir_all(&dir).map_err(disk_err)?;
+        for (file, min_bytes) in files {
             let target = dir.join(file);
-            if target.is_file() {
-                self.emit(tx, DownloadEvent::Log(format!("[{repo}] 已存在，跳过 {file}")));
-                continue;
+            match skip_decision(&target, *min_bytes) {
+                SkipDecision::Skip => {
+                    self.emit(tx, DownloadEvent::Log(format!("[{repo}] 已存在，跳过 {file}")));
+                    continue;
+                }
+                SkipDecision::Redo { have } => {
+                    self.emit(
+                        tx,
+                        DownloadEvent::Log(format!(
+                            "[{repo}] {file} 已存在但尺寸异常（{have} < {min_bytes}），重新下载"
+                        )),
+                    );
+                    let _ = std::fs::remove_file(&target);
+                }
+                SkipDecision::Missing => {}
             }
             self.emit(tx, DownloadEvent::Log(format!("[{repo}] 开始下载 {file}")));
             self.download_one(&client, hub, repo, file, &target, tx)?;
@@ -191,9 +251,9 @@ impl Downloader {
         file: &str,
         target: &Path,
         tx: Option<&Sender<DownloadEvent>>,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), DlError> {
         let incomplete = incomplete_path(target);
-        let mut last_err: Option<anyhow::Error> = None;
+        let mut last_err: Option<DlError> = None;
         for (attempt, backoff) in std::iter::once(Duration::ZERO).chain(BACKOFFS).enumerate() {
             if backoff > Duration::ZERO {
                 let msg = format!("[{repo}] {file} 下载失败，{backoff:?} 后第 {attempt} 次重试");
@@ -203,7 +263,13 @@ impl Downloader {
             }
             match self.try_download(client, hub, repo, file, target, &incomplete, tx) {
                 Ok(()) => return Ok(()),
-                Err(e) => last_err = Some(e),
+                Err(e) => {
+                    // DL-2/F5 快速失败：永久性错误（404 仓库缺失/401 私有/磁盘）不再退避
+                    if !e.kind.retryable() {
+                        return Err(e);
+                    }
+                    last_err = Some(e);
+                }
             }
         }
         Err(last_err.unwrap())
@@ -218,7 +284,7 @@ impl Downloader {
         target: &Path,
         incomplete: &Path,
         tx: Option<&Sender<DownloadEvent>>,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), DlError> {
         if let Some(p) = target.parent() {
             std::fs::create_dir_all(p).map_err(disk_err)?;
         }
@@ -245,7 +311,10 @@ impl Downloader {
                     continue;
                 }
                 // 失败分类前缀（契约不变：DownloadFailed 仍是 String；UI 端按前缀分流提示）
-                anyhow::bail!("{}HTTP {status}", kind_prefix(http_kind(status)));
+                return Err(DlError::new(
+                    FailKind::Http(status.as_u16()),
+                    format!("HTTP {status}"),
+                ));
             }
             if !supports_resume && done > 0 {
                 // 服务端忽略 Range 返 200：从头重写
@@ -279,7 +348,7 @@ impl Downloader {
             let mut resp = resp;
             loop {
                 let n = resp.read(&mut buf).map_err(|e| {
-                    anyhow::anyhow!("{}网络读取中断: {e}", kind_prefix(KIND_NET))
+                    DlError::new(FailKind::Net, format!("网络读取中断: {e}"))
                 })?;
                 if n == 0 {
                     break;
@@ -292,17 +361,20 @@ impl Downloader {
                 }
             }
             f.flush().map_err(disk_err)?;
+            // 落盘后再 rename（DL-2/F4：掉电不留半截终版文件）
+            f.sync_all().map_err(disk_err)?;
 
             // 完整性：总长已知则校验
             if let Some(total) = total {
-                anyhow::ensure!(
-                    written == total,
-                    "{}长度不完整 {written}/{total}",
-                    kind_prefix(KIND_LENGTH)
-                );
+                if written != total {
+                    return Err(DlError::new(
+                        FailKind::Length,
+                        format!("长度不完整 {written}/{total}"),
+                    ));
+                }
             }
             drop(f);
-            std::fs::rename(incomplete, target).map_err(disk_err)?;
+            finalize_incomplete(incomplete, target)?;
             self.progress(tx, repo, file, written, total.or(Some(written)));
             return Ok(());
         }
@@ -336,6 +408,32 @@ fn incomplete_path(target: &Path) -> PathBuf {
     target.with_file_name(name)
 }
 
+/// 跳过判定（DL-2/F4，独立纯函数便于离线测试）：达下限跳过；
+/// 存在但不足（半截/损坏残留，如无 Content-Length 时的截断终版）→ 重下；
+/// 不存在 → 下载。
+#[derive(Debug)]
+enum SkipDecision {
+    Skip,
+    Redo { have: u64 },
+    Missing,
+}
+
+fn skip_decision(target: &Path, min_bytes: u64) -> SkipDecision {
+    match std::fs::metadata(target) {
+        Ok(m) if m.is_file() && m.len() >= min_bytes => SkipDecision::Skip,
+        Ok(m) => SkipDecision::Redo { have: m.len() },
+        Err(_) => SkipDecision::Missing,
+    }
+}
+
+/// 收尾 rename（Windows 不覆盖已存在目标：双写竞态兜底移除，DL-2/F4）
+fn finalize_incomplete(incomplete: &Path, target: &Path) -> Result<(), DlError> {
+    if target.exists() {
+        let _ = std::fs::remove_file(target);
+    }
+    std::fs::rename(incomplete, target).map_err(disk_err)
+}
+
 /// 从响应解析文件总长：206 → Content-Range 尾段；200 → Content-Length
 fn parse_total(resp: &reqwest::blocking::Response) -> Option<u64> {
     if resp.status() == reqwest::StatusCode::PARTIAL_CONTENT {
@@ -348,6 +446,116 @@ fn parse_total(resp: &reqwest::blocking::Response) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// DL-2/F5：重试分类表——net/length/5xx/429 可重试；404/401/403/磁盘/取消立即失败
+    #[test]
+    fn fail_kind_retry_classification() {
+        assert!(FailKind::Net.retryable());
+        assert!(FailKind::Length.retryable());
+        assert!(FailKind::Http(500).retryable());
+        assert!(FailKind::Http(503).retryable());
+        assert!(FailKind::Http(429).retryable());
+        assert!(!FailKind::Http(404).retryable());
+        assert!(!FailKind::Http(401).retryable());
+        assert!(!FailKind::Http(403).retryable());
+        assert!(!FailKind::Http(418).retryable());
+        assert!(!FailKind::Disk.retryable());
+        assert!(!FailKind::Cancelled.retryable());
+    }
+
+    /// DL-5 前置：回落候选 = 仓库缺失或网络不可达；其余换源无解
+    #[test]
+    fn fail_kind_fallback_candidates() {
+        assert!(FailKind::Http(404).fallback_candidate());
+        assert!(FailKind::Net.fallback_candidate());
+        assert!(!FailKind::Http(401).fallback_candidate());
+        assert!(!FailKind::Http(500).fallback_candidate());
+        assert!(!FailKind::Length.fallback_candidate());
+        assert!(!FailKind::Disk.fallback_candidate());
+        assert!(!FailKind::Cancelled.fallback_candidate());
+    }
+
+    /// 失败前缀契约不变（UI DownloadErrKind::parse 依赖字符串前缀分流）
+    #[test]
+    fn dl_error_display_keeps_prefix_contract() {
+        let e = DlError::new(FailKind::Http(404), "HTTP 404 Not Found".to_string());
+        assert_eq!(e.to_string(), "[http-404] HTTP 404 Not Found");
+        let e = DlError::new(FailKind::Http(500), "HTTP 500".to_string());
+        assert_eq!(e.to_string(), "[http] HTTP 500");
+        let e = DlError::new(FailKind::Net, "网络请求失败: x".to_string());
+        assert_eq!(e.to_string(), "[net] 网络请求失败: x");
+        let e = DlError::new(FailKind::Disk, "磁盘 I/O 失败: 满".to_string());
+        assert_eq!(e.to_string(), "[disk] 磁盘 I/O 失败: 满");
+        let e = DlError::new(FailKind::Length, "长度不完整 1/2".to_string());
+        assert_eq!(e.to_string(), "[length] 长度不完整 1/2");
+        let e = DlError::new(FailKind::Cancelled, "已取消".to_string());
+        assert_eq!(e.to_string(), "[cancel] 已取消");
+    }
+
+    /// DL-2/F4：跳过判定——足额跳过 / 半截重下 / 缺失下载
+    #[test]
+    fn skip_decision_validates_size() {
+        let dir = std::env::temp_dir().join(format!("lt_dl_skip_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("m.bin");
+        assert!(matches!(skip_decision(&target, 1_000), SkipDecision::Missing));
+        std::fs::write(&target, vec![0u8; 2_000]).unwrap();
+        assert!(matches!(skip_decision(&target, 1_000), SkipDecision::Skip));
+        // 半截终版文件（无 Content-Length 下载残留/外部拷贝坏档）→ 重下
+        std::fs::write(&target, vec![0u8; 10]).unwrap();
+        match skip_decision(&target, 1_000) {
+            SkipDecision::Redo { have } => assert_eq!(have, 10),
+            other => panic!("应判重下，实际 {other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// DL-2/F4 端到端（零网络）：清单全部足额 → download_files 全跳过即成功
+    ///（客户端构造不发请求，端点值无关紧要）
+    #[test]
+    fn download_files_all_complete_skips_without_network() {
+        let dir = std::env::temp_dir().join(format!("lt_dl_skip_e2e_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let d = Downloader::new(&dir, ProxyMode::None).with_hf_endpoint("http://127.0.0.1:1");
+        let files: &[(&str, u64)] = &[("m.bin", 1_000), ("tokens.txt", 10)];
+        let snap = d.snapshot_dir(Hub::Hf, "a/b");
+        std::fs::create_dir_all(&snap).unwrap();
+        std::fs::write(snap.join("m.bin"), vec![0u8; 2_000]).unwrap();
+        std::fs::write(snap.join("tokens.txt"), vec![0u8; 16]).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let got = d.download_files(Hub::Hf, "a/b", files, Some(&tx)).expect("足额应全跳过并成功");
+        assert_eq!(got, snap);
+        let mut logs = Vec::new();
+        let mut done = false;
+        while let Ok(ev) = rx.try_recv() {
+            match ev {
+                DownloadEvent::Log(s) => logs.push(s),
+                DownloadEvent::Done { .. } => done = true,
+                _ => {}
+            }
+        }
+        assert!(done, "应发 Done 事件");
+        assert!(logs.iter().any(|s| s.contains("跳过 m.bin")), "{logs:?}");
+        assert!(logs.iter().any(|s| s.contains("跳过 tokens.txt")), "{logs:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// DL-2/F4：收尾 rename 在目标已存在（双写竞态）时覆盖而非报错
+    #[test]
+    fn finalize_replaces_existing_target() {
+        let dir = std::env::temp_dir().join(format!("lt_dl_fin_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let incomplete = dir.join("m.bin.incomplete");
+        let target = dir.join("m.bin");
+        std::fs::write(&incomplete, b"new-content").unwrap();
+        std::fs::write(&target, b"stale").unwrap();
+        finalize_incomplete(&incomplete, &target).expect("竞态兜底应覆盖旧目标");
+        assert_eq!(std::fs::read(&target).unwrap(), b"new-content");
+        assert!(!incomplete.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn incomplete_path_suffixes_file_name() {

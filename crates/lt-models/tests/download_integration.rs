@@ -118,7 +118,7 @@ fn full_download_emits_events_and_writes_file() {
     let (tx, rx) = channel();
 
     let out = downloader_at(&dir, port)
-        .download_files(Hub::Ms, "iic/Test", &["model.bin"], Some(&tx))
+        .download_files(Hub::Ms, "iic/Test", &[("model.bin", 1)], Some(&tx))
         .unwrap();
 
     assert_eq!(std::fs::read(out.join("model.bin")).unwrap(), BODY);
@@ -127,7 +127,7 @@ fn full_download_emits_events_and_writes_file() {
     assert!(events.iter().any(|e| matches!(e, DownloadEvent::FileDone { file, .. } if file == "model.bin")));
     // 幂等：第二次调用跳过已存在文件
     let (tx2, rx2) = channel();
-    downloader_at(&dir, port).download_files(Hub::Ms, "iic/Test", &["model.bin"], Some(&tx2)).unwrap();
+    downloader_at(&dir, port).download_files(Hub::Ms, "iic/Test", &[("model.bin", 1)], Some(&tx2)).unwrap();
     let ev2: Vec<_> = rx2.try_iter().collect();
     assert!(ev2.iter().any(|e| matches!(e, DownloadEvent::Log(m) if m.contains("跳过"))));
     let _ = std::fs::remove_dir_all(&dir);
@@ -143,7 +143,7 @@ fn resume_from_incomplete_sends_range() {
     std::fs::create_dir_all(&snap).unwrap();
     std::fs::write(snap.join("model.bin.incomplete"), &BODY[..3]).unwrap();
 
-    let out = downloader_at(&dir, port).download_files(Hub::Ms, "iic/Test", &["model.bin"], None).unwrap();
+    let out = downloader_at(&dir, port).download_files(Hub::Ms, "iic/Test", &[("model.bin", 1)], None).unwrap();
 
     // 完整文件 + .incomplete 已 rename 消失
     assert_eq!(std::fs::read(out.join("model.bin")).unwrap(), BODY);
@@ -164,7 +164,7 @@ fn stale_incomplete_416_restarts_from_zero() {
     // 陈旧续传：比远端还长
     std::fs::write(snap.join("model.bin.incomplete"), vec![0u8; 64]).unwrap();
 
-    let out = downloader_at(&dir, port).download_files(Hub::Ms, "iic/Test", &["model.bin"], None).unwrap();
+    let out = downloader_at(&dir, port).download_files(Hub::Ms, "iic/Test", &[("model.bin", 1)], None).unwrap();
     assert_eq!(std::fs::read(out.join("model.bin")).unwrap(), BODY);
     let ranges = log.ranges.lock().unwrap().clone();
     // 第一次带超限 Range → 416；第二次不带 Range 从头来
@@ -179,7 +179,7 @@ fn server_error_retries_with_backoff() {
     let (port, _t) = serve(BODY, 1, log.clone()); // 第一次 500
     let dir = tmpdir("retry");
 
-    let out = downloader_at(&dir, port).download_files(Hub::Ms, "iic/Test", &["model.bin"], None).unwrap();
+    let out = downloader_at(&dir, port).download_files(Hub::Ms, "iic/Test", &[("model.bin", 1)], None).unwrap();
     assert_eq!(std::fs::read(out.join("model.bin")).unwrap(), BODY);
     assert_eq!(log.ranges.lock().unwrap().len(), 2, "恰好重试一次");
     let _ = std::fs::remove_dir_all(&dir);
@@ -191,10 +191,65 @@ fn progress_events_throttled_but_final_emitted() {
     let (port, _t) = serve(BODY, 0, log.clone());
     let dir = tmpdir("prog");
     let (tx, rx) = channel();
-    downloader_at(&dir, port).download_files(Hub::Ms, "iic/Test", &["small.bin"], Some(&tx)).unwrap();
+    downloader_at(&dir, port).download_files(Hub::Ms, "iic/Test", &[("small.bin", 1)], Some(&tx)).unwrap();
     let events: Vec<_> = rx.try_iter().collect();
     // 文件收尾必发一条 Progress（total=16）
     let got = events.iter().any(|e| matches!(e, DownloadEvent::Progress { done: 16, total: Some(16), .. }));
     assert!(got, "events={events:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 固定状态码服务器（测 404/503 等固定响应的快速失败路径）
+fn serve_always(status: &'static str, body: &'static [u8]) -> (u16, std::thread::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let h = std::thread::spawn(move || {
+        for conn in listener.incoming() {
+            let Ok(mut stream) = conn else { break };
+            let _ = read_request_range(&mut stream);
+            let headers = format!("Content-Length: {}\r\nConnection: close\r\n", body.len());
+            write_response(&mut stream, status, &headers, body);
+        }
+    });
+    (port, h)
+}
+
+/// DL-2/F4 端到端：已存在但低于下限的半截文件 → 不跳过，删除后真实重下
+#[test]
+fn undersized_existing_file_is_redownloaded() {
+    let log = Arc::new(Log::default());
+    let (port, _t) = serve(BODY, 0, log.clone());
+    let dir = tmpdir("undersize");
+    let snap = dir.join("modelscope").join("models").join("iic--Test").join("snapshots").join("master");
+    std::fs::create_dir_all(&snap).unwrap();
+    // 残留半截终版文件（4B < 下限 10B）
+    std::fs::write(snap.join("model.bin"), &BODY[..4]).unwrap();
+
+    let (tx, rx) = channel();
+    let out = downloader_at(&dir, port)
+        .download_files(Hub::Ms, "iic/Test", &[("model.bin", 10)], Some(&tx))
+        .unwrap();
+
+    // 重下为完整 BODY，而非跳过保留半截
+    assert_eq!(std::fs::read(out.join("model.bin")).unwrap(), BODY);
+    let events: Vec<_> = rx.try_iter().collect();
+    assert!(events.iter().any(|e| matches!(e, DownloadEvent::Log(m) if m.contains("尺寸异常"))), "events={events:?}");
+    assert!(events.iter().any(|e| matches!(e, DownloadEvent::FileDone { file, .. } if file == "model.bin")));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// DL-2/F5 端到端：404 是永久错误 → 只发 1 次请求立即失败（不再 1/4/16s 退避），
+/// 错误串带 [http-404] 前缀（UI 分类契约）。5xx 暂时性重试路径由
+/// server_error_retries_with_backoff 覆盖（分类规则见单元测试 fail_kind_*）。
+#[test]
+fn http_404_fails_fast_without_retries() {
+    let (port, _t) = serve_always("404 Not Found", b"");
+    let dir = tmpdir("fastfail");
+    let t0 = std::time::Instant::now();
+    let err = downloader_at(&dir, port)
+        .download_files(Hub::Ms, "iic/Test", &[("model.bin", 1)], None)
+        .expect_err("404 应失败");
+    assert!(err.to_string().contains("[http-404]"), "{err}");
+    assert!(t0.elapsed() < std::time::Duration::from_secs(3), "应快速失败，实际 {:?}", t0.elapsed());
     let _ = std::fs::remove_dir_all(&dir);
 }
