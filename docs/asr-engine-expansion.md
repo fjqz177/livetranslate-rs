@@ -2,6 +2,8 @@
 
 > 状态：**阶段二活跃文档**。**r2（2026-09-08）WP-A 动工方案实测定稿**：HF 目标仓全量枚举定案、ModelScope 全量核查（无官方源）、hf-mirror 经产品下载器实测 20.4 MB/s、DL-1~6 后代码面逐行重验、**D-24 诚实下载源决策**登记。WP-A 按本文 §3 施工；WP-B（Qwen3-ASR）调研维持，实装新偏差自 **D-25** 起（D-24 已被下载源决策占用，AGENTS.md 原注记「WP-B 自 D-24 起」顺延）。
 >
+> **r2.1（2026-09-08）D-24 语义修订（用户裁决）**：HF 端点**不设全局默认镜像、不新增 `hf_endpoint` 设置键**——用户选 HF 源 = 官方 `huggingface.co` 直连；用户选 MS 源而 HF 成为实际下载路径时（该模型无 MS 源的直接回退，或 MS 尝试失败后的回落）= **自动经 hf-mirror.com**。端点由所选 hub 决定，实化为 lt-models 常量 + `hf_endpoint_for(selected)`（§3.2 A9/A10）。
+>
 > r1（2026-09-07）：初版调研。其 §2.4「funasr 缓存 50MB 单文件误判」漏洞与 WP-C 硬化项已被 DL-1（D-22 manifest 探测）消化，r2 正式取消；r1 §1.4 所称「设置里已有 hf-mirror endpoint 覆写」经核仅指 lt-models 机制，**应用层未接线**（本 r2 §3-A10 补齐）。
 
 ---
@@ -11,7 +13,7 @@
 | 议题 | 判定 | 一句话依据 |
 |---|---|---|
 | **FunASR Nano（funasr-nano-2512）实装** | **可行，turnkey，按 §3 立即施工（WP-A）** | 目标仓定案 `csukuangfj/sherpa-onnx-funasr-nano-int8-2025-12-30`（HF 全量枚举 55+ 仓后唯一正确解，六文件 2026-01-07 版实测合计 1,009,605,061B）；锁定的 sherpa-onnx 1.13.7 binding 与原生库同 release 均含 `OfflineFunASRNanoModelConfig`；缺口仅注册表修正 + 引擎实现 + 两处分派 |
-| **无真实 MS 源模型的下载语义** | **D-24（2026-09-08 用户裁决）：诚实回退，不伪造** | 注册表 `ms` 字段只填真实存在的 ModelScope 仓，无则 `None`；`always_hf` 语义 =「仅 HF 源」，所选 hub=ms 时链路**直达 HF（经 hf-mirror 镜像端点）**，禁止把非 MS 链接塞进 ms 字段或做特殊标记（现注册表错误条目即反例）；`hub_chain` 现有实现已满足，需补 hf_endpoint 设置键 + 应用层接线 + UI 诚实提示 |
+| **无真实 MS 源模型的下载语义** | **D-24（2026-09-08 用户裁决，r2.1 修订）：诚实回退，不伪造** | 注册表 `ms` 字段只填真实存在的 ModelScope 仓，无则 `None`；`always_hf` 语义 =「仅 HF 源」，所选 hub=ms 时链路**直达 HF 且自动经 hf-mirror 镜像**（选 hub=hf 则官方直连——端点由所选 hub 决定，不新增设置键），禁止把非 MS 链接塞进 ms 字段或做特殊标记（现注册表错误条目即反例）；`hub_chain` 现有实现已满足，需补端点映射常量 + backend 一行接线 + UI 诚实提示 |
 | **hf-mirror 可用性** | **实测通过，镜像备选路线全部封存** | 产品下载器全链路（hub_chain→直链→206 续传→manifest 校验）963MB 用时 47.3s、均速 20.4 MB/s，六文件与 HF API 逐字节一致；ModelScope 侧无官方 nano 源，zengshuishui 等社区镜像不采信 |
 | **缓存完整性硬化（原 WP-C）** | **取消——已被 DL-1 消化** | `cache.rs:38-42 dir_has_manifest` 逐文件「存在+达下限」对多文件模型天然成立，注册表填对清单即得，无需新代码 |
 | **Qwen3-ASR-0.6B 接入** | **可行，先 0.5 天 spike 再实装（WP-B，维持 r1 结论）** | binding 已有 `OfflineQwen3ASRModelConfig`；CPU RTF 0.077–0.168@2线程；无真实 MS 源，下载同样走 D-24 语义 |
@@ -27,7 +29,7 @@
 ### 1.1 引擎架构（双栈，均已上线，r1 内容维持有效）
 
 ```
-Settings { asr_engine: "funasr"|"whisper", funasr_model, whisper_model_size, hub, hf_endpoint(r2 新增), ... }
+Settings { asr_engine: "funasr"|"whisper", funasr_model, whisper_model_size, hub, ... }
     │
     ▼  pipeline.rs::build_worker_config (crates/lt-app/src/pipeline.rs:648)
 WorkerConfig { engine: "sensevoice"|"whisper", display_name, language, pad_seconds, options{model_dir|model_path} }
@@ -180,9 +182,9 @@ HF 搜索 API 枚举 nano 相关 55+ 仓（funasr-nano / fun-asr-nano 双关键�
 
 1. **ms 字段只填真实存在的 ModelScope 仓**；模型无 MS 源则 `None`。**禁止**把 HF 链接塞进 ms 字段、禁止占位符/特殊标记等「自欺欺人」手段（现注册表错误条目 1.4-② 即反例）。
 2. **`always_hf: true` 语义 =「仅 HF 源」**：所选 hub=ms 时 `hub_chain` 直达 HF（现有实现 download/mod.rs:34 `if always_hf || hub == Hub::Hf` 已满足）；以注册表不变量测试钉死 nano：`always_hf && ms.is_none()`。
-3. **HF 下载默认经 hf-mirror**：settings 新增 `hf_endpoint` 键（默认 `https://hf-mirror.com`，可改回官方/自建），backend 接线 `with_hf_endpoint`（补 1.5 缺口）。国内受益者不止 nano——whisper 六档（今日 always_hf）同样受益。
+3. **HF 端点随所选 hub（r2.1 修订）**：选 HF 源 = 官方 `huggingface.co` 直连（用户显式选 HF 即默认其可直连或已配代理）；选 MS 源则 HF 成为实际下载路径时——含「模型无 MS 源的直接回退」与「MS 尝试失败后的回落」两种情形——**自动经 `hf-mirror.com`**。端点不设用户设置键，实化为 lt-models 常量 + `hf_endpoint_for(selected_hub)`，backend 一行接线（补 1.5 缺口）。国内受益者不止 nano——whisper 六档（今日 always_hf）在默认 hub=ms 下同样受益。
 4. **UI 诚实告知**：hub=ms 且选中仅 HF 源模型时，下载区显示「该模型仅提供 HuggingFace 源，将经 HF 镜像下载」（i18n zh/en 同步）。
-5. **供应链注记**：第三方镜像 × 无哈希校验 = 信任依赖（distribution.md §6 既有风险）。缓释：端点用户可改；后续在 registry 渐进登记 sha256（既有备忘，非本 WP）。
+5. **供应链注记**：第三方镜像 × 无哈希校验 = 信任依赖（distribution.md §6 既有风险）。缓释：镜像仅用于 MS 模式下的 HF 尝试（选 HF 源即官方直连，用户可自主选择）；后续在 registry 渐进登记 sha256（既有备忘，非本 WP）。
 6. 编号影响：D-24 被本决策占用，**WP-B 新偏差自 D-25 起**（AGENTS.md 原注记「WP-B 自 D-24 起」顺延）。
 
 ### 3.1 判定理由
@@ -201,8 +203,8 @@ API 面（binding+原生同版本）、模型面（官方包实测 963MB/RTF 0.1
 | A6 | `crates/lt-app/src/pipeline.rs:657-671` | funasr 分支按 `entry.key` 分派：`"sensevoice-small"` → `engine:"sensevoice"` + `pad_seconds: Some(pad_seconds)`（照旧）；`"funasr-nano-2512"` → `engine:"nano"` + `pad_seconds: None`。`resolve_funasr_entry`（:611）不改（mlt/非法键回退语义维持） |
 | A7 | `crates/lt-asr/src/manager.rs` | 不改码（:81-83/:304-312 已就位）；补一条集成断言防回归：`engine_family("nano")=="funasr"` 且 nano 引擎名触发 padding 跳过路径 |
 | A8 | `crates/lt-ui/src/windows/panel/vad.rs` | ① :390-396 SenseVoice padding 滑杆在 `funasr_model=="funasr-nano-2512"` 时隐藏（原版 nano 无 padding 的 UI 面；manager 已跳过，显示而无效果属误导）；② D-24-④：hub=ms 且选中 nano 时模型/下载区 hint 行 `model_nano_hf_only` |
-| A9 | `crates/lt-proto/src/settings.rs` | 新增 `pub hf_endpoint: String`：`#[serde(default = "default_hf_endpoint")]`（⚠️ Settings 是容器级 `#[serde(default)]`（:41），字段级 default 必须显式——否则旧 settings.json 导入得空串）；`Default` impl（:97 区）与 `default_hf_endpoint() -> String { "https://hf-mirror.com".into() }`；sanitize（:192 区）：空/非法（非 `http(s)://` 开头）→ 回默认并记 `fixed`。lt-proto 只加数据键不动 Cmd（D-17 字体先例） |
-| A10 | `crates/lt-app/src/backend.rs:187` + `assets/i18n/zh.yaml`/`en.yaml` | `Downloader::new(dl_dir, dl_proxy_mode).with_hf_endpoint(settings.hf_endpoint.clone())`（D-24-③ 接线，弥补 1.5 缺口）；i18n 新键两份同步：`label_hf_endpoint`/`hint_hf_endpoint`（设置下载源组输入框，vad.rs :410 hub 下拉同区）/`model_nano_hf_only` |
+| A9 | `crates/lt-models/src/download/mod.rs` | 新增常量 `HF_OFFICIAL_ENDPOINT = "https://huggingface.co"`、`HF_MIRROR_ENDPOINT = "https://hf-mirror.com"` 与 `pub fn hf_endpoint_for(selected: Hub) -> &'static str`（r2.1 语义：Hf→官方 / Ms→镜像）；单测两分支映射（url_builders 测试旁） |
+| A10 | `crates/lt-app/src/backend.rs:187` + `assets/i18n/zh.yaml`/`en.yaml` | `Downloader::new(dl_dir, dl_proxy_mode).with_hf_endpoint(hf_endpoint_for(hub))`（D-24-③ 接线，弥补 1.5 缺口；`hub` = 本轮下载所选 hub，run_download :158 已有）；i18n 新键两份同步：`model_nano_hf_only`（zh「该模型暂无 ModelScope 源，将自动经 HF 镜像（hf-mirror.com）下载」），挂 vad.rs :410 hub 下拉同区 |
 | A11 | `crates/lt-models/src/download/mod.rs`（探针处置） | `probe_nano_tmp` 探针测试保留转正（`#[ignore]` 注记改为「WP-A 验收演练工具」），随本 WP 提交 |
 | A12 | 文档回写 | 本文 §0/§1.2 状态勾销；`docs/archive/rewrite-research.md` §1.5 登记 D-24 + WP-2 勾销（处置=实装）；`AGENTS.md` 待办（WP-A ✗ / D-24 / WP-B 自 D-25 起）；实测数据（下载 47.3s/20.4MB/s、加载时长、RTF 本机复测）回填 §2.2 |
 
@@ -213,7 +215,7 @@ API 面（binding+原生同版本）、模型面（官方包实测 963MB/RTF 0.1
    - 选 nano → 识别页点下载 → **秒完成**（缓存已预置，验证 skip 幂等 + manifest 命中）；
    - 引擎切换成功、悬浮窗 ready；`test_wavs/` 中/英/粤各一条对照转写，语言显示正确；
    - SenseVoice padding 滑杆对 nano 隐藏、日志无 padding 下发（A7 断言呼应）；
-   - hub=ms 时 nano 显示「仅 HF 源」hint；改 `hf_endpoint` 为官方端点后下载设置生效（可用 mock 或观察日志 URL）；
+   - hub=ms 时 nano 显示「暂无 ModelScope 源，将经 HF 镜像下载」hint；日志核对 URL：hub=hf → `huggingface.co` 直连，hub=ms + nano → `hf-mirror.com`（A9 单测 + 日志观察）；
    - 切回 sensevoice 一切如旧；`cargo run -p lt-app` 冒烟无回归。
 3. 观察点（不预做，出现再登记）：粤语 `<0xB2>` 类字节 token；本机 RTF 与加载时长（回填 §2.2）；#3066 类重复文本。
 
@@ -222,10 +224,9 @@ API 面（binding+原生同版本）、模型面（官方包实测 963MB/RTF 0.1
 | 风险 | 等级 | 对策 |
 |---|---|---|
 | int8 AR 解码偶发重复/幻觉（#3066 类） | 中 | 「实验性」标注维持；manager 错误分类+自动重启兜底；高频复现再评估相邻重复折叠（先不做） |
-| hf-mirror 第三方信任 × 无哈希校验 | 中 | 端点可改（A9/A10）；sha256 渐进登记（既有备忘）；UI 诚实提示 |
+| hf-mirror 第三方信任 × 无哈希校验 | 中 | 仅 MS 模式的 HF 尝试走镜像（选 HF 即官方直连，用户可自主选择）；sha256 渐进登记（既有备忘）；UI 诚实提示 |
 | 首次加载慢（600MB llm ORT 初始化） | 低 | ready 180s 充裕；ModelLoadStart 模态已有链路 |
 | worker 内存峰值（int8 约 1–1.5GB） | 低 | RSS 回收 = 基线+2048MB 天然覆盖 |
-| `hf_endpoint` 旧 settings 导入为空串 | 已防 | A9 字段级 serde default + sanitize 兜底 |
 | 大陆直连 HF（用户改回官方端点又无代理） | 低 | 属用户显式选择；代理三模式仍兜底；README 提示 |
 
 ---
@@ -249,13 +250,13 @@ r1 §4.1–4.5 全部有效（spike 四项验证、B-α 拓扑推荐 `asr_engine
 ## 7. 排期与边界（r2 更新）
 
 ```
-WP-A  nano 实装 + 注册表修正 + D-24 hf_endpoint 接线 + A8 UI    ≈ 1 天   ← 本文 §3，可立即开工
+WP-A  nano 实装 + 注册表修正 + D-24 端点映射接线 + A8 UI    ≈ 1 天   ← 本文 §3，可立即开工
 WP-B  spike（qwen3 加载/格式/RTF）                                0.5 天   ← 结论回填 §4
 WP-B  qwen3 实装（B-α，待拍板）                                  1–1.5 天
 ─── 每步收尾 cargo test --workspace 全绿 + 自主中文 commit
 ```
 
-**明确不做**：Qwen3-1.7B、hotwords UI、MLT 默认解禁、MS 社区镜像采信（zengshuishui 系）、tar.bz2 整包下载特性（hf-mirror 实测后封存）、Parakeet/Canary/Voxtral/Moonshine/Kimi-Audio/Phi-4-MM（r1 §6 理由不变）。
+**明确不做**：Qwen3-1.7B、hotwords UI、MLT 默认解禁、MS 社区镜像采信（zengshuishui 系）、tar.bz2 整包下载特性（hf-mirror 实测后封存）、`hf_endpoint` 设置键（r2.1 语义下端点全自动，无用户设置面；未来镜像不可用或有自定义需求再议）、Parakeet/Canary/Voxtral/Moonshine/Kimi-Audio/Phi-4-MM（r1 §6 理由不变）。
 
 **不改的事**：默认引擎 SenseVoice；`funasr_model` 3 项 1:1 结构；whisper 双栈；mlt 置灰；`hub_chain` 回落语义（D-24 仅补接线与不变量，不改链路算法）。
 
@@ -263,6 +264,6 @@ WP-B  qwen3 实装（B-α，待拍板）                                  1–1.
 
 - r1 §8 全部保留。增补：
 - 目标仓：https://huggingface.co/csukuangfj/sherpa-onnx-funasr-nano-int8-2025-12-30
-- hf-mirror：https://hf-mirror.com （`HF_ENDPOINT` 语义的 Rust 等价 = settings `hf_endpoint`）
+- hf-mirror：https://hf-mirror.com （`HF_ENDPOINT` 语义的 Rust 等价 = D-24 r2.1 端点映射 `hf_endpoint_for(selected_hub)`：选 MS 时自动取镜像）
 - MS 核查对象：fuyuantech/fuyuan-sherpa-onnx-funasr-nano-int8-2025-12-30 ｜ zhaochaoqun/sherpa-onnx-asr-models ｜ zengshuishui/FunASR-Nano-onnx ｜ manyeyes/Fun-ASR-Nano-2512-LLM-onnx ｜ FunAudioLLM/Fun-ASR-Nano-2512
 - 官方 C API 示例：https://github.com/k2-fsa/sherpa-onnx/blob/master/c-api-examples/funasr-nano-c-api.c
