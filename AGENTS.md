@@ -2,24 +2,23 @@
 
 ## 项目定位
 
-Python(PyQt6) 实时音频翻译应用 LiveTranslate 的 **Rust 1:1 重写**（main 分支施工中；M0–M6 主体已完成：whisper 全链放开 + interim 增量识别接线 + 视觉五工作包 + 字体系统 W-1~W-7 + 分发裁决 D-18~D-21 全部落地，305 测全绿，release 单 exe 分发演练通过）。
+Rust 原生实时音频翻译应用 **LiveTranslate-rs**（Python(PyQt6) 原版 LiveTranslate 仅作行为参考，**不再追求 1:1 复刻**）。阶段一（1:1 复刻期，2026-09-05～09-07）已收尾：M0–M6 主体 + 视觉五工作包 + 字体系统 W-1~W-7 + 分发裁决 D-18~D-21 全部落地，313 测全绿，release 单 exe 分发演练通过；当前进入**阶段二（Rust 自有产品化）**：新增能力以产品体验为准，原版有/没有不再是取舍依据，行为差异落档为**新偏差 D-22 起**编号的决策史（`docs/archive/rewrite-research.md` §1.5 顺延）。
 
-- **复刻权威 = 工作区内 `LiveTranslate/` 原版代码副本**（gitignored，扁平结构；2026-09-06 用户明确：与 `D:\biancheng\LiveTranslate`、`LiveTranslate-NG` 等外部仓库无关）。改 GUI 前先回读副本对应 Python 模块：`main.py`、`subtitle_overlay.py`、`subtitle_window.py`、`control_panel.py`、`vad_processor.py` 等（均在副本根目录）。
-- **权威文档**：`RESEARCH.md`（选型结论、刻意偏差 D-1~D-21、风险 R-1~R-14）与 `PLAN.md`（施工图：契约全表 §3、算法规格 §5、经验教训 §6、风险预案 §8、验收清单 §9）。
-- **施工依据文档（`docs/`，按工作包/WP 推进）**：`parity-closure-plan.md`（九 WP 对齐收口，WP-1/3/4 已完成，WP-2/5/6/7/8/9 未动）、`font-system-plan.md`（W-1~W-5 已全部完成）、`visual-parity-plan.md`（五工作包已完成）、`distribution-plan.md`（WD-1~WD-10 阶段一/二）、`asr-engine-expansion-plan.md`（nano/qwen3 调研）、`ui-realign-plan.md`/`overlay-realign-plan.md`（GUI 对齐五阶段）。
+- **参考副本 = 工作区内 `LiveTranslate/` 原版代码副本**（gitignored，扁平结构；2026-09-06 用户明确：与 `D:\biancheng\LiveTranslate`、`LiveTranslate-NG` 等外部仓库无关）。**参考而非规范**：改 GUI 前仍可回读副本对应 Python 模块（`main.py`、`subtitle_overlay.py`、`subtitle_window.py`、`control_panel.py`、`vad_processor.py` 等，均在副本根目录），但新功能不必拘泥其行为。
+- **文档体系（2026-09-07 重组）**：当前依据 = `docs/`（`README.md` 索引、`distribution.md` 分发路线图、`asr-engine-expansion.md` ASR 扩展）与本文档待办；阶段一决策史全部归档 `docs/archive/`（`rewrite-research.md` 选型/偏差 D-1~D-21/风险 R-1~R-14、`rewrite-plan.md` 施工图、`parity-closure.md` 复刻收口九 WP、`ui-realign.md` 等 GUI 对齐方案），**只读**，修改仅允许加"修订"注记，不作为施工依据。
 
 ## 硬性约束（不可违背）
 
 - **纯 CPU**：不碰 CUDA/DirectML/GPU；whisper GPU feature 禁用；MonitorBar GPU 恒 N/A。
 - **远程 ASR 已整体裁剪**（remote-whisper 引擎、相关设置键均已删除）。
 - 单 exe 分发；配置目录 = `~/.config/livetranslate`（Windows 下字面 home/.config，**不是** %APPDATA%）；`settings.json` 的 `models_dir` 键可指定模型缓存路径。
-- 刻意偏差按 RESEARCH.md §1.5 执行，不擅自"改进"原版行为。
+- 阶段一偏差 D-1~D-21 是决策史不是束缚（见 `docs/archive/rewrite-research.md` §1.5）；新阶段行为差异落档为新偏差，编号自 D-22 起（如 D-22 起指 Qwen3-ASR 等阶段二新能力）。
 - 当前仅 Windows 实现（wasapi 采集）；AudioBackend trait 已为跨平台抽象，但 macOS/Linux 后端未实装。
 
 ## 构建与测试
 
 ```bash
-cargo test --workspace            # 全量测试（305 测全绿；2 个 ignored = real_model_smoke/speech 真模型离线纪律），收工前提
+cargo test --workspace            # 全量测试（313 测全绿；2 个 ignored = real_model_smoke/speech 真模型离线纪律），收工前提
 cargo build --release -p lt-app   # 单 exe（现有 ~62MB；onnxruntime.dll + silero_vad.onnx 内嵌，启动解压到配置目录）
 cargo run -p lt-app               # GUI 冒烟
 ```
@@ -60,6 +59,8 @@ cargo run -p lt-app               # GUI 冒烟
 
 ## 当前待办（2026-09-07 截点，已完工项带 ✗ 标记）
 
-- **对齐收口（docs/parity-closure-plan.md，九 WP）**：✗ WP-1 whisper UI 放开、✗ WP-3 interim 增量识别接线（VAD 共享拓扑 + ASR 分流，loopback 端到端实证）、✗ WP-4 padding 热应用——均已随 2026-09-07 落地（281→290 测）；未动：**WP-2** FunASR Nano 置灰防坑（1 小时级）、**WP-5** 托盘菜单与气泡（⚑ D-1 决策点）、**WP-6** 缺模型下载门 + 加载框日志（⚑ D-2）、**WP-7** 字幕窗六项偏差逐项裁决、**WP-8** ErrorBanner/全局热键——两者在 Python 权威副本中不存在，出处待用户裁决（⚑ D-3/D-4）、**WP-9** M6 调优与实机实测（启动<2s / 空闲 CPU<1% / 8h 长跑 / 内存回收 / 端到端语音复验，需实机非静音时段）。
-- **分发与用户旅程（docs/distribution-plan.md，D-18~D-21 已裁决）**：暂不公开发布（本地 zip）/ 首启直进主界面（D-19 转正，向导代码保留不接线）/ 检查更新按钮（随公开发布）/ 全模型双源（whisper 打破 always-HF 上 MS 镜像 + hub 缺失回落）。阶段一待施工：**WD-1** 打包脚本、**WD-2** 版本可见性（VERSIONINFO/--version/UI 版本行）、**WD-3** LICENSE+NOTICES+简版 README、**WD-4** whisper 双源实测落地、**WD-5** 二次启动激活已有窗口；**WD-6** 首启轻引导横幅可选待点头；WD-7 CI / WD-8 检查更新归阶段二（D-18）。
-- ✗ 字体系统 W-1~W-7 全部完成（2026-09-07：内嵌思源/等宽/符号三字体 + brotli 压缩资产 + 双主旋钮级联 + 系统字体扫描选择器，见 docs/font-system-plan.md）；✗ 视觉五工作包 WP-A~E 完成（285 测）；✗ StartDownload targets 动态化完成（backend settings 镜像现场重算）；✗ docs 提交规范整改完成（de0d6d4 已 rebase 拆分为 9c9fd67/5f3be9b/d4c169a，7419115 归档，de0d6d4 不复存在）。
+- **阶段一收尾（已完工，✗ 标记）**：✗ 对齐收口 WP-1/3/4（2026-09-07 落地，290 测）；✗ 字体系统 W-1~W-7（内嵌思源/等宽/符号 + brotli + 双主旋钮级联 + 系统字体扫描选择器，见 docs/archive/font-system.md）；✗ 视觉五工作包 WP-A~E（285 测）；✗ StartDownload targets 动态化（backend settings 镜像现场重算）；✗ docs 提交规范整改（de0d6d4 已 rebase 拆分为 9c9fd67/5f3be9b/d4c169a，7419115 归档，de0d6d4 不复存在）。
+- **分发与用户旅程（docs/distribution.md，D-18~D-21 已裁决）**：暂不公开发布（本地 zip）/ 首启直进主界面（D-19 转正，向导代码保留不接线）/ 检查更新按钮（随公开发布）/ 全模型双源（whisper 打破 always-HF 上 MS 镜像 + hub 缺失回落）。阶段一待施工：**WD-1** 打包脚本、**WD-2** 版本可见性（VERSIONINFO/--version/UI 版本行）、**WD-3** LICENSE+NOTICES+简版 README、**WD-4** whisper 双源实测落地、**WD-5** 二次启动激活已有窗口；**WD-6** 首启轻引导横幅可选待点头；WD-7 CI / WD-8 检查更新归阶段二（D-18）。
+- **ASR 引擎扩展（docs/asr-engine-expansion.md，调研完成，阶段二新能力）**：WP-A FunASR Nano 实装 + 注册表修正（0.5–1 天，取代复刻期 WP-2 置灰防坑）→ WP-B Qwen3-ASR-0.6B spike + 实装（设置拓扑经用户拍板；新偏差落档 D-22 起）。
+- **复刻期遗留按新定位处置（docs/archive/parity-closure.md）**：WP-2 由上面 WP-A 取代；**WP-5/6/7/8 不再默认按复刻执行**——WP-5 托盘菜单与气泡、WP-8 ErrorBanner/全局热键（原版不存在）届时按产品价值裁决；**WP-9 M6 调优与实机实测保留**（启动<2s / 空闲 CPU<1% / 8h 长跑 / 内存回收 / 端到端语音复验，需实机非静音时段）。
+- **UX 三期可选项（docs/archive/ux-feedback.md）**：前缀码改结构化枚举、设置保存失败 UI 流、P2-4 错误译文样式。
