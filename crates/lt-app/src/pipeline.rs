@@ -299,6 +299,13 @@ pub(crate) enum TlSwitch {
     TargetLanguage(String),
     /// 原地改超时（原版 set_timeout）
     Timeout(u32),
+    /// 识别语言过滤镜像同步（AH-3/H4）：pending 机制驱动 worker 实际语言，
+    /// 此命令同步 ASR 线程内段过滤所用镜像——二者不一致时改语言后过滤仍按
+    /// 旧值判定（字幕全灭/漏过滤）
+    AsrLanguage(String),
+    /// padding 镜像同步（AH-3/H4；family = "funasr" | "whisper"）：引擎切换
+    /// 装配读取，防运行时改 pad 后切换静默回退启动快照旧值
+    Pad { family: String, secs: f32 },
     /// 运行时切换 ASR 引擎/模型（原版 _switch_asr_engine；ensure_started
     /// 内部带替换+失败回滚，此处只补路由与 UI 事件）
     ReplaceEngine {
@@ -552,6 +559,23 @@ impl Pipeline {
         self.pending.set_padding(engine_family, secs);
     }
 
+    /// UI 线程调用：同步识别语言过滤镜像（AH-3/H4）。pending 机制驱动 worker
+    /// 实际语言，此命令同步 ASR 线程段过滤所用值——二者必须一致，否则运行时
+    /// 改语言后过滤仍按旧值判定（字幕全灭/漏过滤）
+    pub fn sync_asr_language(&self, lang: &str) {
+        if let Some(tx) = &self.tl_switch {
+            let _ = tx.send(TlSwitch::AsrLanguage(lang.to_string()));
+        }
+    }
+
+    /// UI 线程调用：同步 padding 镜像（AH-3/H4）——引擎切换装配读取，防运行时
+    /// 改 pad 后切换静默回退启动快照旧值
+    pub fn sync_padding(&self, engine_family: &str, secs: f32) {
+        if let Some(tx) = &self.tl_switch {
+            let _ = tx.send(TlSwitch::Pad { family: engine_family.to_string(), secs });
+        }
+    }
+
     pub fn stop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
         self.backend.stop();
@@ -736,14 +760,25 @@ struct AsrThreadCtx {
     tl_switch: crossbeam_channel::Receiver<TlSwitch>,
 }
 
+/// ASR 线程内可热更的运行时设置镜像（AH-3/H4）：启动时的 settings 快照在
+/// 运行中会陈旧——asr_language 参与段过滤（reject_segment/commit_text）、双
+/// pad 参与引擎切换装配（build_worker_config）；经 TlSwitch 同步更新
+/// （与 target_language 的既有同款模式）
+struct AsrRuntime {
+    asr_language: String,
+    sensevoice_pad: f32,
+    whisper_pad: f32,
+}
+
 /// 翻译器域命令的共享路由（AH-1/H1）：待命循环与主循环空闲分支共用的四臂
-/// （ReplaceRig/TargetLanguage/Timeout/TestTranslator）。`ReplaceEngine` 的引擎
-/// 处理两侧不同——待命态只重试装配，主循环 ensure_started+事件+回滚——原样
-/// 透传给调用方自行处理。
+/// （ReplaceRig/TargetLanguage/Timeout/TestTranslator）+ AH-3 镜像同步两臂。
+/// `ReplaceEngine` 的引擎处理两侧不同——待命态只重试装配，主循环
+/// ensure_started+事件+回滚——原样透传给调用方自行处理。
 fn route_translator_switch(
     sw: TlSwitch,
     tl: &mut Option<Arc<TlRig>>,
     target_language: &mut String,
+    runtime: &mut AsrRuntime,
     proxy: &EventLoopProxy<UiMsg>,
     settings: &lt_proto::Settings,
 ) -> Option<TlSwitch> {
@@ -775,6 +810,19 @@ fn route_translator_switch(
         TlSwitch::Timeout(secs) => {
             if let Some(rig) = tl {
                 rig.translator.set_timeout(secs);
+            }
+            None
+        }
+        TlSwitch::AsrLanguage(lang) => {
+            runtime.asr_language = lang;
+            None
+        }
+        TlSwitch::Pad { family, secs } => {
+            // 与 set_pending_padding 同键（"funasr"/"whisper" 家族；funasr 家族
+            // 仅 sensevoice 有 padding 语义 → 归 sensevoice_pad）
+            match family.as_str() {
+                "whisper" => runtime.whisper_pad = secs,
+                _ => runtime.sensevoice_pad = secs,
             }
             None
         }
@@ -832,6 +880,13 @@ fn run_asr_thread(
     let AsrThreadCtx { segment_queue, vad, interim, pending, stop, proxy, tl_switch } = ctx;
     // 目标语言的运行时快照（同语言判定用；TlSwitch::TargetLanguage 同步更新）
     let mut target_language = settings.target_language.clone();
+    // AH-3/H4 运行时镜像：asr_language（段过滤）+ 双 pad（引擎切换装配），
+    // 经 TlSwitch::AsrLanguage/Pad 同步，防启动快照陈旧
+    let mut runtime = AsrRuntime {
+        asr_language: settings.asr_language.clone(),
+        sensevoice_pad: settings.sensevoice_pad_seconds,
+        whisper_pad: settings.whisper_pad_seconds,
+    };
     // 增量识别会话状态（原版 _interim_* 字段；跨段存活，vad_flush 复位）
     let mut interim_state = InterimState::default();
     // 构造 worker 配置（当前仅 sensevoice；whisper M5）
@@ -868,10 +923,10 @@ fn run_asr_thread(
         &models_dir,
         &settings.asr_engine,
         &settings.funasr_model,
-        settings.sensevoice_pad_seconds,
-        &settings.asr_language,
+        runtime.sensevoice_pad,
+        &runtime.asr_language,
         &settings.whisper_model_size,
-        settings.whisper_pad_seconds,
+        runtime.whisper_pad,
     );
     if worker.is_none() {
         let _ = proxy.send_event(UiMsg::Event(UiEvent::AsrUnavailable));
@@ -885,7 +940,7 @@ fn run_asr_thread(
         let _ = segment_queue.pop_timeout(Duration::from_secs(1));
         while let Ok(sw) = tl_switch.try_recv() {
             let Some(TlSwitch::ReplaceEngine { engine, funasr_model, whisper_model_size, language }) =
-                route_translator_switch(sw, &mut tl, &mut target_language, &proxy, settings)
+                route_translator_switch(sw, &mut tl, &mut target_language, &mut runtime, &proxy, settings)
             else {
                 continue;
             };
@@ -894,10 +949,10 @@ fn run_asr_thread(
                 &models_dir,
                 &engine,
                 &funasr_model,
-                settings.sensevoice_pad_seconds,
+                runtime.sensevoice_pad,
                 &language,
                 &whisper_model_size,
-                settings.whisper_pad_seconds,
+                runtime.whisper_pad,
             ) {
                 Some((config, display)) => {
                     tracing::info!("待命中模型已就绪: {engine}/{model_key}，退出待命装配 worker");
@@ -940,7 +995,7 @@ fn run_asr_thread(
             manager.maybe_recycle_if_idle();
             while let Ok(sw) = tl_switch.try_recv() {
                 if let Some(TlSwitch::ReplaceEngine { engine, funasr_model, whisper_model_size, language }) =
-                    route_translator_switch(sw, &mut tl, &mut target_language, &proxy, settings)
+                    route_translator_switch(sw, &mut tl, &mut target_language, &mut runtime, &proxy, settings)
                 {
                     // 原版 _switch_asr_engine：装配新配置 → 加载对话框 →
                     // ensure_started（失败内部回滚旧 worker）→ 设备/不可用事件
@@ -948,10 +1003,10 @@ fn run_asr_thread(
                         &models_dir,
                         &engine,
                         &funasr_model,
-                        settings.sensevoice_pad_seconds,
+                        runtime.sensevoice_pad,
                         &language,
                         &whisper_model_size,
-                        settings.whisper_pad_seconds,
+                        runtime.whisper_pad,
                     ) {
                         Some((config, display)) => {
                             let _ = proxy.send_event(UiMsg::Event(UiEvent::ModelLoadStart(display.clone())));
@@ -968,6 +1023,13 @@ fn run_asr_thread(
                                 let _ = proxy.send_event(UiMsg::Event(UiEvent::AsrDevice(format!(
                                     "{display} [cpu]"
                                 ))));
+                                // AH-3：切换后增量会话状态复位——旧引擎的
+                                // committed_tail/active 对新引擎输出无意义，且
+                                // 切换后首个收尾段经 commit_interim_final 绕过
+                                // 语言过滤，残留 active 会放行语言不符文本
+                                interim_state.reset();
+                                interim.last_interim_samples.store(0, Ordering::Relaxed);
+                                interim.last_check_ms.store(0, Ordering::Relaxed);
                                 // 日志按引擎打实际模型键（whisper 打 funasr_model 会误导诊断）
                                 let model_key =
                                     engine_model_key(&engine, &funasr_model, &whisper_model_size);
@@ -1002,7 +1064,7 @@ fn run_asr_thread(
                     &mut manager,
                     &vad,
                     &mut interim_state,
-                    settings,
+                    &runtime.asr_language,
                     &target_language,
                     tl.as_deref(),
                     &proxy,
@@ -1024,7 +1086,7 @@ fn run_asr_thread(
                             // 回声剥离 → pending 前置拼接 → 噪声过滤 → 提交
                             commit_interim_final(
                                 &mut interim_state,
-                                settings,
+                                &runtime.asr_language,
                                 &target_language,
                                 tl.as_deref(),
                                 &proxy,
@@ -1036,7 +1098,7 @@ fn run_asr_thread(
                         } else if let Some(reason) = reject_segment(
                             &result.text,
                             seg_seconds,
-                            &settings.asr_language,
+                            &runtime.asr_language,
                             &result.language,
                         ) {
                             // 段级三层过滤（原版 _process_segment：空/纯标点 → 噪声 → 语言）
@@ -1046,7 +1108,7 @@ fn run_asr_thread(
                                     let preview: String = result.text.chars().take(60).collect();
                                     tracing::info!(
                                         "语言过滤: 期望 {:?} 但识别为 {:?}，丢弃: {preview}",
-                                        settings.asr_language,
+                                        runtime.asr_language,
                                         result.language
                                     );
                                 }
@@ -1058,7 +1120,7 @@ fn run_asr_thread(
                             }
                         } else {
                             commit_text(
-                                settings,
+                                &runtime.asr_language,
                                 &target_language,
                                 tl.as_deref(),
                                 &proxy,
@@ -1104,11 +1166,13 @@ fn drain_interim_duplicates(queue: &BoundedDropQueue<(SegmentSource, Vec<f32>)>)
 /// 增量通道（对照原版 `_do_interim_asr` 逐条）：锁 VAD peek → 短缓冲跳过 →
 /// 识别 → 回声剥离 → 分句 → 提交前 n-1 句（短句 ≤8 字母数字进 pending 拼接）
 /// → 比例裁剪已消费音频 → 更新 tail/active。返回是否提交了句子。
+/// `asr_language` 为运行时镜像（AH-3）。
+#[allow(clippy::too_many_arguments)]
 fn run_interim_pass(
     manager: &mut AsrManager,
     vad: &Arc<Mutex<VadProcessor>>,
     st: &mut InterimState,
-    settings: &lt_proto::Settings,
+    asr_language: &str,
     target_language: &str,
     tl: Option<&TlRig>,
     proxy: &EventLoopProxy<UiMsg>,
@@ -1168,7 +1232,7 @@ fn run_interim_pass(
         }
         let text = pending_merge(&st.pending, text);
         st.pending.clear();
-        commit_text(settings, target_language, tl, proxy, &text, &result.language, asr_ms);
+        commit_text(asr_language, target_language, tl, proxy, &text, &result.language, asr_ms);
         committed = true;
     }
     if !committed {
@@ -1202,7 +1266,7 @@ fn run_interim_pass(
 #[allow(clippy::too_many_arguments)]
 fn commit_interim_final(
     st: &mut InterimState,
-    settings: &lt_proto::Settings,
+    asr_language: &str,
     target_language: &str,
     tl: Option<&TlRig>,
     proxy: &EventLoopProxy<UiMsg>,
@@ -1223,7 +1287,7 @@ fn commit_interim_final(
         tracing::debug!("噪声过滤: {seg_seconds:.1}s 段仅产出 {text:?}，跳过");
         return;
     }
-    commit_text(settings, target_language, tl, proxy, &text, lang, asr_ms);
+    commit_text(asr_language, target_language, tl, proxy, &text, lang, asr_ms);
 }
 
 /// 提交一条已确定文本（原版 `_process_segment_text` 尾部等价）：AddMessage →
@@ -1232,7 +1296,7 @@ fn commit_interim_final(
 /// 此处检查冗余但无害——1:1 保留原版的双层防线）。
 #[allow(clippy::too_many_arguments)]
 fn commit_text(
-    settings: &lt_proto::Settings,
+    asr_language: &str,
     target_language: &str,
     tl: Option<&TlRig>,
     proxy: &EventLoopProxy<UiMsg>,
@@ -1245,12 +1309,12 @@ fn commit_text(
         tracing::debug!("ASR 返回空/纯标点结果，跳过: {original_text:?}");
         return;
     }
-    if settings.asr_language != "auto" && lang != settings.asr_language {
+    if asr_language != "auto" && lang != asr_language {
         // 预览按字符截断，避免切坏 UTF-8 边界
         let preview: String = original_text.chars().take(60).collect();
         tracing::info!(
             "语言过滤: 期望 {:?} 但识别为 {:?}，丢弃: {preview}",
-            settings.asr_language,
+            asr_language,
             lang
         );
         return;

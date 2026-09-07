@@ -82,19 +82,23 @@ impl AppShell {
                 }
                 tracing::info!("管道恢复");
             }
-            // 挂起机制：UI 线程只存值，ASR 线程在下一次 transcribe 前应用
+            // 挂起机制：UI 线程只存值，ASR 线程在下一次 transcribe 前应用；
+            // AH-3：同步 ASR 线程内段过滤镜像，防过滤仍按启动快照旧值判定
             Cmd::SetAsrLanguage(lang) => {
                 if let Some(p) = &self.pipeline {
                     p.set_pending_language(&lang);
+                    p.sync_asr_language(&lang);
                 }
                 self.ui.app_state.settings.asr_language = lang.clone();
                 tracing::info!("源语言: {lang}");
                 self.persist_settings();
             }
-            // padding 挂起热应用（原版 _set_asr_padding）；settings 字段已由面板写入
+            // padding 挂起热应用（原版 _set_asr_padding）+ 镜像同步（AH-3：
+            // 引擎切换装配读取，防切换后静默回退旧值）；settings 字段已由面板写入
             Cmd::SetPadding { engine, secs } => {
                 if let Some(p) = &self.pipeline {
                     p.set_pending_padding(&engine, secs);
+                    p.sync_padding(&engine, secs);
                 }
                 tracing::info!("padding 挂起: {engine} {secs}s（下一段识别生效）");
                 self.persist_settings();
