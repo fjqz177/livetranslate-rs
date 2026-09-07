@@ -104,7 +104,7 @@ fn ensure_single_instance() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// worker 子进程主循环：SenseVoice / Whisper（M5.1）/ Fun-ASR-Nano（WP-A）
+/// worker 子进程主循环：SenseVoice / Whisper（M5.1）/ Fun-ASR-Nano（WP-A）/ Qwen3-ASR（WP-B）
 fn asr_worker_entry(cfg_json: &str) -> anyhow::Result<()> {
     let config: lt_asr::WorkerConfig = serde_json::from_str(cfg_json)?;
     match config.engine.as_str() {
@@ -140,6 +140,23 @@ fn asr_worker_entry(cfg_json: &str) -> anyhow::Result<()> {
                     // nano 无 padding 语义（pad_seconds 恒 None），语言为创建期参数
                     lt_asr::NanoEngine::load(&dir, &cfg.language)
                         .map_err(|e| anyhow::anyhow!("{e}"))
+                },
+            )
+        }
+        "qwen3" => {
+            lt_asr::worker::run(
+                std::io::stdin().lock(),
+                std::io::stdout().lock(),
+                config,
+                move |cfg| {
+                    let dir = cfg
+                        .options
+                        .get("model_dir")
+                        .and_then(|v| v.as_str())
+                        .map(std::path::PathBuf::from)
+                        .ok_or_else(|| anyhow::anyhow!("缺少 model_dir"))?;
+                    // qwen3 无 padding/语言参数（pad_seconds 恒 None，纯 auto-LID）
+                    lt_asr::Qwen3AsrEngine::load(&dir).map_err(|e| anyhow::anyhow!("{e}"))
                 },
             )
         }

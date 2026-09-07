@@ -446,6 +446,9 @@ group_model_cache: "Model Cache"
 model_not_cached: "Not cached"
 model_mlt_disabled_hint: "Upstream ONNX export for this model is not available yet — currently unselectable."
 model_nano_hf_only: "No ModelScope source for this model yet — it will be downloaded automatically via the HF mirror (hf-mirror.com)."
+engine_display_qwen3: "Qwen3-ASR (multilingual, experimental)"
+model_qwen3_hf_only: "No ModelScope source for this model yet — it will be downloaded automatically via the HF mirror (hf-mirror.com)."
+qwen3_lang_auto_hint: "Qwen3-ASR always auto-detects the source language; the recognition language selector has no effect for it."
 
 # Placeholder for later milestone pages
 page_pending: "(this page lands with a later milestone)"

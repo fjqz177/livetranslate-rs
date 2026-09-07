@@ -13,8 +13,8 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-/// 合法引擎值（r8 定稿：双引擎，anime/remote 已裁剪，导入时回退）
-pub const ASR_ENGINES: [&str; 2] = ["funasr", "whisper"];
+/// 合法引擎值（r8 双引擎 + WP-B qwen3；anime/remote 已裁剪，导入时回退）
+pub const ASR_ENGINES: [&str; 3] = ["funasr", "whisper", "qwen3"];
 /// 合法 funasr 模型（mlt 置灰但仍是合法存量值）
 pub const FUNASR_MODELS: [&str; 3] = ["sensevoice-small", "funasr-nano-2512", "funasr-mlt-nano-2512"];
 /// 合法 whisper 档位（r8：+turbo）
@@ -540,6 +540,24 @@ mod tests {
         assert_eq!(s.asr_engine, "whisper");
         // whisper 引擎不动 funasr_model（默认值）
         assert_eq!(s.funasr_model, "sensevoice-small");
+    }
+
+    /// WP-B（B-α）：qwen3 为合法第三引擎值，sanitize 原样放行；
+    /// 非法值仍回退 funasr（funasr_model 保持不动）
+    #[test]
+    fn qwen3_engine_value_passes_sanitize() {
+        let s = Settings::from_value_compatible(serde_json::json!({
+            "asr_engine": "qwen3",
+            "funasr_model": "funasr-nano-2512"
+        }));
+        assert_eq!(s.asr_engine, "qwen3");
+        // qwen3 不消费 funasr_model，但也不动它（切回 funasr 时语义仍在）
+        assert_eq!(s.funasr_model, "funasr-nano-2512");
+
+        let mut s: Settings = serde_json::from_value(serde_json::json!({ "asr_engine": "qwen4" })).unwrap();
+        let fixed = s.sanitize();
+        assert_eq!(s.asr_engine, "funasr");
+        assert!(fixed.iter().any(|f| f.starts_with("asr_engine")));
     }
 
     #[test]

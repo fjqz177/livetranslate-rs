@@ -78,9 +78,12 @@ impl AsrPendingHandle {
 
 /// 引擎名 → 引擎家族（padding 挂起键，对应原版 asr_type "funasr"/"whisper"）。
 /// 注意：M5 nano 接入时复核（nano 属 funasr 家族但不支持 padding）。
+/// WP-B：qwen3 独立家族——若落 whisper 兜底，此前挂起的 whisper padding 会
+/// 泄漏到 qwen3 worker（Unsupported 噪音）；UI 不产生 "qwen3" 家族键 → 恒 no-op。
 fn engine_family(engine: &str) -> &'static str {
     match engine {
         "sensevoice" | "nano" => "funasr",
+        "qwen3" => "qwen3",
         // 其余（whisper 系）一律归 whisper 家族
         _ => "whisper",
     }
@@ -470,5 +473,7 @@ mod should_recycle_tests {
         assert_eq!(engine_family("nano"), "funasr");
         assert_eq!(engine_family("sensevoice"), "funasr");
         assert_eq!(engine_family("whisper"), "whisper");
+        // WP-B 回归：qwen3 独立家族（不得落 whisper 兜底——防挂起 padding 泄漏）
+        assert_eq!(engine_family("qwen3"), "qwen3");
     }
 }

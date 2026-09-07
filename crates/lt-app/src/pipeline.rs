@@ -691,10 +691,35 @@ fn build_worker_config(
                 display,
             ))
         }
+        "qwen3" => {
+            // WP-B：单一模型（B-α，settings 无独立模型键）；无 padding 语义
+            let entry = registry::qwen3_entry();
+            let model_dir = lt_models::cache::local_model_dir(models_dir, &entry)?;
+            Some((
+                WorkerConfig {
+                    engine: "qwen3".into(),
+                    display_name: entry.display.into(),
+                    language: language.to_string(),
+                    pad_seconds: None,
+                    options: serde_json::json!({ "model_dir": model_dir.to_string_lossy() }),
+                },
+                entry.display.into(),
+            ))
+        }
         other => {
             tracing::warn!("引擎 {other:?} 未实装，无法启动 worker");
             None
         }
+    }
+}
+
+/// 引擎切换日志的模型键：whisper 打档位、qwen3 打固定键（settings 无独立键）、
+/// funasr 打 funasr_model——打错键会误导诊断。
+fn engine_model_key<'a>(engine: &str, funasr_model: &'a str, whisper_model: &'a str) -> &'a str {
+    match engine {
+        "whisper" => whisper_model,
+        "qwen3" => "qwen3-asr-0.6b",
+        _ => funasr_model,
     }
 }
 
@@ -732,9 +757,12 @@ fn run_asr_thread(
         }
     };
     // 模型键 → 条目；mlt/非法键回退 sensevoice-small（不阻断 UI，也不得用 nano 冒充）。
-    // 诊断仅 funasr 引擎相关：whisper 启动诊断走 build_worker_config 的 whisper 分支
+    // 诊断仅 funasr 引擎相关：whisper/qwen3 启动诊断走 build_worker_config 对应分支
     let (entry, fell_back) = if settings.asr_engine == "funasr" {
         resolve_funasr_entry(&settings.funasr_model)
+    } else if settings.asr_engine == "qwen3" {
+        // WP-B：诊断用 qwen3 自身条目（否则未缓存日志打错模型名）
+        (registry::qwen3_entry(), false)
     } else {
         (registry::SENSEVOICE_SMALL.clone(), false)
     };
@@ -849,11 +877,8 @@ fn run_asr_thread(
                                         "{display} [cpu]"
                                     ))));
                                     // 日志按引擎打实际模型键（whisper 打 funasr_model 会误导诊断）
-                                    let model_key = if engine == "whisper" {
-                                        whisper_model_size.as_str()
-                                    } else {
-                                        funasr_model.as_str()
-                                    };
+                                    let model_key =
+                                        engine_model_key(&engine, &funasr_model, &whisper_model_size);
                                     tracing::info!("引擎已切换: {engine}/{model_key}");
                                 }
                             }
@@ -865,11 +890,8 @@ fn run_asr_thread(
                                     "{} [cpu]",
                                     current_display
                                 ))));
-                                let model_key = if engine == "whisper" {
-                                    whisper_model_size.as_str()
-                                } else {
-                                    funasr_model.as_str()
-                                };
+                                let model_key =
+                                    engine_model_key(&engine, &funasr_model, &whisper_model_size);
                                 tracing::warn!(
                                     "切换目标未缓存/未知，保持当前引擎: {engine}/{model_key}（去识别页下载）"
                                 );
@@ -1269,6 +1291,30 @@ mod tests {
             build_worker_config(&base, "funasr", "funasr-mlt-nano-2512", 0.5, "auto", "", 2.0).expect("mlt 回退 sensevoice 应可装配");
         assert_eq!(cfg3.engine, "sensevoice");
         assert_eq!(display3, "SenseVoice Small");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn qwen3_dispatch_and_uncached() {
+        // WP-B：qwen3 → 独立 worker 引擎 + 恒不传 pad（B-α 单一模型，无模型键）
+        let base = std::env::temp_dir().join(format!("lt_qwen3_dispatch_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        // 未缓存 → None（发 AsrUnavailable，等待下载）
+        assert!(build_worker_config(&base, "qwen3", "", 0.5, "auto", "", 2.0).is_none());
+
+        sparse_manifest(&base, &registry::QWEN3_ASR);
+        let (cfg, display) =
+            build_worker_config(&base, "qwen3", "", 0.5, "auto", "", 2.0).expect("qwen3 已缓存应可装配");
+        assert_eq!(cfg.engine, "qwen3");
+        assert_eq!(cfg.pad_seconds, None, "qwen3 无 padding 语义");
+        assert_eq!(display, "Qwen3-ASR-0.6B");
+        assert!(cfg.options["model_dir"].as_str().is_some());
+
+        // 日志模型键分派（打错键会误导诊断）
+        assert_eq!(engine_model_key("qwen3", "funasr-nano-2512", "tiny"), "qwen3-asr-0.6b");
+        assert_eq!(engine_model_key("whisper", "x", "tiny"), "tiny");
+        assert_eq!(engine_model_key("funasr", "sensevoice-small", "tiny"), "sensevoice-small");
 
         let _ = std::fs::remove_dir_all(&base);
     }

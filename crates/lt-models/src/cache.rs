@@ -147,6 +147,8 @@ pub fn is_asr_cached(models_dir: &Path, engine: &str, model: &str) -> bool {
     match engine {
         "funasr" => registry::funasr_entry(model).is_some_and(|e| is_funasr_cached(models_dir, &e)),
         "whisper" => is_whisper_cached(models_dir, model),
+        // WP-B：qwen3 单一模型，settings 无模型键（B-α），model 参数无意义
+        "qwen3" => is_funasr_cached(models_dir, &registry::qwen3_entry()),
         _ => false,
     }
 }
@@ -209,6 +211,23 @@ pub fn missing_models(
                 files_min_bytes: entry.files_min_bytes,
                 estimated_bytes: entry.estimated_bytes,
             }]
+        }
+        // WP-B：qwen3 单一模型（B-α），两个模型参数均无意义
+        "qwen3" => {
+            let entry = registry::qwen3_entry();
+            if is_funasr_cached(models_dir, &entry) {
+                Vec::new()
+            } else {
+                vec![MissingModel {
+                    display: entry.display.into(),
+                    hub_hf: entry.hf,
+                    hub_ms: entry.ms,
+                    always_hf: entry.always_hf,
+                    files: entry.files,
+                    files_min_bytes: entry.files_min_bytes,
+                    estimated_bytes: entry.estimated_bytes,
+                }]
+            }
         }
         _ => Vec::new(),
     }
@@ -377,6 +396,51 @@ mod tests {
         write(&ms_dir.join("tokens.txt"), 4_096);
         assert!(is_asr_cached(&dir, "funasr", "sensevoice-small"));
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn qwen3_manifest_probe_semantics() {
+        // WP-B：qwen3 探测复用 funasr manifest 机制（model 参数无意义，B-α 单一模型）
+        let dir = tmpdir("qwen3");
+        assert!(!is_asr_cached(&dir, "qwen3", ""));
+        let miss = missing_models(&dir, "qwen3", "", "");
+        assert_eq!(miss.len(), 1);
+        assert_eq!(miss[0].display, "Qwen3-ASR-0.6B");
+        assert!(miss[0].always_hf, "D-24：qwen3 仅 HF 源");
+        assert!(miss[0].hub_ms.is_none());
+        assert_eq!(miss[0].hub_hf, Some("csukuangfj2/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25"));
+        assert_eq!(miss[0].files_min_bytes.len(), miss[0].files.len());
+
+        // HF 侧 manifest 齐全（六件套逐文件过下限，tokenizer/ 为子目录）→ 已缓存
+        let snap = hf_cache_root(&dir)
+            .join("models--csukuangfj2--sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25")
+            .join("snapshots")
+            .join("main");
+        write(&snap.join("conv_frontend.onnx"), 44_148_281);
+        write(&snap.join("encoder.int8.onnx"), 182_491_662);
+        write(&snap.join("decoder.int8.onnx"), 755_914_231);
+        write(&snap.join("tokenizer/merges.txt"), 1_671_853);
+        write(&snap.join("tokenizer/tokenizer_config.json"), 12_487);
+        write(&snap.join("tokenizer/vocab.json"), 2_776_833);
+        assert!(is_asr_cached(&dir, "qwen3", ""));
+        assert!(missing_models(&dir, "qwen3", "", "").is_empty());
+        // local_model_dir 命中 snapshot（装配层 model_dir 来源）
+        let entry = registry::qwen3_entry();
+        assert_eq!(local_model_dir(&dir, &entry).unwrap(), snap);
+        // 缺 tokenizer 子目录任一文件即判未缓存
+        let dir2 = tmpdir("qwen3b");
+        let snap2 = hf_cache_root(&dir2)
+            .join("models--csukuangfj2--sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25")
+            .join("snapshots")
+            .join("main");
+        write(&snap2.join("conv_frontend.onnx"), 44_148_281);
+        write(&snap2.join("encoder.int8.onnx"), 182_491_662);
+        write(&snap2.join("decoder.int8.onnx"), 755_914_231);
+        write(&snap2.join("tokenizer/merges.txt"), 1_671_853);
+        write(&snap2.join("tokenizer/vocab.json"), 2_776_833);
+        assert!(!is_asr_cached(&dir2, "qwen3", ""), "缺 tokenizer_config.json");
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&dir2);
     }
 
     #[test]

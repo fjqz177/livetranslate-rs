@@ -6,6 +6,7 @@
 //! nano 无 padding 语义（原版 funasr_supports_padding: nano=false）——
 //! `set_input_padding` 保持 trait 默认 `Unsupported`，manager 已按引擎名跳过下发。
 
+use super::{guess_language, strip_special_tags};
 use crate::engine::AsrEngine;
 use lt_proto::{AsrResult, EngineError};
 use sherpa_onnx::{
@@ -76,54 +77,12 @@ impl NanoEngine {
 
     /// 后处理（原版 1:1）：清全部 `<|...|>` 标签 → trim → 空或 "sil" → None
     fn postprocess(raw: &str) -> Option<String> {
-        let mut out = String::with_capacity(raw.len());
-        let mut rest = raw;
-        while let Some(start) = rest.find("<|") {
-            out.push_str(&rest[..start]);
-            match rest[start..].find("|>") {
-                Some(end) => rest = &rest[start + end + 2..],
-                None => {
-                    out.push_str(&rest[start..]);
-                    rest = "";
-                    break;
-                }
-            }
-        }
-        out.push_str(rest);
+        let out = strip_special_tags(raw);
         let out = out.trim();
         if out.is_empty() || out == "sil" {
             None
         } else {
             Some(out.to_string())
-        }
-    }
-
-    /// 启发式语种判定（原版 _guess_language 1:1；按码点计数）
-    fn guess_language(text: &str) -> String {
-        let total = text.chars().count();
-        if total == 0 {
-            return "auto".into();
-        }
-        let (mut cjk, mut jp, mut ko) = (0usize, 0usize, 0usize);
-        for c in text.chars() {
-            if ('\u{4e00}'..='\u{9fff}').contains(&c) {
-                cjk += 1;
-            }
-            if ('\u{3040}'..='\u{30ff}').contains(&c) || ('\u{31f0}'..='\u{31ff}').contains(&c) {
-                jp += 1;
-            }
-            if ('\u{ac00}'..='\u{d7af}').contains(&c) {
-                ko += 1;
-            }
-        }
-        if jp > 0 {
-            "ja".into()
-        } else if ko as f32 > total as f32 * 0.3 {
-            "ko".into()
-        } else if cjk as f32 > total as f32 * 0.3 {
-            "zh".into()
-        } else {
-            "en".into()
         }
     }
 }
@@ -182,7 +141,7 @@ impl AsrEngine for NanoEngine {
                 let language = self
                     .language
                     .clone()
-                    .unwrap_or_else(|| Self::guess_language(&text));
+                    .unwrap_or_else(|| guess_language(&text));
                 Ok(AsrResult {
                     text,
                     language: language.clone(),
@@ -231,20 +190,7 @@ mod tests {
         assert_eq!(NanoEngine::postprocess("abc<|def"), Some("abc<|def".into()));
     }
 
-    #[test]
-    fn guess_language_matches_original_heuristics() {
-        // 假名 >0 即 ja（优先级最高）
-        assert_eq!(NanoEngine::guess_language("テスト"), "ja");
-        assert_eq!(NanoEngine::guess_language("こんにちは hello"), "ja");
-        // 谚文 >30%
-        assert_eq!(NanoEngine::guess_language("한국어 한국어 한국어 abc"), "ko");
-        // 汉字 >30%
-        assert_eq!(NanoEngine::guess_language("你好世界"), "zh");
-        // 低于 30% 阈值 → en（4 码点中 1 汉字 = 25%）
-        assert_eq!(NanoEngine::guess_language("abc 你"), "en");
-        assert_eq!(NanoEngine::guess_language("hello world"), "en");
-        assert_eq!(NanoEngine::guess_language(""), "auto");
-    }
+    // 启发式 LID 边界测试随 guess_language 提升至 engines/mod.rs（共享面）
 
     #[test]
     fn load_error_when_files_missing() {

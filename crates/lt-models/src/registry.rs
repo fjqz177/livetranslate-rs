@@ -61,6 +61,30 @@ pub const FUNASR_NANO: ModelEntry = ModelEntry {
     files_min_bytes: &[100_000_000, 150_000_000, 300_000_000, 1_000_000, 5_000_000, 1_000_000],
 };
 
+/// Qwen3-ASR-0.6B（WP-B 实装）。【2026-09-08 核实】sherpa-onnx 官方 int8 包，
+/// 仓/清单/字节数经 HF API 实测（docs/asr-engine-expansion.md §4.2）；
+/// 注意作者是 csukuangfj**2**（`csukuangfj/` 同名仓不存在）。
+/// D-24：MS 无官方单仓（csukuangfj2/csukuangfj 双 404）→ ms=None 诚实留空，
+/// always_hf=true，国内经 hf-mirror 镜像下载（download::hf_endpoint_for）。
+/// files_min_bytes 刻意远低于实测（假阴性=多下一次可自愈；假阳性=判已缓存却加载失败）。
+pub const QWEN3_ASR: ModelEntry = ModelEntry {
+    key: "qwen3-asr-0.6b",
+    display: "Qwen3-ASR-0.6B",
+    hf: Some("csukuangfj2/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25"),
+    ms: None,
+    always_hf: true,
+    estimated_bytes: 1_020_000_000,
+    files: &[
+        "conv_frontend.onnx",
+        "encoder.int8.onnx",
+        "decoder.int8.onnx",
+        "tokenizer/merges.txt",
+        "tokenizer/tokenizer_config.json",
+        "tokenizer/vocab.json",
+    ],
+    files_min_bytes: &[20_000_000, 90_000_000, 350_000_000, 1_000_000, 5_000, 1_000_000],
+};
+
 /// whisper 各档统一 HF repo。
 /// 【M5 首日核实】PLAN 预估的 ggml-org/whisper-{size} 六仓已全部转为私有
 /// （API 返回 401，resolve 端点同）；whisper.cpp 官方模型仓是单仓
@@ -119,6 +143,11 @@ pub fn funasr_entry(key: &str) -> Option<ModelEntry> {
 /// whisper 条目（size 为合法档位时）
 pub fn whisper_entry_for(size: &str) -> Option<ModelEntry> {
     WHISPER_ENTRIES.iter().find(|e| e.key == size).cloned()
+}
+
+/// Qwen3-ASR 条目（单一模型，settings 无独立模型键——B-α 拓扑：引擎值即模型）。
+pub fn qwen3_entry() -> ModelEntry {
+    QWEN3_ASR.clone()
 }
 
 #[cfg(test)]
@@ -202,6 +231,25 @@ mod tests {
     }
 
     #[test]
+    fn qwen3_entry_hf_only() {
+        // WP-B/D-24：真实仓（HF API 实测存在，作者 csukuangfj2）；无 MS 源 → ms=None 诚实留空
+        assert_eq!(
+            QWEN3_ASR.hf,
+            Some("csukuangfj2/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25")
+        );
+        assert!(QWEN3_ASR.ms.is_none());
+        const {
+            assert!(QWEN3_ASR.always_hf && QWEN3_ASR.ms.is_none()) // 编译期不变量：仅 HF 源
+        }
+        // 六件套（三 onnx + tokenizer 子目录）；实测合计 987,015,347B + 余量
+        assert_eq!(QWEN3_ASR.files.len(), 6);
+        assert_eq!(QWEN3_ASR.files_min_bytes.len(), 6);
+        assert!(QWEN3_ASR.files.iter().any(|f| f.starts_with("tokenizer/")));
+        assert_eq!(QWEN3_ASR.estimated_bytes, 1_020_000_000);
+        assert_eq!(qwen3_entry().key, "qwen3-asr-0.6b");
+    }
+
+    #[test]
     fn manifest_min_bytes_parallel_to_files() {
         // DL-1⑥：files 与 files_min_bytes 必须等长（探测 zip 依赖）；
         // whisper 下限 = 实测半体积；funasr 下限远低于实际（防假阴性重下循环）
@@ -209,7 +257,7 @@ mod tests {
             assert_eq!(e.files.len(), e.files_min_bytes.len(), "{}", e.key);
             assert_eq!(e.files_min_bytes[0], e.estimated_bytes / 2, "{}", e.key);
         }
-        for e in [SENSEVOICE_SMALL.clone(), FUNASR_NANO.clone()] {
+        for e in [SENSEVOICE_SMALL.clone(), FUNASR_NANO.clone(), QWEN3_ASR.clone()] {
             assert_eq!(e.files.len(), e.files_min_bytes.len(), "{}", e.key);
             assert!(e.files_min_bytes[0] >= 1 && e.files_min_bytes[1] >= 1, "{}", e.key);
             // 主文件下限必须远低于估计体积（下限是"远未完成"防线，不是完整性度量）

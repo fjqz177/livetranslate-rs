@@ -19,12 +19,14 @@ use lt_proto::{AudioDeviceChoice, MicDeviceChoice};
 
 // ── 引擎 / 模型 / 语言的纯逻辑表（单测覆盖） ──
 
-/// 引擎表（r8 双引擎；显示名读 i18n `engine_display_*` 键，缺键回退注册表兜底名——
-/// 原版 GUI_ENGINE_ORDER × ENGINE_REGISTRY 的 Rust 子集）
-pub const ENGINES: [(&str, &str, &str); 2] = [
+/// 引擎表（r8 双引擎 + WP-B qwen3；显示名读 i18n `engine_display_*` 键，缺键回退注册表
+/// 兜底名——原版 GUI_ENGINE_ORDER × ENGINE_REGISTRY 的 Rust 子集 + 阶段二新增）
+pub const ENGINES: [(&str, &str, &str); 3] = [
     // (engine id, i18n 键, 注册表兜底显示名)
     ("funasr", "engine_display_funasr", "FunASR (SenseVoice)"),
     ("whisper", "engine_display_whisper", "Whisper (faster-whisper)"),
+    // WP-B：尾部追加，既有两项索引不动
+    ("qwen3", "engine_display_qwen3", "Qwen3-ASR"),
 ];
 
 /// 引擎显示名（原版 t("engine_display_" + id) 语义；t() 缺键回退键名 → 用兜底名）
@@ -226,6 +228,15 @@ pub fn model_cache_status(
                 }
             }
         },
+        // WP-B：qwen3 复用 manifest 探测（单一模型，B-α 无模型键）
+        "qwen3" => {
+            let entry = lt_models::registry::qwen3_entry();
+            if lt_models::cache::is_funasr_cached(models_dir, &entry) {
+                CacheStatus::Cached(entry.estimated_bytes)
+            } else {
+                CacheStatus::Missing(entry.estimated_bytes)
+            }
+        }
         _ => CacheStatus::Unavailable,
     }
 }
@@ -313,6 +324,11 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
                     }
                 });
         });
+        // WP-B：qwen3 无语言参数（纯 auto-LID）——下拉保留（设置对其他引擎仍有效），
+        // 但明示对当前引擎无效
+        if engine == "qwen3" {
+            hint_line(ui, pal, &lt_i18n::t("qwen3_lang_auto_hint"));
+        }
 
         // FunASR 模型（仅 funasr 引擎显示；原版 _on_engine_changed_whisper_vis）
         if is_funasr {
@@ -425,12 +441,20 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
                     }
                 });
         });
-        // D-24：hub=ms 但所选模型无真实 MS 源（nano）→ 诚实提示自动经 HF 镜像下载
-        if state.settings.hub == "ms"
-            && state.settings.asr_engine == "funasr"
-            && state.settings.funasr_model == "funasr-nano-2512"
-        {
-            hint_line(ui, pal, &lt_i18n::t("model_nano_hf_only"));
+        // D-24：hub=ms 但所选模型无真实 MS 源（nano / qwen3）→ 诚实提示自动经 HF 镜像下载
+        if state.settings.hub == "ms" {
+            let hf_only_key = if state.settings.asr_engine == "funasr"
+                && state.settings.funasr_model == "funasr-nano-2512"
+            {
+                Some("model_nano_hf_only")
+            } else if state.settings.asr_engine == "qwen3" {
+                Some("model_qwen3_hf_only")
+            } else {
+                None
+            };
+            if let Some(key) = hf_only_key {
+                hint_line(ui, pal, &lt_i18n::t(key));
+            }
         }
 
         // ── 界面语言（原版 _ui_lang_combo：["English","中文"]，index 0=en 1=zh；
@@ -692,6 +716,9 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
         ui.horizontal(|ui| {
             let model_display = if state.settings.asr_engine == "funasr" {
                 funasr_model_items()[funasr_index_for(&state.settings.funasr_model)].display.clone()
+            } else if state.settings.asr_engine == "qwen3" {
+                // WP-B：qwen3 显示名取注册表（缓存卡片/下载标题行）
+                lt_models::registry::qwen3_entry().display.to_string()
             } else {
                 whisper_tier_display_for(&state.settings.whisper_model_size)
             };
@@ -1064,18 +1091,20 @@ mod tests {
 
     // ── 引擎 / 模型 / 语言表 ──
 
-    /// 引擎表：r8 双引擎、显示名可解析（whisper M5.1 起可选，无灰显特判）
+    /// 引擎表：r8 双引擎 + WP-B qwen3、显示名可解析（whisper M5.1 起可选，无灰显特判）
     #[test]
     fn engine_table_and_display_fallback() {
-        assert_eq!(ENGINES.map(|(id, _, _)| id), ["funasr", "whisper"]);
+        assert_eq!(ENGINES.map(|(id, _, _)| id), ["funasr", "whisper", "qwen3"]);
         assert_eq!(engine_index_for("funasr"), 0);
         assert_eq!(engine_index_for("whisper"), 1);
+        assert_eq!(engine_index_for("qwen3"), 2);
         // legacy/未知值回退 funasr（settings.sanitize 之外的 UI 侧双保险）
         assert_eq!(engine_index_for("sensevoice"), 0);
         assert_eq!(engine_index_for("bogus"), 0);
         // 显示名：i18n 键已补 → 命中译文；未知 id 原样返回
         assert!(!engine_display("funasr").is_empty());
         assert_ne!(engine_display("funasr"), "engine_display_funasr");
+        assert_ne!(engine_display("qwen3"), "engine_display_qwen3");
         assert_eq!(engine_display("nope"), "nope");
     }
 
