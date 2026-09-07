@@ -148,7 +148,12 @@ impl Settings {
                 m.as_object_mut().map(|o| o.remove("no_think"));
             }
         }
-        let mut s: Settings = serde_json::from_value(root).unwrap_or_default();
+        // AH-10/H21：类型漂移（旧版/手改键类型不符）此前静默全量回退默认值
+        // ——引擎/语言/设备全丢且无提示，必须留痕
+        let mut s: Settings = serde_json::from_value(root).unwrap_or_else(|e| {
+            tracing::warn!("settings.json 部分键类型不兼容，已回退默认值: {e}");
+            Settings::default()
+        });
         s.sanitize();
         s
     }

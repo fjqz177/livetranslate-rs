@@ -19,6 +19,7 @@
 //! stdout 纪律（E-07）：worker 的 stdout 是协议通道，whisper.cpp 的进度/时间戳
 //! 打印全部关闭（print_* 四项 false）；C++ 侧残留日志走 stderr，由父进程重定向。
 
+use super::normalize_language;
 use crate::engine::AsrEngine;
 use crate::worker::WorkerConfig;
 use lt_proto::{language_display, AsrResult, EngineError};
@@ -108,14 +109,6 @@ impl WhisperEngine {
         }
         let joined = parts.join(" ").trim().to_string();
         (!joined.is_empty()).then_some(joined)
-    }
-}
-
-/// "auto"/"" → None（auto 检测）；其余原样
-fn normalize_language(language: &str) -> Option<String> {
-    match language {
-        "" | "auto" | "Auto" => None,
-        l => Some(l.to_string()),
     }
 }
 

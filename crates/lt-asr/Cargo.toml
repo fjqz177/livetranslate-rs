@@ -5,7 +5,6 @@ edition.workspace = true
 
 [dependencies]
 lt-proto = { workspace = true }
-ort = { workspace = true }
 sherpa-onnx = { workspace = true }
 whisper-rs = { workspace = true }   # 纯 CPU：workspace 声明未开任何 GPU feature
 anyhow = { workspace = true }
@@ -18,3 +17,7 @@ sysinfo = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 windows = { workspace = true }
+
+[dev-dependencies]
+# 仅 coexist.rs 示例（R-4 共存验证件）使用；生产依赖不链接 ort
+ort = { workspace = true }

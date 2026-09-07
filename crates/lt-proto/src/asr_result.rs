@@ -8,9 +8,13 @@ pub struct AsrResult {
     pub text: String,
     /// ISO 码（"en"/"zh"/...），检测不到时 "auto"/"unknown"
     pub language: String,
-    /// 原版 SenseVoice/Nano 直接回传 code；Whisper 查 LANGUAGE_DISPLAY
+    /// 原版 SenseVoice/Nano 直接回传 code；Whisper 查 LANGUAGE_DISPLAY。
+    /// 现状注记（AH-10）：lt-ui/lt-app 无任何消费方（UI 语言显示由
+    /// `language` 驱动）——契约冻结保留字段，新代码勿依赖其"显示名"语义
     pub language_name: String,
-    /// word_timestamps=True 时（仅 Whisper 引擎支持）
+    /// word_timestamps=True 时（仅 Whisper 引擎支持）。
+    /// 现状注记（AH-10）：当前管道恒传 false（interim 通道对重复增量太贵），
+    /// 四引擎均不产出，恒 None
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub words: Option<Vec<WordTs>>,
 }

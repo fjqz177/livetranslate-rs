@@ -19,9 +19,9 @@
 - 版本：ONNX Runtime 1.29.0（C API 向后兼容，覆盖 ort 2.0-rc.13 所需 API 22）
 - 来源：PyPI `onnxruntime-1.29.0` win_amd64 wheel 内 capi/onnxruntime.dll
   （= 微软官方 release 产物，未改动）
-- sha256：见 git 历史（assets/SOURCES.md 随资产入库）
+- sha256：`4075344f1057c0d16883fb5a93428aeac5fecfbcb24e1560defb1cb80a6e0a85`（18,093,368 B，2026-09-08 实测入库文件）
 
-## icons/（应用与托盘图标，2026-09-06 由用户提供的 D:iancheng\LiveTranslatessets\icons 搬入）
+## icons/（应用与托盘图标，2026-09-06 由用户提供的 `D:iancheng\LiveTranslatessets\icons` 搬入）
 
 - `app.icns`（78,542 B）sha256 `958b4c63e2f2983d01b8aeca1e166662ddbda746f8740fdfd91ee87e42a7534b`
 - `app.ico`（27,917 B）sha256 `87881526136933bdaf60441ca38c3ff68686a9c7857fe720ef946054eb6f6b7a`
@@ -72,7 +72,7 @@
 
 | 文件 | 大小 | 压缩体 sha256 |
 |---|---|---|
-| `NotoSansCJKsc-Regular.otf.br` | 11,457,451 B | d35b738332ab714a…（完整见 git 属性） |
+| `NotoSansCJKsc-Regular.otf.br` | 11,457,451 B | `d35b738332ab714af2511b8b3cd73f3bc164cb1b519406738dfce4ee0020cd02` |
 | `NotoSansMono-VF.ttf.br` | 761,491 B | 118384f344fdc8f3d664a3c5fcf49424bdb9793e2c3b60af43270a13420aeec8 |
 | `NotoSansSymbols2-Regular.ttf.br` | 435,506 B | 7ab1b92eae75a194d8ba653e06ab0e60af902d1a6154a082673f87e4c14e5b27 |
 | `OFL.txt` | 4,388 B | 1c05c68c34f9708415aada51f17e1b0092d2cea709bf4a94cd38114f9e73d7d9 |

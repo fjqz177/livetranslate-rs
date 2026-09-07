@@ -109,11 +109,14 @@ impl Response {
 /// 帧写入（父子两端共用）
 pub struct FrameWriter<W: Write> {
     inner: W,
+    /// 音频字节 staging（帧间复用免重分配；AH-10/H20：整块单次写替代
+    /// 逐样本 write_all——裸管道上每 4 字节样本一次 syscall，8s 段 ≈12.8 万次）
+    audio_buf: Vec<u8>,
 }
 
 impl<W: Write> FrameWriter<W> {
     pub fn new(inner: W) -> Self {
-        Self { inner }
+        Self { inner, audio_buf: Vec::new() }
     }
 
     fn write_frame(&mut self, json: &[u8], audio: &[f32]) -> std::io::Result<()> {
@@ -124,9 +127,12 @@ impl<W: Write> FrameWriter<W> {
             .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "帧超限"))?;
         self.inner.write_all(&(total as u32).to_le_bytes())?;
         self.inner.write_all(json)?;
+        self.audio_buf.clear();
+        self.audio_buf.reserve(audio.len() * 4);
         for s in audio {
-            self.inner.write_all(&s.to_le_bytes())?;
+            self.audio_buf.extend_from_slice(&s.to_le_bytes());
         }
+        self.inner.write_all(&self.audio_buf)?;
         self.inner.flush()
     }
 

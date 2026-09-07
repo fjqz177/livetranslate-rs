@@ -541,7 +541,6 @@ impl Pipeline {
         tracing::info!("增量识别: {enabled}（间隔 {interval}s）");
     }
 
-    #[allow(dead_code)]
     pub fn set_paused(&self, paused: bool) {
         self.paused.store(paused, Ordering::Relaxed);
     }
@@ -549,7 +548,6 @@ impl Pipeline {
     /// UI 线程调用：挂起 ASR 识别语言；ASR 线程在下一次 transcribe 前应用并提交
     /// （原版 _set_asr_language + _apply_pending_asr_settings；仅加锁存值，
     /// 绝不跨进程调用，慢/挂死的 worker 不会冻结 UI）
-    #[allow(dead_code)]
     pub fn set_pending_language(&self, lang: &str) {
         self.pending.set_language(lang);
     }

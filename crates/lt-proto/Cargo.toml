@@ -7,3 +7,5 @@ edition.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+# settings 兼容装载失败告警（AH-10：静默全量回退默认值无任何日志）
+tracing = { workspace = true }

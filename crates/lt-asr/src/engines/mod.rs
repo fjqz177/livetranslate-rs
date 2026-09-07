@@ -37,18 +37,33 @@ pub(crate) fn guess_language(text: &str) -> String {
     }
 }
 
-/// 清除全部 `<|...|>` 标签（未闭合标签保留原样，与 sensevoice 同策略）。
+/// 语言值归一（原版 _normalize_language）：空/auto/Auto → None（模型 auto 检测）
+pub(crate) fn normalize_language(language: &str) -> Option<String> {
+    match language {
+        "" | "auto" | "Auto" => None,
+        l => Some(l.to_string()),
+    }
+}
+
+/// 清除全部 `<|...|>` 标签——语义对齐原版正则 `<\|[^|]+\|>`（AH-10/H21）：
+/// 标签内容必须为**不含 `|` 的非空串**。畸形标签（`<|a|b|>`、`<||>`、未闭合）
+/// 整体不匹配、原样保留——原实现对 `|>` 的贪心搜索会吞掉标签外的文本
 pub(crate) fn strip_special_tags(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
     let mut rest = raw;
     while let Some(start) = rest.find("<|") {
         out.push_str(&rest[..start]);
-        match rest[start..].find("|>") {
-            Some(end) => rest = &rest[start + end + 2..],
-            None => {
-                out.push_str(&rest[start..]);
-                rest = "";
-                break;
+        let body = &rest[start + 2..];
+        match body.find("|>") {
+            // `[^|]+`：`|>` 前必须有至少 1 个非 `|` 字符
+            Some(end) if end >= 1 && !body[..end].contains('|') => {
+                rest = &body[end + 2..];
+            }
+            // 该位置不构成合法标签：保留 `<|` 并从其后继续扫描
+            //（对齐正则的"匹配失败则前移一位"行为）
+            _ => {
+                out.push_str("<|");
+                rest = body;
             }
         }
     }
@@ -81,13 +96,18 @@ mod tests {
 
     #[test]
     fn strip_special_tags_semantics() {
-        // nano 既有语义 1:1（提升共享，防行为漂移）
+        // 正常标签：清除
         assert_eq!(strip_special_tags("<|zh|>你好世界"), "你好世界");
         assert_eq!(strip_special_tags("hello <|HAPPY|>world<|BGM|>"), "hello world");
         // 未闭合标签：保留原样
         assert_eq!(strip_special_tags("abc<|def"), "abc<|def");
         // 纯标签 → 空
         assert_eq!(strip_special_tags("<|BGM|><|Speech|>"), "");
+        // AH-10/H21：畸形标签对齐原版正则 <\|[^|]+\|>——整体不匹配原样保留
+        assert_eq!(strip_special_tags("<|a|b|>保留"), "<|a|b|>保留");
+        assert_eq!(strip_special_tags("<||>保留"), "<||>保留");
+        // 合法标签之后接畸形标签：合法的照清、畸形的保留
+        assert_eq!(strip_special_tags("<|zh|>x<|a|b|>y"), "x<|a|b|>y");
     }
 
     #[test]

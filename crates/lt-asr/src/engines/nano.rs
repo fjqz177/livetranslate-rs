@@ -6,7 +6,7 @@
 //! nano 无 padding 语义（原版 funasr_supports_padding: nano=false）——
 //! `set_input_padding` 保持 trait 默认 `Unsupported`，manager 已按引擎名跳过下发。
 
-use super::{describe_model_files, guess_language, sherpa_create_failure_hint, strip_special_tags};
+use super::{describe_model_files, guess_language, normalize_language, sherpa_create_failure_hint, strip_special_tags};
 use crate::engine::AsrEngine;
 use lt_proto::{AsrResult, EngineError};
 use sherpa_onnx::{
@@ -84,13 +84,6 @@ impl NanoEngine {
         } else {
             Some(out.to_string())
         }
-    }
-}
-
-fn normalize_language(language: &str) -> Option<String> {
-    match language {
-        "" | "auto" | "Auto" => None,
-        l => Some(l.to_string()),
     }
 }
 
