@@ -171,6 +171,8 @@ pub struct MissingModel {
     pub files: &'static [&'static str],
     /// 每个清单文件的字节数下限（与 files 等长；下载器跳过校验共用，DL-2）
     pub files_min_bytes: &'static [u64],
+    /// 每个清单文件的 sha256（与 files 等长；空串=未登记跳过内容校验，AH-5）
+    pub files_sha256: &'static [&'static str],
     /// 估计体积（注册表 calibrated；UI 进度条总量与「未缓存 ≈X」共用）
     pub estimated_bytes: u64,
 }
@@ -198,6 +200,7 @@ pub fn missing_models(
                     always_hf: entry.always_hf,
                     files: entry.files,
                     files_min_bytes: entry.files_min_bytes,
+                    files_sha256: entry.files_sha256,
                     estimated_bytes: entry.estimated_bytes,
                 }]
             }
@@ -215,6 +218,7 @@ pub fn missing_models(
                 always_hf: entry.always_hf,
                 files: entry.files,
                 files_min_bytes: entry.files_min_bytes,
+                files_sha256: entry.files_sha256,
                 estimated_bytes: entry.estimated_bytes,
             }]
         }
@@ -231,6 +235,7 @@ pub fn missing_models(
                     always_hf: entry.always_hf,
                     files: entry.files,
                     files_min_bytes: entry.files_min_bytes,
+                    files_sha256: entry.files_sha256,
                     estimated_bytes: entry.estimated_bytes,
                 }]
             }

@@ -119,6 +119,8 @@ pub enum FailKind {
     Disk,
     /// 长度校验失败（下载不完整）
     Length,
+    /// sha256 内容校验失败（AH-5/H8：内容损坏是确定性的，重试/换源无解）
+    Checksum,
     /// 用户取消（保留 .incomplete 续传现场；DL-4）
     Cancelled,
 }
@@ -131,6 +133,7 @@ impl FailKind {
             FailKind::Http(_) => "http",
             FailKind::Disk => "disk",
             FailKind::Length => "length",
+            FailKind::Checksum => "checksum",
             FailKind::Cancelled => "cancel",
         }
     }
@@ -142,7 +145,7 @@ impl FailKind {
         match self {
             FailKind::Net | FailKind::Length => true,
             FailKind::Http(s) => s >= 500 || s == 429,
-            FailKind::Disk | FailKind::Cancelled => false,
+            FailKind::Disk | FailKind::Checksum | FailKind::Cancelled => false,
         }
     }
 
@@ -151,6 +154,8 @@ impl FailKind {
     pub fn fallback_candidate(self) -> bool {
         matches!(self, FailKind::Net | FailKind::Http(404))
     }
+    // 注意：Checksum 不回落另一 hub——同一注册表哈希对两源一致（镜像同步），
+    // 换源无解（AH-5）
 }
 
 /// 下载错误（Display = `"[{前缀}] {message}"`，与既有失败前缀契约兼容）
@@ -193,7 +198,13 @@ struct FileJob<'a> {
     /// 第 k/n 个文件（1 起）
     k: usize,
     n: usize,
+    /// sha256 十六进制（空串 = 注册表未登记，跳过内容校验；AH-5/H8）
+    sha256: &'a str,
 }
+
+/// 下载清单项：`(文件路径, 字节数下限, sha256 十六进制)`。
+/// sha256 空串 = 渐进登记未完成，仅做长度/下限校验（AH-5/DEC-4）
+pub type FileSpec<'a> = (&'a str, u64, &'a str);
 
 pub struct Downloader {
     models_dir: PathBuf,
@@ -247,7 +258,10 @@ impl Downloader {
         let mut b = reqwest::blocking::Client::builder()
             .connect_timeout(Duration::from_secs(10))
             .user_agent(concat!("livetranslate-rs/", env!("CARGO_PKG_VERSION")))
-            .redirect(reqwest::redirect::Policy::limited(10));
+            .redirect(reqwest::redirect::Policy::limited(10))
+            // AH-5/H7：模型为二进制文件无需自动解压——gzip 解码会让
+            // Content-Length 与实际写入字节数脱节（total=None/长度误判来源）
+            .no_gzip();
         b = match &self.proxy {
             ProxyMode::None => b.no_proxy(),
             ProxyMode::System => b,
@@ -265,7 +279,7 @@ impl Downloader {
         &self,
         hub: Hub,
         repo: &str,
-        files: &[(&str, u64)],
+        files: &[FileSpec<'_>],
         cancel: &AtomicBool,
         tx: Option<&Sender<DownloadEvent>>,
     ) -> anyhow::Result<PathBuf> {
@@ -273,7 +287,7 @@ impl Downloader {
         let dir = self.snapshot_dir(hub, repo);
         std::fs::create_dir_all(&dir).map_err(disk_err)?;
         let n = files.len();
-        for (idx, (file, min_bytes)) in files.iter().enumerate() {
+        for (idx, (file, min_bytes, sha256)) in files.iter().enumerate() {
             if cancel.load(Ordering::Relaxed) {
                 return Err(anyhow::Error::new(DlError::new(FailKind::Cancelled, "已取消")));
             }
@@ -302,6 +316,7 @@ impl Downloader {
                 incomplete: &incomplete_path(&target),
                 k: idx + 1, // 从 1 起（UI 显示「第 k/n 个文件」）
                 n,
+                sha256,
             };
             self.download_one(&client, hub, &job, cancel, tx)?;
             self.emit(tx, DownloadEvent::FileDone { repo: repo.into(), file: (*file).into() });
@@ -437,18 +452,37 @@ impl Downloader {
             // 落盘后再 rename（DL-2/F4：掉电不留半截终版文件）
             f.sync_all().map_err(disk_err)?;
 
-            // 完整性：总长已知则校验
-            if let Some(total) = total {
-                if written != total {
+            // AH-5/H7：总长未知（无 Content-Length/Content-Range）→ 拒绝下载。
+            // 字节长度是完整性主通道——收尾放行会造成「截断文件永久判已缓存」
+            // 死局（total=None 时长度校验被整体跳过）
+            let Some(total) = total else {
+                return Err(DlError::new(
+                    FailKind::Length,
+                    "服务端未提供 Content-Length，拒绝下载收尾",
+                ));
+            };
+            // 完整性：长度校验
+            if written != total {
+                return Err(DlError::new(
+                    FailKind::Length,
+                    format!("长度不完整 {written}/{total}"),
+                ));
+            }
+            drop(f);
+            // AH-5/H8：sha256 内容校验（finalize 前对 .incomplete 流式计算；
+            // 不匹配删除现场快速失败——截断/镜像污染不再可能落为终版文件）
+            if !job.sha256.is_empty() {
+                let actual = sha256_file_hex(incomplete).map_err(disk_err)?;
+                if !actual.eq_ignore_ascii_case(job.sha256) {
+                    let _ = std::fs::remove_file(incomplete);
                     return Err(DlError::new(
-                        FailKind::Length,
-                        format!("长度不完整 {written}/{total}"),
+                        FailKind::Checksum,
+                        format!("sha256 不匹配 actual={actual}"),
                     ));
                 }
             }
-            drop(f);
             finalize_incomplete(incomplete, target)?;
-            self.progress(tx, job, written, total.or(Some(written)));
+            self.progress(tx, job, written, Some(total));
             return Ok(());
         }
     }
@@ -465,7 +499,7 @@ impl Downloader {
     pub fn download_model(
         &self,
         chain: &[(Hub, &str)],
-        files: &[(&str, u64)],
+        files: &[FileSpec<'_>],
         cancel: &AtomicBool,
         tx: Option<&Sender<DownloadEvent>>,
     ) -> anyhow::Result<PathBuf> {
@@ -544,6 +578,22 @@ fn finalize_incomplete(incomplete: &Path, target: &Path) -> Result<(), DlError> 
         let _ = std::fs::remove_file(target);
     }
     std::fs::rename(incomplete, target).map_err(disk_err)
+}
+
+/// 文件 sha256（十六进制小写；AH-5/H8 内容校验用，流式读避免大文件驻留）
+fn sha256_file_hex(path: &Path) -> std::io::Result<String> {
+    use sha2::Digest;
+    let mut f = std::fs::File::open(path)?;
+    let mut hasher = sha2::Sha256::new();
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = f.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 /// 从响应解析文件总长：206 → Content-Range 尾段；200 → Content-Length
@@ -650,7 +700,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("lt_dl_skip_e2e_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let d = Downloader::new(&dir, ProxyMode::None).with_hf_endpoint("http://127.0.0.1:1");
-        let files: &[(&str, u64)] = &[("m.bin", 1_000), ("tokens.txt", 10)];
+        let files: &[FileSpec] = &[("m.bin", 1_000, ""), ("tokens.txt", 10, "")];
         let snap = d.snapshot_dir(Hub::Hf, "a/b");
         std::fs::create_dir_all(&snap).unwrap();
         std::fs::write(snap.join("m.bin"), vec![0u8; 2_000]).unwrap();
@@ -747,21 +797,23 @@ mod tests {
 /// 运行：cargo test -p lt-models probe_nano_download -- --ignored --nocapture
 #[cfg(test)]
 mod probe_nano_tmp {
-    use super::{DownloadEvent, Downloader, Hub, ProxyMode};
+    use super::{DownloadEvent, Downloader, FileSpec, Hub, ProxyMode};
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
     use std::time::Instant;
 
     const NANO_REPO: &str = "csukuangfj/sherpa-onnx-funasr-nano-int8-2025-12-30";
-    /// WP-A 拟登记清单（文件, 下限字节）——下限刻意远低于实测
-    const NANO_SPECS: [(&str, u64); 6] = [
-        ("embedding.int8.onnx", 100_000_000),
-        ("encoder_adaptor.int8.onnx", 150_000_000),
-        ("llm.int8.onnx", 300_000_000),
-        ("Qwen3-0.6B/merges.txt", 1_000_000),
-        ("Qwen3-0.6B/tokenizer.json", 5_000_000),
-        ("Qwen3-0.6B/vocab.json", 1_000_000),
-    ];
+    /// 探针清单从注册表派生（AH-5：sha256 全量登记，下载时顺带内容校验）
+    fn nano_specs() -> Vec<FileSpec<'static>> {
+        let e = crate::registry::FUNASR_NANO.clone();
+        e.files
+            .iter()
+            .copied()
+            .zip(e.files_min_bytes.iter().copied())
+            .zip(e.files_sha256.iter().copied())
+            .map(|((f, min), sha)| (f, min, sha))
+            .collect()
+    }
 
     #[test]
     #[ignore = "真实网络下载 ~1GB（hf-mirror，写真实缓存）；WP-A 演练/测速用"]
@@ -774,7 +826,7 @@ mod probe_nano_tmp {
         let worker = {
             let cancel = cancel.clone();
             std::thread::spawn(move || {
-                dl.download_model(&[(Hub::Hf, NANO_REPO)], &NANO_SPECS, &cancel, Some(&tx))
+                dl.download_model(&[(Hub::Hf, NANO_REPO)], &nano_specs(), &cancel, Some(&tx))
             })
         };
         let mut last_pct = [0usize; 6];
@@ -794,8 +846,8 @@ mod probe_nano_tmp {
             }
         }
         let snapshot = worker.join().expect("下载线程 panic").expect("下载失败");
-        let files: Vec<&str> = NANO_SPECS.iter().map(|(f, _)| *f).collect();
-        let mins: Vec<u64> = NANO_SPECS.iter().map(|(_, m)| *m).collect();
+        let files: Vec<&str> = nano_specs().iter().map(|(f, _, _)| *f).collect();
+        let mins: Vec<u64> = nano_specs().iter().map(|(_, m, _)| *m).collect();
         assert!(
             crate::cache::dir_has_manifest(&snapshot, &files, &mins),
             "manifest 完整性复核失败"

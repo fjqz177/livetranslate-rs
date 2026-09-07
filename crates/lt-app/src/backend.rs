@@ -177,6 +177,23 @@ fn run_download(
         return;
     }
 
+    // AH-5：下载前磁盘剩余空间预检（941MB 级模型默认落 C 盘；不足即明示快速
+    // 失败，避免写入中途 Disk 错误且已占用部分空间）。探测失败不阻断。
+    let need: u64 = targets.iter().map(|m| m.estimated_bytes).sum::<u64>() + 256 * 1024 * 1024;
+    if let Some(free) = free_disk_bytes(&models_dir) {
+        if free < need {
+            fail(
+                proxy,
+                &format!(
+                    "磁盘剩余空间不足：本模型约需 {}，当前仅剩 {}（可改 models_dir 或清理磁盘）",
+                    format_size(need),
+                    format_size(free)
+                ),
+            );
+            return;
+        }
+    }
+
     // 下载线程 + 事件泵（Downloader 阻塞式，独立线程）
     let (tx, rx) = std::sync::mpsc::channel::<DownloadEvent>();
     let dl_dir = models_dir.clone();
@@ -191,11 +208,15 @@ fn run_download(
                 // Downloader::download_model；hub_chain 见 lt-models）
                 let chain = hub_chain(hub, m.hub_hf, m.hub_ms, m.always_hf);
                 // 清单 = (文件名, 字节数下限)：下载器跳过校验与探测 manifest 同源（DL-2）
-                let specs: Vec<(&str, u64)> = m
+                // 清单 = (文件名, 字节数下限, sha256)：跳过校验/长度/内容三通道
+                // 与注册表同源（DL-2 + AH-5）
+                let specs: Vec<(&str, u64, &str)> = m
                     .files
                     .iter()
                     .copied()
                     .zip(m.files_min_bytes.iter().copied())
+                    .zip(m.files_sha256.iter().copied())
+                    .map(|((f, min), sha)| (f, min, sha))
                     .collect();
                 if let Err(e) = dl.download_model(&chain, &specs, &cancel, Some(&tx)) {
                     return Err((m.display.clone(), e));
@@ -244,6 +265,35 @@ fn run_download(
             }
         }
     }
+}
+
+/// 目标目录所在盘的剩余字节数（AH-5；Windows GetDiskFreeSpaceExW）。
+/// 探测失败返回 None（调用方跳过预检，不阻断下载）。
+#[cfg(windows)]
+fn free_disk_bytes(dir: &std::path::Path) -> Option<u64> {
+    use windows::core::PCWSTR;
+    use windows::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+    let root = dir
+        .canonicalize()
+        .ok()
+        .and_then(|p| p.to_str().map(String::from))?;
+    let mut wide: Vec<u16> = root.encode_utf16().collect();
+    wide.push(0);
+    let mut free: u64 = 0;
+    let ok = unsafe {
+        GetDiskFreeSpaceExW(
+            PCWSTR(wide.as_ptr()),
+            None,
+            None,
+            Some(&mut free),
+        )
+    };
+    ok.is_ok().then_some(free)
+}
+
+#[cfg(not(windows))]
+fn free_disk_bytes(_dir: &std::path::Path) -> Option<u64> {
+    None
 }
 
 /// 当前设置的缺失模型清单（StartDownload 现场重算；本地 GGML 路径不触发下载）。
