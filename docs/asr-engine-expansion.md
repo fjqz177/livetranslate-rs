@@ -6,11 +6,13 @@
 >
 > **r2.2（2026-09-08）：✗ WP-A 施工完成。** A1~A12 全部落地，341 测全绿（21 套件），新码 clippy 零告警；引擎级验收与 GUI 端到端冒烟数据见 §3.3 末「验收结果」。
 >
+> **r3（2026-09-08）：WP-B 动工方案实测定稿。** 目标仓 `csukuangfj2/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25` 经 HF API 实测（六文件 987,015,347B + LFS sha256，lastModified 2026-04-07）；binding 1.13.7 `OfflineQwen3ASRModelConfig` 逐字段核对（含 Default 陷阱）；官方文档页参数基线与输出格式取证；v1.13.7（2026-09-01 发布）同 release 自带 `qwen3-asr-c-api.c`——r1 spike 首项「binding 有字段 ≠ 原生支持」风险**基本排除**（spike 保留为验收程序）；设置拓扑 **B-α 经用户拍板生效**（AGENTS.md 2026-09-08）；完整施工清单见 §4（r3 重写）。
+>
 > r1（2026-09-07）：初版调研。其 §2.4「funasr 缓存 50MB 单文件误判」漏洞与 WP-C 硬化项已被 DL-1（D-22 manifest 探测）消化，r2 正式取消；r1 §1.4 所称「设置里已有 hf-mirror endpoint 覆写」经核仅指 lt-models 机制，**应用层未接线**（本 r2 §3-A10 补齐）。
 
 ---
 
-## 0. 结论速览（TL;DR，r2 更新）
+## 0. 结论速览（TL;DR，r3 更新）
 
 | 议题 | 判定 | 一句话依据 |
 |---|---|---|
@@ -18,11 +20,11 @@
 | **无真实 MS 源模型的下载语义** | **D-24（2026-09-08 用户裁决，r2.1 修订）：诚实回退，不伪造** | 注册表 `ms` 字段只填真实存在的 ModelScope 仓，无则 `None`；`always_hf` 语义 =「仅 HF 源」，所选 hub=ms 时链路**直达 HF 且自动经 hf-mirror 镜像**（选 hub=hf 则官方直连——端点由所选 hub 决定，不新增设置键），禁止把非 MS 链接塞进 ms 字段或做特殊标记（现注册表错误条目即反例）；`hub_chain` 现有实现已满足，需补端点映射常量 + backend 一行接线 + UI 诚实提示 |
 | **hf-mirror 可用性** | **实测通过，镜像备选路线全部封存** | 产品下载器全链路（hub_chain→直链→206 续传→manifest 校验）963MB 用时 47.3s、均速 20.4 MB/s，六文件与 HF API 逐字节一致；ModelScope 侧无官方 nano 源，zengshuishui 等社区镜像不采信 |
 | **缓存完整性硬化（原 WP-C）** | **取消——已被 DL-1 消化** | `cache.rs:38-42 dir_has_manifest` 逐文件「存在+达下限」对多文件模型天然成立，注册表填对清单即得，无需新代码 |
-| **Qwen3-ASR-0.6B 接入** | **可行，先 0.5 天 spike 再实装（WP-B，维持 r1 结论）** | binding 已有 `OfflineQwen3ASRModelConfig`；CPU RTF 0.077–0.168@2线程；无真实 MS 源，下载同样走 D-24 语义 |
-| Qwen3-ASR-1.7B | **不可行，不接** | sherpa-onnx 官方未支持（issue #3535 open）；纯 CPU AR 解码实时性无保障（不变） |
+| **Qwen3-ASR-0.6B 接入** | **可行，turnkey，按 §4（r3）立即施工（WP-B；spike 降级为验收程序）** | 目标仓定案 `csukuangfj2/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25`（HF 实测六文件 987,015,347B；MS 无源走 D-24）；binding 1.13.7 字段 + v1.13.7 原生支持 + 官方参数基线全核实；拓扑 B-α 已拍板；CPU RTF 0.077–0.168@2线程；**无 language 参数（纯 auto-LID）** |
+| Qwen3-ASR-1.7B | **不可行，不接（r3 复核维持）** | sherpa-onnx 官方未支持（#3535 2026-09-08 仍 open）；HF 社区已有自转换 1.7B 包（ilmina/thieunv 等）但非官方不采信；纯 CPU AR 解码实时性无保障 |
 | funasr-mlt-nano-2512 | **维持置灰（D-14，不变）** | 无官方转换；MS 亦无源（r2 实测）；社区包质量未验证 |
 
-**施工顺序**：WP-A（nano 实装 + 注册表修正 + D-24 接线，约 1 天）→ WP-B spike（0.5 天）→ WP-B 实装（1–1.5 天，拓扑 B-α 待用户拍板）。
+**施工顺序**：✗ WP-A（nano 实装 + 注册表修正 + D-24 接线，已完工）→ WP-B spike（0.5 天，降级为验收程序）→ WP-B 实装（1–1.5 天，**拓扑 B-α 已拍板**，见 §4）。
 
 ---
 
@@ -49,7 +51,7 @@ AsrManager（crates/lt-asr/src/manager.rs）：重启≤3次、错误分类、RS
 - AsrEngine trait（`crates/lt-asr/src/engine.rs`）：`transcribe(audio, word_timestamps)` + `set_language` + `set_input_padding`（后两者默认 `Unsupported`）。
 - 客户端超时预算（`crates/lt-asr/src/client.rs:125-127`）：ready 180s / 单次 60s / shutdown 5s。对 nano（963MB 包、573MB 级 llm 加载）充裕。
 
-### 1.2 FunASR Nano 现状：占位已成、实装未做（r2 逐行核实）
+### 1.2 FunASR Nano 现状：占位已成、实装未做（r2 逐行核实；各 ❌ 已随 WP-A 消除，WP-B 基线见 §1.6）
 
 | 层 | 状态 | 位置（r2 行号） |
 |---|---|---|
@@ -91,7 +93,24 @@ always_hf: false,                                                             //
 
 - 探测：`is_funasr_cached` = 双 hub 各自 manifest 齐全即命中（或语义）；`local_model_dir` MS→HF 优先级；快照取字典序最后且含完整 manifest（E-10）。
 - 下载：`backend.rs run_download`（:149-246）会话化线程 + 取消（D-23）+ 泵 drain（F9）；`hub_chain(hub, hub_hf, hub_ms, always_hf)` 生成尝试链，`Downloader::download_model` 逐链尝试（DL-5）；仅 404/网络类错误回落。
-- **端点现状**：`Downloader::new(dl_dir, dl_proxy_mode)`（backend.rs:187）**未调 `with_hf_endpoint`** → HF 下载直连官方。国内无代理场景基本不可用（r2 实测 hf-mirror 20.4 MB/s，见 §2.7）——A10 补此缺口。
+- **端点现状**：`Downloader::new(dl_dir, dl_proxy_mode)`（backend.rs:187）**未调 `with_hf_endpoint`** → HF 下载直连官方。国内无代理场景基本不可用（r2 实测 hf-mirror 20.4 MB/s，见 §2.7）——A10 补此缺口。（存档注记，r3：A10 已随 WP-A 接线，现场 backend.rs:188。）
+
+### 1.6 WP-B 相关现状（r3 新增，行号 = 2026-09-08 WP-A 完工后现场）
+
+§1.2 表中各 ❌ 已随 WP-A 消除（注册表已修正、nano 引擎在位、分派/worker 臂已加、hf_endpoint 已接线）；本节为 WP-B 施工基线：
+
+| 层 | 现状（qwen3 视角） | 位置 |
+|---|---|---|
+| proto 契约 | `ASR_ENGINES: [&str; 2]`（funasr/whisper），sanitize :171 引用该常量——扩三值即自动放行；`Cmd::SwitchEngine` 已含 engine 自由字符串，**无需扩契约** | `lt-proto/settings.rs:17`；`lt-app/backend.rs:77-90` |
+| WorkerConfig | 定义在 lt-asr（非冻结的 lt-proto），engine 为自由字符串 | `lt-asr/worker.rs:18` |
+| 模型注册表 | 无 qwen3 条目（B1 新增）；`is_funasr_cached`/`local_model_dir` 泛化于 ModelEntry，qwen3 复用**零改动** | `lt-models/registry.rs`；`cache.rs:97,220` |
+| 缓存探测 | `is_asr_cached`/`missing_models` 各只有 funasr/whisper 两臂（B3 加 "qwen3"） | `lt-models/cache.rs:146-152,171-215` |
+| 装配分派 | `build_worker_config` 已按 entry.key 分派 nano/sensevoice（B4 加 "qwen3" 臂）；启动诊断 :736 对非 funasr 引擎取 SENSEVOICE 条目、TlSwitch 日志 model_key :852/:868 对非 whisper 打 funasr_model——qwen3 会打错名，同改 | `lt-app/pipeline.rs:648-699,736-750,852-856,868-875` |
+| 引擎实现 | `engines/` 有 nano.rs/whisper.rs（B5 加 qwen3.rs）；guess_language/标签清理目前是 NanoEngine 关联函数（提升共享，见 B5） | `lt-asr/engines/mod.rs` |
+| worker 分发 | `asr_worker_entry` 三臂 sensevoice(:111)/nano(:128)/whisper(:146)（B7 加 "qwen3"） | `lt-app/main.rs:108-159` |
+| manager 层 | `engine_family` 映射 sensevoice\|nano→"funasr"、whisper→"whisper"（B8 加 "qwen3"→"qwen3"）；padding 挂起按家族取键且 UI 永不发 `SetPadding{engine:"qwen3"}` → apply_pending 天然 no-op，**零逻辑改动** | `lt-asr/manager.rs:81-83,296-312` |
+| UI | `ENGINES` 双值表（B9 扩三值）；`model_cache_status` 双臂（B9 加）；语言下拉恒启用（qwen3 需 auto-only hint）；D-24 nano hint 条件 :429-434 需扩 qwen3；funasr 模型下拉/whisper 档位/双 padding 滑杆显隐已按引擎隔离，qwen3 天然全隐藏 | `lt-ui/windows/panel/vad.rs:24-28,195-231,300-315,429-434` |
+| 下载链路 | **零改动**：注册表 `ms=None+always_hf=true` → `hub_chain` 纯 HF 链 + `hf_endpoint_for(hub)` 已接线（backend.rs:188，A10）；`current_missing` :251 已透传 asr_engine | `lt-app/backend.rs` |
 
 ---
 
@@ -134,9 +153,9 @@ pub struct OfflineFunASRNanoModelConfig {   // sherpa-onnx-1.13.7/src/offline_as
 - fp16（1.5GB）/ fp32（3.7GB）官方档存在（`…-fp16-2025-12-30` / `…-2025-12-30`）但体积/内存不满足「纯 CPU + 单 exe + 按需下载」约束，**不用**。
 - 已知上游风险：#3066（int8 重复文本）在该包官方样例未复现；方言误识较多（预期内）；粤语样例输出含 `<0xB2>` 类字节级 fallback token 疑似（文档页样例流）→ 列入 A12 验收观察点，若复现再补 postprocess 清理（不预做）。
 
-### 2.3 Qwen3-ASR（维持 r1 结论）
+### 2.3 Qwen3-ASR（r3 起以 §4 为准）
 
-0.6B 官方转换包 `csukuangfj2/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25`（HF 实测存在；**MS 无官方单仓**——r2 实测 csukuangfj2 404；MS 侧存在 zengshuishui/Qwen3-ASR-onnx 社区散文件镜像，非官方不采信）。1.7B 不接。详情见 r1 §2.3/§4（内容仍有效，不再重复）。
+0.6B 官方转换包 `csukuangfj2/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25`（r3 复测在位，六文件 987,015,347B；**MS 无官方单仓**——r2/r3 两轮实测 csukuangfj2 404；MS 侧存在 zengshuishui/Qwen3-ASR-onnx 社区散文件镜像，非官方不采信）。1.7B 不接（#3535 open）。完整目标仓定案、文件字节数、参数基线与施工清单见 **§4（r3 重写）**；r1 §2.3/§4 与 r2 增补作为沿革保留。
 
 ### 2.4 下载器与缓存层约束（r2 重写：r1 的两个硬约束一个已消失、一个已验证）
 
@@ -240,13 +259,131 @@ API 面（binding+原生同版本）、模型面（官方包实测 963MB/RTF 0.1
 
 ---
 
-## 4. WP-B：Qwen3-ASR-0.6B（维持 r1 §4，增补两点）
+## 4. WP-B：Qwen3-ASR-0.6B 实装（r3 动工定稿；spike 0.5 天 + 实装 1–1.5 天）
 
-r1 §4.1–4.5 全部有效（spike 四项验证、B-α 拓扑推荐 `asr_engine` 第三值、改造清单 B1~B12、风险表）。r2 增补：
+### 4.0 拍板与编号
 
-1. **下载语义**：qwen3 无真实 MS 源（§2.5），注册表 `ms=None + always_hf=true`，走 D-24 链路——B1 条目的 ms 字段按此填写。
-2. **编号**：实装产生的新偏差自 **D-25** 起（D-24 已占用）；B11 文档回写相应更新。
-3. 设置拓扑（B-α vs B-β）仍需用户拍板后方可开工。
+- 设置拓扑 **B-α：`asr_engine` 新增第三值 `"qwen3"`**，经用户拍板生效（AGENTS.md 2026-09-08）。B-β（`funasr_model` 加第 4 项）否决：污染 D-14 的 3 项 1:1 结构、"FunASR 模型"语义错误、padding/诊断按 funasr 家族走会打架。qwen3 不是 FunASR 模型，不进 `funasr_model`。
+- 新偏差自 **D-25** 起编号（D-24 已被下载源决策占用）。
+- 下载语义：qwen3 无可用 MS 源（§4.2 核查）→ 注册表 `ms=None + always_hf=true`，完全复用 D-24 链路（`hub_chain` 纯 HF 链 + `hf_endpoint_for` 端点随所选 hub）与 UI 诚实提示。
+
+### 4.1 判定理由（四面全绿）
+
+- **模型面**：2026-01 官方开源（Apache 2.0）；30 语 + 22 汉语方言 + 歌词/说唱识别，方言/粤语覆盖强于 SenseVoice 五语，与实时同传字幕/多语种会议室场景高度匹配；0.6B 为官方口径开源 SOTA 级小型。
+- **引擎面**：binding 1.13.7 `OfflineQwen3ASRModelConfig`（offline_asr.rs:325-352）逐字段核对在位（`conv_frontend/encoder/decoder/tokenizer` 四路径 + `max_total_len/max_new_tokens/temperature/top_p/seed/hotwords`）；**v1.13.7 原生库（2026-09-01 发布）与 binding 同 release，tag 内自带官方 `qwen3-asr-c-api.c` 示例**——r1 的「binding 有字段 ≠ 原生支持」风险基本排除（spike 保留为验收程序）。
+- **工程面**：§1.6 盘点——下载/缓存/hub 回落/manager 五层就绪或仅常数表扩展，缺口集中在注册表条目 + 引擎实现 + 三处分派/表臂；UI 模型下拉/padding 滑杆显隐已按引擎隔离，qwen3 天然不显示无关控件。
+- **风险面**：默认引擎仍 SenseVoice，qwen3 仅显式选择才启用；「实验性」标注 + manager 错误分类/自动重启兜底，出问题不阻塞主路径。
+
+### 4.2 模型与仓库定案（r3 实测，2026-09-08）
+
+**目标仓（全网唯一正确解）= `csukuangfj2/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25`**（作者 csukuangfj**2** = k2-fsa/sherpa-onnx 维护者小号；lastModified 2026-04-07；官方文档页下载指引同源）。**注意作者多一个 "2"**——`csukuangfj/`（无 2）同名仓 HF/MS 双实测 404。
+
+manifest 六文件（HF API `?blobs=true` 实测；即注册表下载清单）：
+
+| 文件 | 实测字节 | LFS sha256（前 16 位） | 注册表下限拟值 |
+|---|---|---|---|
+| `conv_frontend.onnx` | 44,148,281 | `d22dc4423e0940e4` | 20,000,000 |
+| `encoder.int8.onnx` | 182,491,662 | `60748d3e6744a57c` | 90,000,000 |
+| `decoder.int8.onnx` | 755,914,231 | `4f6885be5959ae26` | 350,000,000 |
+| `tokenizer/merges.txt` | 1,671,853 | —（非 LFS） | 1,000,000 |
+| `tokenizer/tokenizer_config.json` | 12,487 | —（非 LFS） | 5,000 |
+| `tokenizer/vocab.json` | 2,776,833 | —（非 LFS） | 1,000,000 |
+| **合计** | **987,015,347 ≈ 941 MB** | | `estimated_bytes = 1_020_000_000` |
+
+- 三个 tokenizer 文件与 nano 包 `Qwen3-0.6B/` 目录对应文件字节数完全一致（1,671,853 / 2,776,833）——同源 Qwen3-0.6B tokenizer，互为旁证。
+- 仓内 `test_wavs/` 17 条样例**含 `transcript.txt` 参照转写**（中/英/粤/日/德/法/西/俄/阿拉伯/rap/绕口令/噪音/语码切换）→ 验收免麦克风且有 ground truth。
+- 不变量：`files_min_bytes[0] × 2 (40MB) < estimated_bytes` ✓；下限刻意远低于实测（假阴性自愈、假阳性死局，同 nano 口径）。
+
+**HF 全量枚举排除清单**（search=`qwen3-asr` / `sherpa-onnx-qwen3`，90+ 仓；r3 实测）：
+
+- ✅ 仅目标仓满足「官方维护者 + sherpa 官方包布局（三 onnx + tokenizer 目录）+ int8 档」三全。
+- ❌ 官方**原版**权重：`Qwen/Qwen3-ASR-0.6B(-hf)`、`Qwen/Qwen3-ASR-1.7B(-hf)`——PyTorch/HF 格式，sherpa 引擎不可用（仅溯源注记）。
+- ❌ 同名转存：`wt5719001` / `jkman2023` / `cattle12`（与官方包同名，无维护者身份，无采信必要）。
+- ❌ 自转换/非官方变体：`pantinor`、`ilmina`（0.6B+1.7B）、`thieunv`（0.6B+1.7B）、`tritueviet`、`HatiSkoll28` 等——布局与质检未验证（1.7B 变体另见「明确不接」）。
+- ❌ 运行时不兼容：GGUF 系（unslothai/ggml-org/FlippyDora…）、MLX 系（Apple）、OpenVINO/CoreML/neuron、非 sherpa 布局 ONNX 散件（andrewleech/louis030195/rhasspy 等）。
+
+**ModelScope 核查（r3 复测）：无可用 MS 源**：
+
+| MS 仓库 | 实测 | 判定 |
+|---|---|---|
+| `csukuangfj2/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25` | **404** | 官方未发布 MS 单仓 |
+| `csukuangfj/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25` | **404** | namespace 无 "2" 亦无 |
+| `Qwen/Qwen3-ASR-0.6B` | 200 存在 | 官方**原版**权重（`Qwen3ASRForConditionalGeneration`，PyTorch）——格式不符，引擎不可用，仅溯源 |
+| `zengshuishui/Qwen3-ASR-onnx` | 200 存在 | 社区镜像（散文件，含 fp32/1.7B 档；sherpa 官方文档页确实引用其 fp32/1.7B，但本 WP 只用 int8 档，仍不采信——非官方质检，D-24 备注封存） |
+| `zhaochaoqun/sherpa-onnx-asr-models` | tar.bz2 整包 | 官方 GitHub Releases 转存（r2 已核），整包格式不可用 |
+
+**官方运行基线**（sherpa 文档页 `qwen3-asr/pretrained.html` CLI dump 实证）：
+
+- 路径参数：`--qwen3-asr-conv-frontend` / `--qwen3-asr-encoder` / `--qwen3-asr-decoder` / `--qwen3-asr-tokenizer=<tokenizer 目录>`——与 binding 四字段 1:1（tokenizer 传**目录**，同 nano 形状）。
+- 采样/解码：`max_new_tokens=512`、`num_threads=2~3`（官方示例混用：mic=3、VAD 文件=2）；config dump 实证 `temperature=1e-06, top_p=0.8, seed=42, max_total_len=512, hotwords=""`，`decoding_method=greedy_search`（框架默认，同 sensevoice/nano）。
+- **binding Default 陷阱（与 nano 同款，必显式）**：`OfflineQwen3ASRModelConfig::default()` 的 temperature/top_p/seed 恰为官方值，但 **`max_new_tokens=128`（官方 512）**——`max_new_tokens` 与 `max_total_len` 一律显式写死，不裸用 Default。
+- 输出格式：官方样例（Obama.wav）转写为**纯文本**，无 `<|...|>` 标签残留——qwen3 预期不需要 nano 式标签清理（保留防御性 strip，spike 复核定案）。
+- RTF：r1 口径 **0.077–0.168@2线程**（优于 nano 的 0.144–0.191）；本机弱 CPU 下限与内存峰值由 spike 复核。
+- fp32 档 / 1.7B 档：官方文档页指向 MS zengshuishui 社区镜像——**均不用**（体积/CPU 实时性 + 非官方质检）。
+
+### 4.3 与 nano 的实现差异（决定 B5 形状）
+
+| 维度 | nano（WP-A 已实装） | qwen3（本 WP） |
+|---|---|---|
+| 语言参数 | 有 `language` 创建期字段；set_language 重建识别器 | **无该字段**（纯 auto-LID）：`set_language("auto")`→Ok（no-op）；非 auto→`Err(Unsupported)`（诚实暴露；manager 对 Failed 仅 warn 一次并照常提交挂起，无噪音面） |
+| 提示词 | system_prompt/user_prompt 必填官方值 | **无 prompt 字段** |
+| tokenizer | 目录 `Qwen3-0.6B/` | 目录 `tokenizer/` |
+| 特有字段 | itn/hotwords | `max_total_len`（默认 512 显式设置；本管线 VAD `max_speech_duration` 默认 8s，天然远低于边界） |
+| 输出后处理 | `<|...|>` 清理 + "sil" 语义（原版 1:1） | 预期纯文本：防御性标签清理 + trim + 空→None；`AsrResult.language/language_name` 用启发式 LID（与 nano 同款，提升为共享函数） |
+| 线程 | num_threads=2 | num_threads=2（官方 VAD 示例口径；spike 对 1/2/3 择优定案） |
+
+### 4.4 S0 spike（0.5 天，降级为验收程序）
+
+探针测试 `probe_real_qwen3`（仿 `probe_real_nano`，`#[ignore]`，不入常规测试面）：模型包经 hf-mirror 预置真实缓存（复用 WP-A 的 lt-models 下载演练模式，或手动 curl 直链）。四项验证，结论回填 §4.2/§4.6 后再进入实装提交：
+
+1. **加载冒烟**：v1.13.7 原生库 create recognizer 成功（预期通过——tag 已含 c-api 示例）；
+2. **输出格式**：`test_wavs/cantonese.wav`、`raokouling.wav`、`ja1.wav` 对照 `transcript.txt`——确认无标签残留、标点风格、是否需要额外后处理；
+3. **本机 RTF/内存**：官方 0.077–0.168 为官方机器口径，本机复测 + worker RSS 采样（对照回收阈值 基线+2048MB）；
+4. **num_threads 1/2/3** 择优（AR 解码受益多线程，预期 2 或 3）。
+
+### 4.5 改造清单（B-α；逐文件，行号 = 2026-09-08 现场）
+
+| # | 文件 | 改动 |
+|---|---|---|
+| B1 | `crates/lt-models/src/registry.rs` | 新增 `pub const QWEN3_ASR: ModelEntry { key:"qwen3-asr-0.6b", display:"Qwen3-ASR-0.6B", hf:Some("csukuangfj2/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25"), ms:None, always_hf:true, estimated_bytes:1_020_000_000, files:六件套, files_min_bytes:§4.2 表 }` + `pub fn qwen3_entry() -> ModelEntry`（单一模型，无键参）；`const { assert!(QWEN3_ASR.always_hf && QWEN3_ASR.ms.is_none()) }`（D-24 不变量，同 FUNASR_NANO）；`manifest_min_bytes_parallel_to_files` 测试纳入 QWEN3_ASR；新增 `qwen3_entry_hf_only` 测试 |
+| B2 | `crates/lt-proto/src/settings.rs:17` | `ASR_ENGINES: [&str; 3] = ["funasr", "whisper", "qwen3"]`（sanitize :171 引用常量自动放行，无 legacy 别名）；注释「r8 定稿：双引擎」更新；补测试：`asr_engine="qwen3"` 过 sanitize 原样保留、非法值仍回退 funasr |
+| B3 | `crates/lt-models/src/cache.rs:146-152,171-215` | `is_asr_cached` 加 `"qwen3"` 臂：`is_funasr_cached(models_dir, &registry::qwen3_entry())`（manifest 机制泛化，qwen3 的 model 参数无意义，忽略）；`missing_models` 加 `"qwen3"` 臂（固定条目，display "Qwen3-ASR-0.6B"）。测试：HF 布局稀疏 manifest 造缓存 → `is_asr_cached(dir,"qwen3",…)` 命中、`missing_models` 清空；未缓存报缺失且 `always_hf=true` 带出 |
+| B4 | `crates/lt-app/src/pipeline.rs:648-699,736-750,852-856,868-875` | ① `build_worker_config` 加 `"qwen3"` 臂：`entry=qwen3_entry()` → `local_model_dir` 未缓存 None；`engine:"qwen3"`、`pad_seconds:None`、`options{model_dir}`；② 启动诊断 :736 分支加 qwen3 臂取 QWEN3 条目（否则未缓存日志打错模型名）；③ TlSwitch 日志 model_key :852/:868 加 `engine=="qwen3" → "qwen3-asr-0.6b"` 臂。测试：稀疏 manifest 下 `build_worker_config(&base,"qwen3",…)` 装配成功且 pad None；未缓存 None |
+| B5 | `crates/lt-asr/src/engines/qwen3.rs`（新建）+ `engines/mod.rs` 共享化 | `Qwen3AsrEngine::load(model_dir)`：校验三 onnx + `tokenizer/` 目录（缺一即 EngineError::Load，清单与注册表同源）；`build_recognizer`：`cfg.model_config.qwen3_asr = OfflineQwen3ASRModelConfig{ conv_frontend/encoder/decoder: Some(join(…)), tokenizer: Some(join("tokenizer")), max_total_len:512, max_new_tokens:512, temperature:1e-6, top_p:0.8, seed:42, hotwords:None }`，`num_threads=2`（S0 定案可调）；`transcribe` 同 nano 流形状：防御性 `<\|…\|>` 清理 + trim + 空→None；`guess_language` 填 `AsrResult.language/language_name`；`set_language`：""\|"auto"\|"Auto"→Ok(no-op)，其余→`Err(EngineError::Unsupported)`；`set_input_padding` 保持 trait 默认。**共享化**：`guess_language` 与标签 strip 从 `NanoEngine` 关联函数提升为 `engines/mod.rs` `pub(crate)` 自由函数，nano 委托调用（既有 nano 单测保持通过），qwen3 复用。单测：postprocess 分支 / set_language auto 放行与非 auto 拒绝 / load 缺文件报错 |
+| B6 | `crates/lt-asr/src/engines/mod.rs` + `src/lib.rs` | `pub mod qwen3;` + `pub use engines::qwen3::Qwen3AsrEngine;` |
+| B7 | `crates/lt-app/src/main.rs:108-159` | `asr_worker_entry` 加 `"qwen3"` 臂（仿 nano 臂：`options.model_dir` → `Qwen3AsrEngine::load(&dir)`，不消费 pad_seconds/language） |
+| B8 | `crates/lt-asr/src/manager.rs:79-83` | `engine_family` 加 `"qwen3" => "qwen3"`（显式独立家族；apply_pending :301 `get("qwen3")` 恒 None 天然 no-op，UI 不产生该家族 SetPadding，零逻辑改动）；测试补 `engine_family("qwen3")=="qwen3"` |
+| B9 | `crates/lt-ui/src/windows/panel/vad.rs` | ① `ENGINES:24-28` 扩三项 `("qwen3","engine_display_qwen3","Qwen3-ASR")`（尾部追加，既有索引不动）；测试 :1070 三值数组；② `model_cache_status:195` 加 `"qwen3"` 臂（qwen3_entry → is_funasr_cached → Cached/Missing(estimated_bytes)）；③ 语言下拉 :300-315 后：engine=="qwen3" 时 `hint_line(qwen3_lang_auto_hint)`；④ D-24 hint :429-434 条件扩 qwen3（hub==ms && engine=="qwen3" → `model_qwen3_hf_only`）；⑤ 过一遍确认：funasr 模型下拉 :318 / whisper 档位 :349 / 双 padding :391,:400 / nano hint 对 qwen3 均天然隐藏 |
+| B10 | `assets/i18n/zh.yaml` + `en.yaml` | 三键两份同步（Rust additions 段）：`engine_display_qwen3`（zh「Qwen3-ASR（多语种，实验性）」/ en "Qwen3-ASR (multilingual, experimental)"）、`model_qwen3_hf_only`（同 nano 措辞）、`qwen3_lang_auto_hint`（zh「Qwen3-ASR 恒自动检测源语言，识别语言选择对其无效」/ en 同义） |
+| B11 | 探针处置 | `probe_real_qwen3`（lt-asr）与可选下载演练探针保留为 `#[ignore]` 验收工具（同 A11 模式），随本 WP 提交 |
+| B12 | 文档回写 | 本文 §0/§4 状态勾销 + 实测数据回填 §4.2/§4.6；`docs/archive/rewrite-research.md` §1.5 登记 **D-25**（新增 Qwen3-ASR-0.6B 引擎；不支持项：无源语言指定 / 无热词 UI / 不接 1.7B 与 fp32）；`AGENTS.md` 待办更新 |
+
+**明确无需改动**（验证项，非改造项）：`lt-app/backend.rs`（SwitchEngine 载荷引擎无关 :77-90；`current_missing` :251 已透传 asr_engine；hf_endpoint 接线 :188 在位）、`lt-models/download/mod.rs`（hub_chain/hf_endpoint_for 泛化）、manager apply_pending（:296-312 家族取键天然 no-op）、面板 diff/恢复页（恢复默认回 funasr/sensevoice 语义成立）。
+
+### 4.6 验收清单
+
+1. `cargo test --workspace` 全绿（341 + 新增：B1 不变量/B2 sanitize/B3 探测/B4 分派/B5 引擎单测/B8 家族回归/B9 三值表）；新码 clippy 零告警。
+2. S0 spike 四项结论确认（§4.4）并回填本文档。
+3. 实机（临时 `LIVETRANSLATE_CONFIG_DIR`，settings 显式 `models_dir` 指真实缓存）：
+   - 选 qwen3 → 识别页下载 941MB（缓存预置则秒完成，验证 manifest 幂等命中）→ 引擎切换成功、悬浮窗 ready `Qwen3-ASR-0.6B [cpu]`；
+   - `test_wavs/` 中/英/粤/日/语码切换各一条对照 `transcript.txt`；`language` 字段启发式判定正确；
+   - 语言下拉选非 auto → 日志恰一条 warn（Unsupported）且识别照常（auto-LID）；选回 auto 无 warn；
+   - padding 滑杆 / funasr 模型下拉 / whisper 档位均隐藏；hub=ms 显示镜像 hint；日志核对 URL：hub=hf → `huggingface.co` 直连，hub=ms → `hf-mirror.com`；
+   - 切回 sensevoice/whisper 一切如旧；`cargo run -p lt-app` 冒烟无回归。
+4. 观察点（不预做，出现再登记）：int8 AR 重复/幻觉（#3066 类）；长段行为（max_total_len 边界）；本机 RTF 与加载时长（回填 §4.2）；粤语输出字节级 fallback token（nano 同款观察点）。
+
+### 4.7 风险与对策
+
+| 风险 | 等级 | 对策 |
+|---|---|---|
+| 原生库支持（binding 字段 ≠ 原生实现） | 低（已基本排除） | v1.13.7 同 release 含官方 c-api 示例（§4.1）；S0 首项兜底；不过则升 `sherpa-onnx` crate 补丁版本（`"1.13"` 语义内） |
+| 无 language 指定（asr_language 下拉对其无效） | 中 | auto-LID 即设计行为；UI hint 明示（B10）；set_language 非 auto → Unsupported 诚实暴露；`AsrResult.language` 启发式兜底 |
+| decoder 756MB → worker RSS 峰值（估 1.1–1.5GB） | 低 | RSS 回收 = 基线+2048MB 天然覆盖（nano 实测 1.09GB 同级）；S0 复核 |
+| max_total_len=512 对长段截断 | 低 | 管线 VAD max_speech_duration 默认 8s，远低于边界；观察点登记 |
+| 上游采样参数扰动（r1 #3509 情报） | 低 | 不暴露 hotwords UI；采样参数固定官方基线；seed 固定 42 确定性 |
+| int8 AR 幻觉/重复 | 中 | 「实验性」标注维持；manager 错误分类+自动重启兜底；高频复现再评估相邻重复折叠（先不做） |
+| hf-mirror 第三方信任 × 无哈希校验 | 中 | D-24 既有语义：选 HF 即官方直连、选 MS 才走镜像；UI 诚实提示；sha256 渐进登记（既有备忘——三个 onnx 的 LFS sha256 已实测入档 §4.2） |
+| 1.7B 诱惑（社区已有自转换包） | — | 明确不接：#3535 open（2026-09-08 复核）+ 非官方转换 + 纯 CPU AR 解码成本翻三倍 |
 
 ## 5. WP-C：缓存完整性硬化 → **取消**（r2）
 
@@ -256,12 +393,12 @@ r1 §4.1–4.5 全部有效（spike 四项验证、B-α 拓扑推荐 `asr_engine
 
 扫描结论与观察名单（Cohere Transcribe 2B / FireRedASR2-CTC）不变；MLT 有条件解锁路径（r1 §6.3）不变，另补：**MS 亦无 MLT 源**（r2 实测），若未来解禁只能走 HF。
 
-## 7. 排期与边界（r2 更新）
+## 7. 排期与边界（r3 更新）
 
 ```
-WP-A  nano 实装 + 注册表修正 + D-24 端点映射接线 + A8 UI    ≈ 1 天   ← 本文 §3，可立即开工
-WP-B  spike（qwen3 加载/格式/RTF）                                0.5 天   ← 结论回填 §4
-WP-B  qwen3 实装（B-α，待拍板）                                  1–1.5 天
+✗ WP-A  nano 实装 + 注册表修正 + D-24 端点映射接线 + A8 UI    ≈ 1 天   ← 已完工（r2.2，§3.5）
+WP-B  S0 spike（qwen3 加载/格式/RTF/线程，验收程序化）          0.5 天   ← §4.4，结论回填 §4.2/§4.6
+WP-B  qwen3 实装（B-α 已拍板，B1~B12）                          1–1.5 天 ← §4.5，可立即开工
 ─── 每步收尾 cargo test --workspace 全绿 + 自主中文 commit
 ```
 
@@ -272,7 +409,9 @@ WP-B  qwen3 实装（B-α，待拍板）                                  1–1.
 ## 8. 参考资料（r2 增补）
 
 - r1 §8 全部保留。增补：
-- 目标仓：https://huggingface.co/csukuangfj/sherpa-onnx-funasr-nano-int8-2025-12-30
+- 目标仓（nano）：https://huggingface.co/csukuangfj/sherpa-onnx-funasr-nano-int8-2025-12-30
+- 目标仓（qwen3）：https://huggingface.co/csukuangfj2/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25 ｜ 官方文档页：https://k2-fsa.github.io/sherpa/onnx/qwen3-asr/pretrained.html ｜ C API 示例：https://github.com/k2-fsa/sherpa-onnx/blob/master/c-api-examples/qwen3-asr-c-api.c ｜ 1.7B 支持追踪：https://github.com/k2-fsa/sherpa-onnx/issues/3535
+- Qwen3-ASR 官方原版权重（溯源，非引擎源）：https://huggingface.co/Qwen/Qwen3-ASR-0.6B ｜ https://modelscope.cn/models/Qwen/Qwen3-ASR-0.6B ｜ 发布博客：https://qwen.ai/blog?id=qwen3asr
 - hf-mirror：https://hf-mirror.com （`HF_ENDPOINT` 语义的 Rust 等价 = D-24 r2.1 端点映射 `hf_endpoint_for(selected_hub)`：选 MS 时自动取镜像）
 - MS 核查对象：fuyuantech/fuyuan-sherpa-onnx-funasr-nano-int8-2025-12-30 ｜ zhaochaoqun/sherpa-onnx-asr-models ｜ zengshuishui/FunASR-Nano-onnx ｜ manyeyes/Fun-ASR-Nano-2512-LLM-onnx ｜ FunAudioLLM/Fun-ASR-Nano-2512
 - 官方 C API 示例：https://github.com/k2-fsa/sherpa-onnx/blob/master/c-api-examples/funasr-nano-c-api.c

@@ -9,7 +9,7 @@
 | 文档 | 内容 | 状态 |
 |---|---|---|
 | `distribution.md` | 分发与用户旅程（D-18~D-21 裁决 + WD-1~WD-10 两阶段） | 阶段一 WD-1~WD-5 待施工，阶段二预案 |
-| `asr-engine-expansion.md` | ASR 引擎扩展：FunASR Nano 实装 / Qwen3-ASR-0.6B / 开源模型扫描 | r2 WP-A 动工方案实测定稿（2026-09-08，D-24 登记），待施工；WP-B 调研维持 |
+| `asr-engine-expansion.md` | ASR 引擎扩展：✗ FunASR Nano 实装（WP-A，D-24）/ Qwen3-ASR-0.6B 实装方案（WP-B r3 动工定稿，目标仓 `csukuangfj2/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25`，B-α 拓扑）/ 开源模型扫描 | WP-A 完成（2026-09-08，341 测）；WP-B r3 动工方案定稿（2026-09-08），待施工 |
 | `download-overhaul.md` | 模型下载链路审计与改造（13 项发现证据 + DEC-1~5 决策 + DL-1~6 施工卡；D-22/D-23 登记） | 完成（2026-09-08，334 测；DL-1~6 全落地） |
 
 ## 归档文档（`docs/archive/`，只读决策史）
