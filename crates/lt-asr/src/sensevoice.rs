@@ -4,6 +4,7 @@
 //! （情感/事件/BGM）→ trim → 空文本视为无结果。
 
 use crate::engine::AsrEngine;
+use crate::engines::{describe_model_files, sherpa_create_failure_hint};
 use lt_proto::{AsrResult, EngineError};
 use sherpa_onnx::{
     OfflineRecognizer, OfflineRecognizerConfig, OfflineSenseVoiceModelConfig,
@@ -126,8 +127,17 @@ fn build_recognizer(
     };
     cfg.model_config.tokens = Some(tokens.to_string_lossy().into_owned());
     cfg.model_config.num_threads = 1;
-    OfflineRecognizer::create(&cfg)
-        .ok_or_else(|| EngineError::Load(format!("sherpa 创建识别器失败（model={}）", model.display())))
+    OfflineRecognizer::create(&cfg).ok_or_else(|| {
+        EngineError::Load(format!(
+            "sherpa 创建识别器失败（model={}；文件 [{}]）——{}",
+            model.display(),
+            describe_model_files(
+                model.parent().unwrap_or(model),
+                &[model.file_name().and_then(|s| s.to_str()).unwrap_or("model.onnx"), "tokens.txt"],
+            ),
+            sherpa_create_failure_hint(),
+        ))
+    })
 }
 
 /// 尾部补零至 target（target ≥ len）

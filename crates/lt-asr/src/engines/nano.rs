@@ -6,7 +6,7 @@
 //! nano 无 padding 语义（原版 funasr_supports_padding: nano=false）——
 //! `set_input_padding` 保持 trait 默认 `Unsupported`，manager 已按引擎名跳过下发。
 
-use super::{guess_language, strip_special_tags};
+use super::{describe_model_files, guess_language, sherpa_create_failure_hint, strip_special_tags};
 use crate::engine::AsrEngine;
 use lt_proto::{AsrResult, EngineError};
 use sherpa_onnx::{
@@ -117,7 +117,13 @@ fn build_recognizer(
     };
     cfg.model_config.num_threads = NUM_THREADS;
     OfflineRecognizer::create(&cfg).ok_or_else(|| {
-        EngineError::Load(format!("sherpa 创建识别器失败（model={}）", model_dir.display()))
+        EngineError::Load(format!(
+            "sherpa 创建识别器失败（model={}；文件 [{}]，tokenizer 目录 {}）——{}",
+            model_dir.display(),
+            describe_model_files(model_dir, &ONNX_FILES),
+            if model_dir.join(TOKENIZER_DIR).is_dir() { "在" } else { "缺" },
+            sherpa_create_failure_hint(),
+        ))
     })
 }
 

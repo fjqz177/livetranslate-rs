@@ -9,6 +9,7 @@ pub mod wasapi_win;
 
 use parking_lot::{Condvar, Mutex};
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 /// 原版固定 16k mono 的目标采样率
@@ -150,18 +151,36 @@ pub fn pad_bucket(audio: &[f32], quantum: usize) -> Vec<f32> {
 
 /// 有界队列：满时丢最旧（对齐原版 audio_queue maxsize=100 的
 /// `get_nowait(); put_nowait()` 语义）；支持带超时的阻塞取出。
+/// 丢弃带确定性节奏告警（AH-7/H11：装载期/峰值丢段此前完全不可诊断）。
 pub struct BoundedDropQueue<T> {
     inner: Mutex<VecDeque<T>>,
     cv: Condvar,
     cap: usize,
+    /// 队列标识（丢弃告警定位用）
+    name: &'static str,
+    /// 累计丢弃数：第 1 次与每 200 次 warn 一条（确定性节奏，免时钟）
+    dropped: AtomicU64,
 }
 
 impl<T> BoundedDropQueue<T> {
-    pub fn new(cap: usize) -> Self {
+    pub fn new(cap: usize, name: &'static str) -> Self {
         Self {
             inner: Mutex::new(VecDeque::with_capacity(cap)),
             cv: Condvar::new(),
             cap,
+            name,
+            dropped: AtomicU64::new(0),
+        }
+    }
+
+    fn note_drop(&self) {
+        let n = self.dropped.fetch_add(1, Ordering::Relaxed) + 1;
+        if n == 1 || n % 200 == 0 {
+            tracing::warn!(
+                "音频队列[{}]已满，丢弃最旧腾位（累计丢弃 {n}，容量 {}）",
+                self.name,
+                self.cap
+            );
         }
     }
 
@@ -170,6 +189,7 @@ impl<T> BoundedDropQueue<T> {
         let mut q = self.inner.lock();
         if q.len() >= self.cap {
             q.pop_front();
+            self.note_drop();
         }
         q.push_back(v);
         self.cv.notify_one();
@@ -200,6 +220,7 @@ impl<T> BoundedDropQueue<T> {
         let mut q = self.inner.lock();
         if q.len() >= self.cap {
             q.pop_back();
+            self.note_drop();
         }
         q.push_front(v);
         self.cv.notify_one();
@@ -360,7 +381,7 @@ mod tests {
 
     #[test]
     fn drop_queue_semantics() {
-        let q: BoundedDropQueue<u32> = BoundedDropQueue::new(3);
+        let q: BoundedDropQueue<u32> = BoundedDropQueue::new(3, "test");
         for i in 0..5 {
             q.push(i);
         }
@@ -376,7 +397,7 @@ mod tests {
     #[test]
     fn try_pop_and_push_front_preserve_order() {
         // 排空重复标记场景：弹出后回插队首，FIFO 顺序不变（原版 put 回语义）
-        let q: BoundedDropQueue<u32> = BoundedDropQueue::new(4);
+        let q: BoundedDropQueue<u32> = BoundedDropQueue::new(4, "test");
         for i in [10, 20, 30] {
             q.push(i);
         }
@@ -387,7 +408,7 @@ mod tests {
         q.push_front(20);
         assert_eq!(q.try_pop(), Some(20));
         // 满时 push_front 丢队尾保队首
-        let full: BoundedDropQueue<u32> = BoundedDropQueue::new(2);
+        let full: BoundedDropQueue<u32> = BoundedDropQueue::new(2, "test");
         full.push(1);
         full.push(2);
         full.push_front(0);

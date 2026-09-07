@@ -348,7 +348,7 @@ impl Pipeline {
         let pending = lt_asr::AsrPendingHandle::default();
 
         // ── 音频：chunk 满丢旧队列 ──
-        let chunk_queue = Arc::new(BoundedDropQueue::new(100));
+        let chunk_queue = Arc::new(BoundedDropQueue::new(100, "chunk"));
         let mut backend = WasapiBackend::new();
         backend.start(
             settings.audio_device.clone(),
@@ -374,7 +374,7 @@ impl Pipeline {
         );
         vad.update_settings(&vad_settings);
 
-        let segment_queue = Arc::new(BoundedDropQueue::<(SegmentSource, Vec<f32>)>::new(SEGMENT_QUEUE_CAP));
+        let segment_queue = Arc::new(BoundedDropQueue::<(SegmentSource, Vec<f32>)>::new(SEGMENT_QUEUE_CAP, "segment"));
         // VAD 共享拓扑（原版 _vad_lock）：capture 写、ASR 线程增量识别时
         // peek/trim/speech_samples 读，锁粒度 = 单次方法调用
         let vad = Arc::new(Mutex::new(vad));
@@ -975,9 +975,13 @@ fn run_asr_thread(
     // 当前生效引擎的显示标签（切换失败回滚后用于恢复 AsrDevice，避免
     // 状态行挂着「ASR unavailable」而旧引擎实际仍在工作——P0-4）
     let mut current_display = display.clone();
+    // AH-7/H13：AsrUnavailable 边沿触发——unavailable 是稳态，只在 false→true
+    // 沿发一次事件，识别恢复（transcribe Ok / AsrDevice 发出）时复位
+    let mut asr_unavailable_notified = false;
     // 模型加载对话框（原版 _ModelLoadDialog：装载期模态；AsrDevice/AsrUnavailable 关闭）
     let _ = proxy.send_event(UiMsg::Event(UiEvent::ModelLoadStart(display.clone())));
     if let Err(e) = manager.ensure_started(&config) {
+        asr_unavailable_notified = true;
         let _ = proxy.send_event(UiMsg::Event(UiEvent::AsrUnavailable));
         tracing::error!("ASR worker 启动失败: {e}");
     } else {
@@ -1020,6 +1024,7 @@ fn run_asr_thread(
                                 tracing::error!("引擎切换失败（已回滚）: {e}");
                             } else {
                                 current_display = display.clone();
+                                asr_unavailable_notified = false;
                                 let _ = proxy.send_event(UiMsg::Event(UiEvent::AsrDevice(format!(
                                     "{display} [cpu]"
                                 ))));
@@ -1080,6 +1085,7 @@ fn run_asr_thread(
                 let t0 = std::time::Instant::now();
                 match manager.transcribe(&audio, false) {
                     Ok(result) => {
+                        asr_unavailable_notified = false;
                         let asr_ms = t0.elapsed().as_secs_f64() * 1000.0;
                         if interim_state.active {
                             // 收尾段（原版 _process_interim_final 的 Ok(result) 分支）：
@@ -1132,7 +1138,8 @@ fn run_asr_thread(
                     }
                     Err(e) => {
                         tracing::warn!("ASR 段识别失败: {e}");
-                        if e.unavailable() {
+                        if e.unavailable() && !asr_unavailable_notified {
+                            asr_unavailable_notified = true;
                             let _ = proxy.send_event(UiMsg::Event(UiEvent::AsrUnavailable));
                         }
                     }

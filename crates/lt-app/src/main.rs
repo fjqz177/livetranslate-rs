@@ -106,6 +106,11 @@ fn ensure_single_instance() -> anyhow::Result<()> {
 
 /// worker 子进程主循环：SenseVoice / Whisper（M5.1）/ Fun-ASR-Nano（WP-A）/ Qwen3-ASR（WP-B）
 fn asr_worker_entry(cfg_json: &str) -> anyhow::Result<()> {
+    // AH-7/H14：worker 分支在主进程 logging::init 之前 return，引擎里的
+    // tracing 此前是无 subscriber 的 no-op（日志黑洞）。初始化写 stderr 的
+    // 轻量订阅者——父进程 drain_stderr 捕获后以 debug(target:"asr_worker")
+    // 回流日志窗（INFO 级足够：引擎加载/就绪信息，避免 debug 洪泛）
+    init_worker_logging();
     let config: lt_asr::WorkerConfig = serde_json::from_str(cfg_json)?;
     match config.engine.as_str() {
         "sensevoice" => {
@@ -173,4 +178,16 @@ fn asr_worker_entry(cfg_json: &str) -> anyhow::Result<()> {
         }
         other => anyhow::bail!("未知 worker 引擎: {other}"),
     }
+}
+
+/// worker 进程的轻量日志订阅者（AH-7/H14）：stderr 单路、INFO 级
+fn init_worker_logging() {
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+    use tracing_subscriber::Layer as _; // with_filter
+    let stderr_layer = tracing_subscriber::fmt::layer()
+        .with_ansi(false)
+        .with_writer(std::io::stderr)
+        .with_filter(tracing_subscriber::filter::LevelFilter::INFO);
+    tracing_subscriber::registry().with(stderr_layer).init();
 }

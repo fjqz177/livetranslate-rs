@@ -224,8 +224,8 @@ mod tests {
         MonitorLog,
         Arc<AtomicBool>,
     ) {
-        let q = Arc::new(BoundedDropQueue::new(100));
-        let seg = Arc::new(BoundedDropQueue::new(16));
+        let q = Arc::new(BoundedDropQueue::new(100, "test-chunk"));
+        let seg = Arc::new(BoundedDropQueue::new(16, "test-seg"));
         (q, seg, Arc::new(Mutex::new(Vec::new())), Arc::new(AtomicBool::new(false)))
     }
 
@@ -304,8 +304,8 @@ mod tests {
     #[test]
     fn timeout_feeds_silence_to_advance_vad() {
         // 不往队列放数据，VAD 已有缓冲 → 超时路径喂静音收段
-        let q = Arc::new(BoundedDropQueue::<(Vec<f32>, Option<f32>)>::new(100));
-        let seg_tx = Arc::new(BoundedDropQueue::<(SegmentSource, Vec<f32>)>::new(16));
+        let q = Arc::new(BoundedDropQueue::<(Vec<f32>, Option<f32>)>::new(100, "test-chunk"));
+        let seg_tx = Arc::new(BoundedDropQueue::<(SegmentSource, Vec<f32>)>::new(16, "test-seg"));
         let paused = Arc::new(AtomicBool::new(false));
         let mut vad = VadProcessor::new(Burst(40.into()), 16000, 0.5, 1.0, 15.0, 0.032);
         let chunk = vec![0.1f32; 512];

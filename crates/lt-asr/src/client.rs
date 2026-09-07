@@ -396,6 +396,9 @@ fn reader_loop(mut stdout: ChildStdout, tx: std::sync::mpsc::Sender<Result<Respo
 }
 
 fn drain_stderr(mut stderr: impl Read) {
+    // AH-7：`\r` 视为行界（C 库进度条式输出）；长期无换行时截断 pending，
+    // 防无界增长（超长单行/二进制误判）
+    const PENDING_CAP: usize = 1 << 20;
     let mut buf = [0u8; 4096];
     let mut pending = Vec::new();
     loop {
@@ -403,10 +406,17 @@ fn drain_stderr(mut stderr: impl Read) {
             Ok(0) | Err(_) => break,
             Ok(n) => {
                 pending.extend_from_slice(&buf[..n]);
-                while let Some(pos) = pending.iter().position(|&b| b == b'\n') {
+                while let Some(pos) = pending.iter().position(|&b| b == b'\n' || b == b'\r') {
                     let line: Vec<u8> = pending.drain(..=pos).collect();
                     let s = String::from_utf8_lossy(&line[..line.len() - 1]);
-                    tracing::debug!(target: "asr_worker", "{s}");
+                    if !s.trim().is_empty() {
+                        tracing::debug!(target: "asr_worker", "{s}");
+                    }
+                }
+                if pending.len() > PENDING_CAP {
+                    let s = String::from_utf8_lossy(&pending);
+                    tracing::debug!(target: "asr_worker", "(stderr 超长行截断) {s}");
+                    pending.clear();
                 }
             }
         }

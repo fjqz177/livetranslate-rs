@@ -333,18 +333,20 @@ fn take_native_chunks(st: &mut LoopStream, out: &mut Vec<Vec<f32>>) {
     }
 }
 
-/// mic 流排空到积压（原版：一次读光 get_read_available）
-fn drain_mic(mic: &mut MicStream, mic_buf: &mut Vec<f32>) {
+/// mic 流排空到积压（原版：一次读光 get_read_available）。
+/// 返回 `false` = 读失败（AH-7/H12：调用方 warn+退避重开，镜像 loopback
+/// 恢复语义——原实现静默 break，mic 被抢占后无声消失且无任何日志）
+fn drain_mic(mic: &mut MicStream, mic_buf: &mut Vec<f32>) -> bool {
     loop {
         let Ok(Some(frames)) = mic.capture.get_next_packet_size() else {
-            break;
+            return true;
         };
         if frames == 0 {
-            break;
+            return true;
         }
         let mut buf = vec![0u8; frames as usize * mic.blockalign];
         if mic.capture.read_from_device(&mut buf).is_err() {
-            break;
+            return false;
         }
         let inter = decode_samples(&buf, mic.sample_type, mic.bits);
         let mono = to_mono(&inter, mic.channels);
@@ -385,6 +387,23 @@ fn read_loop(
     }
     let mut mic_buf: Vec<f32> = Vec::new();
     let mut last_device_check = Instant::now();
+    // AH-7/H12：mic 读失败 → warn + 0.5s 退避重开（镜像 loopback 读错误恢复）；
+    // 不清 chunk 队列（loopback 未受影响）。requested_mic 经参传入避免闭包
+    // 与 SetMic 命令臂的可变借用冲突
+    let handle_mic =
+        |mic: &mut Option<MicStream>, mic_buf: &mut Vec<f32>, requested: &Option<String>| {
+            if let Some(m) = mic {
+                if !drain_mic(m, mic_buf) {
+                    tracing::warn!("麦克风读取失败（设备可能被移除/抢占），0.5s 后尝试重开");
+                    std::thread::sleep(Duration::from_millis(500));
+                    close_mic(mic);
+                    mic_buf.clear();
+                    *mic = open_mic(requested.as_deref())
+                        .map_err(|e| tracing::error!("读错误后重开麦克风失败: {e:#}"))
+                        .ok();
+                }
+            }
+        };
 
     while running.load(Ordering::Relaxed) {
         // ── 控制命令（原版 restart_event / mic_restart_event 分支）──
@@ -492,9 +511,7 @@ fn read_loop(
                     }
                     if produced.is_empty() {
                         // 无新数据（原版 sleep(0.005) continue）
-                        if let Some(m) = &mut mic {
-                            drain_mic(m, &mut mic_buf);
-                        }
+                        handle_mic(&mut mic, &mut mic_buf, &requested_mic);
                         std::thread::sleep(Duration::from_millis(POLL_IDLE_MS));
                         continue;
                     }
@@ -503,9 +520,7 @@ fn read_loop(
         }
 
         // ── mic 排水 → 逐块混合推送（原版尾部逻辑）──
-        if let Some(m) = &mut mic {
-            drain_mic(m, &mut mic_buf);
-        }
+        handle_mic(&mut mic, &mut mic_buf, &requested_mic);
         for chunk in produced {
             let (mixed, mic_rms) = mix_with_mic(&chunk, &mut mic_buf);
             chunk_tx.push((mixed, mic_rms));

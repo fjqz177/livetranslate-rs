@@ -28,7 +28,7 @@ fn main() -> anyhow::Result<()> {
     println!("当前默认输出: {:?}", be.current_default_output()?);
     eprintln!("[4] 启动采集线程…");
 
-    let q = Arc::new(BoundedDropQueue::new(100));
+    let q = Arc::new(BoundedDropQueue::new(100, "audio_check"));
     be.start(None, None, q.clone())?;
     eprintln!("[5] 采集 5s（放点音乐看 RMS）…");
     let t0 = Instant::now();

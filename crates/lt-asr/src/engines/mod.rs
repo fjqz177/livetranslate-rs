@@ -56,6 +56,25 @@ pub(crate) fn strip_special_tags(raw: &str) -> String {
     out
 }
 
+/// 装载失败诊断（AH-7/H14）：sherpa `create` 失败时根因只在 C++ 侧 stderr
+/// （父进程 drain_stderr 以 debug 回流），错误文案附清单文件实测字节数——
+/// 区分「空文件/截断残留」与「文件在位但 ORT 加载失败」，并引导恢复路径
+pub(crate) fn describe_model_files(model_dir: &std::path::Path, files: &[&str]) -> String {
+    files
+        .iter()
+        .map(|name| match std::fs::metadata(model_dir.join(name)) {
+            Ok(m) => format!("{name}={}", m.len()),
+            Err(_) => format!("{name}=缺失"),
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// sherpa create 失败错误的公共尾注（AH-7/H14 + DEC-4③ 恢复路径指引）
+pub(crate) fn sherpa_create_failure_hint() -> &'static str {
+    "详情见日志窗 debug（asr_worker stderr）；若怀疑缓存损坏，可在 设置→数据与存储 删除该模型后重新下载"
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
