@@ -5,6 +5,8 @@
 //! - 反序列化：字段全 `#[serde(default)]`，缺失即默认；
 //! - 导入原版文件：经 [`Settings::from_value_compatible`] 做 legacy 键迁移
 //!   （`no_think` → `thinking_style` 等）与非法值回退（记日志）。
+//! - Rust 版新增键（原版无对应）：`models_dir`、`ui_font_family`、
+//!   `subtitle_font_family`（D-17，缺失即默认，导入原版文件不受影响）。
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -67,6 +69,9 @@ pub struct Settings {
     pub system_prompt: String,
     pub timeout: u32,               // 秒
     pub ui_lang: String,            // en | zh
+    // ── 字体（D-17，Rust 版新增：默认内嵌思源，行级键空串=跟随主设置）──
+    pub ui_font_family: String,          // 界面字体族名（内嵌思源名或系统字体名）
+    pub subtitle_font_family: String,    // 字幕/悬浮窗显示文本主字体族名
     // ── UI ──
     pub style: Style,
     pub subtitle_mode: SubtitleMode,
@@ -108,6 +113,8 @@ impl Default for Settings {
             system_prompt: String::new(),
             timeout: 10,
             ui_lang: "en".into(),
+            ui_font_family: "Noto Sans CJK SC".into(),
+            subtitle_font_family: "Noto Sans CJK SC".into(),
             style: Style::default(),
             subtitle_mode: SubtitleMode::default(),
             overlay_x: None,
@@ -188,6 +195,16 @@ impl Settings {
         }
         if self.asr_language.is_empty() {
             self.asr_language = "auto".into();
+        }
+        // D-17：字体主键空串（手改/损坏）回退默认内嵌思源；
+        // 行级键空串是合法语义（=跟随主设置），不回退
+        if self.ui_font_family.is_empty() {
+            self.ui_font_family = "Noto Sans CJK SC".into();
+            fixed.push("ui_font_family: 空 → 默认思源".into());
+        }
+        if self.subtitle_font_family.is_empty() {
+            self.subtitle_font_family = "Noto Sans CJK SC".into();
+            fixed.push("subtitle_font_family: 空 → 默认思源".into());
         }
         if self.models.is_empty() {
             self.models.push(ModelConfig::default());
@@ -293,7 +310,10 @@ pub struct Style {
     pub header_color: String,
     pub header_opacity: u32,   // 0-255
     pub border_radius: u32,    // px
+    /// D-17（2026-09-07 用户裁决）：空串 = 跟随 settings.subtitle_font_family；
+    /// 原版默认 "Microsoft YaHei"（此处保留原值为空语义 1:1 于旧文件导入）
     pub original_font_family: String,
+    /// D-17：空串 = 跟随 subtitle_font_family（原版默认 "Microsoft YaHei"）
     pub translation_font_family: String,
     pub original_font_size: u32,     // pt
     pub translation_font_size: u32,  // pt
@@ -312,8 +332,9 @@ impl Default for Style {
             header_color: "#1a1a2e".into(),
             header_opacity: 230,
             border_radius: 8,
-            original_font_family: "Microsoft YaHei".into(),
-            translation_font_family: "Microsoft YaHei".into(),
+            // D-17：原版默认 "Microsoft YaHei"，改为空串（跟随字幕主字体）
+            original_font_family: "".into(),
+            translation_font_family: "".into(),
             original_font_size: 11,
             translation_font_size: 14,
             original_color: "#cccccc".into(),
@@ -353,7 +374,8 @@ impl Default for SubtitleLine {
             line_type: "translation".into(),
             lang: Some("en".into()),
             enabled: true,
-            font_family: "Microsoft YaHei".into(),
+            // D-17：原版默认 "Microsoft YaHei"，改为空串（跟随字幕主字体）
+            font_family: "".into(),
             font_size: 24,
             color: "#FFFFFF".into(),
             opacity: 255,
@@ -553,5 +575,64 @@ mod tests {
         assert_eq!(sm.lines[1].color, "#FFD700");
         assert_eq!(sm.lines[1].lang.as_deref(), Some("zh"));
         assert_eq!(sm.lines[0].line_type, "original");
+        // D-17（2026-09-07 用户裁决）：字体键默认从原版 "Microsoft YaHei"
+        // 改为空串 = 跟随 subtitle_font_family（主键默认内嵌思源）
+        assert_eq!(st.original_font_family, "");
+        assert_eq!(st.translation_font_family, "");
+        assert!(sm.lines.iter().all(|l| l.font_family.is_empty()));
+    }
+
+    /// D-17：两把主字体键默认内嵌思源；行级默认空串（跟随）
+    #[test]
+    fn default_font_keys_follow_embedded_source_han() {
+        let s = Settings::default();
+        assert_eq!(s.ui_font_family, "Noto Sans CJK SC");
+        assert_eq!(s.subtitle_font_family, "Noto Sans CJK SC");
+        assert_eq!(Style::default().original_font_family, "");
+        assert_eq!(Style::default().translation_font_family, "");
+        assert_eq!(SubtitleLine::default().font_family, "");
+        // 默认两行（原文/译文）同样为跟随
+        assert!(SubtitleLine::default_pair().iter().all(|l| l.font_family.is_empty()));
+        // 序列化携带两把新键
+        let v = serde_json::to_value(&s).unwrap();
+        assert_eq!(v["ui_font_family"], "Noto Sans CJK SC");
+        assert_eq!(v["subtitle_font_family"], "Noto Sans CJK SC");
+    }
+
+    /// 旧文件三级语义：缺键 → 默认；显式 "Microsoft YaHei"（原版导入）→ 尊重
+    #[test]
+    fn legacy_yahei_values_respected() {
+        let s = Settings::from_value_compatible(serde_json::json!({
+            "style": { "original_font_family": "Microsoft YaHei" },
+            "subtitle_mode": { "lines": [ { "font_family": "Microsoft YaHei" } ] }
+        }));
+        assert_eq!(s.style.original_font_family, "Microsoft YaHei");
+        assert_eq!(s.subtitle_mode.lines[0].font_family, "Microsoft YaHei");
+        // 缺新键走默认
+        assert_eq!(s.ui_font_family, "Noto Sans CJK SC");
+        assert_eq!(s.subtitle_font_family, "Noto Sans CJK SC");
+    }
+
+    /// 字体主键空串（手改/损坏 JSON）→ sanitize 回默认
+    #[test]
+    fn font_family_empty_sanitized_to_default() {
+        // 绕过 from_value_compatible 的预 sanitize，直接反序列化后手动 sanitize
+        let mut s: Settings = serde_json::from_value(serde_json::json!({
+            "ui_font_family": "", "subtitle_font_family": ""
+        }))
+        .unwrap();
+        let fixed = s.sanitize();
+        assert_eq!(s.ui_font_family, "Noto Sans CJK SC");
+        assert_eq!(s.subtitle_font_family, "Noto Sans CJK SC");
+        assert!(fixed.iter().any(|f| f.starts_with("ui_font_family")));
+        assert!(fixed.iter().any(|f| f.starts_with("subtitle_font_family")));
+        // 行级空串是合法跟随语义，sanitize 不得改动
+        let mut s2: Settings = serde_json::from_value(serde_json::json!({
+            "style": { "translation_font_family": "" }
+        }))
+        .unwrap();
+        let fixed2 = s2.sanitize();
+        assert_eq!(s2.style.translation_font_family, "");
+        assert!(!fixed2.iter().any(|f| f.contains("translation_font_family")));
     }
 }

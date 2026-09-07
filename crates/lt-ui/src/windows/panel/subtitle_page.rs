@@ -39,7 +39,15 @@ pub fn line_row_text(line: &SubtitleLine) -> String {
     let mut parts = vec![
         mark.to_string(),
         label,
-        format!("{} {}pt", line.font_family, line.font_size),
+        // D-17：空串 = 跟随字幕主字体（摘要显示"跟随"而非族名）
+        {
+            let fam = if line.font_family.is_empty() {
+                lt_i18n::t("label_font_follow")
+            } else {
+                line.font_family.clone()
+            };
+            format!("{fam} {}pt", line.font_size)
+        },
         line.color.clone(),
         lt_i18n::t(align_key),
     ];
@@ -563,7 +571,7 @@ mod tests {
         let text = line_row_text(&line);
         assert!(text.starts_with("\u{2713}  |  "), "{text}");
         assert!(text.contains("(en)"), "翻译行带语言后缀: {text}");
-        assert!(text.contains("Microsoft YaHei 24pt"), "{text}");
+        assert!(text.contains("跟随（默认） 24pt") || text.contains("Follow (default) 24pt"), "{text}");
         assert!(text.contains("#FFFFFF"), "{text}");
         assert!(!text.contains("subwin_"), "i18n 键应已解析: {text}");
         // 5 段：✓ | 类型(语言) | 字体 字号 | 颜色 | 对齐，+ 轮廓 = 6 段
