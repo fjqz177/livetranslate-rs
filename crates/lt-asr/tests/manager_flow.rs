@@ -24,6 +24,23 @@ fn failing_spawn() -> Spawner {
     Box::new(|_cfg: &WorkerConfig| Err(AsrClientError::Status("注入的启动失败".into())))
 }
 
+/// 第 0（初始）与第 3+（复活）次成功、第 1/2 次恒失败
+/// （AH-2 H3：recover 重建失败 → 空窗 → 有限重建失败 → unavailable → 复活，全链）
+fn flaky_spawn() -> Spawner {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::Arc;
+    let path = PathBuf::from(env!("CARGO_BIN_EXE_fake_asr_worker"));
+    let calls = Arc::new(AtomicU32::new(0));
+    Box::new(move |cfg: &WorkerConfig| {
+        let n = calls.fetch_add(1, Ordering::SeqCst);
+        // 0=ensure_started 成功；1=recover 重启失败；2=空窗重建失败；3=复活成功
+        if n == 1 || n == 2 {
+            return Err(AsrClientError::Status("注入的后续启动失败".into()));
+        }
+        AsrWorkerClient::spawn_program(&path, cfg.clone())
+    })
+}
+
 /// 指定引擎名的配置（engine_family / 回滚测试用）
 fn cfg_engine(engine: &str, name: &str, options: serde_json::Value) -> WorkerConfig {
     WorkerConfig {
@@ -219,4 +236,76 @@ fn first_start_failure_has_no_rollback() {
     // 首次启动本就没有旧 worker：仅 Failed，不标记不可用
     assert!(!err.unavailable(), "首次失败应仅 Failed: {err}");
     assert!(!m.is_unavailable());
+}
+
+// ── AH-2/D-26：恢复语义统一（间隙死亡 / 空窗重建 / 装载失败帧 / 送达即提交） ──
+
+/// worker 在**两次请求之间**死亡（exit_after_ms 后台线程退出进程）：
+/// 下一次 transcribe 预检发现 → 自动恢复重启（原实现折成 Status"worker 未就绪"
+/// 按用法错误上抛，永不重启 → 永久僵尸态）
+#[test]
+fn crash_between_requests_restarts_on_next_transcribe() {
+    let mut m = AsrManager::with_spawner(fake_spawn());
+    let c = cfg("Echo", serde_json::json!({"fake": {"exit_after_ms": 800}}));
+    m.ensure_started(&c).expect("start");
+    assert!(m.transcribe(&audio(), false).is_ok(), "首次识别应成功");
+    std::thread::sleep(std::time::Duration::from_millis(1200));
+    // 间隙死亡后的第一次识别：自动恢复（本段丢弃），而非 Failed 死循环
+    let err = m.transcribe(&audio(), false).unwrap_err();
+    assert!(matches!(err, AsrManagerError::Restarted(_)), "实际: {err}");
+    assert!(!err.unavailable());
+    // 重启后的 worker 正常工作（注：同配置仍带 exit_after_ms，须立即识别）
+    assert!(m.transcribe(&audio(), false).is_ok());
+    m.shutdown();
+}
+
+/// recover 重启失败留下的 client=None 空窗：下一次识别有限重建一次，
+/// 再失败即标记 unavailable（有界，不每段重试）；换配置可复活
+#[test]
+fn failed_recover_gap_rebuilds_then_marks_unavailable() {
+    let mut m = AsrManager::with_spawner(flaky_spawn());
+    let c = cfg("Echo", serde_json::json!({"fake": {"exit_after_ms": 800}}));
+    m.ensure_started(&c).expect("start");
+    assert!(m.transcribe(&audio(), false).is_ok());
+    std::thread::sleep(std::time::Duration::from_millis(1200));
+    // 间隙死亡 → recover → 重启 spawn 失败（注入第 1 次）→ Failed 且 client=None
+    let err = m.transcribe(&audio(), false).unwrap_err();
+    assert!(matches!(err, AsrManagerError::Failed(_)), "实际: {err}");
+    assert!(!m.is_unavailable(), "配额未耗尽不应标记不可用");
+    // 空窗的下一次识别：有限重建（注入第 2 次失败）→ 标记 unavailable
+    let err = m.transcribe(&audio(), false).unwrap_err();
+    assert!(err.unavailable(), "实际: {err}");
+    assert!(m.is_unavailable());
+    // 换配置（引擎切换语义）→ 复活（注入第 3 次起成功）
+    m.ensure_started(&cfg("Echo2", serde_json::json!({}))).expect("复活");
+    assert!(m.transcribe(&audio(), false).is_ok());
+    m.shutdown();
+}
+
+/// 装载失败走真实 error(recoverable=false) 帧路径（AH-9a 前 fake 只会 exit
+/// 不发帧，此路径零覆盖）：首次启动仅 Failed，不标不可用、无回滚可言
+#[test]
+fn load_failure_frame_marks_first_start_failed() {
+    let mut m = AsrManager::with_spawner(fake_spawn());
+    let c = cfg("Echo", serde_json::json!({"fake": {"fail_load": true}}));
+    let err = m.ensure_started(&c).unwrap_err();
+    assert!(!err.unavailable(), "首次装载失败应仅 Failed: {err}");
+    assert!(!m.is_unavailable());
+}
+
+/// worker 回 set_language 可恢复错误（qwen3 非 auto 语言的日常形态）：
+/// 原版"送达即提交"——warn 后仍写回 restart config，识别继续、挂起清除
+#[test]
+fn set_language_recoverable_fail_still_commits_pending() {
+    let handle = AsrPendingHandle::default();
+    let mut m = AsrManager::with_spawner_and_pending(fake_spawn(), handle.clone());
+    let c = cfg("Echo", serde_json::json!({"fake": {"fail_set_language": true}}));
+    m.ensure_started(&c).expect("start");
+    handle.set_language("zh");
+    let res = m.transcribe(&audio(), false).expect("transcribe");
+    assert_eq!(res.text, "echo len=1600");
+    assert_eq!(m.config().unwrap().language, "zh", "挂起值应已提交");
+    // 挂起已清：后续识别不再重复下发
+    assert!(m.transcribe(&audio(), false).is_ok());
+    m.shutdown();
 }

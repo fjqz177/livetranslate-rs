@@ -257,11 +257,17 @@ impl AsrWorkerClient {
         audio: &[f32],
         timeout: Duration,
     ) -> Result<Response, AsrClientError> {
-        if self.status() != Status::Ready {
-            return Err(AsrClientError::Status(format!(
-                "worker 未就绪: {:?}",
-                self.status()
-            )));
+        let st = self.status();
+        if st != Status::Ready {
+            // 预检刷新后已死（含"请求间隙死亡"：worker 在两次请求之间退出）→
+            // 按 Exited 上抛，manager 侧 recover 接管（AH-2/D-26：原实现折成
+            // Status 被上层归为用法错误，永不触发自动重启 → 永久僵尸态）
+            if matches!(st, Status::Exited | Status::Failed) {
+                return Err(AsrClientError::Exited(format!(
+                    "预检发现 worker 非 Ready: {st:?}"
+                )));
+            }
+            return Err(AsrClientError::Status(format!("worker 未就绪: {st:?}")));
         }
         let req = Request { id: uuid::Uuid::new_v4().to_string(), kind };
         self.stdin.write_request(&req, audio)?;
@@ -337,6 +343,10 @@ impl AsrWorkerClient {
     }
 
     fn finish_stop(&mut self) {
+        // ack 窗口过后 kill 兜底（AH-2/H6：兑现 shutdown 文档承诺——worker 忙/
+        // 滞留时不无界阻塞 child.wait()；已退出的进程 kill 为无害 no-op）。
+        // 否则 UI 线程 Pipeline::stop join ASR 线程会整体挂死。
+        let _ = self.child.kill();
         let _ = self.child.wait();
         self.status = Status::Stopped;
     }

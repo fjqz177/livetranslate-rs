@@ -214,14 +214,36 @@ impl AsrManager {
         }
     }
 
-    /// 单次识别：错误分类 + 自动恢复（与原版 _run_asr 一致；失败不重试同一段）
+    /// 单次识别：错误分类 + 自动恢复（失败不重试同一段）。
+    /// 恢复语义（AH-2/D-26）：`Worker{recoverable}` 走三振计数，**其余一切
+    /// 错误（Exited/Timeout/Status/Io）一律进 [`Self::recover`]**——client 层
+    /// 任何使用点发现的死亡/协议失序都交还统一重建入口（原版 `except
+    /// Exception` 仅按失败上抛，恢复只覆盖"等待期死亡"，留下永久僵尸态）。
     pub fn transcribe(
         &mut self,
         audio: &[f32],
         word_timestamps: bool,
     ) -> Result<AsrResult, AsrManagerError> {
-        if self.unavailable || self.client.is_none() {
+        if self.unavailable {
             return Err(AsrManagerError::Unavailable("worker 未就绪".into()));
+        }
+        // recover/RSS 回收中 spawn 失败留下的空窗（client=None 且非 unavailable）：
+        // 有限重建一次——失败即 mark_unavailable（此后走上面分支，不会每段重试）；
+        // 复活路径 = 换配置 ensure_started（引擎切换语义）
+        if self.client.is_none() {
+            let Some(config) = self.config.clone() else {
+                self.mark_unavailable("无配置可重建");
+                return Err(AsrManagerError::Unavailable("无配置可重建".into()));
+            };
+            tracing::warn!("ASR worker 缺位（此前重建失败），尝试恢复");
+            return match self.spawn_ready(&config) {
+                Ok(()) => Err(AsrManagerError::Restarted("worker 已恢复，本段丢弃".into())),
+                Err(e) => {
+                    let msg = format!("worker 缺位且重建失败: {e}");
+                    self.mark_unavailable(&msg);
+                    Err(AsrManagerError::Unavailable(msg))
+                }
+            };
         }
         // 识别前应用挂起设置（原版 _apply_pending_asr_settings）：
         // worker 死亡/超时 → 保持挂起并直接上抛，重启后的 worker 重新应用
@@ -246,14 +268,7 @@ impl AsrManager {
                     self.error_count
                 )))
             }
-            Err(AsrClientError::Exited(reason)) => {
-                Err(self.recover(&format!("进程退出: {reason}")))
-            }
-            Err(AsrClientError::Timeout(t)) => Err(self.recover(&format!("响应超时 {t:.1}s"))),
-            Err(e) => {
-                // Status/Io：客户端层用法错误，按失败上抛（原版 except Exception 分支）
-                Err(AsrManagerError::Failed(format!("{e}")))
-            }
+            Err(e) => Err(self.recover(&format!("{e}"))),
         }
     }
 
@@ -342,10 +357,14 @@ impl AsrManager {
         };
         match f(c) {
             Ok(()) => Ok(()),
-            // 原版语义：Exited 与 Timeout 都走 _recover_asr_worker（kill+重启）
-            Err(AsrClientError::Exited(r)) => Err(self.recover(&format!("进程退出: {r}"))),
-            Err(AsrClientError::Timeout(t)) => Err(self.recover(&format!("响应超时 {t:.1}s"))),
-            Err(e) => Err(AsrManagerError::Failed(format!("{e}"))),
+            // worker 回错误（含 qwen3 set_language 非 auto 的诚实 Unsupported）：
+            // 按失败上抛、带原始消息，不占恢复配额
+            Err(AsrClientError::Worker { message, .. }) => {
+                Err(AsrManagerError::Failed(message))
+            }
+            // AH-2/D-26：与 transcribe 同语义——其余错误一律恢复重建
+            // （原版语义只对 Exited/Timeout 走 _recover_asr_worker）
+            Err(e) => Err(self.recover(&format!("{e}"))),
         }
     }
 

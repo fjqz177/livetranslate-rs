@@ -88,3 +88,41 @@ fn transcribe_timeout_terminates_worker() {
     // 超时路径已 terminate；状态 Failed
     assert_eq!(c.status(), Status::Failed);
 }
+
+// ── AH-2/D-26：恢复语义统一 ──
+
+/// worker 在两次请求之间死亡（后台线程延时退出）→ 下一次请求预检按 Exited
+/// 上抛（原实现折成 Status"worker 未就绪: Exited"，上层归为用法错误永不恢复）
+#[test]
+fn request_after_gap_death_reports_exited() {
+    let mut c = AsrWorkerClient::spawn_program(
+        &fake_worker_path(),
+        fake_config("Echo", serde_json::json!({"fake": {"exit_after_ms": 500}})),
+    )
+    .expect("spawn");
+    c.wait_ready().expect("ready");
+    assert!(c.transcribe(&sample(0.1), false).is_ok());
+    std::thread::sleep(Duration::from_millis(900));
+    let err = c.transcribe(&sample(0.1), false).unwrap_err();
+    assert!(matches!(err, AsrClientError::Exited(_)), "实际: {err:?}");
+}
+
+/// shutdown 的 kill 兜底（H6）：worker 忙（挂 30s）时 ack 窗口（5s）过后
+/// 必须杀进程返回，不得无界 child.wait()（否则 UI 线程 join 整体挂死）
+#[test]
+fn shutdown_kills_worker_hung_in_transcribe() {
+    let mut c = AsrWorkerClient::spawn_program(
+        &fake_worker_path(),
+        fake_config("Hang", serde_json::json!({"fake": {"hang_ms": 30_000}})),
+    )
+    .expect("spawn");
+    c.wait_ready().expect("ready");
+    let t0 = std::time::Instant::now();
+    c.shutdown();
+    assert!(
+        t0.elapsed() < Duration::from_secs(8),
+        "shutdown 应在 ack 窗口+ε 内返回，实际 {:?}",
+        t0.elapsed()
+    );
+    assert_eq!(c.status(), Status::Stopped);
+}
