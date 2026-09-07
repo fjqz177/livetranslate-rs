@@ -47,6 +47,21 @@ pub fn hub_chain<'a>(
         .collect()
 }
 
+/// HF 官方端点（用户显式选 hub=hf 时的直连源）
+pub const HF_OFFICIAL_ENDPOINT: &str = "https://huggingface.co";
+/// HF 国内镜像（D-24：用户选 hub=ms 而 HF 成为实际下载路径时自动启用——
+/// 涵盖「模型无 MS 源的直接回退」与「MS 尝试失败后的回落」两种情形）
+pub const HF_MIRROR_ENDPOINT: &str = "https://hf-mirror.com";
+
+/// 本轮下载所选 hub → 其中 HF 尝试所用的端点（D-24 r2.1：端点随所选 hub，
+/// 不设用户设置键；MS 模式选镜像因选 MS 即国内直连场景）。
+pub fn hf_endpoint_for(selected: Hub) -> &'static str {
+    match selected {
+        Hub::Hf => HF_OFFICIAL_ENDPOINT,
+        Hub::Ms => HF_MIRROR_ENDPOINT,
+    }
+}
+
 /// 下载目标 hub
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Hub {
@@ -706,6 +721,14 @@ mod tests {
     }
 
     #[test]
+    fn hf_endpoint_follows_selected_hub() {
+        // D-24 r2.1：选 HF=官方直连；选 MS=HF 尝试自动走镜像
+        assert_eq!(hf_endpoint_for(Hub::Hf), HF_OFFICIAL_ENDPOINT);
+        assert_eq!(hf_endpoint_for(Hub::Ms), HF_MIRROR_ENDPOINT);
+        assert_eq!(hf_endpoint_for(Hub::Ms), "https://hf-mirror.com");
+    }
+
+    #[test]
     fn url_builders() {
         let d = Downloader::new("m", ProxyMode::None).with_hf_endpoint("https://hf-mirror.com");
         assert_eq!(
@@ -716,5 +739,76 @@ mod tests {
             d.file_url(Hub::Ms, "iic/SenseVoiceSmall", "tokens.txt"),
             "https://modelscope.cn/api/v1/models/iic/SenseVoiceSmall/repo?Revision=master&FilePath=tokens.txt"
         );
+    }
+}
+
+/// WP-A 演练探针（临时，不入常规测试面）：经 hf-mirror 用真实下载器把 nano
+/// 官方包（~1GB）拉到真实缓存，验证直链/续传/manifest 全链路并测速。
+/// 运行：cargo test -p lt-models probe_nano_download -- --ignored --nocapture
+#[cfg(test)]
+mod probe_nano_tmp {
+    use super::{DownloadEvent, Downloader, Hub, ProxyMode};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::time::Instant;
+
+    const NANO_REPO: &str = "csukuangfj/sherpa-onnx-funasr-nano-int8-2025-12-30";
+    /// WP-A 拟登记清单（文件, 下限字节）——下限刻意远低于实测
+    const NANO_SPECS: [(&str, u64); 6] = [
+        ("embedding.int8.onnx", 100_000_000),
+        ("encoder_adaptor.int8.onnx", 150_000_000),
+        ("llm.int8.onnx", 300_000_000),
+        ("Qwen3-0.6B/merges.txt", 1_000_000),
+        ("Qwen3-0.6B/tokenizer.json", 5_000_000),
+        ("Qwen3-0.6B/vocab.json", 1_000_000),
+    ];
+
+    #[test]
+    #[ignore = "真实网络下载 ~1GB（hf-mirror，写真实缓存）；WP-A 演练/测速用"]
+    fn probe_nano_download_via_hf_mirror() {
+        let md = std::path::Path::new("C:/Users/fjqz177/.config/livetranslate/models");
+        let dl = Downloader::new(md, ProxyMode::None).with_hf_endpoint("https://hf-mirror.com");
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (tx, rx) = std::sync::mpsc::channel();
+        let t0 = Instant::now();
+        let worker = {
+            let cancel = cancel.clone();
+            std::thread::spawn(move || {
+                dl.download_model(&[(Hub::Hf, NANO_REPO)], &NANO_SPECS, &cancel, Some(&tx))
+            })
+        };
+        let mut last_pct = [0usize; 6];
+        while let Ok(ev) = rx.recv() {
+            match ev {
+                DownloadEvent::Progress { file, k, n, done, total, .. } => {
+                    let (tot, pct) = (total.unwrap_or(0), |d: u64, t: u64| if t > 0 { (d * 100 / t) as usize } else { 0 });
+                    let p = pct(done, tot);
+                    if p >= last_pct[k - 1] + 25 || done == tot {
+                        last_pct[k - 1] = p;
+                        println!("[{k}/{n}] {file}: {done}/{tot} ({p}%)  t={:?}", t0.elapsed());
+                    }
+                }
+                DownloadEvent::FileDone { file, .. } => println!("✓ FileDone {file}  t={:?}", t0.elapsed()),
+                DownloadEvent::Log(m) => println!("… {m}"),
+                DownloadEvent::Done { dir, .. } => println!("★ Done → {dir:?}  t={:?}", t0.elapsed()),
+            }
+        }
+        let snapshot = worker.join().expect("下载线程 panic").expect("下载失败");
+        let files: Vec<&str> = NANO_SPECS.iter().map(|(f, _)| *f).collect();
+        let mins: Vec<u64> = NANO_SPECS.iter().map(|(_, m)| *m).collect();
+        assert!(
+            crate::cache::dir_has_manifest(&snapshot, &files, &mins),
+            "manifest 完整性复核失败"
+        );
+        let total: u64 = files
+            .iter()
+            .map(|f| std::fs::metadata(snapshot.join(f)).unwrap().len())
+            .sum();
+        let el = t0.elapsed();
+        println!(
+            "snapshot = {snapshot:?}\n六件实测合计 = {total} bytes，总耗时 {el:?}，均速 {:.1} MB/s",
+            total as f64 / 1_048_576.0 / el.as_secs_f64()
+        );
+        assert_eq!(cancel.load(Ordering::Relaxed), false);
     }
 }

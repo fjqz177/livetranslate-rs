@@ -658,12 +658,19 @@ fn build_worker_config(
         "funasr" => {
             let (entry, _fell_back) = resolve_funasr_entry(funasr_model);
             let model_dir = lt_models::cache::local_model_dir(models_dir, &entry)?;
+            // WP-A：nano 为独立 worker 引擎（LLM 解码、无 padding 语义）；
+            // sensevoice 维持原路径
+            let (engine, pad) = if entry.key == "funasr-nano-2512" {
+                ("nano", None)
+            } else {
+                ("sensevoice", Some(pad_seconds))
+            };
             Some((
                 WorkerConfig {
-                    engine: "sensevoice".into(),
+                    engine: engine.into(),
                     display_name: entry.display.into(),
                     language: language.to_string(),
-                    pad_seconds: Some(pad_seconds),
+                    pad_seconds: pad,
                     options: serde_json::json!({ "model_dir": model_dir.to_string_lossy() }),
                 },
                 entry.display.into(),
@@ -1217,6 +1224,54 @@ fn commit_text(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── build_worker_config：funasr 按 entry.key 分派（WP-A）──
+
+    /// 造 manifest「完整」的快照：稀疏文件（set_len 即达下限，秒级无磁盘占用）
+    fn sparse_manifest(models_dir: &std::path::Path, entry: &registry::ModelEntry) {
+        let snap = lt_models::cache::hf_style_snapshot(
+            models_dir,
+            lt_models::download::Hub::Hf,
+            entry.hf.expect("条目须有 HF 源"),
+            "main",
+        );
+        for (f, min) in entry.files.iter().zip(entry.files_min_bytes.iter()) {
+            let p = snap.join(f);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::File::create(&p).unwrap().set_len(*min).unwrap();
+        }
+    }
+
+    #[test]
+    fn funasr_dispatch_nano_vs_sensevoice() {
+        // WP-A：funasr-nano-2512 → 独立 worker 引擎 "nano" + 恒不传 pad；
+        // sensevoice-small → 原路径 "sensevoice" + pad 照旧
+        let base = std::env::temp_dir().join(format!("lt_nano_dispatch_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        sparse_manifest(&base, &registry::FUNASR_NANO);
+        sparse_manifest(&base, &registry::SENSEVOICE_SMALL);
+
+        let (cfg, display) =
+            build_worker_config(&base, "funasr", "funasr-nano-2512", 0.5, "auto", "", 2.0).expect("nano 已缓存应可装配");
+        assert_eq!(cfg.engine, "nano");
+        assert_eq!(cfg.pad_seconds, None, "nano 无 padding 语义");
+        assert_eq!(display, "Fun-ASR-Nano");
+        assert!(cfg.options["model_dir"].as_str().is_some());
+
+        let (cfg2, display2) =
+            build_worker_config(&base, "funasr", "sensevoice-small", 0.5, "auto", "", 2.0).expect("sensevoice 已缓存应可装配");
+        assert_eq!(cfg2.engine, "sensevoice");
+        assert_eq!(cfg2.pad_seconds, Some(0.5));
+        assert_eq!(display2, "SenseVoice Small");
+
+        // mlt 无注册表条目（D-14）→ 回退 sensevoice-small 条目装配
+        let (cfg3, display3) =
+            build_worker_config(&base, "funasr", "funasr-mlt-nano-2512", 0.5, "auto", "", 2.0).expect("mlt 回退 sensevoice 应可装配");
+        assert_eq!(cfg3.engine, "sensevoice");
+        assert_eq!(display3, "SenseVoice Small");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
 
     // ── TlRig::from_settings：翻译装置构建（M3 装配） ──
 

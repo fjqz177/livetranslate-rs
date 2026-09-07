@@ -19,7 +19,7 @@ mod shell;
 use lt_proto::{Cmd, UiMsg};
 
 fn main() -> anyhow::Result<()> {
-    // worker 子进程入口：--asr-worker <config-json>（sensevoice + whisper）
+    // worker 子进程入口：--asr-worker <config-json>（sensevoice + whisper + nano）
     if let Some(cfg) = std::env::args().skip_while(|a| a != "--asr-worker").nth(1) {
         return asr_worker_entry(&cfg);
     }
@@ -104,7 +104,7 @@ fn ensure_single_instance() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// worker 子进程主循环：SenseVoice / Whisper（M5.1）
+/// worker 子进程主循环：SenseVoice / Whisper（M5.1）/ Fun-ASR-Nano（WP-A）
 fn asr_worker_entry(cfg_json: &str) -> anyhow::Result<()> {
     let config: lt_asr::WorkerConfig = serde_json::from_str(cfg_json)?;
     match config.engine.as_str() {
@@ -121,6 +121,24 @@ fn asr_worker_entry(cfg_json: &str) -> anyhow::Result<()> {
                         .map(std::path::PathBuf::from)
                         .ok_or_else(|| anyhow::anyhow!("缺少 model_dir"))?;
                     lt_asr::sensevoice::SenseVoiceEngine::load(&dir, cfg.pad_seconds, &cfg.language)
+                        .map_err(|e| anyhow::anyhow!("{e}"))
+                },
+            )
+        }
+        "nano" => {
+            lt_asr::worker::run(
+                std::io::stdin().lock(),
+                std::io::stdout().lock(),
+                config,
+                move |cfg| {
+                    let dir = cfg
+                        .options
+                        .get("model_dir")
+                        .and_then(|v| v.as_str())
+                        .map(std::path::PathBuf::from)
+                        .ok_or_else(|| anyhow::anyhow!("缺少 model_dir"))?;
+                    // nano 无 padding 语义（pad_seconds 恒 None），语言为创建期参数
+                    lt_asr::NanoEngine::load(&dir, &cfg.language)
                         .map_err(|e| anyhow::anyhow!("{e}"))
                 },
             )

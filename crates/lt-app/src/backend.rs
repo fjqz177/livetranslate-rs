@@ -17,7 +17,7 @@
 
 use crate::logging;
 use lt_models::cache::MissingModel;
-use lt_models::download::{DownloadEvent, Downloader, DlError, FailKind, Hub, ProxyMode, hub_chain};
+use lt_models::download::{DownloadEvent, Downloader, DlError, FailKind, Hub, ProxyMode, hf_endpoint_for, hub_chain};
 use lt_proto::{Cmd, Settings, UiEvent, UiMsg};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError};
@@ -184,7 +184,8 @@ fn run_download(
     let worker = std::thread::Builder::new()
         .name("lt-download".into())
         .spawn(move || {
-            let dl = Downloader::new(dl_dir, dl_proxy_mode);
+            // D-24：HF 尝试端点随所选 hub——选 HF=官方直连，选 MS=自动走 hf-mirror
+            let dl = Downloader::new(dl_dir, dl_proxy_mode).with_hf_endpoint(hf_endpoint_for(hub));
             for m in &targets {
                 // DL-5：所选 hub 优先，404/网络不可达时回落另一 hub（编排下沉
                 // Downloader::download_model；hub_chain 见 lt-models）

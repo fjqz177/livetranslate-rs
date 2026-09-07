@@ -38,18 +38,27 @@ pub const SENSEVOICE_SMALL: ModelEntry = ModelEntry {
     files_min_bytes: &[50_000_000, 1_024],
 };
 
-/// funasr-nano（M5 实装；注册表占位）。
-/// 【WP-A 待核】estimated_bytes 为占位值；下限 50MB 按「远低于实际」取值，
-/// nano 实装时经 HF API 核对实际字节数后校准（沿 whisper【M5 首日核实】先例）。
+/// funasr-nano（WP-A 实装）。【2026-09-08 核实】sherpa-onnx 官方 int8 包，
+/// 仓/清单/字节数经 HF API 实测（docs/asr-engine-expansion.md §2.2）。
+/// D-24：MS 无官方单仓 → ms=None 诚实留空（禁止伪造 ms 字段），always_hf=true，
+/// 国内经 hf-mirror 镜像下载（download::hf_endpoint_for）。
+/// files_min_bytes 刻意远低于实测（假阴性=多下一次可自愈；假阳性=判已缓存却加载失败）。
 pub const FUNASR_NANO: ModelEntry = ModelEntry {
     key: "funasr-nano-2512",
     display: "Fun-ASR-Nano",
-    hf: Some("csukuangfj/sherpa-onnx-funasr-nano-2512-zh-cantonese-en-ja-ko"),
-    ms: Some("csukuangfj/sherpa-onnx-funasr-nano-2512-zh-cantonese-en-ja-ko"),
-    always_hf: false,
-    estimated_bytes: 1_100_000_000,
-    files: &["model.int8.onnx", "tokens.txt"],
-    files_min_bytes: &[50_000_000, 1_024],
+    hf: Some("csukuangfj/sherpa-onnx-funasr-nano-int8-2025-12-30"),
+    ms: None,
+    always_hf: true,
+    estimated_bytes: 1_050_000_000,
+    files: &[
+        "embedding.int8.onnx",
+        "encoder_adaptor.int8.onnx",
+        "llm.int8.onnx",
+        "Qwen3-0.6B/merges.txt",
+        "Qwen3-0.6B/tokenizer.json",
+        "Qwen3-0.6B/vocab.json",
+    ],
+    files_min_bytes: &[100_000_000, 150_000_000, 300_000_000, 1_000_000, 5_000_000, 1_000_000],
 };
 
 /// whisper 各档统一 HF repo。
@@ -174,6 +183,22 @@ mod tests {
         // mlt 无上游 ONNX 转换（D-14）→ None，运行时回退 sensevoice-small
         assert!(funasr_entry("funasr-mlt-nano-2512").is_none());
         assert!(funasr_entry("bogus").is_none());
+    }
+
+    #[test]
+    fn funasr_nano_entry_hf_only() {
+        // WP-A/D-24：真实仓（HF API 实测存在）；无 MS 源 → ms=None 诚实留空
+        assert_eq!(
+            FUNASR_NANO.hf,
+            Some("csukuangfj/sherpa-onnx-funasr-nano-int8-2025-12-30")
+        );
+        assert!(FUNASR_NANO.ms.is_none());
+        const { assert!(FUNASR_NANO.always_hf) } // 编译期不变量：仅 HF 源
+        // 六件套（三 onnx + Qwen3-0.6B tokenizer 子目录）；实测合计 963MB + 余量
+        assert_eq!(FUNASR_NANO.files.len(), 6);
+        assert_eq!(FUNASR_NANO.files_min_bytes.len(), 6);
+        assert!(FUNASR_NANO.files.iter().any(|f| f.starts_with("Qwen3-0.6B/")));
+        assert_eq!(FUNASR_NANO.estimated_bytes, 1_050_000_000);
     }
 
     #[test]

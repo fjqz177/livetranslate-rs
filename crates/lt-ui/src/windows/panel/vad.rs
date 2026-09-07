@@ -386,7 +386,9 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
         //     whisper padding 仅 whisper；变更经 Cmd::SetPadding 挂起热应用 +
         //     300ms 防抖 ApplySettings 落盘）──
         ui.add_space(4.0);
-        if is_funasr {
+        // nano 无 padding 语义（原版 funasr_supports_padding: nano=false，manager 亦
+        // 跳过下发）→ 滑杆仅 sensevoice 有意义，选中 nano 时隐藏（显示而无效果属误导）
+        if is_funasr && state.settings.funasr_model != "funasr-nano-2512" {
             let mut sv = state.settings.sensevoice_pad_seconds;
             if drag_secs(ui, "panel_pad_sensevoice", &lt_i18n::t("label_sensevoice_padding"), &mut sv, 0.0..=5.0, true) {
                 state.settings.sensevoice_pad_seconds = sv;
@@ -423,6 +425,13 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
                     }
                 });
         });
+        // D-24：hub=ms 但所选模型无真实 MS 源（nano）→ 诚实提示自动经 HF 镜像下载
+        if state.settings.hub == "ms"
+            && state.settings.asr_engine == "funasr"
+            && state.settings.funasr_model == "funasr-nano-2512"
+        {
+            hint_line(ui, pal, &lt_i18n::t("model_nano_hf_only"));
+        }
 
         // ── 界面语言（原版 _ui_lang_combo：["English","中文"]，index 0=en 1=zh；
         //     写 settings.ui_lang 防抖落盘，重启生效）──

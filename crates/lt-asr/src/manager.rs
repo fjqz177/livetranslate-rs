@@ -450,7 +450,7 @@ impl Default for AsrManager {
 
 #[cfg(test)]
 mod should_recycle_tests {
-    use super::should_recycle;
+    use super::{engine_family, should_recycle};
 
     #[test]
     fn recycle_only_past_delta() {
@@ -459,5 +459,16 @@ mod should_recycle_tests {
         assert!(!should_recycle(500, 2547, 2048));
         assert!(should_recycle(500, 2548, 2048));
         assert!(should_recycle(0, 1, 0));
+    }
+
+    #[test]
+    fn nano_family_and_padding_invariants() {
+        // WP-A 回归：nano 归 funasr 家族（padding 挂起键）；但 nano 不支持 padding
+        // （原版 funasr_supports_padding: nano=false），apply_pending_asr_settings
+        // 对 engine=="nano" 跳过下发——worker 引擎名经 build_worker_config 的
+        // "funasr-nano-2512" → "nano" 分派与本表耦合，改名须同步。
+        assert_eq!(engine_family("nano"), "funasr");
+        assert_eq!(engine_family("sensevoice"), "funasr");
+        assert_eq!(engine_family("whisper"), "whisper");
     }
 }

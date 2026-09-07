@@ -11,6 +11,7 @@ pub mod sensevoice;
 pub mod worker;
 
 pub use client::{AsrClientError, AsrWorkerClient, Status};
+pub use engines::nano::NanoEngine;
 pub use engines::whisper::WhisperEngine;
 pub use manager::{AsrManager, AsrManagerError, AsrPendingHandle, Spawner};
 pub use engine::AsrEngine;
