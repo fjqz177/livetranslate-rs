@@ -953,8 +953,7 @@ mod tests {
     #[test]
     fn clamp_max_speech_only_qwen3_and_only_down() {
         // AH-8/D-28：仅 qwen3 生效且只向下收敛（update_settings 之后调用可收敛）
-        let mut s = VadSettings::default();
-        s.max_speech_duration = 30.0;
+        let s = VadSettings { max_speech_duration: 30.0, ..Default::default() };
         let mut p = make(&[]);
         p.update_settings(&s);
         assert!(!p.clamp_max_speech("funasr", 15.0), "非 qwen3 不钳制");
