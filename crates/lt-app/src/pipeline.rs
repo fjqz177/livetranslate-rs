@@ -736,6 +736,93 @@ struct AsrThreadCtx {
     tl_switch: crossbeam_channel::Receiver<TlSwitch>,
 }
 
+/// 翻译器域命令的共享路由（AH-1/H1）：待命循环与主循环空闲分支共用的四臂
+/// （ReplaceRig/TargetLanguage/Timeout/TestTranslator）。`ReplaceEngine` 的引擎
+/// 处理两侧不同——待命态只重试装配，主循环 ensure_started+事件+回滚——原样
+/// 透传给调用方自行处理。
+fn route_translator_switch(
+    sw: TlSwitch,
+    tl: &mut Option<Arc<TlRig>>,
+    target_language: &mut String,
+    proxy: &EventLoopProxy<UiMsg>,
+    settings: &lt_proto::Settings,
+) -> Option<TlSwitch> {
+    match sw {
+        TlSwitch::ReplaceRig { config, settings } => {
+            match TlRig::from_model_config(&config, &settings) {
+                Ok(Some(rig)) => {
+                    tracing::info!("翻译器已切换: {} ({})", config.name, config.model);
+                    *tl = Some(Arc::new(rig));
+                }
+                Ok(None) => {
+                    tracing::warn!("翻译器切换目标为空（models 空/越界），保持当前装置");
+                }
+                Err(reason) => {
+                    let _ = proxy.send_event(UiMsg::Event(UiEvent::TranslatorUnavailable {
+                        reason,
+                    }));
+                }
+            }
+            None
+        }
+        TlSwitch::TargetLanguage(lang) => {
+            *target_language = lang.clone();
+            if let Some(rig) = tl {
+                rig.translator.set_target_language(&lang);
+            }
+            None
+        }
+        TlSwitch::Timeout(secs) => {
+            if let Some(rig) = tl {
+                rig.translator.set_timeout(secs);
+            }
+            None
+        }
+        TlSwitch::TestTranslator { name, config } => {
+            // 构建临时装置（不切换活动翻译器），发一次最简请求回执 UI
+            let mut test_settings = settings.clone();
+            test_settings.target_language = target_language.clone();
+            match TlRig::from_model_config(&config, &test_settings) {
+                Ok(Some(rig)) => {
+                    let proxy = proxy.clone();
+                    let name = name.clone();
+                    rig.pool.submit(move || {
+                        let t0 = Instant::now();
+                        let mut it =
+                            rig.translator.translate_iter("Livetranslate test", "auto");
+                        let (ok, err, ms) = match it.next() {
+                            Some(Ok(_partial)) => (true, None, t0.elapsed().as_millis() as u64),
+                            Some(Err(e)) => (false, Some(e.ui_text()), t0.elapsed().as_millis() as u64),
+                            None => (false, Some(lt_i18n::t("test_translator_no_response")), t0.elapsed().as_millis() as u64),
+                        };
+                        let _ = proxy.send_event(UiMsg::Event(
+                            UiEvent::TestTranslatorResult { name, ok, error: err, ms },
+                        ));
+                    });
+                }
+                Ok(None) => {
+                    let _ = proxy.send_event(UiMsg::Event(UiEvent::TestTranslatorResult {
+                        name,
+                        ok: false,
+                        error: Some(lt_i18n::t("test_translator_no_config").into()),
+                        ms: 0,
+                    }));
+                }
+                Err(reason) => {
+                    let _ = proxy.send_event(UiMsg::Event(UiEvent::TestTranslatorResult {
+                        name,
+                        ok: false,
+                        error: Some(reason),
+                        ms: 0,
+                    }));
+                }
+            }
+            None
+        }
+        engine @ TlSwitch::ReplaceEngine { .. } => Some(engine),
+    }
+}
+
 /// ASR 线程：模型就绪则循环识别；未缓存则发 AsrUnavailable 后待命
 fn run_asr_thread(
     settings: &lt_proto::Settings,
@@ -777,7 +864,7 @@ fn run_asr_thread(
             settings.funasr_model
         );
     }
-    let worker = build_worker_config(
+    let mut worker = build_worker_config(
         &models_dir,
         &settings.asr_engine,
         &settings.funasr_model,
@@ -786,15 +873,45 @@ fn run_asr_thread(
         &settings.whisper_model_size,
         settings.whisper_pad_seconds,
     );
-    let Some((config, display)) = worker else {
+    if worker.is_none() {
         let _ = proxy.send_event(UiMsg::Event(UiEvent::AsrUnavailable));
-        tracing::warn!("ASR 模型未缓存（{entry:?}），等待向导/下载（M2.5）");
-        // 待命：模型就绪前吞掉段（无引擎可用）
-        while !stop.load(Ordering::Relaxed) {
-            if segment_queue.pop_timeout(Duration::from_secs(1)).is_none() {
+        tracing::warn!("ASR 模型未缓存（{entry:?}），进入待命态（AH-1）");
+    }
+    // 待命 = 可唤醒状态而非死胡同（AH-1/H1，P0）：模型就绪前吞掉段，但必须
+    // 消费 tl_switch——运行时下载完成后 shell 重发 SwitchEngine（shell.rs
+    // DownloadSucceeded 分支），收到即用挂起参数重装配并落回正常装配路径。
+    // 原实现只排段不消费命令，唤醒信号无人接，新用户首启旅程必须重启应用。
+    while worker.is_none() && !stop.load(Ordering::Relaxed) {
+        let _ = segment_queue.pop_timeout(Duration::from_secs(1));
+        while let Ok(sw) = tl_switch.try_recv() {
+            let Some(TlSwitch::ReplaceEngine { engine, funasr_model, whisper_model_size, language }) =
+                route_translator_switch(sw, &mut tl, &mut target_language, &proxy, settings)
+            else {
                 continue;
+            };
+            let model_key = engine_model_key(&engine, &funasr_model, &whisper_model_size);
+            match build_worker_config(
+                &models_dir,
+                &engine,
+                &funasr_model,
+                settings.sensevoice_pad_seconds,
+                &language,
+                &whisper_model_size,
+                settings.whisper_pad_seconds,
+            ) {
+                Some((config, display)) => {
+                    tracing::info!("待命中模型已就绪: {engine}/{model_key}，退出待命装配 worker");
+                    worker = Some((config, display));
+                }
+                None => {
+                    let _ = proxy.send_event(UiMsg::Event(UiEvent::AsrUnavailable));
+                    tracing::warn!("待命中切换目标仍未缓存: {engine}/{model_key}，继续待命");
+                }
             }
         }
+    }
+    let Some((config, display)) = worker else {
+        tracing::info!("ASR 待命中管道停止");
         return;
     };
 
@@ -819,125 +936,57 @@ fn run_asr_thread(
         // M6 interim 接入后再分流）
         let Some((source, audio)) = segment_queue.pop_timeout(Duration::from_millis(500)) else {
             // 空闲分支：RSS 回收（原版 _asr_loop queue.Empty）+ 翻译器切换命令
+            // （AH-1：翻译器四臂经 route_translator_switch 与待命循环共享）
             manager.maybe_recycle_if_idle();
             while let Ok(sw) = tl_switch.try_recv() {
-                match sw {
-                    TlSwitch::ReplaceRig { config, settings } => {
-                        match TlRig::from_model_config(&config, &settings) {
-                            Ok(Some(rig)) => {
-                                tracing::info!("翻译器已切换: {} ({})", config.name, config.model);
-                                tl = Some(Arc::new(rig));
-                            }
-                            Ok(None) => {
-                                tracing::warn!("翻译器切换目标为空（models 空/越界），保持当前装置");
-                            }
-                            Err(reason) => {
-                                let _ = proxy.send_event(UiMsg::Event(UiEvent::TranslatorUnavailable {
-                                    reason,
-                                }));
-                            }
-                        }
-                    }
-                    TlSwitch::TargetLanguage(lang) => {
-                        target_language = lang.clone();
-                        if let Some(rig) = &tl {
-                            rig.translator.set_target_language(&lang);
-                        }
-                    }
-                    TlSwitch::Timeout(secs) => {
-                        if let Some(rig) = &tl {
-                            rig.translator.set_timeout(secs);
-                        }
-                    }
-                    TlSwitch::ReplaceEngine { engine, funasr_model, whisper_model_size, language } => {
-                        // 原版 _switch_asr_engine：装配新配置 → 加载对话框 →
-                        // ensure_started（失败内部回滚旧 worker）→ 设备/不可用事件
-                        match build_worker_config(
-                            &models_dir,
-                            &engine,
-                            &funasr_model,
-                            settings.sensevoice_pad_seconds,
-                            &language,
-                            &whisper_model_size,
-                            settings.whisper_pad_seconds,
-                        ) {
-                            Some((config, display)) => {
-                                let _ = proxy.send_event(UiMsg::Event(UiEvent::ModelLoadStart(display.clone())));
-                                if let Err(e) = manager.ensure_started(&config) {
-                                    // 回滚后旧 worker 仍在工作：恢复旧标签而非
-                                    // 发 AsrUnavailable（避免状态与行为矛盾，P0-4）
-                                    let _ = proxy.send_event(UiMsg::Event(UiEvent::AsrDevice(format!(
-                                        "{} [cpu]",
-                                        current_display
-                                    ))));
-                                    tracing::error!("引擎切换失败（已回滚）: {e}");
-                                } else {
-                                    current_display = display.clone();
-                                    let _ = proxy.send_event(UiMsg::Event(UiEvent::AsrDevice(format!(
-                                        "{display} [cpu]"
-                                    ))));
-                                    // 日志按引擎打实际模型键（whisper 打 funasr_model 会误导诊断）
-                                    let model_key =
-                                        engine_model_key(&engine, &funasr_model, &whisper_model_size);
-                                    tracing::info!("引擎已切换: {engine}/{model_key}");
-                                }
-                            }
-                            None => {
-                                // 未缓存/未知档：旧引擎继续运行——不发
-                                // AsrUnavailable（P0-4），恢复标签并落日志；
-                                // 面板侧缓存卡片「未缓存 + 下载按钮」给出下一步
+                if let Some(TlSwitch::ReplaceEngine { engine, funasr_model, whisper_model_size, language }) =
+                    route_translator_switch(sw, &mut tl, &mut target_language, &proxy, settings)
+                {
+                    // 原版 _switch_asr_engine：装配新配置 → 加载对话框 →
+                    // ensure_started（失败内部回滚旧 worker）→ 设备/不可用事件
+                    match build_worker_config(
+                        &models_dir,
+                        &engine,
+                        &funasr_model,
+                        settings.sensevoice_pad_seconds,
+                        &language,
+                        &whisper_model_size,
+                        settings.whisper_pad_seconds,
+                    ) {
+                        Some((config, display)) => {
+                            let _ = proxy.send_event(UiMsg::Event(UiEvent::ModelLoadStart(display.clone())));
+                            if let Err(e) = manager.ensure_started(&config) {
+                                // 回滚后旧 worker 仍在工作：恢复旧标签而非
+                                // 发 AsrUnavailable（避免状态与行为矛盾，P0-4）
                                 let _ = proxy.send_event(UiMsg::Event(UiEvent::AsrDevice(format!(
                                     "{} [cpu]",
                                     current_display
                                 ))));
+                                tracing::error!("引擎切换失败（已回滚）: {e}");
+                            } else {
+                                current_display = display.clone();
+                                let _ = proxy.send_event(UiMsg::Event(UiEvent::AsrDevice(format!(
+                                    "{display} [cpu]"
+                                ))));
+                                // 日志按引擎打实际模型键（whisper 打 funasr_model 会误导诊断）
                                 let model_key =
                                     engine_model_key(&engine, &funasr_model, &whisper_model_size);
-                                tracing::warn!(
-                                    "切换目标未缓存/未知，保持当前引擎: {engine}/{model_key}（去识别页下载）"
-                                );
+                                tracing::info!("引擎已切换: {engine}/{model_key}");
                             }
                         }
-                    }
-                    TlSwitch::TestTranslator { name, config } => {
-                        // ② 构建临时装置（不切换活动翻译器），发一次最简请求回执 UI
-                        let mut test_settings = settings.clone();
-                        test_settings.target_language = target_language.clone();
-                        match TlRig::from_model_config(&config, &test_settings) {
-                            Ok(Some(rig)) => {
-                                let proxy = proxy.clone();
-                                let name = name.clone();
-                                rig.pool.submit(move || {
-                                    let t0 = Instant::now();
-                                    let mut it = rig.translator.translate_iter(
-                                        "Livetranslate test",
-                                        "auto",
-                                    );
-                                    let (ok, err, ms) = match it.next() {
-                                        Some(Ok(_partial)) => (true, None, t0.elapsed().as_millis() as u64),
-                                        Some(Err(e)) => (false, Some(e.ui_text()), t0.elapsed().as_millis() as u64),
-                                        None => (false, Some(lt_i18n::t("test_translator_no_response")), t0.elapsed().as_millis() as u64),
-                                    };
-                                    let _ = proxy.send_event(UiMsg::Event(
-                                        UiEvent::TestTranslatorResult { name, ok, error: err, ms },
-                                    ));
-                                });
-                            }
-                            Ok(None) => {
-                                let _ = proxy.send_event(UiMsg::Event(UiEvent::TestTranslatorResult {
-                                    name,
-                                    ok: false,
-                                    error: Some(lt_i18n::t("test_translator_no_config").into()),
-                                    ms: 0,
-                                }));
-                            }
-                            Err(reason) => {
-                                let _ = proxy.send_event(UiMsg::Event(UiEvent::TestTranslatorResult {
-                                    name,
-                                    ok: false,
-                                    error: Some(reason),
-                                    ms: 0,
-                                }));
-                            }
+                        None => {
+                            // 未缓存/未知档：旧引擎继续运行——不发
+                            // AsrUnavailable（P0-4），恢复标签并落日志；
+                            // 面板侧缓存卡片「未缓存 + 下载按钮」给出下一步
+                            let _ = proxy.send_event(UiMsg::Event(UiEvent::AsrDevice(format!(
+                                "{} [cpu]",
+                                current_display
+                            ))));
+                            let model_key =
+                                engine_model_key(&engine, &funasr_model, &whisper_model_size);
+                            tracing::warn!(
+                                "切换目标未缓存/未知，保持当前引擎: {engine}/{model_key}（去识别页下载）"
+                            );
                         }
                     }
                 }
