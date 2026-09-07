@@ -1,11 +1,18 @@
-//! 测试用假 ASR worker（echo 引擎 + 可注入故障）。
+//! 测试用假 ASR worker：复用真实 [`lt_asr::worker::run`] 主循环 + echo 引擎工厂
+//! （AH-9a，docs/asr-hardening.md H17：此前本文件独立复刻主循环，真实循环零测试
+//! 覆盖，且两份循环行为会漂移——如 SetLanguage 错误处理一个是 panic 一个是 error 帧）。
 //!
 //! 通过 WorkerConfig.options 注入行为：
 //! `{"fake": {"crash_on_ready": true, "crash_on_transcribe": true,
-//!            "crash_on_set_language": true, "fail_transcribe": true, "hang_ms": 5000}}`
+//!            "crash_on_set_language": true, "fail_load": true,
+//!            "fail_transcribe": true, "fail_set_language": true,
+//!            "hang_ms": 5000, "exit_after_ms": 800}}`
+//!
+//! - `fail_load`：工厂返回 Err → 走真实"装载失败 → error(recoverable=false) 帧"路径；
+//! - `exit_after_ms`：后台线程延时退出进程——模拟 worker 在**两次请求之间**死亡
+//!   （引擎只在请求内拿到控制权，间隙死亡必须由旁观线程制造，H2 回归用例依赖）。
 
 use lt_asr::engine::AsrEngine;
-use lt_asr::frame::{FrameReader, FrameWriter, ReqKind, Request, Response, ReadyInfo};
 use lt_asr::worker::WorkerConfig;
 use lt_proto::{AsrResult, EngineError};
 
@@ -15,6 +22,19 @@ struct EchoEngine {
     crash_on_transcribe: bool,
     crash_on_set_language: bool,
     fail_transcribe: bool,
+    fail_set_language: bool,
+}
+
+impl EchoEngine {
+    fn from_options(options: &serde_json::Value) -> Self {
+        Self {
+            hang_ms: opt_u64(options, "hang_ms"),
+            crash_on_transcribe: opt_bool(options, "crash_on_transcribe"),
+            crash_on_set_language: opt_bool(options, "crash_on_set_language"),
+            fail_transcribe: opt_bool(options, "fail_transcribe"),
+            fail_set_language: opt_bool(options, "fail_set_language"),
+        }
+    }
 }
 
 impl AsrEngine for EchoEngine {
@@ -41,11 +61,23 @@ impl AsrEngine for EchoEngine {
             eprintln!("fake worker: set_language 时模拟崩溃");
             std::process::abort();
         }
+        if self.fail_set_language {
+            // 与真实引擎一致的失败形态：error(recoverable=true) 帧，进程继续
+            return Err(EngineError::Runtime { message: "注入的 set_language 可恢复失败".into(), recoverable: true });
+        }
         Ok(())
     }
     fn set_input_padding(&mut self, _pad: f32) -> Result<(), EngineError> {
         Ok(())
     }
+}
+
+/// 引擎工厂（EngineFactory = fn 指针）：装载失败走真实 error(recoverable=false) 路径
+fn echo_factory(cfg: &WorkerConfig) -> anyhow::Result<EchoEngine> {
+    if opt_bool(&cfg.options, "fail_load") {
+        anyhow::bail!("注入的装载失败（fail_load）");
+    }
+    Ok(EchoEngine::from_options(&cfg.options))
 }
 
 fn opt_bool(options: &serde_json::Value, key: &str) -> bool {
@@ -62,55 +94,31 @@ fn main() {
         std::process::exit(2);
     };
     let config: WorkerConfig = serde_json::from_str(&args[cfg_pos + 1]).expect("配置解析");
-    let options = config.options.clone();
 
-    let mut stdin = std::io::stdin().lock();
-    let mut stdout = std::io::stdout().lock();
-    let mut writer = FrameWriter::new(&mut stdout);
-
-    if opt_bool(&options, "crash_on_ready") {
+    if opt_bool(&config.options, "crash_on_ready") {
         // 不发 ready 直接消失（测试 ready 超时/退出路径）
         eprintln!("fake worker: ready 前退出");
         std::process::exit(3);
     }
-    writer
-        .write_response(&Response::ready(ReadyInfo {
-            engine: config.engine.clone(),
-            display_name: config.display_name.clone(),
-        }))
-        .expect("写 ready");
+    let exit_after_ms = opt_u64(&config.options, "exit_after_ms");
+    if exit_after_ms > 0 {
+        std::thread::Builder::new()
+            .name("fake-exit".into())
+            .spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(exit_after_ms));
+                eprintln!("fake worker: exit_after_ms 到点，进程退出（模拟请求间隙死亡）");
+                std::process::exit(7);
+            })
+            .expect("后台退出线程");
+    }
 
-    let engine = EchoEngine {
-        hang_ms: opt_u64(&options, "hang_ms"),
-        crash_on_transcribe: opt_bool(&options, "crash_on_transcribe"),
-        crash_on_set_language: opt_bool(&options, "crash_on_set_language"),
-        fail_transcribe: opt_bool(&options, "fail_transcribe"),
-    };
-    let mut engine = Some(engine);
-    let mut reader = FrameReader::new(&mut stdin);
-    while let Some(inc) = reader.read_request().expect("读请求") {
-        let Request { id, kind } = inc.request;
-        match kind {
-            ReqKind::Shutdown => {
-                writer.write_response(&Response::shutdown(&id)).unwrap();
-                break;
-            }
-            ReqKind::Transcribe { word_timestamps } => {
-                match engine.as_mut().unwrap().transcribe(&inc.audio, word_timestamps) {
-                    Ok(r) => writer.write_response(&Response::result(&id, r)).unwrap(),
-                    Err(e) => writer
-                        .write_response(&Response::error(Some(&id), e.to_string(), e.recoverable()))
-                        .unwrap(),
-                }
-            }
-            ReqKind::SetLanguage { language } => {
-                engine.as_mut().unwrap().set_language(&language).unwrap();
-                writer.write_response(&Response::ack(&id)).unwrap();
-            }
-            ReqKind::SetInputPadding { pad_seconds } => {
-                engine.as_mut().unwrap().set_input_padding(pad_seconds).unwrap();
-                writer.write_response(&Response::ack(&id)).unwrap();
-            }
-        }
+    if let Err(e) = lt_asr::worker::run(
+        std::io::stdin().lock(),
+        std::io::stdout().lock(),
+        config,
+        echo_factory,
+    ) {
+        eprintln!("fake worker: 主循环异常退出: {e:#}");
+        std::process::exit(1);
     }
 }
