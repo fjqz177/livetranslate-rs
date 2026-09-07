@@ -49,6 +49,44 @@ pub fn reset_style(style: &mut Style) {
 
 /// 样式页 UI 总入口
 pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
+    // ── 字体（D-17：界面/字幕两把主旋钮；其余行级在下方「文字」组）──
+    group_card(ui, pal, &lt_i18n::t("group_fonts"), |ui| {
+        let cur_ui = state.settings.ui_font_family.clone();
+        if let Some(next) = super::font_picker::font_picker_row(
+            ui,
+            &mut state.fonts,
+            "font_ui",
+            &lt_i18n::t("label_ui_font"),
+            cur_ui,
+            "",
+            false,
+        ) {
+            state.settings.ui_font_family = next;
+            crate::fonts::apply_fonts(ui.ctx(), &state.settings, &mut state.fonts);
+            mark_settings_dirty(state);
+        }
+        let cur_sub = state.settings.subtitle_font_family.clone();
+        if let Some(next) = super::font_picker::font_picker_row(
+            ui,
+            &mut state.fonts,
+            "font_sub",
+            &lt_i18n::t("label_subtitle_font"),
+            cur_sub,
+            "",
+            false,
+        ) {
+            state.settings.subtitle_font_family = next;
+            crate::fonts::apply_fonts(ui.ctx(), &state.settings, &mut state.fonts);
+            mark_settings_dirty(state);
+        }
+        ui.label(
+            RichText::new(lt_i18n::t("hint_subtitle_font_scope"))
+                .size(11.0)
+                .color(ui.visuals().weak_text_color()),
+        );
+        super::font_picker::font_group_preview(ui, state);
+    });
+
     // ── 预设（原版 preset_group）──
     group_card(ui, pal, &lt_i18n::t("group_preset"), |ui| {
         let labels = preset_labels();
@@ -58,6 +96,8 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
             if let Some(next) = next {
                 if next < PRESET_NAMES.len() {
                     apply_preset(&mut state.settings.style, PRESET_NAMES[next]);
+                    // 预设可能改写行级字体键（D-17 默认=跟随），字体链需同步
+                    crate::fonts::apply_fonts(ui.ctx(), &state.settings, &mut state.fonts);
                     mark_settings_dirty(state);
                 }
             }
@@ -69,6 +109,7 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
                 .clicked()
             {
                 reset_style(&mut state.settings.style);
+                crate::fonts::apply_fonts(ui.ctx(), &state.settings, &mut state.fonts);
                 mark_settings_dirty(state);
             }
             // 原版样式 Tab 同行右侧"重置窗口位置"（_on_reset_positions → reset_positions 信号）
@@ -251,7 +292,7 @@ fn style_u32_row(
     });
 }
 
-/// "标签 + 字体族文本框"行（已知偏差：无系统字体枚举，QFontComboBox → 文本输入）
+/// "标签 + 字体选择器"行（D-17：行级空串=跟随；选中即应用字体链并防抖落盘）
 fn font_row(
     ui: &mut Ui,
     state: &mut AppState,
@@ -260,23 +301,22 @@ fn font_row(
     field: impl Fn(&mut Style) -> &mut String,
 ) {
     ui.push_id(id, |ui| {
-        ui.horizontal(|ui| {
-            ui.label(RichText::new(format!("{label} ")).color(ui.visuals().text_color()));
-            let mut family = field(&mut state.settings.style).clone();
-            let resp = ui
-                .add(egui::TextEdit::singleline(&mut family).desired_width(200.0))
-                .changed();
-            if resp {
-                *field(&mut state.settings.style) = family.trim().to_string();
-                mark_custom(&mut state.settings.style);
-                mark_settings_dirty(state);
-            }
-            ui.label(
-                RichText::new(lt_i18n::t("label_resolved_font").replace("{family}", family.trim()))
-                    .size(11.0)
-                    .color(ui.visuals().weak_text_color()),
-            );
-        });
+        let cur = field(&mut state.settings.style).clone();
+        let master = state.settings.subtitle_font_family.clone();
+        if let Some(next) = super::font_picker::font_picker_row(
+            ui,
+            &mut state.fonts,
+            id,
+            label,
+            cur,
+            &master,
+            true,
+        ) {
+            *field(&mut state.settings.style) = next;
+            mark_custom(&mut state.settings.style);
+            crate::fonts::apply_fonts(ui.ctx(), &state.settings, &mut state.fonts);
+            mark_settings_dirty(state);
+        }
     });
 }
 

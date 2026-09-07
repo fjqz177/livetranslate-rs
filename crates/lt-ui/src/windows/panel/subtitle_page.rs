@@ -8,8 +8,8 @@
 //! 读取 cfg 渲染，应用后自动生效）；`enabled` 勾选另发 WinAction::ToggleSubtitle
 //! 联动字幕窗显隐（原版 subtitle_settings_changed → app_shell 显隐路径）。
 //!
-//! 已知偏差：字体改为文本输入（egui 无系统字体枚举；默认值仍 Microsoft YaHei）；
-//! 颜色为 "#rrggbb" 文本 + 色块预览（rfd 无颜色对话框）。
+//! 已知偏差：行级字体走系统字体选择器（D-17 内嵌思源置顶 + 注册表扫描，
+//! 空串=跟随字幕主字体）；颜色为 "#rrggbb" 文本 + 色块预览（rfd 无颜色对话框）。
 
 use super::{color_field, group_card, mark_settings_dirty, Palette};
 use crate::state::{move_line_down, move_line_up, AppState, LineEditState, ANIM_VALUES};
@@ -404,8 +404,10 @@ fn render_line_editor(ui: &mut Ui, state: &mut AppState) {
     let mut open = true;
     let mut cancel = false;
     let mut accepted: Option<SubtitleLine> = None;
+    let master = state.settings.subtitle_font_family.clone();
     {
-        let panel = &mut state.panel;
+        // panel.line_editor 与 fonts 是 AppState 不同字段，可并行借用
+        let (panel, fonts) = (&mut state.panel, &mut state.fonts);
         let Some(ed) = panel.line_editor.as_mut() else { return };
         egui::Window::new(RichText::new(lt_i18n::t("subwin_edit_line")).strong())
             .open(&mut open)
@@ -417,7 +419,7 @@ fn render_line_editor(ui: &mut Ui, state: &mut AppState) {
                 egui::ScrollArea::vertical()
                     .max_height(440.0)
                     .auto_shrink([false, false])
-                    .show(ui, |ui| line_editor_fields(ui, ed));
+                    .show(ui, |ui| line_editor_fields(ui, ed, fonts, &master));
                 ui.add_space(6.0);
                 ui.separator();
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -440,6 +442,8 @@ fn render_line_editor(ui: &mut Ui, state: &mut AppState) {
             lines[ed.index] = line;
             state.panel.line_selected = Some(ed.index);
         }
+        // 行级字体键可能变更，字体链（命名族注册）同步重建
+        crate::fonts::apply_fonts(ui.ctx(), &state.settings, &mut state.fonts);
         mark_settings_dirty(state);
     } else if !open || cancel {
         state.panel.line_editor = None;
@@ -447,7 +451,12 @@ fn render_line_editor(ui: &mut Ui, state: &mut AppState) {
 }
 
 /// 行编辑字段全集（原版 LineEditDialog QGridLayout 逐行；SubtitleLine 15 字段）
-fn line_editor_fields(ui: &mut Ui, ed: &mut LineEditState) {
+fn line_editor_fields(
+    ui: &mut Ui,
+    ed: &mut LineEditState,
+    fonts: &mut crate::fonts::FontsState,
+    master: &str,
+) {
     egui::Grid::new("line_edit_grid")
         .num_columns(2)
         .spacing([8.0, 5.0])
@@ -484,9 +493,20 @@ fn line_editor_fields(ui: &mut Ui, ed: &mut LineEditState) {
             }
             ui.end_row();
 
-            // 字体（文本输入，已知偏差：无系统字体枚举）
+            // 字体（D-17：行级空串=跟随主设置；选择器含小样与缺字提示）
             ui.label(lt_i18n::t("subwin_font"));
-            ui.add(egui::TextEdit::singleline(&mut ed.font_family).desired_width(200.0));
+            let cur_family = ed.font_family.clone();
+            if let Some(next) = super::font_picker::font_picker_row(
+                ui,
+                fonts,
+                "line_edit_font",
+                "",
+                cur_family,
+                master,
+                true,
+            ) {
+                ed.font_family = next;
+            }
             ui.end_row();
 
             // 字号 8..=120 pt

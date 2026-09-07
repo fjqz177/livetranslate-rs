@@ -1154,6 +1154,8 @@ pub struct AppState {
     /// sysinfo 实例与上次采样时刻（1s 节流）
     sys: Option<sysinfo::System>,
     sys_last: Option<Instant>,
+    /// 字体系统（W-3）：系统字体扫描列表 + 加载缓存 + 族名→FontFamily 解析表
+    pub fonts: crate::fonts::FontsState,
 }
 
 impl AppState {
@@ -1208,6 +1210,8 @@ impl AppState {
             quit_requested: false,
             sys: None,
             sys_last: None,
+            // 字体系统（W-3）：启动扫描系统字体列表，应用期按 Settings 热重建
+            fonts: crate::fonts::FontsState::new(),
         }
     }
 

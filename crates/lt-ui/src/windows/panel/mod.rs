@@ -17,6 +17,7 @@
 pub mod benchmark_tab;
 pub mod changelog_tab;
 pub mod data;
+pub mod font_picker;
 pub mod style;
 pub mod subtitle_page;
 pub mod translation;
