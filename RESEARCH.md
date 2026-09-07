@@ -562,7 +562,7 @@ muda 菜单树（含 4 个动态子菜单 + 单选组 + checkbox 同步），图
 | R-11 | **纯 CPU 下弱机性能**：whisper medium/large int8 在低主频 CPU 可能跟不上实时 | 中 | 默认引擎 SenseVoice int8（CPU 单段 <1s，覆盖绝大多数场景）；whisper 档位体积/速度提示引导选 tiny/small/turbo（turbo 档是弱机要质量的最优解，D-15）（r4：远程 ASR 兜底已随功能裁剪移除） |
 | R-12 | sherpa-onnx sys crate 构建脚本从 GitHub releases 下载预编译库（国内网络/CI 不稳） | 低 | 缓存vendor 目录 + `SHERPA_ONNX_LIB_DIR` 手动指定；CI 加缓存 |
 | R-13 | async-openai `byot` 的**流式**入口（create_stream 的 byot 变体）具体方法名/签名待实现期确认（README 只明示了 `create_byot`） | 低 | M3 首日验证；若流式无 byot 变体，回退方案：流式路径用 `serde_json::Value` 直接 POST `/chat/completions`（约 40 行，仅此一条窄路径手写）；非流式路径无影响 |
-| R-14 | 系统字体依存风险（D-17 引入内嵌兜底后的残余）：① 用户选中的系统字体不存在/被卸载 → 未注册族名回落全局链（内嵌思源兜底，不方块）；② 字体度量差异（思源 vs 雅黑 vs 用户自选）带来视觉对齐波动 → D-17 已归档，视觉检查按新基线；③ 注册表扫描范围 = HKLM+HKCU（第三方字体管理器自装字体不覆盖，选择器不出现）；④ TTC 字体仅取 face 0（与既有 msyh.ttc 语义一致） | 低-中 | D-17 实施（docs/font-system-plan.md）：内嵌链字形覆盖测试机器无关化；选择器缺字提示；扫描失败降级仅内嵌 |
+| R-14 | 系统字体依存风险（D-17/W-6 仓库自洽后残余）：① 用户选中的系统字体不存在/被卸载 → 未注册族名回落全局链（内嵌兜底，不方块）；② 字体度量差异（思源 vs 雅黑 vs 用户自选）→ D-17 已归档，视觉检查按新基线；③ 注册表扫描范围 = HKLM+HKCU（第三方字体管理器自装字体不覆盖）；④ TTC 字体仅取 face 0；⑤ Consolas 为系统增强（微软字体不可重分发），缺省回退内嵌等宽（凭据与视觉与原版略有差异） | 低 | 仓库自洽为硬保证：内嵌思源(中英韩)+等宽(chrome)+符号(✗ 等)三字体覆盖全部 UI 字符，`cargo test` 以 skrifa 解析级断言常驻（机器无关）；系统字体仅增强 |
 
 ---
 

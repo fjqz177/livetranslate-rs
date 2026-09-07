@@ -72,3 +72,17 @@
   - 许可：SIL Open Font License 1.1（OFL.txt 随附；允许内嵌商业分发；CFL/Reserved Font Name 'Source' 属 Adobe）
 - `OFL.txt`（4,388 B）sha256 `1c05c68c34f9708415aada51f17e1b0092d2cea709bf4a94cd38114f9e73d7d9`
   - 来源：google/fonts 仓 `ofl/notosanssc/OFL.txt`（同一许可文本，随附于发行版）
+
+## fonts/（W-6 补充：仓库自洽，系统字体仅锦上添花）
+
+- `NotoSansMonoCJKsc-Regular.otf`（16,393,784 B）sha256 `ec04cc376b34887cedbdf84074e2e226ed2761eeabdcb9173fc1dd7bfd153ef7`
+  - 字体：Noto Sans Mono CJK SC Regular（等宽 chrome 的内嵌保证：系统缺 Consolas 时全机器一致的
+    拉丁/数字/中文等宽回退；Noto Sans Mono 为 OFL 1.1，Consolas 为微软字体不可重分发）
+  - 来源：notofonts/noto-cjk 发布 Sans2.004，资产 `13_NotoSansMonoCJKsc.zip`（27,750,553 B，同上发布页）
+  - 许可：SIL Open Font License 1.1（OFL.txt）
+- `NotoSansSymbols2-Regular.ttf`（1,233,128 B）sha256 `7d5fb73b7ca67a6798101741f5d280a3d016a56a197afcd4199dbb57b4b82a21`
+  - 字体：Noto Sans Symbols 2 Regular（补 ✗ 等思源缺失符号；旧实现依赖系统 seguisym.ttf，
+    微软字体不可重分发——仓库自洽后符号渲染零系统依赖）
+  - 来源：google/fonts 仓 `ofl/notosanssymbols2/NotoSansSymbols2-Regular.ttf`
+    （镜像：`https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/notosanssymbols2/NotoSansSymbols2-Regular.ttf`）
+  - 许可：SIL Open Font License 1.1（OFL.txt）

@@ -1,10 +1,14 @@
-//! 字体系统（docs/font-system-plan.md W-3）：内嵌思源默认 + 系统字体扫描 + 级联解析 + 链构建。
+//! 字体系统（docs/font-system-plan.md W-3/W-6）：仓库自洽——所有字形由内嵌字体保证，
+//! 系统字体仅作增强（锦上添花），任何开发者 clone 仓库即得一致渲染、零系统污染。
 //!
-//! 取代原 `install_cjk_fonts` 的系统字体硬依赖（逐文件读 `C:\Windows\Fonts`）：
-//! - 内嵌思源黑体（OFL 1.1）恒在三条链（Proportional / Monospace / 命名族）的兜底位，
-//!   任何系统字体缺失都不方块；
+//! - 内嵌思源黑体（Noto Sans CJK SC = Source Han Sans SC，OFL 1.1）恒在
+//!   Proportional / Monospace / 命名族三条链的兜底位，任何系统字体缺失都不方块；
+//! - 内嵌 Noto Sans Mono CJK SC（同发行源）作为等宽 chrome 的保证回退：
+//!   系统有 Consolas 时保持原版 1:1（Consolas 为微软字体不可重分发/不内嵌）；
+//! - UI 符号（✓ ✗ ● ▲ ▼ 等）由思源覆盖，不再依赖系统 seguisym；
 //! - 行级字体键空串 = 跟随主设置（D-17 级联模型，见 [`resolve_family`]）；
-//! - 系统字体经注册表枚举 + 懒加载字节（只读选中/注册的族），扫描失败降级仅内嵌。
+//! - 系统字体经注册表枚举 + 懒加载字节（只读选中/注册的族；Windows 专属，
+//!   其他平台为空列表——仓库内仍可完整渲染）。
 //!
 //! 渲染侧约定：`FontFamily::Name(族名)` 只出现在 [`FontsState::resolved`]（已注册者）
 //! —— epaint 的 `FontsImpl::font` 对未绑定族名会 panic，绝不直接构造未注册的 Name。
@@ -18,10 +22,20 @@ use std::sync::Arc;
 
 /// 内嵌思源黑体（W-1 入库，OFL 1.1）；`FontData::from_static` 零拷贝。
 pub const EMBEDDED_BYTES: &[u8] = include_bytes!("../../../assets/fonts/NotoSansCJKsc-Regular.otf");
+/// 内嵌等宽字体（W-6 入库，与思源同 noto-cjk 发布源/同设计；系统缺 Consolas 时保证
+/// 等宽 chrome（含 CJK）全机器一致。Consolas 为微软字体不可重分发，故仅系统增强）。
+pub const MONO_BYTES: &[u8] = include_bytes!("../../../assets/fonts/NotoSansMonoCJKsc-Regular.otf");
+/// 内嵌符号字体（W-6 入库，OFL 1.1；补 ✗ 等思源未覆盖的符号——旧实现靠系统
+/// seguisym.ttf（微软字体不可重分发），仓库自洽后符号渲染不再依赖系统）。
+pub const SYMBOLS_BYTES: &[u8] = include_bytes!("../../../assets/fonts/NotoSansSymbols2-Regular.ttf");
 /// 内嵌字体「展示族名」：设置键默认值 + 选择器首项显示。
 pub const EMBEDDED_FAMILY: &str = "Noto Sans CJK SC";
 /// 内嵌思源在 `FontDefinitions.font_data` 中的注册名（链尾兜底 + 命名族链尾部）。
 pub const EMBEDDED_KEY: &str = "sans-cjk-sc";
+/// 内嵌等宽字体的注册名（Monospace 链内，兜底位）。
+pub const MONO_KEY: &str = "sans-cjk-mono";
+/// 内嵌符号字体的注册名（各链尾部；✓ ✗ 等）。
+pub const SYMBOLS_KEY: &str = "sans-symbols";
 /// 中英韩样例：UI 预览卡与字形覆盖测试共用（防漂移）。
 pub const SAMPLE_TEXT: &str = "天地玄黄 宇宙洪荒 The quick brown fox 한국어 어둠 0123456789";
 /// 字形覆盖检查样例（选择器缺字提示与覆盖测试用）。
@@ -42,7 +56,6 @@ pub struct FontsState {
     /// 已加载字节（Arc 复用：热应用重建 FontDefinitions 时不重复读文件/拷贝）。
     loaded: HashMap<PathBuf, Arc<FontData>>,
     consolas: Option<Arc<FontData>>,
-    seguisym: Option<Arc<FontData>>,
     /// 族名 → 渲染可用 FontFamily（apply_fonts 时重建；渲染侧每帧只查表）。
     pub resolved: HashMap<String, FontFamily>,
 }
@@ -101,7 +114,8 @@ pub fn family_covers_cjk(ctx: &Context, family: &FontFamily) -> bool {
 // ── 系统字体扫描 ──
 
 /// 枚举 HKLM+HKCU 字体注册表，输出清洗后的系统字体列表。
-/// 注册表不可读/为空 → Err（调用方降级仅内嵌）。
+/// 注册表不可读/为空 → Err（调用方降级仅内嵌）。非 Windows 平台恒空（仓库自洽不受影响）。
+#[cfg(windows)]
 pub fn scan_system_fonts() -> Result<Vec<SystemFont>> {
     use ::windows::Win32::System::Registry::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
 
@@ -118,6 +132,12 @@ pub fn scan_system_fonts() -> Result<Vec<SystemFont>> {
     Ok(normalize_registry_entries(&raw, &system_root()))
 }
 
+/// 非 Windows 平台：无系统字体列表（内嵌链保证完整渲染，选择器仅内嵌项）。
+#[cfg(not(windows))]
+pub fn scan_system_fonts() -> Result<Vec<SystemFont>> {
+    Ok(Vec::new())
+}
+
 /// 系统根目录（%SystemRoot%，缺省 C:\Windows）。
 fn system_root() -> PathBuf {
     std::env::var("SystemRoot")
@@ -126,6 +146,7 @@ fn system_root() -> PathBuf {
 }
 
 /// 单注册表键枚举：把 (值名, 值数据) 追加到 out。键必然关闭。
+#[cfg(windows)]
 unsafe fn scan_hive(hive: ::windows::Win32::System::Registry::HKEY, out: &mut Vec<(String, String)>) {
     use ::windows::Win32::Foundation::ERROR_NO_MORE_ITEMS;
     use ::windows::Win32::System::Registry::{RegCloseKey, RegEnumValueW, RegOpenKeyExW, HKEY, KEY_READ};
@@ -263,31 +284,30 @@ fn wish_family<'a>(wanted: &mut Vec<&'a str>, seen: &mut HashSet<String>, fam: &
     wanted.push(fam);
 }
 
-/// 按 Settings 重建 FontDefinitions（纯构建；调用方 set_fonts）。链装配：
-/// - Proportional：[界面字体] → [内嵌思源] → [egui 默认族尾] → [seguisym]
-/// - Monospace：[Consolas] → [界面字体] → [内嵌思源] → [默认族尾] → [seguisym]
-/// - Name(族名)（行级/字幕字体）：[该字体] → [内嵌思源] → [seguisym]
+/// 按 Settings 重建 FontDefinitions（纯构建；调用方 set_fonts）。链装配（仓库自洽）：
+/// - Proportional：[界面字体] → [内嵌思源] → [内嵌符号] → [egui 默认族尾]
+/// - Monospace：[Consolas(系统，锦上添花)] → [内嵌等宽 MonoCJK] → [界面字体] → [内嵌思源] → [内嵌符号] → [默认族尾]
+/// - Name(族名)（行级/字幕字体）：[该字体] → [内嵌思源] → [内嵌符号]
 /// 找不到的族名不注册（Name 不出现），渲染经 resolved 回落 Proportional（全局链，内嵌兜底）。
+/// **不读取任何系统符号字体**：✓ ✗ ● ▲ ▼ 等由内嵌思源 + Noto Sans Symbols 2 覆盖
+/// （覆盖率测试常驻，缺失任一字符即失败——仓库自洽成为硬保证）。
 pub fn build_definitions(settings: &Settings, fonts: &mut FontsState) -> FontDefinitions {
     let mut defs = FontDefinitions::default();
 
-    // 内嵌思源兜底恒注册
+    // 内嵌三字体恒注册：思源（链尾兜底）+ 等宽 MonoCJK（chrome 保证回退）+ 符号
     defs.font_data
         .insert(EMBEDDED_KEY.into(), FontData::from_static(EMBEDDED_BYTES).into());
+    defs.font_data
+        .insert(MONO_KEY.into(), FontData::from_static(MONO_BYTES).into());
+    defs.font_data
+        .insert(SYMBOLS_KEY.into(), FontData::from_static(SYMBOLS_BYTES).into());
 
-    // 系统锦上添花：Consolas（等宽 chrome，原版 QFont Consolas）与 seguisym（✓ ✗ ▲ ▼）
+    // 系统锦上添花：Consolas（等宽 chrome，原版 QFont Consolas；缺省回落内嵌等宽）
     let consolas_key = "consolas";
     let consolas_ok = load_window_font(&mut fonts.consolas, "consola.ttf")
         .map(|d| {
             defs.font_data
                 .insert(consolas_key.into(), d.into());
-        })
-        .is_some();
-    let symbol_key = "seguisym";
-    let symbol_ok = load_window_font(&mut fonts.seguisym, "seguisym.ttf")
-        .map(|d| {
-            defs.font_data
-                .insert(symbol_key.into(), d.into());
         })
         .is_some();
 
@@ -326,9 +346,7 @@ pub fn build_definitions(settings: &Settings, fonts: &mut FontsState) -> FontDef
         defs.font_data.insert(key.clone(), data);
         let mut chain = vec![key.clone()];
         push_unique(&mut chain, EMBEDDED_KEY.into());
-        if symbol_ok {
-            push_unique(&mut chain, symbol_key.into());
-        }
+        push_unique(&mut chain, SYMBOLS_KEY.into());
         defs.families
             .insert(FontFamily::Name(Arc::from(*family)), chain);
         fonts
@@ -339,7 +357,7 @@ pub fn build_definitions(settings: &Settings, fonts: &mut FontsState) -> FontDef
         }
     }
 
-    // 全局族（界面字体为 Proportional 链首；chrome 等宽保留 Consolas）
+    // 全局族（界面字体为 Proportional 链首；chrome 等宽：Consolas→内嵌等宽保证）
     let default_prop =
         std::mem::take(defs.families.get_mut(&FontFamily::Proportional).unwrap());
     let default_mono =
@@ -350,24 +368,21 @@ pub fn build_definitions(settings: &Settings, fonts: &mut FontsState) -> FontDef
         push_unique(&mut prop, k.clone());
     }
     push_unique(&mut prop, EMBEDDED_KEY.into());
+    push_unique(&mut prop, SYMBOLS_KEY.into());
     prop.extend(default_prop);
-    if symbol_ok {
-        push_unique(&mut prop, symbol_key.into());
-    }
     defs.families.insert(FontFamily::Proportional, prop);
 
     let mut mono = Vec::new();
     if consolas_ok {
         push_unique(&mut mono, consolas_key.into());
     }
+    push_unique(&mut mono, MONO_KEY.into());
     if let Some(k) = &ui_key {
         push_unique(&mut mono, k.clone());
     }
     push_unique(&mut mono, EMBEDDED_KEY.into());
+    push_unique(&mut mono, SYMBOLS_KEY.into());
     mono.extend(default_mono);
-    if symbol_ok {
-        push_unique(&mut mono, symbol_key.into());
-    }
     defs.families.insert(FontFamily::Monospace, mono);
 
     defs
@@ -407,13 +422,13 @@ fn resolve_font_data(family: &str, fonts: &mut FontsState) -> Option<(String, Ar
     }
 }
 
-/// 读 C:\Windows\Fonts\<file>（缓存于 FontsState，仅首次读磁盘）。
+/// 读 C:\Windows\Fonts\<file>（缓存于 FontsState，仅首次读磁盘；缺省回落内嵌字体）。
 fn load_window_font(cache: &mut Option<Arc<FontData>>, file: &str) -> Option<Arc<FontData>> {
     if cache.is_none() {
         let path = system_root().join("Fonts").join(file);
         *cache = std::fs::read(&path).ok().map(|b| Arc::new(FontData::from_owned(b)));
         if cache.is_none() {
-            tracing::warn!("系统字体未找到（{file}），相关字符回落内嵌思源");
+            tracing::warn!("系统字体未找到（{file}），相关字符回落内嵌字体");
         }
     }
     cache.clone()
@@ -507,6 +522,80 @@ mod tests {
         ctx.begin_pass(egui::RawInput::default());
         let ok = ctx.fonts_mut(|f| f.has_glyphs(&FontId::proportional(16.0), SAMPLE_TEXT));
         assert!(ok, "内嵌思源链应覆盖中/英/韩/数字样例: {SAMPLE_TEXT}");
+    }
+
+    /// 内部：解析级字形缺失清单（skrifa cmap；不吃 epaint has_glyph 对
+    /// replacement-face 的启发式假阴性——见 epaint font.rs has_glyph TODO）。
+    fn font_missing(bytes: &[u8], sample: &str) -> String {
+        use skrifa::MetadataProvider as _;
+        let font = skrifa::FontRef::from_index(bytes, 0).expect("内嵌字体应可解析");
+        let cmap = font.charmap();
+        sample
+            .chars()
+            .filter(|c| cmap.map(*c as u32).is_none())
+            .collect()
+    }
+
+    /// 仓库自洽字形覆盖（机器无关，解析级）：三内嵌字体联合覆盖全部 UI
+    /// 字符集；且链装配必须包含三字体——任何系统字体缺失都不影响渲染。
+    #[test]
+    fn embedded_fonts_cover_all_ui_glyphs() {
+        const ALL: &str = "天地玄黄宇宙洪荒한국어日本語 ABZdef0123456789✓✗●▲▼◆→←◎▪LiveTranslate%,:.";
+        // 联合覆盖（= 渲染链覆盖）：任一字符不被三字体之一包含即失败
+        let mut missing: Vec<char> = ALL
+            .chars()
+            .filter(|c| {
+                ![EMBEDDED_BYTES, MONO_BYTES, SYMBOLS_BYTES]
+                    .iter()
+                    .any(|b| font_missing(b, &c.to_string()).is_empty())
+            })
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "三内嵌字体联合覆盖缺失: {}",
+            missing.drain(..).collect::<String>()
+        );
+        // 语义职责：思源=中/英/韩；等宽=chrome 拉丁/数字/中文；符号=✗（思源所缺）
+        assert!(
+            font_missing(EMBEDDED_BYTES, "天地玄黄宇宙洪荒한국어日本語 ABZdef0123456789").is_empty(),
+            "思源应覆盖中英韩"
+        );
+        assert!(
+            font_missing(MONO_BYTES, "LiveTranslate 0123456789 。").is_empty(),
+            "等宽应覆盖 chrome"
+        );
+        assert!(
+            font_missing(SYMBOLS_BYTES, "✓✗●").is_empty(),
+            "符号应覆盖 ✓✗●（旧实现依赖系统 seguisym.ttf 的理由）"
+        );
+        // 链装配：三条链必须各自包含对应内嵌字体（结构保证）
+        let settings = Settings::default();
+        let mut fonts = FontsState::default();
+        let defs = build_definitions(&settings, &mut fonts);
+        let prop = &defs.families[&FontFamily::Proportional];
+        assert!(prop.iter().any(|k| k == EMBEDDED_KEY));
+        assert!(prop.iter().any(|k| k == SYMBOLS_KEY));
+        let mono = &defs.families[&FontFamily::Monospace];
+        assert!(mono.iter().any(|k| k == MONO_KEY));
+        assert!(mono.iter().any(|k| k == EMBEDDED_KEY));
+    }
+
+    /// 等宽 chrome 覆盖测试（机器无关）：无 Consolas 的系统也须由内嵌
+    /// MonoCJK 提供拉丁/数字/中文等宽渲染（仓库自洽第二条保证）。
+    #[test]
+    fn embedded_mono_covers_chrome() {
+        const MONO_SAMPLE: &str = "LiveTranslate ASR 0123456789 时秒MB CPU%";
+        let ctx = egui::Context::default();
+        let settings = Settings::default();
+        let mut fonts = FontsState::default();
+        apply_fonts(&ctx, &settings, &mut fonts);
+        ctx.begin_pass(egui::RawInput::default());
+        let ok = ctx.fonts_mut(|f| f.has_glyphs(&FontId::monospace(16.0), MONO_SAMPLE));
+        assert!(ok, "内嵌等宽链应覆盖 chrome 样例: {MONO_SAMPLE}");
+        // 默认链装配：等宽链第三位之前应含内嵌等宽（在无 Consolas 时仍兜底）
+        let defs = build_definitions(&settings, &mut FontsState::default());
+        let mono = &defs.families[&FontFamily::Monospace];
+        assert!(mono.iter().any(|k| k == MONO_KEY));
     }
 
     /// 默认设置下链装配：内嵌为 Proportional 链首；命名族已注册；resolved 语义正确。

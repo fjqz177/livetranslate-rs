@@ -28,6 +28,10 @@ tracing = { workspace = true }
 parking_lot = { workspace = true }
 sysinfo = { workspace = true }
 
+[dev-dependencies]
+# 字形覆盖断言用（与 epaint 同栈同版本；仅测试，不进 exe）
+skrifa = "0.44"
+
 [target."cfg(windows)".dependencies]
 windows = { workspace = true, features = [
     "Win32_Foundation",

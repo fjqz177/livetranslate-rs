@@ -2747,6 +2747,7 @@ dependencies = [
  "raw-window-handle",
  "rfd",
  "serde_json",
+ "skrifa",
  "sysinfo",
  "tracing",
  "tray-icon",
