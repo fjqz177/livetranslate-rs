@@ -17,7 +17,7 @@
 
 use crate::logging;
 use lt_models::cache::MissingModel;
-use lt_models::download::{DownloadEvent, Downloader, DlError, FailKind, Hub, ProxyMode};
+use lt_models::download::{DownloadEvent, Downloader, DlError, FailKind, Hub, ProxyMode, hub_chain};
 use lt_proto::{Cmd, Settings, UiEvent, UiMsg};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError};
@@ -186,17 +186,9 @@ fn run_download(
         .spawn(move || {
             let dl = Downloader::new(dl_dir, dl_proxy_mode);
             for m in &targets {
-                // hub 选择：always_hf 模型无视用户选择走 HF（原版 whisper/anime 先例）
-                let (hub_eff, repo) = if m.always_hf {
-                    (Hub::Hf, m.hub_hf)
-                } else if hub == Hub::Hf {
-                    (Hub::Hf, m.hub_hf)
-                } else {
-                    (Hub::Ms, m.hub_ms)
-                };
-                let Some(repo) = repo else {
-                    return Err((m.display.clone(), anyhow::anyhow!("该 hub 无仓库")));
-                };
+                // DL-5：所选 hub 优先，404/网络不可达时回落另一 hub（编排下沉
+                // Downloader::download_model；hub_chain 见 lt-models）
+                let chain = hub_chain(hub, m.hub_hf, m.hub_ms, m.always_hf);
                 // 清单 = (文件名, 字节数下限)：下载器跳过校验与探测 manifest 同源（DL-2）
                 let specs: Vec<(&str, u64)> = m
                     .files
@@ -204,7 +196,7 @@ fn run_download(
                     .copied()
                     .zip(m.files_min_bytes.iter().copied())
                     .collect();
-                if let Err(e) = dl.download_files(hub_eff, repo, &specs, &cancel, Some(&tx)) {
+                if let Err(e) = dl.download_model(&chain, &specs, &cancel, Some(&tx)) {
                     return Err((m.display.clone(), e));
                 }
             }

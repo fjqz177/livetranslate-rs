@@ -21,6 +21,32 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::time::Duration;
 
+/// 下载源尝试链（DL-5，落地 D-21「所选 hub 优先，缺失回落另一 hub」）：
+/// 所选 hub 居首；always_hf 模型恒 HF 居首——D-21 后 always_hf 语义 =
+/// 「HF 优先」而非「HF 唯一」，whisper 的 MS 镜像条目经 distribution WD-4
+/// 实测登记后自然获得回落能力。只含实际有仓库的源。
+pub fn hub_chain<'a>(
+    hub: Hub,
+    hub_hf: Option<&'a str>,
+    hub_ms: Option<&'a str>,
+    always_hf: bool,
+) -> Vec<(Hub, &'a str)> {
+    let chosen = if always_hf || hub == Hub::Hf {
+        (Hub::Hf, hub_hf)
+    } else {
+        (Hub::Ms, hub_ms)
+    };
+    let other = if chosen.0 == Hub::Hf {
+        (Hub::Ms, hub_ms)
+    } else {
+        (Hub::Hf, hub_hf)
+    };
+    [(chosen.0, chosen.1), (other.0, other.1)]
+        .into_iter()
+        .filter_map(|(h, r)| r.map(|r| (h, r)))
+        .collect()
+}
+
 /// 下载目标 hub
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Hub {
@@ -408,6 +434,39 @@ impl Downloader {
         }
     }
 
+    /// 按「所选 hub 优先，缺失/不可达回落另一 hub」（DL-5，D-21 机制半）下载
+    /// 整个模型。`chain` 由 [`hub_chain`] 生成；回落仅仓库级一次，且仅对
+    /// 404/网络类错误（[`FailKind::fallback_candidate`]）生效。
+    pub fn download_model(
+        &self,
+        chain: &[(Hub, &str)],
+        files: &[(&str, u64)],
+        cancel: &AtomicBool,
+        tx: Option<&Sender<DownloadEvent>>,
+    ) -> anyhow::Result<PathBuf> {
+        anyhow::ensure!(!chain.is_empty(), "该模型无可用下载源");
+        let mut last_err: Option<anyhow::Error> = None;
+        for (i, (hub, repo)) in chain.iter().enumerate() {
+            match self.download_files(*hub, repo, files, cancel, tx) {
+                Ok(dir) => return Ok(dir),
+                Err(e) => {
+                    let kind = e.downcast_ref::<DlError>().map(|d| d.kind);
+                    let can_fallback =
+                        i + 1 < chain.len() && kind.is_some_and(|k| k.fallback_candidate());
+                    if can_fallback {
+                        let msg = format!("[{repo}] 下载源不可用（{e:#}），回落下一下载源…");
+                        tracing::warn!("{msg}");
+                        self.emit(tx, DownloadEvent::Log(msg));
+                        continue;
+                    }
+                    last_err = Some(e);
+                    break;
+                }
+            }
+        }
+        Err(last_err.unwrap())
+    }
+
     fn progress(
         &self,
         tx: Option<&Sender<DownloadEvent>>,
@@ -470,6 +529,26 @@ fn parse_total(resp: &reqwest::blocking::Response) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// DL-5：下载源尝试链——所选 hub 优先；always_hf 恒 HF 居首；
+    /// 无仓源被剔除（whisper ms=None → 单源不回落）
+    #[test]
+    fn hub_chain_selected_first_with_fallback() {
+        let hf = Some("a/b");
+        let ms = Some("c/d");
+        assert_eq!(hub_chain(Hub::Ms, hf, ms, false), vec![(Hub::Ms, "c/d"), (Hub::Hf, "a/b")]);
+        assert_eq!(hub_chain(Hub::Hf, hf, ms, false), vec![(Hub::Hf, "a/b"), (Hub::Ms, "c/d")]);
+        // whisper 现状（always_hf 且无 MS 镜像）→ 单源
+        assert_eq!(
+            hub_chain(Hub::Ms, Some("g/whisper.cpp"), None, true),
+            vec![(Hub::Hf, "g/whisper.cpp")]
+        );
+        // WD-4 登记镜像后：HF 居首 + MS 回落（链序即未来行为）
+        assert_eq!(
+            hub_chain(Hub::Hf, Some("g/whisper.cpp"), Some("mirror/whisper"), true),
+            vec![(Hub::Hf, "g/whisper.cpp"), (Hub::Ms, "mirror/whisper")]
+        );
+    }
 
     /// DL-2/F5：重试分类表——net/length/5xx/429 可重试；404/401/403/磁盘/取消立即失败
     #[test]

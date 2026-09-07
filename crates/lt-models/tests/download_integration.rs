@@ -254,6 +254,63 @@ fn serve_counting(body: &'static [u8], counter: Arc<AtomicU32>) -> (u16, std::th
     (port, h)
 }
 
+/// 读取请求行目标路径（回落路由断言用）
+fn read_request_target(stream: &mut TcpStream) -> String {
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 1024];
+    while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
+        let n = stream.read(&mut chunk).unwrap_or(0);
+        if n == 0 {
+            break;
+        }
+        buf.extend_from_slice(&chunk[..n]);
+    }
+    let head = String::from_utf8_lossy(&buf);
+    head.lines()
+        .next()
+        .and_then(|l| l.split_whitespace().nth(1))
+        .map(|s| s.to_string())
+        .unwrap_or_default()
+}
+
+/// DL-5/D-21 端到端：所选 MS 源 404 → 自动回落 HF 源下载成功（含回落日志）
+#[test]
+fn ms_404_falls_back_to_hf_source() {
+    // 路由：路径含 "Fail"（MS 仓）→ 404；其余（HF 仓）→ 200 BODY
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let _t = std::thread::spawn(move || {
+        for conn in listener.incoming() {
+            let Ok(mut stream) = conn else { break };
+            let target = read_request_target(&mut stream);
+            if target.contains("Fail") {
+                write_response(&mut stream, "404 Not Found", "Content-Length: 0\r\n", b"");
+            } else {
+                let headers = format!("Content-Length: {}\r\nConnection: close\r\n", BODY.len());
+                write_response(&mut stream, "200 OK", &headers, BODY);
+            }
+        }
+    });
+    let dir = tmpdir("fallback");
+    let (tx, rx) = channel();
+    // MS/HF endpoint 指向同一 mock：MS 仓 Fail/Repo 必 404，HF 仓 ok/Model 可下
+    let dl = Downloader::new(&dir, ProxyMode::None)
+        .with_ms_endpoint(format!("http://127.0.0.1:{port}"))
+        .with_hf_endpoint(format!("http://127.0.0.1:{port}"));
+    let chain = vec![(Hub::Ms, "Fail/Repo"), (Hub::Hf, "ok/Model")];
+    let out = dl
+        .download_model(&chain, &[("model.bin", 1)], &AtomicBool::new(false), Some(&tx))
+        .expect("MS 404 应回落 HF 成功");
+    assert_eq!(std::fs::read(out.join("model.bin")).unwrap(), BODY);
+    drop(tx);
+    let events: Vec<_> = rx.try_iter().collect();
+    assert!(
+        events.iter().any(|e| matches!(e, DownloadEvent::Log(m) if m.contains("回落"))),
+        "events={events:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// DL-4/D-23：取消令牌预置 → 不发任何请求即返回 [cancel]，.incomplete 续传现场保留
 #[test]
 fn cancel_before_start_makes_no_requests_and_keeps_incomplete() {
