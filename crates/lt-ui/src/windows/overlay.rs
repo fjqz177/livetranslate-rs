@@ -461,8 +461,21 @@ fn message_block(
     let orig_c = o(parse_color(&s.original_color, Color32::from_rgb(0xcc, 0xcc, 0xcc)));
     let ts_c = o(parse_color(&s.timestamp_color, Color32::from_rgb(0x88, 0x88, 0x99)));
     let trans_c = o(parse_color(&s.translation_color, Color32::from_rgb(0xff, 0xff, 0xff)));
-    let head_font = FontId::proportional(pt(s.original_font_size));
-    let trans_font = FontId::proportional(pt(s.translation_font_size));
+    // D-17 级联：样式键空串=跟随字幕主字体；未注册族名回落全局链
+    let head_font = FontId::new(
+        pt(s.original_font_size),
+        crate::fonts::font_family_for(
+            crate::fonts::resolve_family(&s.original_font_family, &state.settings.subtitle_font_family),
+            &state.fonts,
+        ),
+    );
+    let trans_font = FontId::new(
+        pt(s.translation_font_size),
+        crate::fonts::font_family_for(
+            crate::fonts::resolve_family(&s.translation_font_family, &state.settings.subtitle_font_family),
+            &state.fonts,
+        ),
+    );
     let ms_font = FontId::proportional(pt(9));
 
     let inner = egui::Frame::NONE

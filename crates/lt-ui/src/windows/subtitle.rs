@@ -16,7 +16,8 @@
 //!
 //! 已知偏差（详见最终报告）：
 //! - bg_image / 行级 bg_image 贴图未渲染（需图片解码与纹理管理；配置键保留）；
-//! - 行级 font_family 走全局 CJK 字体栈（宿主仅装载 msyh/simhei）；
+//! - 行级 font_family 已按 D-17 级联真实生效（空串=跟随 subtitle_font_family；
+//!   未注册族名回落全局链，内嵌思源兜底）；
 //! - 描边为 8 方向偏移近似（原版为圆头描边、宽 2×outline_width）；
 //! - auto_hide_animation 的 slide_down 以 fade 近似（设置面板仅暴露 none/fade/slide_down）；
 //! - 翻译失败文案会进入字幕（原版 pipeline 在 error 路径不调 update_text；
@@ -271,6 +272,8 @@ pub fn subtitle_ui(ui: &mut Ui, state: &mut AppState) {
         // 借用拆分：不相交字段
         let sm = &state.settings.subtitle_mode;
         let sub = &mut state.subtitle;
+        let fonts = &state.fonts;
+        let master = &state.settings.subtitle_font_family;
 
         // 1) 行配置数量对齐（原版 apply_settings 重建语义）
         let enabled: Vec<&SubtitleLine> = sm.lines.iter().filter(|l| l.enabled).collect();
@@ -295,7 +298,14 @@ pub fn subtitle_ui(ui: &mut Ui, state: &mut AppState) {
         // 4) 度量与换行（缓存 key 不变则跳过重排，原版 _text_cache 语义）
         let mut block_heights: Vec<f32> = Vec::with_capacity(enabled.len());
         for (cfg, line) in enabled.iter().zip(&mut sub.lines) {
-            let font = FontId::proportional(pt(cfg.font_size));
+            // D-17 级联：行级空串=跟随字幕主字体；未注册族名回落全局链
+            let font = FontId::new(
+                pt(cfg.font_size),
+                crate::fonts::font_family_for(
+                    crate::fonts::resolve_family(&cfg.font_family, master),
+                    fonts,
+                ),
+            );
             let lh = line_height(ui, &font);
             let ow = if cfg.outline_enabled { cfg.outline_width as f32 } else { 0.0 };
             // 原版 split_text：avail_w = widget 宽 - 描边×2（widget 宽 = 窗宽 - 左右边距）
