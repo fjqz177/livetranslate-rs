@@ -966,6 +966,9 @@ pub enum DownloadUiState {
     /// done_bytes/total_bytes 为精确字节；total_bytes=0 表示未知，走日志模式）；
     /// log 为进度/日志行环形缓冲（上限 200）
     Downloading { file: String, k: u32, n: u32, done_bytes: u64, total_bytes: u64, log: Vec<String> },
+    /// 下载被用户取消（DL-4/D-23）：.incomplete 续传现场保留，卡片给
+    /// 「继续下载」按钮；log 为取消前日志
+    Cancelled { log: Vec<String> },
     /// 下载失败：kind 供分类提示，detail 为原始错误串，log 为失败前日志
     Failed { kind: DownloadErrKind, detail: String, log: Vec<String> },
 }
@@ -984,7 +987,7 @@ impl DownloadUiState {
 
     /// 追加日志行（环形 200 条，删最旧）
     pub fn push_log(&mut self, line: String) {
-        if let Self::Downloading { log, .. } | Self::Failed { log, .. } = self {
+        if let Self::Downloading { log, .. } | Self::Cancelled { log } | Self::Failed { log, .. } = self {
             if log.len() >= 200 {
                 log.remove(0);
             }

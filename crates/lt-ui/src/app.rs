@@ -775,6 +775,7 @@ impl MultiWindowApp {
                             let (kind, detail) = crate::state::DownloadErrKind::parse(&e);
                             let mut log = match &self.app_state.download {
                                 DownloadUiState::Downloading { log, .. }
+                                | DownloadUiState::Cancelled { log }
                                 | DownloadUiState::Failed { log, .. } => log.clone(),
                                 _ => Vec::new(),
                             };
@@ -785,9 +786,30 @@ impl MultiWindowApp {
                     }
                     self.redraw_setup();
                 }
+                // ── 下载取消（DL-4/D-23：卡片进「已取消，进度已保留」态）──
+                lt_proto::UiEvent::DownloadCancelled => {
+                    // 启动流（向导/缺模型）无取消入口，仅运行期卡片处理
+                    if let StartupFlow::Ready = self.app_state.startup {
+                        let mut log = match &self.app_state.download {
+                            DownloadUiState::Downloading { log, .. }
+                            | DownloadUiState::Cancelled { log }
+                            | DownloadUiState::Failed { log, .. } => log.clone(),
+                            _ => Vec::new(),
+                        };
+                        log.push(lt_i18n::t("download_cancelled_title").to_string());
+                        self.app_state.download = DownloadUiState::Cancelled { log };
+                        self.redraw(WinId::Panel);
+                    }
+                }
                 // ── 启动流：下载成功（应用下发设置 + 500ms 后收尾关窗）──
-                lt_proto::UiEvent::DownloadSucceeded { settings } => {
-                    self.app_state.settings = *settings;
+                lt_proto::UiEvent::DownloadSucceeded { .. } => {
+                    // DL-4/DEC-4：UI 是 settings 事实源，不再用事件载荷覆盖本状态
+                    //（F6 回踩）；落盘走单写者 shell.persist_settings——启动流在此
+                    // 发 PersistSettings，运行期由 AppShell 重发 SwitchEngine 顺带落盘
+                    if !matches!(self.app_state.startup, StartupFlow::Ready) {
+                        let s = self.app_state.settings.clone();
+                        self.app_state.send_cmd(lt_proto::Cmd::PersistSettings(Box::new(s)));
+                    }
                     let done_line = lt_i18n::t("download_complete");
                     match &mut self.app_state.startup {
                         StartupFlow::Wizard(w) => {

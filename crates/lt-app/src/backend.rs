@@ -2,22 +2,34 @@
 //!
 //! 原版对应物：SetupWizardDialog/ModelDownloadDialog 的 `_download_worker`
 //! 后台线程 + `_LogCapture`（下载期间捕获 INFO+ 日志进对话框）。
-//! Rust 版：UI 只发 [`Cmd::StartDownload`]，本线程跑 [`Downloader`]（阻塞式
-//! 专用线程），把 Downloader 事件与 tracing 广播行统一转发为
-//! [`UiEvent::DownloadProgress`] 日志流；成功写设置并发
-//! [`UiEvent::DownloadSucceeded`]（向导=13 键默认块，原版 `_check_done`）。
+//! Rust 版：UI 只发 [`Cmd::StartDownload`]，本线程起**下载会话线程**
+//! （DL-4：下载期间命令线程保持响应，PersistSettings/SwitchEngine 照常消化，
+//! 设置镜像不再过期），会话内跑 [`Downloader`]（阻塞式专用线程 + 取消令牌），
+//! 把 Downloader 事件与 tracing 广播行统一转发为
+//! [`UiEvent::DownloadProgress`] 日志流；成功发
+//! [`UiEvent::DownloadSucceeded`]（向导=13 键默认块，原版 `_check_done`），
+//! 取消发 [`UiEvent::DownloadCancelled`]（D-23）。落盘权归 UI 侧单写者
+//! （DEC-4）：backend 不再直接写 settings.json。
 //!
 //! settings 镜像（M5.1）：拦截 PersistSettings/ApplySettings/SwitchEngine 先更新
 //! 本地镜像再照旧转发 UI 循环——StartDownload 据此现场重算缺失清单，运行中
-//! 切换的引擎/档位即时生效（启动快照会下错模型）；下载成功落盘同用镜像值。
+//! 切换的引擎/档位即时生效（启动快照会下错模型）。
 
 use crate::logging;
 use lt_models::cache::MissingModel;
-use lt_models::download::{DownloadEvent, Downloader, Hub, ProxyMode};
+use lt_models::download::{DownloadEvent, Downloader, DlError, FailKind, Hub, ProxyMode};
 use lt_proto::{Cmd, Settings, UiEvent, UiMsg};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError};
+use std::sync::Arc;
 use std::time::Duration;
 use winit::event_loop::EventLoopProxy;
+
+/// 在途下载会话（DL-4）：取消令牌 + 会话线程句柄
+struct DownloadSession {
+    cancel: Arc<AtomicBool>,
+    handle: std::thread::JoinHandle<()>,
+}
 
 /// 启动后台命令线程（进程生命期常驻；通道关闭即退出）
 pub fn spawn(cmd_rx: Receiver<Cmd>, proxy: EventLoopProxy<UiMsg>, first_launch: bool, settings: Settings) {
@@ -25,12 +37,32 @@ pub fn spawn(cmd_rx: Receiver<Cmd>, proxy: EventLoopProxy<UiMsg>, first_launch: 
         .name("lt-backend".into())
         .spawn(move || {
             let mut settings = settings;
+            let mut session: Option<DownloadSession> = None;
             while let Ok(cmd) = cmd_rx.recv() {
                 match cmd {
                     Cmd::StartDownload { hub, proxy: proxy_mode } => {
+                        // 回收已结束会话；在途则忽略重复请求（UI 侧亦有按钮守卫）
+                        if session.as_ref().is_some_and(|s| s.handle.is_finished()) {
+                            session = None;
+                        }
+                        if session.is_some() {
+                            tracing::warn!("已有下载会话在途，忽略重复 StartDownload");
+                            line(&proxy, "已有下载进行中，请等待完成或取消后重试");
+                            continue;
+                        }
                         let missing = current_missing(&settings);
-                        run_download(&proxy, first_launch, &settings, &missing, &hub, &proxy_mode);
+                        session = Some(start_session(
+                            &proxy, first_launch, &settings, missing, &hub, &proxy_mode,
+                        ));
                     }
+                    Cmd::CancelDownload => match &session {
+                        Some(s) if !s.handle.is_finished() => {
+                            s.cancel.store(true, Ordering::Relaxed);
+                            tracing::info!("已请求取消下载");
+                            line(&proxy, "正在取消下载（进度已保留）…");
+                        }
+                        _ => tracing::debug!("无在途下载，忽略 CancelDownload"),
+                    },
                     // 镜像更新后照旧转发（设置真值在 UI 循环/AppState）
                     Cmd::PersistSettings(s) => {
                         settings = *s;
@@ -81,6 +113,39 @@ fn proxy_mode_from(s: &str) -> ProxyMode {
     }
 }
 
+/// 起下载会话线程（DL-4）：backend 命令线程立即返回继续收命令，
+/// 下载全程（worker + 事件泵）在会话线程内完成。
+fn start_session(
+    proxy: &EventLoopProxy<UiMsg>,
+    first_launch: bool,
+    settings: &Settings,
+    missing: Vec<MissingModel>,
+    hub_s: &str,
+    proxy_s: &str,
+) -> DownloadSession {
+    let cancel = Arc::new(AtomicBool::new(false));
+    let session_proxy = proxy.clone();
+    let session_settings = settings.clone();
+    let session_hub = hub_s.to_string();
+    let session_proxy_s = proxy_s.to_string();
+    let cancel_for_run = cancel.clone();
+    let handle = std::thread::Builder::new()
+        .name("lt-download-session".into())
+        .spawn(move || {
+            run_download(
+                &session_proxy,
+                first_launch,
+                &session_settings,
+                &missing,
+                &session_hub,
+                &session_proxy_s,
+                cancel_for_run,
+            );
+        })
+        .expect("下载会话线程可启动");
+    DownloadSession { cancel, handle }
+}
+
 fn run_download(
     proxy: &EventLoopProxy<UiMsg>,
     first_launch: bool,
@@ -88,6 +153,7 @@ fn run_download(
     missing: &[MissingModel],
     hub_s: &str,
     proxy_s: &str,
+    cancel: Arc<AtomicBool>,
 ) {
     let hub = if hub_s == "hf" { Hub::Hf } else { Hub::Ms };
     let models_dir = match lt_models::paths::models_dir(settings.models_dir.as_deref()) {
@@ -138,7 +204,7 @@ fn run_download(
                     .copied()
                     .zip(m.files_min_bytes.iter().copied())
                     .collect();
-                if let Err(e) = dl.download_files(hub_eff, repo, &specs, Some(&tx)) {
+                if let Err(e) = dl.download_files(hub_eff, repo, &specs, &cancel, Some(&tx)) {
                     return Err((m.display.clone(), e));
                 }
             }
@@ -166,9 +232,24 @@ fn run_download(
         }
         std::thread::sleep(Duration::from_millis(50));
     }
+    // 收尾先排空事件通道再下结论（DL-6/F9：尾部 FileDone/Done 不再丢；
+    // worker 已退出 → tx 已 drop，排空必然收敛）
+    while let Ok(ev) = rx.try_recv() {
+        line(proxy, &format_event(&ev));
+    }
     match worker.join().expect("下载线程不 panic") {
         Ok(()) => succeed(proxy, first_launch, settings, hub_s, proxy_s),
-        Err((name, e)) => fail(proxy, &format!("{name}: {e:#}")),
+        Err((name, e)) => {
+            let cancelled = e
+                .downcast_ref::<DlError>()
+                .is_some_and(|d| d.kind == FailKind::Cancelled);
+            if cancelled {
+                tracing::info!("模型下载已被用户取消: {name}");
+                let _ = proxy.send_event(UiMsg::Event(UiEvent::DownloadCancelled));
+            } else {
+                fail(proxy, &format!("{name}: {e:#}"));
+            }
+        }
     }
 }
 
@@ -187,7 +268,11 @@ fn current_missing(settings: &Settings) -> Vec<MissingModel> {
         .unwrap_or_default()
 }
 
-/// 成功收尾：写设置（向导=13 键默认块，原版 _check_done 的 settings dict）→ 通知 UI
+/// 成功收尾：通知 UI（向导=13 键默认块，原版 _check_done 的 settings dict）。
+/// DL-4/DEC-4：backend **不再直接写盘**——settings.json 由 UI 侧单写者
+/// （shell.persist_settings）落盘：运行期成功链 = shell 收 DownloadSucceeded
+/// → 重发 SwitchEngine → persist；启动流 = app.rs 收成功事件后发
+/// Cmd::PersistSettings。旧实现在这里用可能过期的镜像写盘并回踩 UI 状态（F6）。
 fn succeed(proxy: &EventLoopProxy<UiMsg>, first_launch: bool, settings: &Settings, hub_s: &str, proxy_s: &str) {
     let final_settings = if first_launch {
         let mut s = Settings::default();
@@ -208,10 +293,6 @@ fn succeed(proxy: &EventLoopProxy<UiMsg>, first_launch: bool, settings: &Setting
     } else {
         settings.clone()
     };
-    if let Err(e) = lt_models::settings_io::save(&final_settings) {
-        fail(proxy, &format!("设置保存失败: {e:#}"));
-        return;
-    }
     let _ = proxy.send_event(UiMsg::Event(UiEvent::DownloadSucceeded {
         settings: Box::new(final_settings),
     }));

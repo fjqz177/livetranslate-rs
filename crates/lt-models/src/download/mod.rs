@@ -17,6 +17,7 @@ pub mod ms;
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::time::Duration;
 
@@ -206,11 +207,14 @@ impl Downloader {
     /// 下载 repo 的文件清单到快照目录，返回快照目录。
     /// 清单为 `(文件名, 字节数下限)`：已存在且达下限 → 跳过（幂等）；
     /// 存在但不足（半截/损坏残留）→ 删除重下（DL-2/F4）。
+    /// `cancel` 置位即取消（DL-4/D-23）：在文件边界与读块检查点停止，
+    /// 保留 `.incomplete` 续传现场，返回 `FailKind::Cancelled`。
     pub fn download_files(
         &self,
         hub: Hub,
         repo: &str,
         files: &[(&str, u64)],
+        cancel: &AtomicBool,
         tx: Option<&Sender<DownloadEvent>>,
     ) -> anyhow::Result<PathBuf> {
         let client = self.http_client()?;
@@ -218,6 +222,9 @@ impl Downloader {
         std::fs::create_dir_all(&dir).map_err(disk_err)?;
         let n = files.len();
         for (idx, (file, min_bytes)) in files.iter().enumerate() {
+            if cancel.load(Ordering::Relaxed) {
+                return Err(anyhow::Error::new(DlError::new(FailKind::Cancelled, "已取消")));
+            }
             let target = dir.join(file);
             match skip_decision(&target, *min_bytes) {
                 SkipDecision::Skip => {
@@ -237,7 +244,7 @@ impl Downloader {
             }
             self.emit(tx, DownloadEvent::Log(format!("[{repo}] 开始下载 {file}")));
             // k 从 1 起（UI 显示「第 k/n 个文件」）
-            self.download_one(&client, hub, repo, file, &target, idx + 1, n, tx)?;
+            self.download_one(&client, hub, repo, file, &target, idx + 1, n, cancel, tx)?;
             self.emit(tx, DownloadEvent::FileDone { repo: repo.into(), file: (*file).into() });
         }
         self.emit(tx, DownloadEvent::Done { repo: repo.into(), dir: dir.clone() });
@@ -254,6 +261,7 @@ impl Downloader {
         target: &Path,
         k: usize,
         n: usize,
+        cancel: &AtomicBool,
         tx: Option<&Sender<DownloadEvent>>,
     ) -> Result<(), DlError> {
         let incomplete = incomplete_path(target);
@@ -265,7 +273,10 @@ impl Downloader {
                 self.emit(tx, DownloadEvent::Log(msg));
                 std::thread::sleep(backoff);
             }
-            match self.try_download(client, hub, repo, file, target, &incomplete, k, n, tx) {
+            if cancel.load(Ordering::Relaxed) {
+                return Err(DlError::new(FailKind::Cancelled, "已取消"));
+            }
+            match self.try_download(client, hub, repo, file, target, &incomplete, k, n, cancel, tx) {
                 Ok(()) => return Ok(()),
                 Err(e) => {
                     // DL-2/F5 快速失败：永久性错误（404 仓库缺失/401 私有/磁盘）不再退避
@@ -289,6 +300,7 @@ impl Downloader {
         incomplete: &Path,
         k: usize,
         n: usize,
+        cancel: &AtomicBool,
         tx: Option<&Sender<DownloadEvent>>,
     ) -> Result<(), DlError> {
         if let Some(p) = target.parent() {
@@ -353,6 +365,10 @@ impl Downloader {
             let mut buf = [0u8; 64 * 1024];
             let mut resp = resp;
             loop {
+                if cancel.load(Ordering::Relaxed) {
+                    // 保留 .incomplete 续传现场直接返回
+                    return Err(DlError::new(FailKind::Cancelled, "已取消"));
+                }
                 let n = resp.read(&mut buf).map_err(|e| {
                     DlError::new(FailKind::Net, format!("网络读取中断: {e}"))
                 })?;
@@ -532,7 +548,7 @@ mod tests {
         std::fs::write(snap.join("m.bin"), vec![0u8; 2_000]).unwrap();
         std::fs::write(snap.join("tokens.txt"), vec![0u8; 16]).unwrap();
         let (tx, rx) = std::sync::mpsc::channel();
-        let got = d.download_files(Hub::Hf, "a/b", files, Some(&tx)).expect("足额应全跳过并成功");
+        let got = d.download_files(Hub::Hf, "a/b", files, &AtomicBool::new(false), Some(&tx)).expect("足额应全跳过并成功");
         assert_eq!(got, snap);
         let mut logs = Vec::new();
         let mut done = false;

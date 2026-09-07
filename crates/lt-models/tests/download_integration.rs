@@ -4,7 +4,7 @@ use lt_models::download::{DownloadEvent, Downloader, Hub, ProxyMode};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::mpsc::channel;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 
 /// 请求记录（Range 头；None = 无 Range）
@@ -118,7 +118,7 @@ fn full_download_emits_events_and_writes_file() {
     let (tx, rx) = channel();
 
     let out = downloader_at(&dir, port)
-        .download_files(Hub::Ms, "iic/Test", &[("model.bin", 1)], Some(&tx))
+        .download_files(Hub::Ms, "iic/Test", &[("model.bin", 1)], &AtomicBool::new(false), Some(&tx))
         .unwrap();
 
     assert_eq!(std::fs::read(out.join("model.bin")).unwrap(), BODY);
@@ -127,7 +127,7 @@ fn full_download_emits_events_and_writes_file() {
     assert!(events.iter().any(|e| matches!(e, DownloadEvent::FileDone { file, .. } if file == "model.bin")));
     // 幂等：第二次调用跳过已存在文件
     let (tx2, rx2) = channel();
-    downloader_at(&dir, port).download_files(Hub::Ms, "iic/Test", &[("model.bin", 1)], Some(&tx2)).unwrap();
+    downloader_at(&dir, port).download_files(Hub::Ms, "iic/Test", &[("model.bin", 1)], &AtomicBool::new(false), Some(&tx2)).unwrap();
     let ev2: Vec<_> = rx2.try_iter().collect();
     assert!(ev2.iter().any(|e| matches!(e, DownloadEvent::Log(m) if m.contains("跳过"))));
     let _ = std::fs::remove_dir_all(&dir);
@@ -143,7 +143,7 @@ fn resume_from_incomplete_sends_range() {
     std::fs::create_dir_all(&snap).unwrap();
     std::fs::write(snap.join("model.bin.incomplete"), &BODY[..3]).unwrap();
 
-    let out = downloader_at(&dir, port).download_files(Hub::Ms, "iic/Test", &[("model.bin", 1)], None).unwrap();
+    let out = downloader_at(&dir, port).download_files(Hub::Ms, "iic/Test", &[("model.bin", 1)], &AtomicBool::new(false), None).unwrap();
 
     // 完整文件 + .incomplete 已 rename 消失
     assert_eq!(std::fs::read(out.join("model.bin")).unwrap(), BODY);
@@ -164,7 +164,7 @@ fn stale_incomplete_416_restarts_from_zero() {
     // 陈旧续传：比远端还长
     std::fs::write(snap.join("model.bin.incomplete"), vec![0u8; 64]).unwrap();
 
-    let out = downloader_at(&dir, port).download_files(Hub::Ms, "iic/Test", &[("model.bin", 1)], None).unwrap();
+    let out = downloader_at(&dir, port).download_files(Hub::Ms, "iic/Test", &[("model.bin", 1)], &AtomicBool::new(false), None).unwrap();
     assert_eq!(std::fs::read(out.join("model.bin")).unwrap(), BODY);
     let ranges = log.ranges.lock().unwrap().clone();
     // 第一次带超限 Range → 416；第二次不带 Range 从头来
@@ -179,7 +179,7 @@ fn server_error_retries_with_backoff() {
     let (port, _t) = serve(BODY, 1, log.clone()); // 第一次 500
     let dir = tmpdir("retry");
 
-    let out = downloader_at(&dir, port).download_files(Hub::Ms, "iic/Test", &[("model.bin", 1)], None).unwrap();
+    let out = downloader_at(&dir, port).download_files(Hub::Ms, "iic/Test", &[("model.bin", 1)], &AtomicBool::new(false), None).unwrap();
     assert_eq!(std::fs::read(out.join("model.bin")).unwrap(), BODY);
     assert_eq!(log.ranges.lock().unwrap().len(), 2, "恰好重试一次");
     let _ = std::fs::remove_dir_all(&dir);
@@ -191,7 +191,7 @@ fn progress_events_throttled_but_final_emitted() {
     let (port, _t) = serve(BODY, 0, log.clone());
     let dir = tmpdir("prog");
     let (tx, rx) = channel();
-    downloader_at(&dir, port).download_files(Hub::Ms, "iic/Test", &[("small.bin", 1)], Some(&tx)).unwrap();
+    downloader_at(&dir, port).download_files(Hub::Ms, "iic/Test", &[("small.bin", 1)], &AtomicBool::new(false), Some(&tx)).unwrap();
     let events: Vec<_> = rx.try_iter().collect();
     // 文件收尾必发一条 Progress（total=16）
     let got = events.iter().any(|e| matches!(e, DownloadEvent::Progress { done: 16, total: Some(16), .. }));
@@ -227,7 +227,7 @@ fn undersized_existing_file_is_redownloaded() {
 
     let (tx, rx) = channel();
     let out = downloader_at(&dir, port)
-        .download_files(Hub::Ms, "iic/Test", &[("model.bin", 10)], Some(&tx))
+        .download_files(Hub::Ms, "iic/Test", &[("model.bin", 10)], &AtomicBool::new(false), Some(&tx))
         .unwrap();
 
     // 重下为完整 BODY，而非跳过保留半截
@@ -235,6 +235,52 @@ fn undersized_existing_file_is_redownloaded() {
     let events: Vec<_> = rx.try_iter().collect();
     assert!(events.iter().any(|e| matches!(e, DownloadEvent::Log(m) if m.contains("尺寸异常"))), "events={events:?}");
     assert!(events.iter().any(|e| matches!(e, DownloadEvent::FileDone { file, .. } if file == "model.bin")));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 带外部请求计数的固定响应服务器（取消 / 请求次数断言用）
+fn serve_counting(body: &'static [u8], counter: Arc<AtomicU32>) -> (u16, std::thread::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let h = std::thread::spawn(move || {
+        for conn in listener.incoming() {
+            let Ok(mut stream) = conn else { break };
+            counter.fetch_add(1, Ordering::SeqCst);
+            let _ = read_request_range(&mut stream);
+            let headers = format!("Content-Length: {}\r\nConnection: close\r\n", body.len());
+            write_response(&mut stream, "200 OK", &headers, body);
+        }
+    });
+    (port, h)
+}
+
+/// DL-4/D-23：取消令牌预置 → 不发任何请求即返回 [cancel]，.incomplete 续传现场保留
+#[test]
+fn cancel_before_start_makes_no_requests_and_keeps_incomplete() {
+    let counter = Arc::new(AtomicU32::new(0));
+    let (port, _t) = serve_counting(BODY, counter.clone());
+    let dir = tmpdir("cancel");
+    let snap = dir.join("modelscope").join("models").join("iic--Test").join("snapshots").join("master");
+    std::fs::create_dir_all(&snap).unwrap();
+    std::fs::write(snap.join("model.bin.incomplete"), &BODY[..5]).unwrap();
+
+    let cancel = AtomicBool::new(true);
+    let err = downloader_at(&dir, port)
+        .download_files(Hub::Ms, "iic/Test", &[("model.bin", 1)], &cancel, None)
+        .expect_err("取消应返回错误");
+    assert!(err.to_string().contains("[cancel]"), "{err}");
+    assert_eq!(counter.load(Ordering::Relaxed), 0, "取消后不得发任何请求");
+    assert!(snap.join("model.bin.incomplete").exists(), "续传现场保留");
+    assert!(!snap.join("model.bin").exists());
+    // 复位令牌 → 同一 .incomplete 断点续传成功（自 5B 起续 Range）
+    let log = Arc::new(Log::default());
+    let (port2, _t2) = serve(BODY, 0, log.clone());
+    let out = downloader_at(&dir, port2)
+        .download_files(Hub::Ms, "iic/Test", &[("model.bin", 1)], &AtomicBool::new(false), None)
+        .unwrap();
+    assert_eq!(std::fs::read(out.join("model.bin")).unwrap(), BODY);
+    let ranges = log.ranges.lock().unwrap().clone();
+    assert!(ranges.iter().any(|r| r.as_deref() == Some("bytes=5-")), "ranges={ranges:?}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -247,7 +293,7 @@ fn http_404_fails_fast_without_retries() {
     let dir = tmpdir("fastfail");
     let t0 = std::time::Instant::now();
     let err = downloader_at(&dir, port)
-        .download_files(Hub::Ms, "iic/Test", &[("model.bin", 1)], None)
+        .download_files(Hub::Ms, "iic/Test", &[("model.bin", 1)], &AtomicBool::new(false), None)
         .expect_err("404 应失败");
     assert!(err.to_string().contains("[http-404]"), "{err}");
     assert!(t0.elapsed() < std::time::Duration::from_secs(3), "应快速失败，实际 {:?}", t0.elapsed());

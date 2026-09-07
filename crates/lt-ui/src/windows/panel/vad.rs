@@ -718,6 +718,39 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
                                 .color(pal.weak),
                         );
                     }
+                    // DL-4/D-23：取消 → backend 置会话令牌，Downloader 在检查点停止
+                    if ui
+                        .add(
+                            egui::Button::new(RichText::new(lt_i18n::t("cancel_download")).size(12.0))
+                                .corner_radius(6.0),
+                        )
+                        .clicked()
+                    {
+                        state.send_cmd(lt_proto::Cmd::CancelDownload);
+                    }
+                }
+                // ── 下载已取消（DL-4/D-23）：保留日志 + 继续下载（断点续传）──
+                DownloadUiState::Cancelled { log } => {
+                    ui.label(
+                        RichText::new(lt_i18n::t("download_cancelled_title"))
+                            .color(pal.warn)
+                            .size(11.5),
+                    );
+                    ui.label(
+                        RichText::new(lt_i18n::t("download_cancelled_hint"))
+                            .size(11.0)
+                            .color(pal.weak),
+                    );
+                    let _ = log;
+                    if ui
+                        .add(
+                            egui::Button::new(RichText::new(lt_i18n::t("resume_download")).size(12.0))
+                                .corner_radius(6.0),
+                        )
+                        .clicked()
+                    {
+                        start_download(state);
+                    }
                 }
                 // ── 下载失败：分类建议 + 原始错误 + 重试（P2-6）──
                 DownloadUiState::Failed { kind, detail, log } => {
@@ -855,12 +888,13 @@ fn restore_vad_page(state: &mut AppState) {
 
 /// 发起下载：写入 Downloading 状态（进度事件随后填充）并发送命令。
 /// 进行中忽略重复点击（P2-5 修复：不再触发并发下载线程）。
+/// 失败/取消态的日志带入新下载（上下文延续）。
 fn start_download(state: &mut AppState) {
     if state.download.downloading() {
         return;
     }
     let mut log = match &state.download {
-        DownloadUiState::Failed { log, .. } => log.clone(),
+        DownloadUiState::Failed { log, .. } | DownloadUiState::Cancelled { log } => log.clone(),
         _ => Vec::new(),
     };
     log.push(lt_i18n::t("download_starting").to_string());
@@ -977,6 +1011,28 @@ fn enumerate_devices() -> DeviceCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// DL-4/D-23：取消态 → start_download 恢复为 Downloading 且日志延续；
+    /// Downloading 态重复点击被守卫忽略
+    #[test]
+    fn download_card_cancelled_then_restart_preserves_log() {
+        let mut state = crate::state::AppState::new(lt_proto::Settings::default());
+        // 取消态（带取消前日志）→ 继续下载
+        state.download = DownloadUiState::Cancelled {
+            log: vec!["[a/b] model.bin 1.0 KB / 2.0 KB".into()],
+        };
+        start_download(&mut state);
+        match &state.download {
+            DownloadUiState::Downloading { log, .. } => {
+                assert_eq!(log.len(), 2, "取消前日志 + download_starting");
+            }
+            other => panic!("{other:?}"),
+        }
+        // Downloading 中重复触发被忽略（不再新建状态）
+        let before = state.download.clone();
+        start_download(&mut state);
+        assert_eq!(state.download, before);
+    }
 
     fn dev(names: &[&str]) -> Vec<String> {
         names.iter().map(|s| s.to_string()).collect()

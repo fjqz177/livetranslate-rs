@@ -4,6 +4,7 @@
 //! 验证 URL 方案、Content-Range 解析与落盘布局在真实 CDN 上成立。
 
 use lt_models::download::{DownloadEvent, Downloader, Hub, ProxyMode};
+use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::channel;
 
 fn main() -> anyhow::Result<()> {
@@ -13,7 +14,7 @@ fn main() -> anyhow::Result<()> {
     let repo = "pengzhendong/sherpa-onnx-sense-voice-zh-en-ja-ko-yue";
 
     let (tx, rx) = channel();
-    let dir = dl.download_files(Hub::Ms, repo, &[("tokens.txt", 1)], Some(&tx))?;
+    let dir = dl.download_files(Hub::Ms, repo, &[("tokens.txt", 1)], &AtomicBool::new(false), Some(&tx))?;
 
     for ev in rx.try_iter() {
         match ev {

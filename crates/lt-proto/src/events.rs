@@ -52,6 +52,9 @@ pub enum UiEvent {
     DownloadSucceeded { settings: Box<Settings> },
     /// 下载失败（可重试；UI 恢复控件并显示 btn_retry）
     DownloadFailed(String),
+    /// 下载被用户取消（DL-4/D-23）：UI 卡片回「已取消，进度已保留」态，
+    /// 再次下载从 .incomplete 断点续传（仅追加成员，既有成员语义不变）
+    DownloadCancelled,
     /// 模型加载开始（_ModelLoadDialog 打开依据；label 如 "SenseVoice Small"）
     ModelLoadStart(String),
     /// 模型加载结束（切换引擎的 _ModelLoadDialog 关闭依据）
@@ -71,6 +74,9 @@ pub enum Cmd {
     Stop,
     /// 首启向导/缺模型对话框：开始下载（hub: "ms"|"hf"；proxy: "none"|"system"|URL）
     StartDownload { hub: String, proxy: String },
+    /// 取消在途下载（DL-4/D-23）：backend 置会话取消令牌，Downloader 在文件
+    /// 边界/重试间隙/读块检查点停止并保留 .incomplete 续传现场（仅追加成员）
+    CancelDownload,
     /// 引擎/模型/hub 任一变化触发（签名相同则管道侧自行跳过）
     SwitchEngine {
         engine: String,
