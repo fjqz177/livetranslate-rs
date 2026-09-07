@@ -1,6 +1,8 @@
 # ASR 子系统加固与状态机收口方案（docs/asr-hardening.md）
 
 > 状态：**阶段二活跃文档**（2026-09-08 五路并行审计定稿：进程/IPC、引擎实现、pipeline 集成、注册表/下载链路、测试/文档一致性五切面；全部 P0/P1 发现经主线程逐条复核源码确认）。施工包 **AH-1~AH-10**，新偏差自 **D-26** 起。
+>
+> **r1.1（2026-09-08）：✗ AH-1~AH-10 施工完成。** 363 测全绿（净增 14），新码 clippy 零告警；提交链 53823ae(AH-9a)→96df48a(AH-2)→f6a5881(AH-1)→8d4bf55(AH-3)→37f2902(AH-4)→8601e3c(AH-6)→b0f623b(AH-7)→5fdb375(AH-8)→b96e6ca(AH-5)→4ab7f1f(AH-10)。要点回填：①sha256 实测登记 14/20 文件（sensevoice2+nano6+qwen36+whisper tiny，本地缓存 sha256sum，qwen3 decoder 前缀与 §4.2-asr 交叉核对一致；whisper 其余五档待有网络实机补齐=渐进登记）②新增 FailKind::Checksum（确定性损坏不重试不回落）③total=None 拒绝收尾 + 下载客户端 no_gzip ④磁盘预检 GetDiskFreeSpaceExW。遗留：GUI 冒烟脚本 A/B/C 待实机（mic/loopback 实时环境）；sensevoice.rs 迁入 engines/ 目录（纯组织项）缓行；T1 qwen3 长样例校准待实机。
 > 行号基准 = 2026-09-08 现场（e2d2035）。审计方法：五子代理独立深审 + 主线程对全部 P0/P1 及关键 P2 证据链二次核实；原版对照直接回读工作区副本 `LiveTranslate/main.py`。
 
 ---
