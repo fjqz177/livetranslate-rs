@@ -59,6 +59,42 @@ const BACKOFFS: [Duration; 3] = [
 /// 进度事件节流：累计增量超过此值才发一条
 const PROGRESS_STEP: u64 = 256 * 1024;
 
+// ── 失败分类前缀（契约仍为 String：DownloadFailed(String) 不变；UI 端
+//    按前缀分流「网络/仓库缺失/磁盘」提示，未知/无前缀回落第 3 类）──
+
+/// 网络层失败（reqwest：超时/连接拒绝/DNS/TLS）
+pub const KIND_NET: &str = "net";
+/// HTTP 4xx/5xx（含 404 仓库缺失、限流、服务端错误）
+pub const KIND_HTTP: &str = "http";
+/// 磁盘/IO 失败（创建目录、写入、rename）
+pub const KIND_DISK: &str = "disk";
+/// 长度校验失败（下载不完整）
+pub const KIND_LENGTH: &str = "length";
+
+/// 前缀码文本：`[net] ...`（UI 侧 lt_ui::panel::vad::parse_download_kind 解析）
+pub fn kind_prefix(kind: &str) -> String {
+    format!("[{kind}] ")
+}
+
+/// HTTP 状态码 → 分类键：404 单列（仓库缺失，建议切下载源），其余 4xx/5xx 归 http
+fn http_kind(status: reqwest::StatusCode) -> &'static str {
+    if status == reqwest::StatusCode::NOT_FOUND {
+        "http-404"
+    } else {
+        KIND_HTTP
+    }
+}
+
+/// 磁盘/IO 错误 → 带 [disk] 前缀的 anyhow
+fn disk_err(e: std::io::Error) -> anyhow::Error {
+    anyhow::anyhow!("{}磁盘 I/O 失败: {e}", kind_prefix(KIND_DISK))
+}
+
+/// 网络错误 → 带 [net] 前缀的 anyhow
+fn net_err(e: reqwest::Error) -> anyhow::Error {
+    anyhow::anyhow!("{}网络请求失败: {e}", kind_prefix(KIND_NET))
+}
+
 pub struct Downloader {
     models_dir: PathBuf,
     proxy: ProxyMode,
@@ -184,7 +220,7 @@ impl Downloader {
         tx: Option<&Sender<DownloadEvent>>,
     ) -> anyhow::Result<()> {
         if let Some(p) = target.parent() {
-            std::fs::create_dir_all(p)?;
+            std::fs::create_dir_all(p).map_err(disk_err)?;
         }
         let mut done: u64 = incomplete.metadata().map(|m| m.len()).unwrap_or(0);
 
@@ -195,7 +231,7 @@ impl Downloader {
             if done > 0 {
                 req = req.header("Range", format!("bytes={done}-"));
             }
-            let resp = req.send()?;
+            let resp = req.send().map_err(net_err)?;
             // 注意：不使用 error_for_status——416 是续传回退信号，非错误
             let status = resp.status();
 
@@ -208,7 +244,8 @@ impl Downloader {
                     done = 0;
                     continue;
                 }
-                anyhow::bail!("HTTP {status}");
+                // 失败分类前缀（契约不变：DownloadFailed 仍是 String；UI 端按前缀分流提示）
+                anyhow::bail!("{}HTTP {status}", kind_prefix(http_kind(status)));
             }
             if !supports_resume && done > 0 {
                 // 服务端忽略 Range 返 200：从头重写
@@ -225,7 +262,7 @@ impl Downloader {
             // 打开续传临时文件：续传走追加；全新/重写走截断
             // （Windows 上 append 句柄 set_len 会报拒绝访问，不能混用）
             let mut f = if supports_resume && done > 0 {
-                std::fs::OpenOptions::new().create(true).append(true).open(incomplete)?
+                std::fs::OpenOptions::new().create(true).append(true).open(incomplete).map_err(disk_err)?
             } else {
                 done = 0;
                 let _ = std::fs::remove_file(incomplete);
@@ -233,32 +270,39 @@ impl Downloader {
                     .create(true)
                     .write(true)
                     .truncate(true)
-                    .open(incomplete)?
+                    .open(incomplete)
+                    .map_err(disk_err)?
             };
 
             let mut written = done;
             let mut buf = [0u8; 64 * 1024];
             let mut resp = resp;
             loop {
-                let n = resp.read(&mut buf)?;
+                let n = resp.read(&mut buf).map_err(|e| {
+                    anyhow::anyhow!("{}网络读取中断: {e}", kind_prefix(KIND_NET))
+                })?;
                 if n == 0 {
                     break;
                 }
-                f.write_all(&buf[..n])?;
+                f.write_all(&buf[..n]).map_err(disk_err)?;
                 written += n as u64;
                 if written - done >= PROGRESS_STEP {
                     self.progress(tx, repo, file, written, total);
                     done = written;
                 }
             }
-            f.flush()?;
+            f.flush().map_err(disk_err)?;
 
             // 完整性：总长已知则校验
             if let Some(total) = total {
-                anyhow::ensure!(written == total, "长度不完整 {written}/{total}");
+                anyhow::ensure!(
+                    written == total,
+                    "{}长度不完整 {written}/{total}",
+                    kind_prefix(KIND_LENGTH)
+                );
             }
             drop(f);
-            std::fs::rename(incomplete, target)?;
+            std::fs::rename(incomplete, target).map_err(disk_err)?;
             self.progress(tx, repo, file, written, total.or(Some(written)));
             return Ok(());
         }

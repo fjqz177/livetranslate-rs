@@ -9,7 +9,10 @@
 //! - CloseRequested 一律隐藏窗口（退出仅走托盘 Quit，等价 setQuitOnLastWindowClosed(false)）；
 //! - 点击穿透由窗口层按 50ms 轮询处理（M4 接入），本宿主只负责窗口创建与 flags。
 
-use crate::state::{AppState, OverlayMessage, StartupFlow, TickKind, WinAction, WinId, push_log_line};
+use crate::state::{
+    AppState, DownloadUiState, OverlayMessage, StartupFlow, TickKind, WinAction, WinId,
+    push_log_line,
+};
 use crate::tray::{self, Tray};
 use crate::windows;
 use crate::windows::subtitle::{MonoRect, clamp_to_screen, is_pos_visible};
@@ -417,13 +420,7 @@ impl MultiWindowApp {
             }
             m::QUIT => {
                 // 原版 on_quit(confirm=True)：确认框；取消则不退出
-                let confirmed = rfd::MessageDialog::new()
-                    .set_title(lt_i18n::t("quit_confirm_title"))
-                    .set_description(lt_i18n::t("quit_confirm_msg"))
-                    .set_buttons(rfd::MessageButtons::OkCancel)
-                    .set_level(rfd::MessageLevel::Info)
-                    .show();
-                if confirmed == rfd::MessageDialogResult::Ok {
+                if tray::confirm_quit() {
                     tracing::info!("收到退出指令（已确认）");
                     event_loop.exit();
                 }
@@ -499,10 +496,17 @@ impl MultiWindowApp {
             };
             let _ = t.handles.overlay_toggle.set_text(text);
             // 首次隐藏提示（原版 tray.showMessage 气泡；tray-icon 0.24
-            // 无气泡 API → 降级为日志，已知偏差，待 Shell_NotifyIcon 直调）
+            // 无气泡 API → 一次性 info 弹窗兜底，避免"悬浮窗不见了"困惑）
             if !vis && !self.overlay_hide_notified {
                 self.overlay_hide_notified = true;
-                tracing::info!("{}", lt_i18n::t("hide_tray_hint"));
+                let hint = lt_i18n::t("hide_tray_hint");
+                tracing::info!("{hint}");
+                rfd::MessageDialog::new()
+                    .set_title(lt_i18n::t("hide_tray_hint_title"))
+                    .set_description(&hint)
+                    .set_buttons(rfd::MessageButtons::Ok)
+                    .set_level(rfd::MessageLevel::Info)
+                    .show();
             }
         }
         self.set_visible(WinId::Overlay, vis);
@@ -712,7 +716,7 @@ impl MultiWindowApp {
                 }
                 // ASR 完全不可用（沿用原版字面文案）；同样关闭加载框 + 托盘错误图标
                 lt_proto::UiEvent::AsrUnavailable => {
-                    self.app_state.asr_label = Some("ASR unavailable".into());
+                    self.app_state.asr_label = Some(lt_i18n::t("asr_unavailable"));
                     if let Some(t) = &self.tray {
                         t.set_status(tray::IconStatus::Error);
                     }
@@ -721,12 +725,33 @@ impl MultiWindowApp {
                     }
                     self.close_load_dialog();
                 }
+                // 翻译装置配置无效：状态行红字（翻译页）+ 日志已由 pipeline 落
+                lt_proto::UiEvent::TranslatorUnavailable { reason } => {
+                    self.app_state.translator_error = Some(reason);
+                    self.redraw(WinId::Panel);
+                }
+                // 翻译配置「测试连接」回执
+                lt_proto::UiEvent::TestTranslatorResult { name, ok, error, ms } => {
+                    let _ = name;
+                    self.app_state.test_translator = crate::state::TestTranslatorState::Done {
+                        ok,
+                        error,
+                        ms,
+                    };
+                    self.redraw(WinId::Panel);
+                }
                 // ── 启动流：下载日志流（向导/缺模型对话框共用）──
                 lt_proto::UiEvent::DownloadProgress(line) => {
                     match &mut self.app_state.startup {
                         StartupFlow::Wizard(w) => push_log_line(&mut w.log, line),
                         StartupFlow::DownloadMissing { log, .. } => push_log_line(log, line),
-                        StartupFlow::Ready => {}
+                        StartupFlow::Ready => {
+                            // D-19 直进主界面 → 运行期下载：进度写识别页
+                            // 缓存卡片的下载状态机（P0-1 修复——进度不再被吞）
+                            self.app_state.download.push_log(line.clone());
+                            self.update_download_progress(&line);
+                            self.redraw(WinId::Panel);
+                        }
                     }
                     self.redraw_setup();
                 }
@@ -742,7 +767,18 @@ impl MultiWindowApp {
                             *failed = Some(e);
                             push_log_line(log, failed_line);
                         }
-                        StartupFlow::Ready => {}
+                        StartupFlow::Ready => {
+                            // 运行期下载失败：分类提示 + 历史日志收进卡片（P0-1/P1-6）
+                            let (kind, detail) = crate::state::DownloadErrKind::parse(&e);
+                            let mut log = match &self.app_state.download {
+                                DownloadUiState::Downloading { log, .. }
+                                | DownloadUiState::Failed { log, .. } => log.clone(),
+                                _ => Vec::new(),
+                            };
+                            log.push(failed_line.clone());
+                            self.app_state.download = DownloadUiState::Failed { kind, detail, log };
+                            self.redraw(WinId::Panel);
+                        }
                     }
                     self.redraw_setup();
                 }
@@ -759,7 +795,12 @@ impl MultiWindowApp {
                             push_log_line(log, done_line);
                             *finished = true;
                         }
-                        StartupFlow::Ready => {}
+                        StartupFlow::Ready => {
+                            // 运行期下载成功：卡片回到已缓存（磁盘探测下一帧
+                            // 自然翻转）+ 引擎热切换由 AppShell 处理
+                            self.app_state.download = DownloadUiState::Idle;
+                            self.redraw(WinId::Panel);
+                        }
                     }
                     // 原版 QTimer.singleShot(500, accept)：安排 500ms 收尾节拍
                     self.app_state.cancel_setup_tick();
@@ -813,6 +854,23 @@ impl MultiWindowApp {
     fn redraw(&mut self, id: WinId) {
         if let Some(hw) = self.find(id) {
             hw.window.request_redraw();
+        }
+    }
+
+    /// 从下载进度日志行解析已下/总量（backend format_event 的固定形态：
+    /// `[{repo}] {file} {done} / {total}` 或 `[{repo}] {file} {done}`；
+    /// 非进度行（完成/跳过/快照）不更新）
+    fn update_download_progress(&mut self, line: &str) {
+        let Some((done, total)) = parse_progress_tokens(line) else {
+            return;
+        };
+        if let DownloadUiState::Downloading { done_bytes, total_bytes, .. } =
+            &mut self.app_state.download
+        {
+            *done_bytes = done;
+            if *total_bytes == 0 {
+                *total_bytes = total;
+            }
         }
     }
 
@@ -1137,6 +1195,13 @@ impl MultiWindowApp {
     /// 执行导出（原版 export_messages；rfd 保存对话框 + 三种模式行格式）
     fn run_export(&mut self, mode: &str) {
         if self.app_state.messages.is_empty() {
+            // P1-4：空导出就地弹窗提示（原版仅日志；用户点了按钮必须看到反馈）
+            rfd::MessageDialog::new()
+                .set_title(lt_i18n::t("export_dialog_title"))
+                .set_description(lt_i18n::t("export_empty"))
+                .set_buttons(rfd::MessageButtons::Ok)
+                .set_level(rfd::MessageLevel::Info)
+                .show();
             tracing::info!("{}", lt_i18n::t("export_empty"));
             return;
         }
@@ -1372,6 +1437,32 @@ impl ApplicationHandler<UiMsg> for MultiWindowApp {
             .unwrap_or_else(|| Instant::now() + Duration::from_secs(3600));
         event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
     }
+}
+
+/// 解析下载进度行末端的 "done / total" 字节对（backend format_event 形态：
+/// `[{repo}] {file} 238.4 MB / 410.3 MB`——人性化单位，含 B/KB/MB/GB）。
+/// 非进度行（无 "/" 分隔或不可解析）→ None。
+fn parse_progress_tokens(line: &str) -> Option<(u64, u64)> {
+    // 只扫最后一个 " / " 分隔（done/total 恒在行尾）
+    let marker = " / ";
+    let idx = line.rfind(marker)?;
+    let done = parse_human_size(line[..idx].split_whitespace().last()?)?;
+    let total = parse_human_size(line[idx + marker.len()..].split_whitespace().next()?)?;
+    Some((done, total))
+}
+
+/// "238.4 MB" / "512 B" / "2.89 GB" → 字节（对齐 backend format_size）
+fn parse_human_size(s: &str) -> Option<u64> {
+    let (num, unit) = s.split_once(' ')?;
+    let v: f64 = num.parse().ok()?;
+    let mul = match unit {
+        "B" => 1.0,
+        "KB" => 1024.0,
+        "MB" => 1024.0 * 1024.0,
+        "GB" => 1024.0 * 1024.0 * 1024.0,
+        _ => return None,
+    };
+    Some((v * mul) as u64)
 }
 
 /// 窗口清屏色。

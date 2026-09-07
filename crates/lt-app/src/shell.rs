@@ -39,7 +39,13 @@ impl AppShell {
         self.started = true;
         match Pipeline::start(&settings, self.proxy.clone()) {
             Ok(p) => self.pipeline = Some(p),
-            Err(e) => tracing::error!("管道启动失败: {e:#}"),
+            Err(e) => {
+                // P0-3：装配失败必须让用户看见——面板识别页顶部红字（数据
+                // 源在本字段；细节经日志文件/日志页可查），不再只进日志
+                let msg = format!("{e:#}");
+                tracing::error!("管道启动失败: {msg}");
+                self.ui.app_state.pipeline_error = Some(msg);
+            }
         }
     }
 
@@ -134,6 +140,11 @@ impl AppShell {
                 }
                 tracing::info!("Switching translator: {} ({})", config.name, config.model);
                 self.persist_settings();
+            }
+            Cmd::TestTranslator(config) => {
+                if let Some(p) = self.pipeline.as_ref() {
+                    p.test_translator(&config);
+                }
             }
             Cmd::PersistSettings(settings) => {
                 self.ui.app_state.settings = *settings;

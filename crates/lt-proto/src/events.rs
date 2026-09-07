@@ -56,6 +56,10 @@ pub enum UiEvent {
     ModelLoadStart(String),
     /// 模型加载结束（切换引擎的 _ModelLoadDialog 关闭依据）
     ModelLoadDone { ok: bool, error: Option<String> },
+    /// 翻译装置构建失败（配置无效等）：整条翻译静默不可用的唯一用户可见通道
+    TranslatorUnavailable { reason: String },
+    /// 翻译配置「测试连接」结果（Cmd::TestTranslator 的回执）
+    TestTranslatorResult { name: String, ok: bool, error: Option<String>, ms: u64 },
 }
 
 /// UI → 管道的命令
@@ -87,6 +91,8 @@ pub enum Cmd {
     SetTargetLanguage(String),
     SetTimeout(u32),
     IncrementalAsr { enabled: bool, interval: f32 },
+    /// 翻译配置「测试连接」：构建临时装置发一次最简请求，回执 TestTranslatorResult
+    TestTranslator(Box<ModelConfig>),
 }
 
 /// 音频设备选择（对应 settings.audio_device 语义）

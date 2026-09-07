@@ -876,11 +876,14 @@ pub enum PanelPage {
     Benchmark,
     Cache,
     Changelog,
+    /// 日志页（Rust 版新增：设置内自查入口；与日志窗共享同一缓冲）
+    Log,
 }
 
 impl PanelPage {
-    /// 原版 tabs.addTab 顺序（control_panel.py:170-180）
-    pub const ALL: [PanelPage; 7] = [
+    /// 原版 tabs.addTab 顺序（control_panel.py:170-180）；日志页为 Rust 版新增
+    ///（用户自查入口，追加到末位）
+    pub const ALL: [PanelPage; 8] = [
         PanelPage::VadAsr,
         PanelPage::Translation,
         PanelPage::Style,
@@ -888,6 +891,7 @@ impl PanelPage {
         PanelPage::Benchmark,
         PanelPage::Cache,
         PanelPage::Changelog,
+        PanelPage::Log,
     ];
 
     /// Tab 标题 i18n 键（原版 addTab 的 t("tab_*")）
@@ -900,6 +904,7 @@ impl PanelPage {
             PanelPage::Benchmark => "tab_benchmark",
             PanelPage::Cache => "tab_cache",
             PanelPage::Changelog => "tab_changelog",
+            PanelPage::Log => "tab_log",
         }
     }
 }
@@ -921,10 +926,84 @@ pub struct DeviceCache {
     pub default_output: Option<String>,
 }
 
+/// 下载失败分类（由 lt-models 错误字符串前缀 `[net]`/`[http-404]`/`[disk]`... 解析；
+/// 未知/无前缀 → Other，展示原始错误）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DownloadErrKind {
+    Net,
+    Http404,
+    Http,
+    Disk,
+    Length,
+    Other,
+}
+
+impl DownloadErrKind {
+    /// 解析下载失败消息的前缀码；未知/无前缀回落 Other 并返回原文
+    pub fn parse(msg: &str) -> (Self, String) {
+        let (prefix, rest) = match msg.strip_prefix('[').and_then(|m| m.split_once("] ")) {
+            Some((p, r)) => (p, r),
+            None => return (Self::Other, msg.to_string()),
+        };
+        let kind = match prefix {
+            "net" => Self::Net,
+            "http-404" => Self::Http404,
+            "http" => Self::Http,
+            "disk" => Self::Disk,
+            "length" => Self::Length,
+            _ => Self::Other,
+        };
+        (kind, rest.to_string())
+    }
+}
+
+/// 模型下载运行态（识别页缓存卡片的状态机；运行期下载的唯一 UI 反馈源）
+#[derive(Debug, Clone, PartialEq)]
+pub enum DownloadUiState {
+    /// 无下载（未开始/已成功/被替换）
+    Idle,
+    /// 下载进行中：done/total 供进度条（total=0 表示未知，显示日志模式）；
+    /// log 为进度/日志行环形缓冲（上限 200）
+    Downloading { done_bytes: u64, total_bytes: u64, log: Vec<String> },
+    /// 下载失败：kind 供分类提示，detail 为原始错误串，log 为失败前日志
+    Failed { kind: DownloadErrKind, detail: String, log: Vec<String> },
+}
+
+impl Default for DownloadUiState {
+    fn default() -> Self {
+        Self::Idle
+    }
+}
+
+impl DownloadUiState {
+    /// 进行中（识别页下载按钮禁用 + 卡片进度渲染的依据）
+    pub fn downloading(&self) -> bool {
+        matches!(self, Self::Downloading { .. })
+    }
+
+    /// 追加日志行（环形 200 条，删最旧）
+    pub fn push_log(&mut self, line: String) {
+        if let Self::Downloading { log, .. } | Self::Failed { log, .. } = self {
+            if log.len() >= 200 {
+                log.remove(0);
+            }
+            log.push(line);
+        }
+    }
+}
+
+/// 翻译配置「测试连接」运行态（翻译页按钮行；TestTranslatorResult 事件收敛）
+#[derive(Debug, Clone, Default, PartialEq)]
+pub enum TestTranslatorState {
+    #[default]
+    Idle,
+    Running,
+    Done { ok: bool, error: Option<String>, ms: u64 },
+}
+
 /// 控制面板 UI 伴生状态（全部仅 UI 线程触达；对照 ControlPanel 的面板局部字段）
 #[derive(Default)]
-pub struct PanelUiState {
-    /// 当前页（原版 _nav.currentRow + _stack.setCurrentIndex）
+pub struct PanelUiState {    /// 当前页（原版 _nav.currentRow + _stack.setCurrentIndex）
     pub page: PanelPage,
     /// 明暗主题（内存态；settings 契约缺 theme 键，见 [`ThemeMode`]）
     pub theme: ThemeMode,
@@ -1129,6 +1208,14 @@ pub struct AppState {
     pub panel: PanelUiState,
     /// ASR 设备标签（"SenseVoice Small" 等；不可用时 "ASR unavailable"）
     pub asr_label: Option<String>,
+    /// 模型下载运行态（识别页缓存卡片；DownloadProgress/Failed/Succeeded 事件驱动）
+    pub download: DownloadUiState,
+    /// 翻译装置不可用原因（TranslatorUnavailable 事件；翻译页状态行红字显示）
+    pub translator_error: Option<String>,
+    /// 翻译配置「测试连接」运行态（Cmd::TestTranslator 的 UI 侧）
+    pub test_translator: TestTranslatorState,
+    /// 管道启动失败原因（AppShell 直写；识别页顶部红字显示，用户可去日志页查细节）
+    pub pipeline_error: Option<String>,
     /// 启动流状态机（首启向导/缺模型下载/Ready）
     pub startup: StartupFlow,
     /// 模型加载对话框（_ModelLoadDialog）：Some(label)=显示中
@@ -1171,8 +1258,12 @@ impl AppState {
         let mut visible = std::collections::HashMap::new();
         visible.insert(WinId::Overlay, !startup_pending);
         visible.insert(WinId::Subtitle, !startup_pending && settings.subtitle_mode.enabled);
-        // 原版启动只开悬浮窗；控制面板由悬浮窗"设置"/托盘打开（on_toggle_panel）
-        visible.insert(WinId::Panel, false);
+        // 原版启动只开悬浮窗；控制面板由悬浮窗"设置"/托盘打开（on_toggle_panel）。
+        // LIVETRANSLATE_SHOW_PANEL=1：开发/排障便利（实机截图走查用），默认关闭
+        let show_panel = std::env::var("LIVETRANSLATE_SHOW_PANEL")
+            .map(|v| !v.is_empty() && v != "0")
+            .unwrap_or(false);
+        visible.insert(WinId::Panel, !startup_pending && show_panel);
         visible.insert(WinId::Log, false); // 原版：启动即建但隐藏
         // Setup 对话框窗口：仅启动流进行中初始可见（运行期 load_dialog 单独控制）
         visible.insert(WinId::Setup, startup_pending);
@@ -1198,6 +1289,10 @@ impl AppState {
             logwin: LogWindowState::default(),
             panel: PanelUiState::default(),
             asr_label: None,
+            download: DownloadUiState::default(),
+            translator_error: None,
+            test_translator: TestTranslatorState::default(),
+            pipeline_error: None,
             startup: flow,
             load_dialog: None,
             cmd_tx: None,
@@ -1786,7 +1881,8 @@ mod tests {
 
     // ── 面板（M4.3）：页序 / 防抖 / 页键 ──
 
-    /// 页序对照原版 tabs.addTab（control_panel.py:170-180）固定 7 Tab
+    /// 页序对照原版 tabs.addTab（control_panel.py:170-180）固定 7 Tab +
+    /// Rust 版「日志」页（末位）
     #[test]
     fn panel_pages_order_matches_original() {
         assert_eq!(
@@ -1799,6 +1895,7 @@ mod tests {
                 PanelPage::Benchmark,
                 PanelPage::Cache,
                 PanelPage::Changelog,
+                PanelPage::Log,
             ]
         );
         // Tab 标题键与 yaml 真实键对齐（t() 缺键回退 key 本身 → 不等即键缺失）

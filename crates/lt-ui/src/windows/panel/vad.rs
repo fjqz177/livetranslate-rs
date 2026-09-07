@@ -13,7 +13,7 @@
 //! - "性能基准"按钮在页头（mod.rs），点击仅记日志（窗口随 M4.4 接入）。
 
 use super::{group_card, hint_line, mark_settings_dirty, send_switch_engine, Palette};
-use crate::state::{AppState, DeviceCache};
+use crate::state::{AppState, DeviceCache, DownloadErrKind, DownloadUiState};
 use egui::{RichText, Ui};
 use lt_proto::{AudioDeviceChoice, MicDeviceChoice};
 
@@ -247,6 +247,21 @@ pub fn format_size(size_bytes: u64) -> String {
 
 /// 识别页 UI 总入口
 pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
+    // N3/N4：识别页偏离默认值提示 + 恢复本页（ui_lang 为语言偏好，不提示不恢复）
+    let diffs = crate::panel_diff::diff_paths(&state.settings);
+    let page_diffs: Vec<&str> = diffs
+        .iter()
+        .filter(|p| {
+            VAD_PAGE_PATHS.iter().any(|pre| p.as_str() == *pre || p.as_str().starts_with(pre))
+        })
+        .map(|p: &String| p.as_str())
+        .collect();
+    if !page_diffs.is_empty() {
+        super::reset_toolbar(ui, pal, page_diffs.len(), &page_diffs.join("、"), |_| {
+            restore_vad_page(state);
+        });
+    }
+
     let engine = state.settings.asr_engine.clone();
     let is_funasr = engine == "funasr";
 
@@ -639,7 +654,8 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
     });
 
     // ── 模型缓存（原版 _update_whisper_size_label + 下载按钮的泛化：
-    //     显示当前引擎模型缓存状态；未缓存 → 下载按钮走现有 StartDownload 管线）──
+    //     显示当前引擎模型缓存状态；未缓存 → 下载按钮走现有 StartDownload 管线。
+    //     Rust 版四态：Idle(Missing/Cached) / Downloading(进度+日志) / Failed(分类+重试)）──
     group_card(ui, pal, &lt_i18n::t("group_model_cache"), |ui| {
         let models_dir = lt_models::paths::models_dir(state.settings.models_dir.as_deref())
             .unwrap_or_else(|_| std::env::temp_dir());
@@ -656,44 +672,220 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
                 whisper_tier_display_for(&state.settings.whisper_model_size)
             };
             ui.label(RichText::new(model_display).color(pal.text));
-            match status {
-                CacheStatus::Cached(bytes) => {
-                    ui.label(
-                        RichText::new(format!(
-                            "\u{2713} {} {}",
-                            lt_i18n::t("whisper_already_cached"),
-                            format_size(bytes)
-                        ))
-                        .color(pal.ok),
-                    );
+            match &state.download {
+                // ── 下载进行中：进度条 + 最近日志行（P0-1 修复——有反馈）──
+                DownloadUiState::Downloading { done_bytes, total_bytes, log } => {
+                    let pct = if *total_bytes > 0 {
+                        ((*done_bytes as f64 / *total_bytes as f64) * 100.0) as u32
+                    } else {
+                        0
+                    };
+                    let label = if *total_bytes > 0 {
+                        format!("{} {:.1}%", lt_i18n::t("downloading"), pct as f32)
+                    } else {
+                        lt_i18n::t("downloading").to_string()
+                    };
+                    ui.label(RichText::new(label).color(pal.accent));
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::ProgressBar::new(if *total_bytes > 0 {
+                                *done_bytes as f32 / *total_bytes as f32
+                            } else {
+                                0.0
+                            })
+                            .desired_width(160.0)
+                            .desired_height(10.0),
+                        );
+                        if *total_bytes > 0 {
+                            ui.label(
+                                RichText::new(format!(
+                                    "{} / {}",
+                                    format_size(*done_bytes),
+                                    format_size(*total_bytes)
+                                ))
+                                .size(11.0)
+                                .color(pal.weak),
+                            );
+                        }
+                    });
+                    if log.is_empty() {
+                        ui.label(RichText::new(lt_i18n::t("download_starting")).size(11.0).color(pal.weak));
+                    } else {
+                        let last = log.last().cloned().unwrap_or_default();
+                        ui.label(
+                            RichText::new(format!("\u{2026} {last}"))
+                                .size(11.0)
+                                .color(pal.weak),
+                        );
+                    }
                 }
-                CacheStatus::Missing(bytes) => {
+                // ── 下载失败：分类建议 + 原始错误 + 重试（P2-6）──
+                DownloadUiState::Failed { kind, detail, log } => {
                     ui.label(
-                        RichText::new(format!("{} \u{2248}{}", lt_i18n::t("model_not_cached"), format_size(bytes)))
+                        RichText::new(lt_i18n::t("download_failed_title"))
+                            .color(pal.err)
+                            .size(11.5),
+                    );
+                    ui.label(
+                        RichText::new(download_err_advice(*kind))
+                            .size(11.0)
                             .color(pal.warn),
                     );
+                    ui.label(
+                        RichText::new(format!("\u{2026} {detail}"))
+                            .size(10.5)
+                            .color(pal.weak),
+                    );
+                    let _ = log;
                     if ui
                         .add(
-                            egui::Button::new(RichText::new(lt_i18n::t("btn_download_whisper")).size(12.0))
+                            egui::Button::new(RichText::new(lt_i18n::t("retry")).size(12.0))
                                 .corner_radius(6.0),
                         )
                         .clicked()
                     {
-                        // 沿用现有下载管线（hub/代理取 settings 默认；backend 线程编排）
-                        state.send_cmd(lt_proto::Cmd::StartDownload {
-                            hub: state.settings.hub.clone(),
-                            proxy: state.settings.download_proxy.clone(),
-                        });
+                        start_download(state);
                     }
                 }
-                CacheStatus::Unavailable => {
-                    hint_line(ui, pal, &lt_i18n::t("model_mlt_disabled_hint"));
-                }
+                // ── 空闲态：磁盘探测三态（原状 + 未缓存下载按钮）──
+                DownloadUiState::Idle => match status {
+                    CacheStatus::Cached(bytes) => {
+                        ui.label(
+                            RichText::new(format!(
+                                "\u{2713} {} {}",
+                                lt_i18n::t("whisper_already_cached"),
+                                format_size(bytes)
+                            ))
+                            .color(pal.ok),
+                        );
+                    }
+                    CacheStatus::Missing(bytes) => {
+                        ui.label(
+                            RichText::new(format!("{} \u{2248}{}", lt_i18n::t("model_not_cached"), format_size(bytes)))
+                                .color(pal.warn),
+                        );
+                        if ui
+                            .add(
+                                egui::Button::new(RichText::new(lt_i18n::t("btn_download_whisper")).size(12.0))
+                                    .corner_radius(6.0),
+                            )
+                            .clicked()
+                        {
+                            start_download(state);
+                        }
+                    }
+                    CacheStatus::Unavailable => {
+                        hint_line(ui, pal, &lt_i18n::t("model_mlt_disabled_hint"));
+                    }
+                },
             }
         });
     });
 
     ui.add_space(8.0);
+}
+
+// ── 下载状态机辅助 ──
+
+/// 识别页字段路径前缀（N3/N4 页级 diff 判定；ui_lang/target_language/models_dir
+/// 等无页内控件命名空间，不纳入）
+const VAD_PAGE_PATHS: [&str; 18] = [
+    "vad_mode",
+    "vad_threshold",
+    "energy_threshold",
+    "min_speech_duration",
+    "max_speech_duration",
+    "silence_mode",
+    "silence_duration",
+    "incremental_asr",
+    "interim_interval",
+    "asr_engine",
+    "funasr_model",
+    "whisper_model_size",
+    "sensevoice_pad_seconds",
+    "whisper_pad_seconds",
+    "hub",
+    "audio_device",
+    "mic_device",
+    "asr_language",
+];
+
+/// 识别页恢复默认：写回字段 + 逐条即时命令（ApplySettings 无法热应用
+/// 引擎/设备/语言/padding/增量，必须重发——N3 生效管道）
+fn restore_vad_page(state: &mut AppState) {
+    let def = lt_proto::Settings::default();
+    let s = &mut state.settings;
+    s.vad_mode = def.vad_mode.clone();
+    s.vad_threshold = def.vad_threshold;
+    s.energy_threshold = def.energy_threshold;
+    s.min_speech_duration = def.min_speech_duration;
+    s.max_speech_duration = def.max_speech_duration;
+    s.silence_mode = def.silence_mode.clone();
+    s.silence_duration = def.silence_duration;
+    s.incremental_asr = def.incremental_asr;
+    s.interim_interval = def.interim_interval;
+    s.asr_engine = def.asr_engine.clone();
+    s.funasr_model = def.funasr_model.clone();
+    s.whisper_model_size = def.whisper_model_size.clone();
+    s.sensevoice_pad_seconds = def.sensevoice_pad_seconds;
+    s.whisper_pad_seconds = def.whisper_pad_seconds;
+    s.hub = def.hub.clone();
+    s.audio_device = def.audio_device.clone();
+    s.mic_device = def.mic_device.clone();
+    s.asr_language = def.asr_language.clone();
+    // 逐条下发即时命令（引擎→语言→设备→padding→增量）
+    super::send_switch_engine(state);
+    state.send_cmd(lt_proto::Cmd::SetAsrLanguage(state.settings.asr_language.clone()));
+    state.send_cmd(lt_proto::Cmd::SetAudioDevice(lt_proto::AudioDeviceChoice::SystemDefault));
+    state.send_cmd(lt_proto::Cmd::SetMicDevice(lt_proto::MicDeviceChoice::Off));
+    state.send_cmd(lt_proto::Cmd::SetPadding {
+        engine: "funasr".into(),
+        secs: state.settings.sensevoice_pad_seconds,
+    });
+    state.send_cmd(lt_proto::Cmd::SetPadding {
+        engine: "whisper".into(),
+        secs: state.settings.whisper_pad_seconds,
+    });
+    state.send_cmd(lt_proto::Cmd::IncrementalAsr {
+        enabled: state.settings.incremental_asr,
+        interval: state.settings.interim_interval,
+    });
+    mark_settings_dirty(state);
+}
+
+/// 发起下载：写入 Downloading 状态（进度事件随后填充）并发送命令。
+/// 进行中忽略重复点击（P2-5 修复：不再触发并发下载线程）。
+fn start_download(state: &mut AppState) {
+    if state.download.downloading() {
+        return;
+    }
+    let mut log = match &state.download {
+        DownloadUiState::Failed { log, .. } => log.clone(),
+        _ => Vec::new(),
+    };
+    log.push(lt_i18n::t("download_starting").to_string());
+    state.download = DownloadUiState::Downloading {
+        done_bytes: 0,
+        total_bytes: 0,
+        log,
+    };
+    state.send_cmd(lt_proto::Cmd::StartDownload {
+        hub: state.settings.hub.clone(),
+        proxy: state.settings.download_proxy.clone(),
+    });
+}
+
+/// 失败分类 → 用户建议（i18n；未知类别给通用指引）
+fn download_err_advice(kind: DownloadErrKind) -> String {
+    let key = match kind {
+        DownloadErrKind::Net => "download_err_net",
+        DownloadErrKind::Http404 => "download_err_http404",
+        DownloadErrKind::Http => "download_err_http",
+        DownloadErrKind::Disk => "download_err_disk",
+        DownloadErrKind::Length => "download_err_length",
+        DownloadErrKind::Other => "download_err_other",
+    };
+    lt_i18n::t(key)
 }
 
 // ── 页内小组件 ──
@@ -956,13 +1148,15 @@ mod tests {
             model_cache_status(&dir, "funasr", "sensevoice-small", ""),
             CacheStatus::Missing(sensevoice_bytes)
         );
-        // MS 镜像仓写入任一文件即命中（ms_model_path exists 语义）
+        // MS 镜像仓写入文件且体积 ≥ 半体积阈值 → 命中（P2-8 收紧：
+        // 原语义仅 exists，半截文件会误判已缓存）
         let hit = lt_models::paths::ms_cache_root(&dir)
             .join("pengzhendong")
             .join("sherpa-onnx-sense-voice-zh-en-ja-ko-yue")
             .join("model.int8.onnx");
         std::fs::create_dir_all(hit.parent().unwrap()).unwrap();
-        std::fs::write(&hit, b"x").unwrap();
+        let half_min = (sensevoice_bytes / 2).max(50_000_000);
+        std::fs::write(&hit, vec![0u8; half_min as usize + 1]).unwrap();
         assert_eq!(
             model_cache_status(&dir, "funasr", "sensevoice-small", ""),
             CacheStatus::Cached(sensevoice_bytes)

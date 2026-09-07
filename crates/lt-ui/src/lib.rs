@@ -1,6 +1,7 @@
 // lt-ui: egui 多窗口宿主 + 各窗口 + 托盘
 pub mod app;
 pub mod fonts;
+pub mod panel_diff;
 pub mod state;
 pub mod style;
 pub mod tray;

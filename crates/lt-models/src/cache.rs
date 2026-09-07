@@ -116,13 +116,43 @@ pub fn ms_model_path(models_dir: &Path, repo: &str) -> PathBuf {
 pub fn is_funasr_cached(models_dir: &Path, entry: &ModelEntry) -> bool {
     let ms_ok = entry
         .ms
-        .map(|repo| ms_model_path(models_dir, repo).exists())
+        .map(|repo| {
+            // MS 侧与 HF 侧同阈值（原版 MS 分支只查 exists 过松，半截文件会
+            // 误判已缓存——登记为收紧偏差；阈值取 min(估计半体积, 50MB) 与
+            // HF 侧 min_bytes 同量级）
+            let d = ms_model_path(models_dir, repo);
+            dir_size_gte(&d, ms_threshold(entry))
+        })
         .unwrap_or(false);
     let hf_ok = entry
         .hf
         .map(|repo| hf_repo_complete(models_dir, repo, FUNASR_MIN_BYTES))
         .unwrap_or(false);
     ms_ok || hf_ok
+}
+
+/// MS 侧体积阈值：与 HF 侧同量级（半体积下限，避免整目录统计小于 50MB 的
+/// 裸仓被误判——下半体积 + 50MB 双取下限，保守投"尚完整"）
+fn ms_threshold(entry: &ModelEntry) -> u64 {
+    (entry.estimated_bytes / 2).max(FUNASR_MIN_BYTES).max(1)
+}
+
+/// 目录内可解析文件总字节 ≥ 阈值（坏链接/读取失败按"未完成"处理）
+fn dir_size_gte(dir: &Path, min_bytes: u64) -> bool {
+    let Ok(files) = walk_files(dir.to_path_buf()) else {
+        return false;
+    };
+    let mut total = 0u64;
+    for f in files {
+        match f.metadata() {
+            Ok(m) => total += m.len(),
+            Err(_) => return false,
+        }
+        if total >= min_bytes {
+            return true;
+        }
+    }
+    false
 }
 
 /// whisper 档位 → 模型 .bin 绝对路径。
@@ -181,6 +211,8 @@ pub struct MissingModel {
     pub hub_ms: Option<&'static str>,
     pub always_hf: bool,
     pub files: &'static [&'static str],
+    /// 估计体积（注册表 calibrated；UI 进度条总量与「未缓存 ≈X」共用）
+    pub estimated_bytes: u64,
 }
 
 /// 缺失模型清单（原版 get_missing_models；本地自定义 whisper 路径不触发下载）
@@ -205,6 +237,7 @@ pub fn missing_models(
                     hub_ms: entry.ms,
                     always_hf: entry.always_hf,
                     files: entry.files,
+                    estimated_bytes: entry.estimated_bytes,
                 }]
             }
         }
@@ -220,6 +253,7 @@ pub fn missing_models(
                 hub_ms: entry.ms,
                 always_hf: entry.always_hf,
                 files: entry.files,
+                estimated_bytes: entry.estimated_bytes,
             }]
         }
         _ => Vec::new(),
@@ -310,10 +344,11 @@ mod tests {
     fn is_asr_cached_dual_hub_or() {
         let dir = tmpdir("dual");
         assert!(!is_asr_cached(&dir, "funasr", "sensevoice-small"));
-        // MS 侧命中（pengzhendong 镜像仓，M2 核对）
+        // MS 侧命中（pengzhendong 镜像仓，M2 核对）；体积 ≥ 50MB 阈值
+        //（P2-8 收紧：原版只查 exists，半截文件会误判已缓存）
         write(
             &ms_cache_root(&dir).join("pengzhendong").join("sherpa-onnx-sense-voice-zh-en-ja-ko-yue").join("model.int8.onnx"),
-            10,
+            130_000_000,
         );
         assert!(is_asr_cached(&dir, "funasr", "sensevoice-small"));
         let _ = fs::remove_dir_all(&dir);
@@ -326,6 +361,8 @@ mod tests {
         let miss = missing_models(&dir, "funasr", "sensevoice-small", "");
         assert_eq!(miss.len(), 1);
         assert_eq!(miss[0].display, "SenseVoice Small");
+        // 缺失条目带估计体积（进度条总量源）
+        assert!(miss[0].estimated_bytes > 0, "estimated_bytes 应填充");
         // mlt 键回退后同样报 sensevoice-small 缺失（D-14）
         let miss = missing_models(&dir, "funasr", "funasr-mlt-nano-2512", "");
         assert_eq!(miss[0].display, "SenseVoice Small");
@@ -334,10 +371,10 @@ mod tests {
         assert_eq!(miss.len(), 1);
         assert_eq!(miss[0].display, "Whisper tiny");
         assert!(missing_models(&dir, "whisper", "", "D:/my/model.bin").is_empty());
-        // MS 侧命中 → funasr 不再缺失
+        // MS 侧命中（≥50MB 阈值）→ funasr 不再缺失
         write(
             &ms_cache_root(&dir).join("pengzhendong").join("sherpa-onnx-sense-voice-zh-en-ja-ko-yue").join("model.int8.onnx"),
-            10,
+            130_000_000,
         );
         assert!(missing_models(&dir, "funasr", "sensevoice-small", "").is_empty());
         let _ = fs::remove_dir_all(&dir);
@@ -382,5 +419,32 @@ mod tests {
         assert!(local.is_none(), "不存在的本地路径不应命中");
         let _ = fs::remove_dir_all(&dir);
         let _ = fs::remove_dir_all(&dir2);
+    }
+}
+
+#[cfg(test)]
+mod probe_tmp {
+    use super::*;
+    #[test]
+    fn probe_real_cache() {
+        let md = std::path::Path::new("C:/Users/fjqz177/.config/livetranslate/models");
+        println!("whisper_model_path tiny = {:?}", crate::cache::whisper_model_path(md, "tiny"));
+        println!("is_whisper_cached tiny = {}", crate::cache::is_whisper_cached(md, "tiny"));
+        println!("hf_cache_root = {:?}", crate::paths::hf_cache_root(md));
+    }
+}
+
+#[cfg(test)]
+mod probe_settings_tmp {
+    use super::*;
+    #[test]
+    fn probe_load_from_smoke_dir() {
+        std::env::set_var("LIVETRANSLATE_CONFIG_DIR", "C:/Users/fjqz177/.zcode/tmp/lt_smoke");
+        let s = crate::settings_io::load();
+        println!("load = {s:?}");
+        if let Ok(Some(s)) = s {
+            println!("models_dir = {:?}", s.models_dir);
+            println!("engine = {:?} size = {:?}", s.asr_engine, s.whisper_model_size);
+        }
     }
 }

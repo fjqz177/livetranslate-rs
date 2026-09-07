@@ -6,6 +6,11 @@
 //! 设置 → 识别页按需下载（StartDownload 命令复用 M2.5 下载管线）。
 //! `--asr-worker` 为 worker 子进程入口。
 
+// 双击 exe 不再弹控制台窗口（对齐正规 GUI 应用；debug 构建保留 console 便于
+// 开发观察 tracing 输出；worker 子进程 stdout/stderr 已管道重定向，见
+// lt-asr/src/client.rs E-07，与子系统无关）。
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 mod backend;
 mod logging;
 mod pipeline;

@@ -18,6 +18,7 @@ pub mod benchmark_tab;
 pub mod changelog_tab;
 pub mod data;
 pub mod font_picker;
+pub mod log_tab;
 pub mod style;
 pub mod subtitle_page;
 pub mod translation;
@@ -165,6 +166,7 @@ pub fn panel_ui(ui: &mut Ui, state: &mut AppState) {
                     PanelPage::Benchmark => benchmark_tab::page(ui, state, &pal),
                     PanelPage::Cache => data::page(ui, state, &pal),
                     PanelPage::Changelog => changelog_tab::page(ui, state, &pal),
+                    PanelPage::Log => log_tab::page(ui, state, &pal),
                 });
             ui.add_space(12.0);
         });
@@ -256,6 +258,37 @@ pub fn form_row(ui: &mut Ui, label: &str, add_control: impl FnOnce(&mut Ui)) {
 /// 弱化提示行（原版 hintLabel）
 pub fn hint_line(ui: &mut Ui, pal: &Palette, text: &str) {
     ui.label(RichText::new(text).size(11.5).color(pal.weak));
+}
+
+/// 页顶「偏离默认 + 恢复本页」工具行（N3/N4）：
+/// 当前页有参数偏离默认值才显示——蓝色加粗徽标（hover 列出偏离字段）+ 恢复按钮。
+/// `reset` 为页内恢复动作（写回默认 + 按字段重发即时命令，见各页 restore_*）；
+/// 闭包可拿到 `ui`（字体重载等需要 ctx 的恢复项）。
+pub fn reset_toolbar(ui: &mut Ui, pal: &Palette, n: usize, fields: &str, reset: impl FnOnce(&mut Ui)) {
+    if n == 0 {
+        return;
+    }
+    ui.horizontal(|ui| {
+        ui.label(
+            RichText::new(
+                lt_i18n::t("diff_page_badge").replace("{n}", &n.to_string()),
+            )
+            .size(11.5)
+            .color(pal.accent)
+            .strong(),
+        )
+        .on_hover_text(fields);
+        if ui
+            .add(
+                egui::Button::new(RichText::new(lt_i18n::t("restore_page_defaults")).size(12.0))
+                    .corner_radius(6.0),
+            )
+            .clicked()
+        {
+            reset(ui);
+        }
+    });
+    ui.add_space(4.0);
 }
 
 /// 颜色字段行（原版 QColor 色块 + "#rrggbb" 文本输入；rfd 无颜色
@@ -392,7 +425,7 @@ mod tests {
         }
     }
 
-    /// Tab 顺序 = 原版 addTab 顺序（control_panel.py:170-180）
+    /// Tab 顺序 = 原版 addTab 顺序（control_panel.py:170-180）+ Rust 版「日志」页（末位）
     #[test]
     fn tab_order_matches_original() {
         assert_eq!(
@@ -405,11 +438,12 @@ mod tests {
                 "tab_benchmark",
                 "tab_cache",
                 "tab_changelog",
+                "tab_log",
             ]
         );
     }
 
-    /// 无头渲染冒烟：7 个 Tab 各跑两帧（egui 即时模式布局收敛需两帧），
+    /// 无头渲染冒烟：8 个 Tab 各跑两帧（egui 即时模式布局收敛需两帧），
     /// 不 panic 且每帧产出图元；设备枚举（VAD/ASR 页）在测试线程真实执行。
     #[test]
     fn panel_ui_smoke_renders_all_pages_headless() {

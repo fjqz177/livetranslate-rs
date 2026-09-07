@@ -176,9 +176,26 @@ fn row1(ui: &mut Ui, state: &mut AppState, compact: bool, opa_pct: u32) {
             state.running = !running;
         }
 
-        // 清空（紧凑模式隐藏）
-        if !compact && ui.add(small_btn(lt_i18n::t("clear"), BTN_FILL, BTN_STROKE, BTN_TEXT, opa_pct)).clicked() {
-            state.messages.clear();
+        // 清空（紧凑模式隐藏；转写自动落盘时免确认，否则确认一次防误触）
+        if !compact
+            && ui
+                .add(small_btn(lt_i18n::t("clear"), BTN_FILL, BTN_STROKE, BTN_TEXT, opa_pct))
+                .clicked()
+        {
+            let confirm = if state.settings.auto_save_transcript {
+                true
+            } else {
+                rfd::MessageDialog::new()
+                    .set_title(lt_i18n::t("clear_confirm_title"))
+                    .set_description(lt_i18n::t("clear_confirm_msg"))
+                    .set_buttons(rfd::MessageButtons::OkCancel)
+                    .set_level(rfd::MessageLevel::Warning)
+                    .show()
+                    == rfd::MessageDialogResult::Ok
+            };
+            if confirm {
+                state.messages.clear();
+            }
         }
 
         // 模式切换（full↔compact，200ms 高度动画）
@@ -191,9 +208,11 @@ fn row1(ui: &mut Ui, state: &mut AppState, compact: bool, opa_pct: u32) {
             state.enqueue_action(WinId::Overlay, WinAction::ShowPanel);
         }
 
-        // 退出（红底）
+        // 退出（红底；与托盘同一确认语义——P1-1，不再秒退）
         if ui.add(small_btn(lt_i18n::t("quit"), QUIT_FILL, QUIT_STROKE, BTN_TEXT, opa_pct)).clicked() {
-            state.quit_requested = true;
+            if crate::tray::confirm_quit() {
+                state.quit_requested = true;
+            }
         }
     });
 }

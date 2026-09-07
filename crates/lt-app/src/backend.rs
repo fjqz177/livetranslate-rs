@@ -211,6 +211,8 @@ fn succeed(proxy: &EventLoopProxy<UiMsg>, first_launch: bool, settings: &Setting
 }
 
 fn fail(proxy: &EventLoopProxy<UiMsg>, msg: &str) {
+    // 失败必须进日志（日志 tab/日志窗双通道），否则运行时下载失败无处可查
+    tracing::error!("模型下载失败: {msg}");
     let _ = proxy.send_event(UiMsg::Event(UiEvent::DownloadFailed(msg.to_string())));
 }
 

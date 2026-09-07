@@ -42,11 +42,23 @@ pub struct Tray {
     pub handles: TrayHandles,
 }
 
+/// 统一退出确认（原版 on_quit(confirm=True)；托盘菜单与悬浮窗退出按钮共用同一
+/// 语义——P1-1 修复：同一动作不再双语义）
+pub fn confirm_quit() -> bool {
+    rfd::MessageDialog::new()
+        .set_title(lt_i18n::t("quit_confirm_title"))
+        .set_description(lt_i18n::t("quit_confirm_msg"))
+        .set_buttons(rfd::MessageButtons::OkCancel)
+        .set_level(rfd::MessageLevel::Info)
+        .show()
+        == rfd::MessageDialogResult::Ok
+}
+
 impl Tray {
-    /// 切换托盘状态图标（原版 tray.setIcon(create_app_icon(status))）
-    pub fn set_status(&self, status: IconStatus) {
-        let _ = self.icon.set_icon(Some(icon_for(status)));
-    }
+/// 切换托盘状态图标（原版 tray.setIcon(create_app_icon(status))）
+pub fn set_status(&self, status: IconStatus) {
+    let _ = self.icon.set_icon(Some(icon_for(status)));
+}
 }
 
 /// 构建完整托盘（含子菜单），并把事件转发到 EventLoopProxy。

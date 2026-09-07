@@ -49,6 +49,30 @@ pub fn reset_style(style: &mut Style) {
 
 /// 样式页 UI 总入口
 pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
+    // N3/N4：样式页偏离默认提示 + 恢复本页（Style 14 键 + 两把主字体键；
+    // 窗口几何（overlay_x 等）不纳入——样式页已有「重置窗口位置」按钮）
+    let diffs = crate::panel_diff::diff_paths(&state.settings);
+    let page_diffs: Vec<&str> = diffs
+        .iter()
+        .filter(|p| {
+            p.starts_with("style.")
+                || p.as_str() == "ui_font_family"
+                || p.as_str() == "subtitle_font_family"
+        })
+        .map(|p: &String| p.as_str())
+        .collect();
+    if !page_diffs.is_empty() {
+        super::reset_toolbar(ui, pal, page_diffs.len(), &page_diffs.join("、"), |ui| {
+            let def = lt_proto::Settings::default();
+            state.settings.style = def.style.clone();
+            state.settings.ui_font_family = def.ui_font_family.clone();
+            state.settings.subtitle_font_family = def.subtitle_font_family.clone();
+            // 字体键变化必须重装字体链（D-17：行级"跟随"解析自注册表）
+            crate::fonts::apply_fonts(ui.ctx(), &state.settings, &mut state.fonts);
+            mark_settings_dirty(state);
+        });
+    }
+
     // ── 字体（D-17：界面/字幕两把主旋钮；其余行级在下方「文字」组）──
     group_card(ui, pal, &lt_i18n::t("group_fonts"), |ui| {
         let cur_ui = state.settings.ui_font_family.clone();

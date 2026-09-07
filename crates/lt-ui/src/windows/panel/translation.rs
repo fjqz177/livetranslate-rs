@@ -14,7 +14,7 @@
 //!   （原版仅做越界钳制，行前移会错位指向别的模型——有意修正）。
 
 use super::{group_card, hint_line, mark_settings_dirty, Palette};
-use crate::state::{AppState, ModelEditState, THINKING_STYLE_VALUES};
+use crate::state::{AppState, ModelEditState, TestTranslatorState, THINKING_STYLE_VALUES};
 use egui::{RichText, Ui};
 use lt_proto::ModelConfig;
 
@@ -99,12 +99,70 @@ pub fn duplicate_model(models: &mut Vec<ModelConfig>, row: usize) -> Option<usiz
     Some(models.len() - 1)
 }
 
+// ── 页内数据模型（原版 dialog model 的 Rust 表达）──
+
+/// 翻译页恢复默认：models 回默认单行（LM Studio 本地端点）、清 prompt、
+/// timeout 回 10s；恢复后重发 SwitchTranslator（N3 生效管道）。
+/// 破坏性（抹掉 API Key）——调用前必须已过确认框。
+fn restore_translation_page(state: &mut AppState) {
+    let def = lt_proto::Settings::default();
+    state.settings.models = def.models.clone();
+    state.settings.active_model = 0;
+    state.settings.system_prompt = def.system_prompt.clone();
+    state.settings.timeout = def.timeout;
+    state.panel.model_selected = None;
+    state.panel.model_editor = None;
+    if let Some(cfg) = super::active_model_config(&state.settings) {
+        state.send_cmd(lt_proto::Cmd::SwitchTranslator(Box::new(cfg)));
+    }
+    mark_settings_dirty(state);
+}
+
 // ── UI ──
 
 /// 翻译页 UI 总入口
 pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
+    // N3/N4：翻译页偏离默认提示 + 恢复本页（恢复会清掉 API 配置 → 确认框）
+    let diffs = crate::panel_diff::diff_paths(&state.settings);
+    let page_diffs: Vec<&str> = diffs
+        .iter()
+        .filter(|p| {
+            ["models", "active_model", "system_prompt", "timeout"]
+                .iter()
+                .any(|pre| p.as_str() == *pre || p.as_str().starts_with(pre))
+        })
+        .map(|p: &String| p.as_str())
+        .collect();
+    if !page_diffs.is_empty() {
+        super::reset_toolbar(ui, pal, page_diffs.len(), &page_diffs.join("、"), |_| {
+            if rfd::MessageDialog::new()
+                .set_title(lt_i18n::t("reset_confirm_title"))
+                .set_description(lt_i18n::t("reset_confirm_translation"))
+                .set_buttons(rfd::MessageButtons::OkCancel)
+                .set_level(rfd::MessageLevel::Warning)
+                .show()
+                == rfd::MessageDialogResult::Ok
+            {
+                restore_translation_page(state);
+            }
+        });
+    }
+
     // ── 模型配置（原版 models_group）──
     group_card(ui, pal, &lt_i18n::t("group_model_configs"), |ui| {
+        // 翻译装置不可用（配置无效）：状态行红字 + 指引（P0-2 修复——
+        // 不再是静默关闭整条翻译）
+        if let Some(reason) = &state.translator_error {
+            ui.label(
+                RichText::new(format!(
+                    "{} {reason}",
+                    lt_i18n::t("translator_error_banner")
+                ))
+                .size(11.0)
+                .color(pal.err),
+            );
+            ui.add_space(2.0);
+        }
         let active = state.settings.active_model;
         let count = state.settings.models.len();
         let mut select: Option<usize> = None;
@@ -204,7 +262,55 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
                     }
                 }
             }
+            // 「测试连接」（Rust 版新增）：对选中行（无选中取活跃模型）发一次
+            // 最简请求并回执结果——LLM API 接入的及时验证闭环
+            let test_target = edit_row.or(state.panel.model_selected);
+            let test_cfg = test_target
+                .and_then(|i| state.settings.models.get(i).cloned())
+                .or_else(|| super::active_model_config(&state.settings));
+            let testing = matches!(state.test_translator, TestTranslatorState::Running);
+            if ui
+                .add_enabled(
+                    test_cfg.is_some() && !testing,
+                    egui::Button::new(RichText::new(match testing {
+                        true => lt_i18n::t("test_translator_testing"),
+                        false => lt_i18n::t("test_translator_btn"),
+                    })
+                    .size(12.5))
+                    .corner_radius(6.0),
+                )
+                .clicked()
+            {
+                if let Some(cfg) = test_cfg {
+                    state.test_translator = TestTranslatorState::Running;
+                    state.send_cmd(lt_proto::Cmd::TestTranslator(Box::new(cfg)));
+                }
+            }
         });
+
+        // 测试结果行（Success 绿 / 失败红 + 耗时；hover 展开错误全文）
+        if let TestTranslatorState::Done { ok, error, ms } = &state.test_translator {
+            ui.add_space(2.0);
+            if *ok {
+                ui.label(
+                    RichText::new(format!(
+                        "\u{2713} {} ({ms} ms)",
+                        lt_i18n::t("test_translator_ok")
+                    ))
+                    .size(11.0)
+                    .color(pal.ok),
+                );
+            } else {
+                let text = error.clone().unwrap_or_default();
+                ui.label(
+                    RichText::new(format!("\u{2716} {}", lt_i18n::t("test_translator_fail")))
+                        .size(11.0)
+                        .color(pal.err),
+                )
+                .on_hover_text(&text);
+                ui.label(RichText::new(&text).size(10.5).color(pal.weak));
+            }
+        }
     });
 
     // ── 系统提示词（原版 prompt_group）──

@@ -98,6 +98,37 @@ pub fn combo_index(ui: &mut Ui, id: &str, current: usize, labels: &[String], wid
 
 /// 字幕页 UI 总入口
 pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
+    // N3/N4：字幕页偏离默认提示 + 恢复本页（SubtitleMode 整体 + 文字行两行默认；
+    // 窗口位置 window_x/y 不纳入——样式页「重置窗口位置」单独承担）。
+    // 确认文案复用原版孤儿键 subwin_reset_confirm（zh/en 均已有）。
+    let diffs = crate::panel_diff::diff_paths(&state.settings);
+    let page_diffs: Vec<&str> = diffs
+        .iter()
+        .filter(|p| p.starts_with("subtitle_mode"))
+        .map(|p: &String| p.as_str())
+        .collect();
+    if !page_diffs.is_empty() {
+        super::reset_toolbar(ui, pal, page_diffs.len(), &page_diffs.join("、"), |ui| {
+            if rfd::MessageDialog::new()
+                .set_title(lt_i18n::t("reset_confirm_title"))
+                .set_description(lt_i18n::t("subwin_reset_confirm"))
+                .set_buttons(rfd::MessageButtons::OkCancel)
+                .set_level(rfd::MessageLevel::Warning)
+                .show()
+                == rfd::MessageDialogResult::Ok
+            {
+                state.settings.subtitle_mode = lt_proto::SubtitleMode::default();
+                // 行级字体跟随（空串）解析自注册表 → 重装字体链
+                crate::fonts::apply_fonts(ui.ctx(), &state.settings, &mut state.fonts);
+                state.enqueue_action(
+                    crate::state::WinId::Panel,
+                    crate::state::WinAction::ToggleSubtitle,
+                );
+                mark_settings_dirty(state);
+            }
+        });
+    }
+
     // ── 基本（原版 subwin_basic 组）──
     group_card(ui, pal, &lt_i18n::t("subwin_basic"), |ui| {
         // 启用字幕窗（settings.subtitle_mode.enabled；联动字幕窗显隐）

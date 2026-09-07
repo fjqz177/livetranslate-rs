@@ -138,14 +138,18 @@ struct TlRig {
 }
 
 impl TlRig {
-    /// 按设置构建；models 为空/active_model 越界 → None（不翻译，仅 ASR）
-    fn from_settings(settings: &lt_proto::Settings) -> Option<Self> {
-        let mc = settings.models.get(settings.active_model)?;
+    /// 按设置构建；models 为空/active_model 越界 → Ok(None)（不翻译，仅 ASR）；
+    /// 配置无效（URL 格式错等）→ Err(原因)（必须让用户可见，见 TranslatorUnavailable）
+    fn from_settings(settings: &lt_proto::Settings) -> Result<Option<Self>, String> {
+        let Some(mc) = settings.models.get(settings.active_model) else {
+            return Ok(None);
+        };
         Self::from_model_config(mc, settings)
     }
 
-    /// 按指定模型配置构建（运行时切换用；构建失败仅告警并返回 None）
-    fn from_model_config(mc: &lt_proto::ModelConfig, settings: &lt_proto::Settings) -> Option<Self> {
+    /// 按指定模型配置构建（运行时切换用；构建失败返回 Err——UI 收到
+    /// TranslatorUnavailable 显示到翻译页状态行，不再静默关闭整条翻译）
+    fn from_model_config(mc: &lt_proto::ModelConfig, settings: &lt_proto::Settings) -> Result<Option<Self>, String> {
         let params = lt_translate::TranslatorParams {
             api_base: mc.api_base.clone(),
             api_key: mc.api_key.clone(),
@@ -173,7 +177,7 @@ impl TlRig {
             }
             Err(e) => {
                 tracing::error!("Translator 构建失败（模型 {:?}）: {e}", mc.name);
-                return None;
+                return Err(format!("{}: {e:#}", mc.name));
             }
         };
         let stats = Arc::new(TlStats::new(mc.input_price, mc.output_price));
@@ -182,12 +186,12 @@ impl TlRig {
             mc.name,
             mc.model
         );
-        Some(Self {
+        Ok(Some(Self {
             translator,
             stats,
             pool: JobPool::new(TL_POOL_WORKERS),
             transcript: Pipeline::transcript_handle(),
-        })
+        }))
     }
 
     /// 提交一段的翻译任务（对照原版 _translate_async 的成功/重复/错误三路）；
@@ -304,6 +308,8 @@ pub(crate) enum TlSwitch {
         whisper_model_size: String,
         language: String,
     },
+    /// 翻译配置「测试连接」：临时装置发一次最简请求后回执 TestTranslatorResult
+    TestTranslator { name: String, config: Box<lt_proto::ModelConfig> },
 }
 
 /// 转录写盘共享句柄（面板"应用"热切换 enabled；与 Pipeline 内部同源）
@@ -398,8 +404,18 @@ impl Pipeline {
             })?;
         }
 
-        // ── 翻译装置（M3）：models 非空即构建；失败仅告警不阻断 ASR ──
-        let tl = TlRig::from_settings(settings).map(Arc::new);
+        // ── 翻译装置（M3）：models 非空即构建；配置无效必须让用户可见
+        //（TranslatorUnavailable → 面板翻译页状态行 + 悬浮窗译文占位）──
+        let tl = match TlRig::from_settings(settings) {
+            Ok(t) => t.map(Arc::new),
+            Err(reason) => {
+                let _ = proxy.send_event(UiMsg::Event(UiEvent::TranslatorUnavailable {
+                    reason: reason.clone(),
+                }));
+                tracing::error!("翻译装置不可用: {reason}");
+                None
+            }
+        };
         let (tl_switch_tx, tl_switch_rx) = crossbeam_channel::unbounded::<TlSwitch>();
 
         // ── ASR 线程：Manager 独占 + 段处理 ──
@@ -468,6 +484,17 @@ impl Pipeline {
                 funasr_model: funasr_model.to_string(),
                 whisper_model_size: whisper_model_size.to_string(),
                 language: language.to_string(),
+            });
+        }
+    }
+
+    /// 翻译配置「测试连接」（设置页翻译按钮）：ASR 线程空闲分支执行，
+    /// 结果经 TestTranslatorResult 回执 UI；不改变当前活动翻译装置
+    pub fn test_translator(&self, config: &lt_proto::ModelConfig) {
+        if let Some(tx) = &self.tl_switch {
+            let _ = tx.send(TlSwitch::TestTranslator {
+                name: config.name.clone(),
+                config: Box::new(config.clone()),
             });
         }
     }
@@ -738,6 +765,9 @@ fn run_asr_thread(
 
     // Manager 持 UI 线程同款挂起句柄：transcribe 前应用挂起的语言/padding
     let mut manager = AsrManager::with_pending(pending);
+    // 当前生效引擎的显示标签（切换失败回滚后用于恢复 AsrDevice，避免
+    // 状态行挂着「ASR unavailable」而旧引擎实际仍在工作——P0-4）
+    let mut current_display = display.clone();
     // 模型加载对话框（原版 _ModelLoadDialog：装载期模态；AsrDevice/AsrUnavailable 关闭）
     let _ = proxy.send_event(UiMsg::Event(UiEvent::ModelLoadStart(display.clone())));
     if let Err(e) = manager.ensure_started(&config) {
@@ -758,9 +788,19 @@ fn run_asr_thread(
             while let Ok(sw) = tl_switch.try_recv() {
                 match sw {
                     TlSwitch::ReplaceRig { config, settings } => {
-                        if let Some(rig) = TlRig::from_model_config(&config, &settings) {
-                            tracing::info!("翻译器已切换: {} ({})", config.name, config.model);
-                            tl = Some(Arc::new(rig));
+                        match TlRig::from_model_config(&config, &settings) {
+                            Ok(Some(rig)) => {
+                                tracing::info!("翻译器已切换: {} ({})", config.name, config.model);
+                                tl = Some(Arc::new(rig));
+                            }
+                            Ok(None) => {
+                                tracing::warn!("翻译器切换目标为空（models 空/越界），保持当前装置");
+                            }
+                            Err(reason) => {
+                                let _ = proxy.send_event(UiMsg::Event(UiEvent::TranslatorUnavailable {
+                                    reason,
+                                }));
+                            }
                         }
                     }
                     TlSwitch::TargetLanguage(lang) => {
@@ -789,9 +829,15 @@ fn run_asr_thread(
                             Some((config, display)) => {
                                 let _ = proxy.send_event(UiMsg::Event(UiEvent::ModelLoadStart(display.clone())));
                                 if let Err(e) = manager.ensure_started(&config) {
-                                    let _ = proxy.send_event(UiMsg::Event(UiEvent::AsrUnavailable));
+                                    // 回滚后旧 worker 仍在工作：恢复旧标签而非
+                                    // 发 AsrUnavailable（避免状态与行为矛盾，P0-4）
+                                    let _ = proxy.send_event(UiMsg::Event(UiEvent::AsrDevice(format!(
+                                        "{} [cpu]",
+                                        current_display
+                                    ))));
                                     tracing::error!("引擎切换失败（已回滚）: {e}");
                                 } else {
+                                    current_display = display.clone();
                                     let _ = proxy.send_event(UiMsg::Event(UiEvent::AsrDevice(format!(
                                         "{display} [cpu]"
                                     ))));
@@ -805,13 +851,63 @@ fn run_asr_thread(
                                 }
                             }
                             None => {
-                                let _ = proxy.send_event(UiMsg::Event(UiEvent::AsrUnavailable));
+                                // 未缓存/未知档：旧引擎继续运行——不发
+                                // AsrUnavailable（P0-4），恢复标签并落日志；
+                                // 面板侧缓存卡片「未缓存 + 下载按钮」给出下一步
+                                let _ = proxy.send_event(UiMsg::Event(UiEvent::AsrDevice(format!(
+                                    "{} [cpu]",
+                                    current_display
+                                ))));
                                 let model_key = if engine == "whisper" {
                                     whisper_model_size.as_str()
                                 } else {
                                     funasr_model.as_str()
                                 };
-                                tracing::warn!("引擎切换目标不可用（未缓存/未知）: {engine}/{model_key}");
+                                tracing::warn!(
+                                    "切换目标未缓存/未知，保持当前引擎: {engine}/{model_key}（去识别页下载）"
+                                );
+                            }
+                        }
+                    }
+                    TlSwitch::TestTranslator { name, config } => {
+                        // ② 构建临时装置（不切换活动翻译器），发一次最简请求回执 UI
+                        let mut test_settings = settings.clone();
+                        test_settings.target_language = target_language.clone();
+                        match TlRig::from_model_config(&config, &test_settings) {
+                            Ok(Some(rig)) => {
+                                let proxy = proxy.clone();
+                                let name = name.clone();
+                                rig.pool.submit(move || {
+                                    let t0 = Instant::now();
+                                    let mut it = rig.translator.translate_iter(
+                                        "Livetranslate test",
+                                        "auto",
+                                    );
+                                    let (ok, err, ms) = match it.next() {
+                                        Some(Ok(_partial)) => (true, None, t0.elapsed().as_millis() as u64),
+                                        Some(Err(e)) => (false, Some(e.ui_text()), t0.elapsed().as_millis() as u64),
+                                        None => (false, Some(lt_i18n::t("test_translator_no_response")), t0.elapsed().as_millis() as u64),
+                                    };
+                                    let _ = proxy.send_event(UiMsg::Event(
+                                        UiEvent::TestTranslatorResult { name, ok, error: err, ms },
+                                    ));
+                                });
+                            }
+                            Ok(None) => {
+                                let _ = proxy.send_event(UiMsg::Event(UiEvent::TestTranslatorResult {
+                                    name,
+                                    ok: false,
+                                    error: Some(lt_i18n::t("test_translator_no_config").into()),
+                                    ms: 0,
+                                }));
+                            }
+                            Err(reason) => {
+                                let _ = proxy.send_event(UiMsg::Event(UiEvent::TestTranslatorResult {
+                                    name,
+                                    ok: false,
+                                    error: Some(reason),
+                                    ms: 0,
+                                }));
                             }
                         }
                     }
@@ -1092,7 +1188,16 @@ fn commit_text(
     }));
 
     // ── 翻译分流（原版 _process_segment_text 尾部；字幕窗 extra_langs 随 M4 接入）──
-    let Some(rig) = tl else { return };
+    let Some(rig) = tl else {
+        // 翻译装置未就绪（配置无效已被 TranslatorUnavailable 提醒）：译文行立即
+        // 给出明确占位，不停留在永久的「翻译中...」——P0-2
+        let _ = proxy.send_event(UiMsg::Event(UiEvent::UpdateTranslation {
+            id,
+            text: lt_i18n::t("translator_unavailable_placeholder"),
+            tl_ms: 0.0,
+        }));
+        return;
+    };
     rig.stats.asr_count.fetch_add(1, Ordering::Relaxed);
     rig.transcript.write_original(id, &timestamp, original_text);
     if lang == target_language {
@@ -1118,7 +1223,7 @@ mod tests {
     #[test]
     fn tl_rig_builds_from_default_settings() {
         let settings = lt_proto::Settings::default();
-        let rig = TlRig::from_settings(&settings);
+        let rig = TlRig::from_settings(&settings).expect("默认设置不应报配置错误");
         assert!(rig.is_some(), "默认 settings 带一个默认模型，应能构建");
         // 目标语言来自全局设置而非模型配置
         assert_eq!(rig.unwrap().translator.target_language(), settings.target_language);
@@ -1128,14 +1233,14 @@ mod tests {
     fn tl_rig_none_when_active_model_out_of_bounds() {
         let mut settings = lt_proto::Settings::default();
         settings.active_model = 99;
-        assert!(TlRig::from_settings(&settings).is_none());
+        assert!(TlRig::from_settings(&settings).unwrap().is_none());
     }
 
     #[test]
     fn tl_rig_none_when_models_empty() {
         let mut settings = lt_proto::Settings::default();
         settings.models.clear();
-        assert!(TlRig::from_settings(&settings).is_none());
+        assert!(TlRig::from_settings(&settings).unwrap().is_none());
     }
 
     #[test]
