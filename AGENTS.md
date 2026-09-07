@@ -2,10 +2,11 @@
 
 ## 项目定位
 
-Python(PyQt6) 实时音频翻译应用 LiveTranslate 的 **Rust 1:1 重写**（main 分支施工中；M0–M5.3 已完成，M5.1 whisper 已全链放开：281 测全绿，release 59MB 单 exe 分发演练通过）。
+Python(PyQt6) 实时音频翻译应用 LiveTranslate 的 **Rust 1:1 重写**（main 分支施工中；M0–M6 主体已完成：whisper 全链放开 + interim 增量识别接线 + 视觉五工作包 + 字体系统 W-1~W-7 + 分发裁决 D-18~D-21 全部落地，305 测全绿，release 单 exe 分发演练通过）。
 
 - **复刻权威 = 工作区内 `LiveTranslate/` 原版代码副本**（gitignored，扁平结构；2026-09-06 用户明确：与 `D:\biancheng\LiveTranslate`、`LiveTranslate-NG` 等外部仓库无关）。改 GUI 前先回读副本对应 Python 模块：`main.py`、`subtitle_overlay.py`、`subtitle_window.py`、`control_panel.py`、`vad_processor.py` 等（均在副本根目录）。
-- **权威文档**：`RESEARCH.md`（选型结论、刻意偏差 D-1~D-16、风险 R-1~R-13）与 `PLAN.md`（施工图：契约全表 §3、算法规格 §5、经验教训 §6、风险预案 §8、验收清单 §9）。GUI 对齐方案见 `docs/ui-realign-plan.md`（五阶段）。
+- **权威文档**：`RESEARCH.md`（选型结论、刻意偏差 D-1~D-21、风险 R-1~R-14）与 `PLAN.md`（施工图：契约全表 §3、算法规格 §5、经验教训 §6、风险预案 §8、验收清单 §9）。
+- **施工依据文档（`docs/`，按工作包/WP 推进）**：`parity-closure-plan.md`（九 WP 对齐收口，WP-1/3/4 已完成，WP-2/5/6/7/8/9 未动）、`font-system-plan.md`（W-1~W-5 已全部完成）、`visual-parity-plan.md`（五工作包已完成）、`distribution-plan.md`（WD-1~WD-10 阶段一/二）、`asr-engine-expansion-plan.md`（nano/qwen3 调研）、`ui-realign-plan.md`/`overlay-realign-plan.md`（GUI 对齐五阶段）。
 
 ## 硬性约束（不可违背）
 
@@ -18,20 +19,20 @@ Python(PyQt6) 实时音频翻译应用 LiveTranslate 的 **Rust 1:1 重写**（m
 ## 构建与测试
 
 ```bash
-cargo test --workspace            # 全量测试（当前 305 测），收工前提
-cargo build --release -p lt-app   # 单 exe（约 59MB；onnxruntime.dll + silero_vad.onnx 内嵌，启动解压到配置目录）
+cargo test --workspace            # 全量测试（305 测全绿；2 个 ignored = real_model_smoke/speech 真模型离线纪律），收工前提
+cargo build --release -p lt-app   # 单 exe（现有 ~62MB；onnxruntime.dll + silero_vad.onnx 内嵌，启动解压到配置目录）
 cargo run -p lt-app               # GUI 冒烟
 ```
 
 - **冒烟**：设临时 `LIVETRANSLATE_CONFIG_DIR`，其中 settings.json 必须显式 `models_dir` 指真实模型缓存（如 `C:\Users\fjqz177\.config\livetranslate\models`），否则引擎探测全部失败。
-- **原版参照截图**：新版原版仓 `uv run python scripts/grab_reference_ui.py`；参照图在 `assets/reference/`（zh/en 各 4 张）。
+- **原版参照截图**：已入库 `assets/reference/`（zh/en 各 4 张）；生成脚本 `scripts/grab_reference_ui.py` 已不在工作区（scripts/ 现仅 silero_reference.py），需要重拍时从外部原版仓获取。
 - 无 CI（`.github/workflows` 尚未创建）。
 
 ## 工作区结构（依赖方向 = 分层规则）
 
-`crates/` 八库，依赖链单向：**lt-proto**（事件/命令/数据契约，已冻结）→ **lt-i18n**（zh/en 489 键）→ **lt-models**（Settings/ModelConfig/模型注册表）→ **lt-pipeline**（wasapi 采集、silero VAD、ORT 内嵌）→ **lt-asr**（ASR worker 子进程 + IPC）→ **lt-translate**（async-openai LLM）→ **lt-ui**（egui 多窗口：悬浮窗/字幕窗/控制面板/日志窗/托盘）→ **lt-app**（装配入口 backend/pipeline/shell；ASR worker 以同 exe `--asr-worker` 自拉起，Job Object 孤儿兜底）。
+`crates/` 八库，依赖链单向：**lt-proto**（事件/命令/数据契约，已冻结）→ **lt-i18n**（zh/en 各 521 键）→ **lt-models**（Settings/ModelConfig/模型注册表）→ **lt-pipeline**（wasapi 采集、silero VAD、ORT 内嵌）→ **lt-asr**（ASR worker 子进程 + IPC）→ **lt-translate**（async-openai LLM）→ **lt-ui**（egui 多窗口：悬浮窗/字幕窗/控制面板/日志窗/托盘）→ **lt-app**（装配入口 backend/pipeline/shell；ASR worker 以同 exe `--asr-worker` 自拉起，Job Object 孤儿兜底）。
 
-- `assets/`：i18n yaml、图标、`reference/` 原版参照截图、`ort/`。
+- `assets/`：i18n yaml、`fonts/`（三 brotli 字体 + OFL 许可）、图标、`reference/` 原版参照截图、`silero_vad.onnx`、`SOURCES.md`（资产来源/sha256）。
 - 分层规则：lt-ui 不得依赖 lt-models/lt-translate；新增 UI 能力**不得扩 lt-proto 契约**（日志经 `LogLine{target}` 回流）；Settings 运行时落盘走 `Cmd::PersistSettings` 由 backend 写（300ms debounce 对齐原版）。
 
 ## 已知大坑（改码前必读）
@@ -46,8 +47,8 @@ cargo run -p lt-app               # GUI 冒烟
 8. 字幕窗 30% 黑底叠白窗呈现的 179 灰是正常 alpha 合成，勿误判为渲染 bug。
 9. C 盘满会使测试 TEMP 报 StorageFull、GDI+ Save 失败（假死）——临时把 TMPDIR 指 D 盘。
 10. 实机走查时 egui 窗口 PrintWindow 会抓到旧帧，必须全屏截图验收。
-11. **edition 2021 的 if-let scrutinee 临时值自死锁**（WP-3 实锤）：
-12. **字体 Name 族未注册会 panic**（epaint `FontsImpl::font`）：`FontFamily::Name(族名)` 只允许出现在 `FontsState::resolved`（已注册者）；渲染一律经 `fonts::font_family_for` 取，不得直接构造。`if let Some(x) = shared_lock.lock().unwrap().method() { … } else { 再 lock 同一把 }` 的 MutexGuard 临时值存活到整个 if-let 语句结束（含 else 分支）→ 同线程二次加锁永久死锁。共享锁 + 分支派发一律先 `let v = lock.lock().unwrap().method();` 绑定再分支。
+11. **edition 2021 的 if-let scrutinee 临时值自死锁**（WP-3 实锤）：`if let Some(x) = shared_lock.lock().unwrap().method() { … } else { 再 lock 同一把 }` 的 MutexGuard 临时值存活到整个 if-let 语句结束（含 else 分支）→ 同线程二次加锁永久死锁。共享锁 + 分支派发一律先 `let v = lock.lock().unwrap().method();` 绑定再分支。
+12. **字体 Name 族未注册会 panic**（epaint `FontsImpl::font`）：`FontFamily::Name(族名)` 只允许出现在 `FontsState::resolved`（已注册者）；渲染一律经 `fonts::font_family_for` 取，不得直接构造。
 
 ## 约定
 
@@ -57,11 +58,8 @@ cargo run -p lt-app               # GUI 冒烟
 - **字体策略（D-17，2026-09-07 用户裁决）**：仓库自洽为硬保证——内嵌思源（中英韩）+ 等宽 MonoCJK（chrome）+ 符号 NotoSansSymbols2（✗ 等）三字体覆盖全部 UI 字符（`assets/fonts/`，均 OFL 1.1，SOURCES.md 有来源/sha256），任何系统字体缺失都不方块；系统字体（Consolas/注册表扫描/用户自选）仅锦上添花，**不读取系统符号字体（seguisym 已移出）；系统字体缺失不报错不阻断，回退内嵌**；体积：字体以 brotli 压缩资产入库（~12.7MB），运行时一次性解压（启动 ~100ms 级，字形零损失），解压后 FontData::from_static 零拷贝；行级字体键（style.original/translation_font_family、subtitle.lines[].font_family）空串 = 跟随 `subtitle_font_family`（级联），显式族名 = 独立指定；系统字体列表来自 HKLM+HKCU 注册表扫描（`lt-ui/src/fonts.rs`），选择器在样式页「字体」组与字幕行编辑处（搜索/刷新/预览/缺字提示）；改字体键 → 立即 `fonts::apply_fonts(ui.ctx(), …)`（共享单 Context 全窗口下一帧生效）+ `mark_settings_dirty` 防抖落盘；**渲染侧禁用 `FontFamily::Name` 臆造**——未注册族名经 `font_family_for` 回落 Proportional。
 - 子代理分工：general-purpose/Explore 建议设 glm-5.3-flash 做执行/检索；架构承重墙（Win32、下载器、算法移植、CRT/链接问题）由主线程亲自做。
 
-## 当前待办（2026-09-07 截点）
+## 当前待办（2026-09-07 截点，已完工项带 ✗ 标记）
 
-- **分发与用户旅程已裁决**（2026-09-07，docs/distribution-plan.md，D-18~D-21）：暂不公开发布（本地 zip）/ 首启直进主界面（D-19 转正，向导代码保留不接线）/ 检查更新按钮（随公开发布）/ 全模型双源（whisper 打破 always-HF 上 MS 镜像 + hub 缺失回落）。阶段一工作包待施工：WD-1 打包脚本、WD-2 版本可见性（VERSIONINFO/--version/UI 版本行）、WD-3 LICENSE+NOTICES+简版 README、WD-4 whisper 双源实测落地、WD-5 二次启动激活已有窗口；WD-6 首启轻引导横幅可选待点头。
-- ErrorBanner（新版悬浮窗错误分类条）、全局热键（hotkeys_group）——两者在 Python 权威副本中不存在，出处待用户裁决（parity-closure-plan WP-8 / D-3、D-4）。
-- ~~M6 interim 装配接线~~ 已完成（2026-09-07：VAD 共享拓扑 + ASR 分流 + 全链热应用接线，290 测全绿，loopback 端到端实证，见 parity-closure-plan WP-3 执行纪要）。
-- FunASR Nano 置灰防坑（WP-2 第 1 步，1 小时级）；CI 已归入分发阶段二（WD-7，随公开发布触发，D-18）。
-- ~~StartDownload targets 动态化~~ 已完成（2026-09-07：backend settings 镜像现场重算，随 whisper 放开落地）。
-- M6 调优三件（启动<2s / 空闲 CPU<1% / 8h 长跑）与内存回收实测；端到端语音复验（需实机非静音时段，interim 已可对照开/关）。
+- **对齐收口（docs/parity-closure-plan.md，九 WP）**：✗ WP-1 whisper UI 放开、✗ WP-3 interim 增量识别接线（VAD 共享拓扑 + ASR 分流，loopback 端到端实证）、✗ WP-4 padding 热应用——均已随 2026-09-07 落地（281→290 测）；未动：**WP-2** FunASR Nano 置灰防坑（1 小时级）、**WP-5** 托盘菜单与气泡（⚑ D-1 决策点）、**WP-6** 缺模型下载门 + 加载框日志（⚑ D-2）、**WP-7** 字幕窗六项偏差逐项裁决、**WP-8** ErrorBanner/全局热键——两者在 Python 权威副本中不存在，出处待用户裁决（⚑ D-3/D-4）、**WP-9** M6 调优与实机实测（启动<2s / 空闲 CPU<1% / 8h 长跑 / 内存回收 / 端到端语音复验，需实机非静音时段）。
+- **分发与用户旅程（docs/distribution-plan.md，D-18~D-21 已裁决）**：暂不公开发布（本地 zip）/ 首启直进主界面（D-19 转正，向导代码保留不接线）/ 检查更新按钮（随公开发布）/ 全模型双源（whisper 打破 always-HF 上 MS 镜像 + hub 缺失回落）。阶段一待施工：**WD-1** 打包脚本、**WD-2** 版本可见性（VERSIONINFO/--version/UI 版本行）、**WD-3** LICENSE+NOTICES+简版 README、**WD-4** whisper 双源实测落地、**WD-5** 二次启动激活已有窗口；**WD-6** 首启轻引导横幅可选待点头；WD-7 CI / WD-8 检查更新归阶段二（D-18）。
+- ✗ 字体系统 W-1~W-7 全部完成（2026-09-07：内嵌思源/等宽/符号三字体 + brotli 压缩资产 + 双主旋钮级联 + 系统字体扫描选择器，见 docs/font-system-plan.md）；✗ 视觉五工作包 WP-A~E 完成（285 测）；✗ StartDownload targets 动态化完成（backend settings 镜像现场重算）；✗ docs 提交规范整改完成（de0d6d4 已 rebase 拆分为 9c9fd67/5f3be9b/d4c169a，7419115 归档，de0d6d4 不复存在）。
