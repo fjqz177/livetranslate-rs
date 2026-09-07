@@ -145,7 +145,7 @@ pub fn is_whisper_cached(models_dir: &Path, size: &str) -> bool {
 /// hub 仅影响下载顺序，探测双 hub 都查）
 pub fn is_asr_cached(models_dir: &Path, engine: &str, model: &str) -> bool {
     match engine {
-        "funasr" => registry::funasr_entry(model).map_or(false, |e| is_funasr_cached(models_dir, &e)),
+        "funasr" => registry::funasr_entry(model).is_some_and(|e| is_funasr_cached(models_dir, &e)),
         "whisper" => is_whisper_cached(models_dir, model),
         _ => false,
     }

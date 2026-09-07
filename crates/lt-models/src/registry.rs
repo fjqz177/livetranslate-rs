@@ -127,7 +127,7 @@ mod tests {
             SENSEVOICE_SMALL.ms,
             Some("pengzhendong/sherpa-onnx-sense-voice-zh-en-ja-ko-yue")
         );
-        assert!(!SENSEVOICE_SMALL.always_hf);
+        const { assert!(!SENSEVOICE_SMALL.always_hf) } // 编译期注册表不变量
         assert!(SENSEVOICE_SMALL.files.contains(&"model.int8.onnx"));
     }
 

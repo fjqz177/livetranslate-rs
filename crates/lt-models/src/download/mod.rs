@@ -169,6 +169,17 @@ fn net_err(e: reqwest::Error) -> DlError {
     DlError::new(FailKind::Net, format!("网络请求失败: {e}"))
 }
 
+/// 单文件下载任务参数（DL-3/DL-4 增补文件序号与取消令牌后聚合，避免参数列车）
+struct FileJob<'a> {
+    repo: &'a str,
+    file: &'a str,
+    target: &'a Path,
+    incomplete: &'a Path,
+    /// 第 k/n 个文件（1 起）
+    k: usize,
+    n: usize,
+}
+
 pub struct Downloader {
     models_dir: PathBuf,
     proxy: ProxyMode,
@@ -269,28 +280,31 @@ impl Downloader {
                 SkipDecision::Missing => {}
             }
             self.emit(tx, DownloadEvent::Log(format!("[{repo}] 开始下载 {file}")));
-            // k 从 1 起（UI 显示「第 k/n 个文件」）
-            self.download_one(&client, hub, repo, file, &target, idx + 1, n, cancel, tx)?;
+            let job = FileJob {
+                repo,
+                file,
+                target: &target,
+                incomplete: &incomplete_path(&target),
+                k: idx + 1, // 从 1 起（UI 显示「第 k/n 个文件」）
+                n,
+            };
+            self.download_one(&client, hub, &job, cancel, tx)?;
             self.emit(tx, DownloadEvent::FileDone { repo: repo.into(), file: (*file).into() });
         }
         self.emit(tx, DownloadEvent::Done { repo: repo.into(), dir: dir.clone() });
         Ok(dir)
     }
 
-    /// 单文件下载（续传 + 重试）。`target` 为最终路径。
+    /// 单文件下载（续传 + 重试）。
     fn download_one(
         &self,
         client: &reqwest::blocking::Client,
         hub: Hub,
-        repo: &str,
-        file: &str,
-        target: &Path,
-        k: usize,
-        n: usize,
+        job: &FileJob,
         cancel: &AtomicBool,
         tx: Option<&Sender<DownloadEvent>>,
     ) -> Result<(), DlError> {
-        let incomplete = incomplete_path(target);
+        let (repo, file) = (job.repo, job.file);
         let mut last_err: Option<DlError> = None;
         for (attempt, backoff) in std::iter::once(Duration::ZERO).chain(BACKOFFS).enumerate() {
             if backoff > Duration::ZERO {
@@ -302,7 +316,7 @@ impl Downloader {
             if cancel.load(Ordering::Relaxed) {
                 return Err(DlError::new(FailKind::Cancelled, "已取消"));
             }
-            match self.try_download(client, hub, repo, file, target, &incomplete, k, n, cancel, tx) {
+            match self.try_download(client, hub, job, cancel, tx) {
                 Ok(()) => return Ok(()),
                 Err(e) => {
                     // DL-2/F5 快速失败：永久性错误（404 仓库缺失/401 私有/磁盘）不再退避
@@ -320,15 +334,11 @@ impl Downloader {
         &self,
         client: &reqwest::blocking::Client,
         hub: Hub,
-        repo: &str,
-        file: &str,
-        target: &Path,
-        incomplete: &Path,
-        k: usize,
-        n: usize,
+        job: &FileJob,
         cancel: &AtomicBool,
         tx: Option<&Sender<DownloadEvent>>,
     ) -> Result<(), DlError> {
+        let (repo, file, target, incomplete) = (job.repo, job.file, job.target, job.incomplete);
         if let Some(p) = target.parent() {
             std::fs::create_dir_all(p).map_err(disk_err)?;
         }
@@ -404,7 +414,7 @@ impl Downloader {
                 f.write_all(&buf[..n]).map_err(disk_err)?;
                 written += n as u64;
                 if written - done >= PROGRESS_STEP {
-                    self.progress(tx, repo, file, k, n, written, total);
+                    self.progress(tx, job, written, total);
                     done = written;
                 }
             }
@@ -423,7 +433,7 @@ impl Downloader {
             }
             drop(f);
             finalize_incomplete(incomplete, target)?;
-            self.progress(tx, repo, file, k, n, written, total.or(Some(written)));
+            self.progress(tx, job, written, total.or(Some(written)));
             return Ok(());
         }
     }
@@ -470,16 +480,20 @@ impl Downloader {
     fn progress(
         &self,
         tx: Option<&Sender<DownloadEvent>>,
-        repo: &str,
-        file: &str,
-        k: usize,
-        n: usize,
+        job: &FileJob,
         done: u64,
         total: Option<u64>,
     ) {
         self.emit(
             tx,
-            DownloadEvent::Progress { repo: repo.into(), file: file.into(), k, n, done, total },
+            DownloadEvent::Progress {
+                repo: job.repo.into(),
+                file: job.file.into(),
+                k: job.k,
+                n: job.n,
+                done,
+                total,
+            },
         );
     }
 }

@@ -958,9 +958,10 @@ impl DownloadErrKind {
 }
 
 /// 模型下载运行态（识别页缓存卡片的状态机；运行期下载的唯一 UI 反馈源）
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub enum DownloadUiState {
     /// 无下载（未开始/已成功/被替换）
+    #[default]
     Idle,
     /// 下载进行中：按**当前文件**显示进度（DL-3——file/k/n 来自 backend 机器段，
     /// done_bytes/total_bytes 为精确字节；total_bytes=0 表示未知，走日志模式）；
@@ -971,12 +972,6 @@ pub enum DownloadUiState {
     Cancelled { log: Vec<String> },
     /// 下载失败：kind 供分类提示，detail 为原始错误串，log 为失败前日志
     Failed { kind: DownloadErrKind, detail: String, log: Vec<String> },
-}
-
-impl Default for DownloadUiState {
-    fn default() -> Self {
-        Self::Idle
-    }
 }
 
 impl DownloadUiState {
