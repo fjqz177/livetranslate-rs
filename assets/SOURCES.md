@@ -1,4 +1,4 @@
-# 资产来源记录（PLAN.md §2.5 要求：入库资产记录来源与 sha256）
+# 资产来源记录（docs/archive/rewrite-plan.md §2.5 要求：入库资产记录来源与 sha256）
 
 ## silero_vad.onnx
 

@@ -1,5 +1,9 @@
 # GUI 视觉质感与手感对齐改造方案（Visual Parity Plan）
 
+> 【已归档】阶段一（Python 1:1 复刻期，2026-09-05～09-07）文档。2026-09-07 起本版不再追求与原版 1:1，Python 原版仅作行为参考；本文仅作决策史，不再作为施工依据（活跃文档见 AGENTS.md 与 docs/README.md）。
+> 五工作包已全部施工完成（285 测），见文首状态行。
+
+
 > **状态：已全部施工完成（2026-09-07）。** 五工作包对应提交：WP-A a883ef7、
 > WP-B 448ee7c、WP-C 0f77cbb、WP-D 509150f（尺寸+changelog 修复）、
 > 5851e60（面板居中）；285 测全绿，实机走查通过。施工中新增修复：changelog
@@ -85,7 +89,7 @@ dark 默认三态（`style.rs:1680-1725`）：
 - 控制面板：无 QScrollArea（grep 无结果）→ **原版面板页面不滚动**，滚动条是 Windows 原生 17px 系统样式（QTabWidget 页内直接布局）
 
 **面板多余滚动条**：
-- 原版 `resize(520, min(650, avail))`（control_panel.py:100）只是请求值；Qt 布局 minimumSizeHint 把窗口顶开 → **实机 ≈535×781 逻辑**（ui-realign-plan §2.1 走查实测 802×1171 物理@150%）
+- 原版 `resize(520, min(650, avail))`（control_panel.py:100）只是请求值；Qt 布局 minimumSizeHint 把窗口顶开 → **实机 ≈535×781 逻辑**（ui-realign.md §2.1 走查实测 802×1171 物理@150%）
 - Rust 版 `create_window(Panel, (520,650))`（app.rs:105）按 650 固定，内容密度又略高于原版 → 内容溢出几十像素 → 滚动条出现（"差一点就能显示完"与 781−650=131px 的量级吻合）
 
 ---
@@ -143,7 +147,7 @@ dark 默认三态（`style.rs:1680-1725`）：
 1. `cargo test --workspace` 全绿（当前 281 测）+ WP-B 新增无头断言。
 2. 实机走查：zh/en 各一遍，全屏截图（egui 窗口 PrintWindow 抓旧帧的坑照旧规避）。
 3. 像素采样脚本沉淀（DPI 坐标换算坑记入：CUA 截图坐标=物理/2，PowerShell 非 DPI-aware 进程 SetCursorPos 用物理/1.5 虚拟坐标，本轮踩过）。
-4. 更新 `RESEARCH.md` 已知偏差表（新增 D-17：header 样式字段因原版 Qt 行为不渲染，1:1 保留字段）与记忆。
+4. 更新 `rewrite-research.md` 已知偏差表（新增 D-17：header 样式字段因原版 Qt 行为不渲染，1:1 保留字段）与记忆。
 
 ---
 
@@ -182,7 +186,7 @@ WP-A、WP-B 互不依赖可并行（不同文件域）；WP-C 依赖 WP-B 的注
 
 ## 7. D-17 字体基线复核项（2026-09-07 追加）
 
-字体系统改造（docs/font-system-plan.md，D-17）后全默认渲染改内嵌思源黑体（Noto Sans CJK SC），
+字体系统改造（docs/archive/font-system.md，D-17）后全默认渲染改内嵌思源黑体（Noto Sans CJK SC），
 与原版微软雅黑**文字度量不同**（字号/换行断点/行高观感），以下既有验收量需按新基线重走：
 
 - 面板 535×781 与行控件换行位置（固定尺寸不变，仅文字宽度微差）；

@@ -1,4 +1,4 @@
-//! 字体系统（docs/font-system-plan.md W-3/W-6/W-7）：仓库自洽——所有字形由内嵌字体保证，
+//! 字体系统（docs/archive/font-system.md W-3/W-6/W-7）：仓库自洽——所有字形由内嵌字体保证，
 //! 系统字体仅作增强（锦上添花），任何开发者 clone 仓库即得一致渲染、零系统污染。
 //!
 //! - 内嵌思源黑体（Noto Sans CJK SC = Source Han Sans SC，OFL 1.1）恒在

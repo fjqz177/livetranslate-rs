@@ -1,5 +1,9 @@
 # 悬浮窗（主界面）对齐原版方案——2026-09-06
 
+> 【已归档】阶段一（Python 1:1 复刻期，2026-09-05～09-07）文档。2026-09-07 起本版不再追求与原版 1:1，Python 原版仅作行为参考；本文仅作决策史，不再作为施工依据（活跃文档见 AGENTS.md 与 docs/README.md）。
+> 主要修复已随提交 2e94bf3 与视觉工作包入库。
+
+
 > 范围：**仅主界面**（程序启动时打开的黑色半透明悬浮窗）。控制面板/托盘/字幕窗不在本方案内。
 > 参考权威 = 工作区内 `LiveTranslate/subtitle_overlay.py`（1286 行；用户明确：与外部 `D:\biancheng\LiveTranslate` 等仓库无关）。
 > 用户反馈两点：① 半透明没实现（整窗全黑不透明）；② UI 观感"非常怪"。
@@ -68,7 +72,7 @@
 
 - egui 0.36 `Button` 内边距用 `Button::margin(Margin)`；复选/下拉无法 100% 复刻 Qt 质感（既有决策：近似即可）。
 - Consolas bold 需同时注册，否则标题伪加粗；无 Consolas 环境（非常见）回退雅黑不致缺字。
-- 走查一律**全屏截图**（egui 窗口 PrintWindow 抓旧帧，见 ui-realign-plan §1 教训）。
+- 走查一律**全屏截图**（egui 窗口 PrintWindow 抓旧帧，见 ui-realign.md §1 教训）。
 - Step A 不动布局、Step B 不动控件规格、Step C 不动数据通路——三步可分三个 commit，互不阻塞。
 
 ---

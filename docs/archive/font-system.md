@@ -1,4 +1,8 @@
-# 字体系统全链路改造施工计划（font-system-plan）
+# 字体系统全链路改造施工计划（font-system）
+
+> 【已归档】阶段一（Python 1:1 复刻期，2026-09-05～09-07）文档。2026-09-07 起本版不再追求与原版 1:1，Python 原版仅作行为参考；本文仅作决策史，不再作为施工依据（活跃文档见 AGENTS.md 与 docs/README.md）。
+> W-1~W-7 已全部完成（D-17/R-14 已回写决策史）。
+
 
 > 制定日期：2026-09-07　基线：HEAD `a395862`（291 测全绿，release 59MB 单 exe）
 > 制定方式：双面核实——① lt-ui/lt-proto/lt-app 现有代码逐点读证（文中所有 file:line 均以基线为准，执行时先 Read 再改）；② egui 0.36.1 / epaint 0.36.1 源码能力核实（skrifa 字体栈、FontFamily::Name、FontData API）；③ Python 原版副本 `LiveTranslate/` 字体用法清点。
@@ -18,8 +22,8 @@
 ### 0.2 参照基准口径（三层）
 
 1. **1:1 权威** = 工作区 `LiveTranslate/` Python 副本（用户 2026-09-06 明确）。本文档"原版行为"均引该副本 `file:line`。
-2. **已裁决偏差** = RESEARCH.md §1.5 的 D-1～D-16。本文档新增偏差 **D-17**（字体默认值/级联语义，用户 2026-09-07 裁决），执行时必须同步回写 RESEARCH.md。
-3. **新风险** = RESEARCH.md R-14（系统字体依存风险），执行时必须同步回写。
+2. **已裁决偏差** = rewrite-research.md §1.5 的 D-1～D-16。本文档新增偏差 **D-17**（字体默认值/级联语义，用户 2026-09-07 裁决），执行时必须同步回写 rewrite-research.md。
+3. **新风险** = rewrite-research.md R-14（系统字体依存风险），执行时必须同步回写。
 
 ### 0.3 硬规约（每个 WP 都适用）
 
@@ -31,7 +35,7 @@
 | **不得扩 lt-proto 契约来承载 UI 能力**：本文档对 lt-proto 的改动仅是 Settings 数据键（有 `models_dir` 先例，见 §4.2.4），**不新增任何 Cmd/Event 变体** | AGENTS.md 分层规则 |
 | edition 2021 if-let 锁临时值自死锁：共享锁+分支派发先绑定再分支 | AGENTS.md 坑 11 |
 | i18n zh/en 两份 yaml 必须同步修改 | AGENTS.md 约定 |
-| 新增资产必须记 `assets/SOURCES.md`（来源 + sha256） | PLAN.md §2.5 |
+| 新增资产必须记 `assets/SOURCES.md`（来源 + sha256） | rewrite-plan.md §2.5 |
 
 ---
 
@@ -419,7 +423,7 @@ let font = FontId::new(pt(cfg.font_size), fam);
 - 行宽测度 `text_width(ui,&font,s)` 已参数化（`subtitle.rs:71-75`），换用同 FontId 即自动一致——**无二次改动**。
 - 实现注意事项：`FontFamily::Name(Arc<str>)` 每处构造 Arc 一次（避免每帧 clone 开销）；把 `font_family_for` 缓存结果挂 `FontsState`（family→Option<FontFamily>，键应用时刷新）——**每帧只查 HashM哈图不重复 Arc**。
 - chrome（`overlay.rs:132,350` monospace）**不动**（Consolas 保持，与原版 `main.py:146` 一致）。
-- 视觉差异归档：全默认思源后与原版雅黑度量不同（行宽/换行阈值变化）——记入 `docs/visual-parity-plan.md` 复核项，面板 535×781 等固定布局尺寸**不调整**（仅文字宽度微差）。
+- 视觉差异归档：全默认思源后与原版雅黑度量不同（行宽/换行阈值变化）——记入 `docs/archive/visual-parity.md` 复核项，面板 535×781 等固定布局尺寸**不调整**（仅文字宽度微差）。
 
 **完成标准**：改两处渲染 + 注释；字幕两行分别选不同字体实机可见（截图：全屏截图验收——egui 窗口 PrintWindow 会抓到旧帧，AGENTS.md 坑 10）；`cargo test --workspace` 全绿。
 
@@ -441,10 +445,10 @@ let font = FontId::new(pt(cfg.font_size), fam);
 - 测试数预估：291 → 约 308（+17 净增；-1 替换）。
 
 **文档**：
-- `RESEARCH.md`：**D-17** = "字体默认统一内嵌思源（Noto Sans CJK SC，OFL 1.1）+ 行级级联（空=跟随主设置）+ 新增键 ui_font_family/subtitle_font_family + 系统字体选择器/预览"（原文引用户 2026-09-07 裁决；标注"原版无对应设置，原版默认 Microsoft YaHei 的 1:1 行为变为'显式客制才生效'"); **R-14** = 系统字体依赖（缺失→内嵌兜底；度量差异→parity 重基线；扫描范围=HKLM+HKCU）。
+- `rewrite-research.md`：**D-17** = "字体默认统一内嵌思源（Noto Sans CJK SC，OFL 1.1）+ 行级级联（空=跟随主设置）+ 新增键 ui_font_family/subtitle_font_family + 系统字体选择器/预览"（原文引用户 2026-09-07 裁决；标注"原版无对应设置，原版默认 Microsoft YaHei 的 1:1 行为变为'显式客制才生效'"); **R-14** = 系统字体依赖（缺失→内嵌兜底；度量差异→parity 重基线；扫描范围=HKLM+HKCU）。
 - `AGENTS.md`：字体策略段落（内嵌思源默认/级联/选择器）+ 更新"291 测"为测试后实测数 + 大坑补充（若产生新坑：如 `font_family_for` 每帧 Arc 注意点）。
 - `assets/SOURCES.md`：W-1 条目。
-- `docs/visual-parity-plan.md`：加复核项"字体度量重基线（思源 vs 雅黑）"。
+- `docs/archive/visual-parity.md`：加复核项"字体度量重基线（思源 vs 雅黑）"。
 
 ---
 
@@ -456,7 +460,7 @@ let font = FontId::new(pt(cfg.font_size), fam);
 | W-2 | `feat(fonts-contract): Settings 增 ui/subtitle_font_family+行级跟随默认(D-17)` | 1h | lt-proto/settings.rs |
 | W-3 | `feat(ui-fonts): 内嵌思源默认+系统字体扫描+字体组选择器/实时预览` | 6-8h | lt-ui/fonts.rs(新), font_picker.rs(新), app.rs, state.rs, style.rs, subtitle_page.rs, i18n×2 |
 | W-4 | `feat(ui-fonts): 悬浮窗/字幕行字体键真实生效(D-17 级联)` | 2-3h | subtitle.rs, overlay.rs |
-| W-5 | `docs(fonts): D-17/R-14 归档+字体测试机器无关化+测试数更新` | 1-2h | RESEARCH.md, AGENTS.md, visual-parity-plan.md, 各测试 |
+| W-5 | `docs(fonts): D-17/R-14 归档+字体测试机器无关化+测试数更新` | 1-2h | rewrite-research.md, AGENTS.md, visual-parity.md.md, 各测试 |
 
 **冒烟走查（每个含渲染 WP 后必做）**：
 
@@ -480,7 +484,7 @@ LIVETRANSLATE_CONFIG_DIR=D:/tmp/lt_smoke cargo run -p lt-app
 - [ ] 悬浮窗/字幕行级字体真实生效（截图验收——全屏截图，非 PrintWindow）
 - [ ] 旧文件（原版导入/显式雅黑）行为遵从§2.2 三级语义
 - [ ] `settings.json` 重启恢复（含新键）
-- [ ] RESEARCH.md D-17/R-14 与 AGENTS.md 已更新
+- [ ] rewrite-research.md D-17/R-14 与 AGENTS.md 已更新
 - [ ] exe 体积实测已记录（预期 ~74MB）
 
 ---
@@ -539,10 +543,10 @@ fn build_definitions(settings: &Settings, system: &[SystemFont], cache: &mut Fon
 
 ## 8. 关联文档索引
 
-- 契约/偏差权威：`RESEARCH.md`（D-17、R-14 待回写）
-- 施工总图：`PLAN.md`
-- 字体相关既有方案：`docs/overlay-realign-plan.md`、`docs/visual-parity-plan.md`
-- 本计划执行纪要（完成后追加）：`docs/font-system-plan.md` 底部"执行纪要"段（每 WP 一行：commit 号 + 测试数 + 遗留项）
+- 契约/偏差权威：`rewrite-research.md`（D-17、R-14 待回写）
+- 施工总图：`rewrite-plan.md`
+- 字体相关既有方案：`docs/archive/overlay-realign.md`、`docs/archive/visual-parity.md`
+- 本计划执行纪要（完成后追加）：`docs/archive/font-system.md` 底部"执行纪要"段（每 WP 一行：commit 号 + 测试数 + 遗留项）
 
 ---
 
@@ -554,6 +558,6 @@ fn build_definitions(settings: &Settings, system: &[SystemFont], cache: &mut Fon
 | W-2 契约 | `8be585a` | 294 | 无；`style_and_subtitle_defaults_match_original` 已按 D-17 改断言 |
 | W-3 字体模块+选择器 | `a2ae876` | 303 | 行级选择器在模态内即时预览依赖上次 apply（提交后生效），可接受；字体列表未做虚拟化（搜索框缓解） |
 | W-4 渲染真实化 | `29155a6` | 303 | chrome（Overlay 头/统计行）保持 Consolas 不动（原版 1:1）；TTC 系统字体仅 face 0 |
-| W-5 文档 | 随本提交 | 303 | docs/font-system-plan.md 附录 A 决策点三项均已按用户裁决落地，无未决 |
+| W-5 文档 | 随本提交 | 303 | docs/archive/font-system.md 附录 A 决策点三项均已按用户裁决落地，无未决 |
 | W-7 体积压缩 | （随本提交） | 305 | brotli(q11) 入库 ~12.7MB（原 34MB）运行时一次性解压（字形零损失，启动 +~100ms）；等宽 chrome 换拉丁 Noto Sans Mono（CJK 回落思源=有 Consolas 机器现状）；区域子集经实测缺失韩文音节（한국어）已否决不采纳；exe ~92MB → ~70MB |
 | W-6 仓库自洽 | （随本提交） | 305 | 收敛系统依赖：内嵌等宽 MonoCJK + 符号 NotoSansSymbols2 取代 seguisym（✗ 由符号字体补足）；Consolas 仅作系统增强（原版 1:1，缺则内嵌等宽一致）；注册表扫描 cfg(windows) 门控（非 Windows 空列表，仓库仍可完整渲染）；覆盖测试改 skrifa 解析级（epaint has_glyph 对 replacement-face 有启发式假阴性，见其 TODO） |

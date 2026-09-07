@@ -577,7 +577,7 @@ runtime_gate_retry: "Retry"
 runtime_gate_quit: "Quit"
 runtime_gate_failed: "Install failed: {error}"
 runtime_gate_full_package: "Persistent network trouble? Re-run the full installer to repair offline."
-# ── Rust-only additions: download loop / translator feedback / log tab / unified prompts (ux-feedback-plan N1-N2) ──
+# ── Rust-only additions: download loop / translator feedback / log tab / unified prompts (docs/archive/ux-feedback.md N1-N2) ──
 tab_log: "Logs"
 asr_unavailable: "ASR unavailable"
 downloading: "Downloading"

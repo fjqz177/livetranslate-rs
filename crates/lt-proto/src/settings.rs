@@ -1,6 +1,6 @@
 //! settings.json 数据契约 —— 与原版 user_settings.json 逐键兼容。
 //!
-//! 兼容策略（对照 PLAN.md §3.1/3.2 与原版 get_data()/migrate 行为）：
+//! 兼容策略（对照 docs/archive/rewrite-plan.md §3.1/3.2 与原版 get_data()/migrate 行为）：
 //! - 序列化：默认值不写盘（`skip_serializing_if`），与原版"条件写入"一致；
 //! - 反序列化：字段全 `#[serde(default)]`，缺失即默认；
 //! - 导入原版文件：经 [`Settings::from_value_compatible`] 做 legacy 键迁移

@@ -1,4 +1,8 @@
-# 与 Python 原版对齐收口施工计划（parity-closure-plan）
+# 与 Python 原版对齐收口施工计划（parity-closure）
+
+> 【已归档】阶段一（Python 1:1 复刻期，2026-09-05～09-07）文档。2026-09-07 起本版不再追求与原版 1:1，Python 原版仅作行为参考；本文仅作决策史，不再作为施工依据（活跃文档见 AGENTS.md 与 docs/README.md）。
+> 复刻收口九 WP 处置：WP-1/3/4 已完成；WP-2 由 docs/asr-engine-expansion.md WP-A 实装取代；WP-5/6/7/8 不再默认按复刻执行（有产品价值时按阶段二裁决）；WP-9 实机调优保留（见 AGENTS.md 待办）。
+
 
 > 制定日期：2026-09-06　基线：HEAD `a3ecaf1`（279 测全绿，release 59MB 单 exe 已验证）
 > 制定方式：对 `LiveTranslate/` Python 权威副本与 Rust 八库做全量双面清点后逐项定稿。
@@ -18,8 +22,8 @@
 ### 0.2 参照基准口径（三层）
 
 1. **1:1 权威** = 工作区 `LiveTranslate/` Python 副本（用户 2026-09-06 明确）。本文档所有"原版行为"均引该副本的 `file:line`。
-2. **已裁决偏差** = RESEARCH.md §1.5 的 D-1～D-16。新偏差一律从 **D-17** 起编号并回写 RESEARCH.md。
-3. **历史反转决策**：`docs/ui-realign-plan.md` Phase C 中"首启向导恢复""托盘全量菜单"两结论已被后续 commit 反转（785eed1 拆向导、7d360b1 托盘精简为 5 项，均引"新版原版 less-is-more"）。本文档将这两处列为 ⚑ 决策点重新裁决，**不默认延续反转**。
+2. **已裁决偏差** = rewrite-research.md §1.5 的 D-1～D-16。新偏差一律从 **D-17** 起编号并回写 rewrite-research.md。
+3. **历史反转决策**：`docs/archive/ui-realign.md` Phase C 中"首启向导恢复""托盘全量菜单"两结论已被后续 commit 反转（785eed1 拆向导、7d360b1 托盘精简为 5 项，均引"新版原版 less-is-more"）。本文档将这两处列为 ⚑ 决策点重新裁决，**不默认延续反转**。
 
 ### 0.3 硬规约（每个 WP 都适用）
 
@@ -69,7 +73,7 @@
 ### 原版行为参照
 
 - 引擎下拉 4 项中 Rust 保留 2 项（D-12 裁 remote、D-13 裁 anime），whisper 可选（`control_panel.py:213-233`）。
-- Whisper 型号下拉 6 档 = 5 原版档 + turbo（D-15），large-v3 标注 CPU 慢（RESEARCH.md §5xx 行 500 区域："Whisper 档位下拉 6 项（5 原版档 + turbo，D-15），large-v3 标注 CPU 慢"）。
+- Whisper 型号下拉 6 档 = 5 原版档 + turbo（D-15），large-v3 标注 CPU 慢（rewrite-research.md §5xx 行 500 区域："Whisper 档位下拉 6 项（5 原版档 + turbo，D-15），large-v3 标注 CPU 慢"）。
 - padding 条件可见：whisper padding 仅 whisper 引擎可见，SenseVoice padding 仅支持 padding 的 FunASR 模型可见（`control_panel.py:285-317, 1118-1137`）。**Rust 现状两个 padding 恒显示**（`vad.rs:293-302`），本 WP 一并对齐。
 
 ### 改造步骤
@@ -109,14 +113,14 @@
 
 - 注册表条目齐全（`crates/lt-models/src/registry.rs:35-44`，HF/MS 双 repo、1.1GB 估计、文件清单）；面板下拉**可选**、标"实验性"（`crates/lt-ui/src/windows/panel/vad.rs:62-68`，`enabled: true`）。
 - 但 `build_worker_config` 把**所有** funasr 条目一律映射 `engine: "sensevoice"`（`pipeline.rs:593-606`），而 SenseVoice 加载器只认 `model.int8.onnx + tokens.txt`（`crates/lt-asr/src/engines/sensevoice.rs:30-56`）。**选中 nano → 下载 1.1GB 成功 → 加载必然失败**（或 `local_model_dir` 探测失败 → `AsrUnavailable`）。这是用户陷阱。
-- AGENTS.md 待办自认"FunASR Nano 实装（目前仅注册表占位）"。RESEARCH.md D-14 的意图是 nano"标实验性**可选**"——即长期正确解是实装，而不是永久置灰；mlt 才是置灰（无上游 ONNX，D-14）。
+- AGENTS.md 待办自认"FunASR Nano 实装（目前仅注册表占位）"。rewrite-research.md D-14 的意图是 nano"标实验性**可选**"——即长期正确解是实装，而不是永久置灰；mlt 才是置灰（无上游 ONNX，D-14）。
 
 ### 改造步骤（分两步走）
 
 **第 1 步（本 WP，防坑，1 小时）**：
 1. `vad.rs::funasr_model_items()` 中 nano 的 `enabled: true → false`（对齐 mlt 的 D-14 灰显样式 `vad.rs:70,273-275`），display 保留"实验性"标注并追加"实装中"提示（新 i18n 键 `model_nano_disabled_hint`，zh/en 同步）。
 2. `vad.rs:285-287` 的 mlt hint 行扩展为按禁用项分别提示（mlt：待上游转换；nano：引擎实装中）。
-3. 回写 RESEARCH.md：D-14 修订记录"nano 短期置灰（引擎未实装防误选），实装后恢复可选"。
+3. 回写 rewrite-research.md：D-14 修订记录"nano 短期置灰（引擎未实装防误选），实装后恢复可选"。
 
 **第 2 步（独立卡，不在本计划排期，前置调研后立项）**：
 - 调研 sherpa-onnx（`sherpa-rs` binding）对 Fun-ASR-Nano 的模型类型支持面：binding 是否暴露 nano 所需的 recognizer 配置（`Cargo.toml` 当前 sherpa 版本、上游 sherpa-onnx 是否已支持该模型 type）。调研结论决定：binding 支持 → 立"Nano 引擎实装"卡（新 `lt-asr::engines::nano`，`build_worker_config` 按 registry 条目分派引擎，`asr_worker_entry` 加分支）；不支持 → nano 维持置灰并记为正式偏差。
@@ -403,14 +407,14 @@
 
 ### ⚑ 决策点 D-3：ErrorBanner 出处
 
-- AGENTS.md 待办列"ErrorBanner（新版悬浮窗错误分类条）"，但**工作区 Python 权威副本无此部件**（错误走弹窗/消息内联 `[error: ...]`/托盘气泡，`main.py:750-776, 1130-1131`），RESEARCH.md 亦无条目。
+- AGENTS.md 待办列"ErrorBanner（新版悬浮窗错误分类条）"，但**工作区 Python 权威副本无此部件**（错误走弹窗/消息内联 `[error: ...]`/托盘气泡，`main.py:750-776, 1130-1131`），rewrite-research.md 亦无条目。
 - **必答前置问题（问用户）**：ErrorBanner 的参照物是什么？（新版原版截图/文字描述/错误分类清单？）
 - 兜底设计（若确认要做而无详细参照）：悬浮窗头部行下方错误分类条，聚合现有错误面——`AsrUnavailable`（ASR 不可用/模型缺失）、`DownloadFailed`（下载失败，可点重试）、翻译错误计数（连续失败提示，点击跳设置）。展示语义：有错常驻、可手动关、错误恢复自动消失。
 - **建议默认：拿到参照前不动工。**
 
 ### ⚑ 决策点 D-4：全局热键出处
 
-- AGENTS.md 待办列"全局热键（hotkeys_group）"，但 Python 副本**零热键代码**、Settings 无 `hotkeys_group` 键、RESEARCH.md 无条目——疑似"新版原版"特性或新需求，出处未证实。
+- AGENTS.md 待办列"全局热键（hotkeys_group）"，但 Python 副本**零热键代码**、Settings 无 `hotkeys_group` 键、rewrite-research.md 无条目——疑似"新版原版"特性或新需求，出处未证实。
 - **必答前置问题**：① 出处（新版原版还是新需求）？② 期望热键集（建议最小集：暂停/恢复、显示/隐藏悬浮窗、清空消息）？③ 冲突策略（注册失败降级提示）？
 - 技术预研结论（供立项）：Win32 `RegisterHotKey` + message-only 窗口 `WM_HOTKEY`，lt-ui 内 `#[cfg(windows)]` 模块；`WM_HOTKEY` 经 proxy 进事件循环。无新依赖。
 - **建议默认：确认出处前不动工。**
@@ -502,4 +506,4 @@
   WP-8 ErrorBanner/热键（D-3/D-4 确认后）
 ```
 
-每批收尾：`cargo test --workspace` 全绿 + clippy 无告警 + 中文 commit（`feat(wp1-whisper-ui): …` 风格）+ 必要时回写 RESEARCH.md 偏差编号与 AGENTS.md 待办勾销。
+每批收尾：`cargo test --workspace` 全绿 + clippy 无告警 + 中文 commit（`feat(wp1-whisper-ui): …` 风格）+ 必要时回写 rewrite-research.md 偏差编号与 AGENTS.md 待办勾销。

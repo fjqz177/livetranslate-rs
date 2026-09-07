@@ -1,7 +1,7 @@
 //! 多窗口宿主（M0.4）：一个 winit 事件循环 + 共享 egui Context + egui-wgpu Painter
 //! （Painter 原生支持多 surface，按 ViewportId 管理）。
 //!
-//! 设计要点（对照 PLAN.md §2.1/2.2）：
+//! 设计要点（对照 docs/archive/rewrite-plan.md §2.1/2.2）：
 //! - 4 个常驻原生窗口：overlay（透明/无边框/置顶/跳任务栏/不抢焦点）、
 //!   subtitle（透明/无边框/置顶）、panel/log（常规装饰窗口）；
 //! - 每窗口独立 `egui_winit::State`（独立 viewport id/DPI/输入）；

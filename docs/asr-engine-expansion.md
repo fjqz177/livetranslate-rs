@@ -1,6 +1,10 @@
 # ASR 引擎扩展可行性分析与施工方案（FunASR Nano / Qwen3-ASR / 开源模型扫描）
 
-> 日期：2026-09-07 ｜ 性质：调研文档（未改任何代码）｜ 前置：RESEARCH.md r8 双栈结论、PLAN.md §2.6/§5.2、docs/parity-closure-plan.md WP-2
+> 状态：**阶段二活跃文档**（2026-09-07 归档重组）。调研已完成，WP-A（FunASR Nano 实装+注册表修正）与 WP-B（Qwen3-0.6B）待施工；
+> 新偏差编号自 D-22 起（D-17 已被字体系统、D-18~D-21 已被分发决策占用），回写目标改为 docs/archive/rewrite-research.md。
+
+
+> 日期：2026-09-07 ｜ 性质：调研文档（未改任何代码）｜ 前置：docs/archive/rewrite-research.md r8 双栈结论、docs/archive/rewrite-plan.md §2.6/§5.2、docs/archive/parity-closure.md WP-2
 >
 > 调研方法：仓内代码逐点核对（文中 file:line 均为实测）+ sherpa-onnx 官方文档/issue + HuggingFace / ModelScope API 实测（hf-mirror 直连核对仓库存活性与文件清单）+ Qwen3-ASR 官方开源信息（2026-01 技术报告 arXiv:2601.21337）。
 
@@ -10,7 +14,7 @@
 
 | 议题 | 判定 | 一句话依据 |
 |---|---|---|
-| **FunASR Nano（funasr-nano-2512）实装** | **可行，接近 turnkey，建议立即做（WP-A）** | 锁定的 sherpa-onnx 1.13.7 Rust binding 已暴露 `OfflineFunASRNanoModelConfig`；官方 int8 转换包实测存在（948MB，CPU RTF 0.144–0.191@2 线程）；manager 层的 nano 无-padding 逻辑**早已写好**（`manager.rs:304-312`）。但注册表条目是错的（仓库名不存在 + 文件清单错误），须先修正，否则就是 parity-closure-plan WP-2 预警的"下载 1.1GB 后必坏"用户陷阱 |
+| **FunASR Nano（funasr-nano-2512）实装** | **可行，接近 turnkey，建议立即做（WP-A）** | 锁定的 sherpa-onnx 1.13.7 Rust binding 已暴露 `OfflineFunASRNanoModelConfig`；官方 int8 转换包实测存在（948MB，CPU RTF 0.144–0.191@2 线程）；manager 层的 nano 无-padding 逻辑**早已写好**（`manager.rs:304-312`）。但注册表条目是错的（仓库名不存在 + 文件清单错误），须先修正，否则就是 docs/archive/parity-closure.md WP-2 预警的"下载 1.1GB 后必坏"用户陷阱 |
 | **Qwen3-ASR-0.6B 接入** | **可行，中低风险，建议做（先 0.5 天 spike 再实装，WP-B）** | Qwen3-ASR 已于 2026-01 以 Apache 2.0 开源（0.6B/1.7B）；sherpa-onnx 官方已支持 0.6B int8 离线识别（2026-03-25 转换包，HF API 实测存在，941MB）；binding 已有 `OfflineQwen3ASRModelConfig`；**CPU RTF 实测 0.077–0.168@2 线程（比 nano 还快）**。属超出原版 1:1 的新能力，需用户拍板设置拓扑（本文推荐方案见 §4.2） |
 | Qwen3-ASR-1.7B | **不可行，不接** | sherpa-onnx 官方未支持（issue #3535 open），仅社区非官方转换包；1.7B AR 解码纯 CPU 实时性无保障 |
 | funasr-mlt-nano-2512 | **维持置灰，但有条件解锁路径** | 官方（csukuangfj）至今无 MLT 转换；社区包 `lorneluo/sherpa-onnx-funasr-mlt-nano-int8-2512` 实测存在（文件布局与官方 nano 一致），质量未验证。D-14 维持，除非用户愿意吃社区包风险（见 §6.3） |
@@ -56,11 +60,11 @@ AsrManager（crates/lt-asr/src/manager.rs）：重启≤3次、错误分类、RS
 | UI 下拉 | ✅ nano 已可选并带"（实验性）"标注；mlt 灰显 | `crates/lt-ui/src/windows/panel/vad.rs:62-74`、i18n `model_experimental` |
 | 下载向导/设置镜像 | ✅ 走 `missing_models(engine, funasr_model, ...)` 通用链路 | `crates/lt-app/src/backend.rs:104,176` |
 
-**既存陷阱（parity-closure-plan WP-2，P0）**：当前用户在面板选中 nano → 触发下载（约 1.1GB）→ 下载"成功" → `build_worker_config` 仍映射 `engine:"sensevoice"` → SenseVoice 加载器找不到 `model.int8.onnx` → 加载必然失败。WP-A 实装后该陷阱自然消除（WP-2 的"置灰防坑"步骤即被取代）。
+**既存陷阱（docs/archive/parity-closure.md WP-2，P0）**：当前用户在面板选中 nano → 触发下载（约 1.1GB）→ 下载"成功" → `build_worker_config` 仍映射 `engine:"sensevoice"` → SenseVoice 加载器找不到 `model.int8.onnx` → 加载必然失败。WP-A 实装后该陷阱自然消除（WP-2 的"置灰防坑"步骤即被取代）。
 
 ### 1.3 原版 Python 的 nano 行为（1:1 对齐的参照，`LiveTranslate/asr_funasr_nano.py`）
 
-- 运行时：funasr `AutoModel`（PyTorch，trust_remote_code）+ **单独下载 Qwen3-0.6B 权重**（`ensure_qwen_weights`，约 1.5GB）。Rust 版走 ONNX 转换包**权重已内联**，Qwen3 下载链路确认不需要移植（RESEARCH.md D-14 已裁决，本次再度核实成立）。
+- 运行时：funasr `AutoModel`（PyTorch，trust_remote_code）+ **单独下载 Qwen3-0.6B 权重**（`ensure_qwen_weights`，约 1.5GB）。Rust 版走 ONNX 转换包**权重已内联**，Qwen3 下载链路确认不需要移植（docs/archive/rewrite-research.md D-14 已裁决，本次再度核实成立）。
 - 后处理（`asr_funasr_nano.py:99-118`）：取 `text` → 正则清除全部 `<|...|>` 标签 → trim → 空文本或 `"sil"` → 视为无结果。
 - 语言判定（`asr_funasr_nano.py:120-135`）：设了 `language` 用设值；否则启发式——假名(3040–30FF/31F0–31FF)>0 → ja；谚文(AC00–D7AF)>30% → ko；汉字(4E00–9FFF)>30% → zh；否则 en；空 → auto。
 - `supports_padding=false`、`supports_language=true`（set_language 存值，下次 generate 传参）。
@@ -80,7 +84,7 @@ estimated_bytes: 1_100_000_000,
 - 真实官方包为 `csukuangfj/sherpa-onnx-funasr-nano-int8-2025-12-30`（HF 存在，2026-01-13 更新），文件清单见 §2.2。
 - ModelScope 上无对应单仓；`csukuangfj/asr-models` 是树状大仓（子目录套子目录），本项目的平面快照下载器无法使用 → **nano/qwen3 必须 `always_hf: true`**（国内用户经设置里已有的 hf-mirror endpoint 覆写下载，机制已存在：`download/mod.rs` 的 `hf_endpoint`）。
 
-> 注：RESEARCH.md §3.8 当时预估的仓名 `csukuangfj/sherpa-onnx-funasr-nano-int8-2025-12-30` 是对的，注册表里的是后来误写的。另注意甄别：HF 上确有"换皮包"`csukuangfj/sherpa-onnx-sense-voice-funasr-nano-2025-12-17`（名字里带 sense-voice，即 #3061 警告的假 nano），**不要**用。
+> 注：docs/archive/rewrite-research.md §3.8 当时预估的仓名 `csukuangfj/sherpa-onnx-funasr-nano-int8-2025-12-30` 是对的，注册表里的是后来误写的。另注意甄别：HF 上确有"换皮包"`csukuangfj/sherpa-onnx-sense-voice-funasr-nano-2025-12-17`（名字里带 sense-voice，即 #3061 警告的假 nano），**不要**用。
 
 ---
 
@@ -137,7 +141,7 @@ pub struct OfflineQwen3ASRModelConfig {
 
 另有 fp16（1.5GB）与 fp32（3.7GB）包，本项目只用 int8。转换脚本源自 `Wasser1462/FunASR-nano-onnx`。
 
-- **CPU 实测速度**（sherpa 官方文档页，int8、2 线程、greedy）：**RTF 0.144–0.191**（≈5–7 倍实时）。RESEARCH.md §3.3 当时"纯 CPU 约 2–4s/段"的悲观估计可以下修：10 秒段约 1.4–1.9s。
+- **CPU 实测速度**（sherpa 官方文档页，int8、2 线程、greedy）：**RTF 0.144–0.191**（≈5–7 倍实时）。docs/archive/rewrite-research.md §3.3 当时"纯 CPU 约 2–4s/段"的悲观估计可以下修：10 秒段约 1.4–1.9s。
 - 质量：官方页对照 ground truth 的转写样例显示常规语音/专业词/多数歌词基本一致；闽南语、湖南话等方言误识较多（预期内）。
 - 已知上游风险（RESEARCH 已记录，现状更新）：#3066 int8 重复文本问题在 2512 官方 int8 包的样例转写中未见复现；#3061 换皮包已甄别（真包文件名是 embedding/encoder_adaptor/llm 三件套）。
 - 架构：SAN-M/DFSMN 编码器 + Qwen3-0.6B LLM 解码器（AR 自回归），31 语种+方言、支持歌词/说唱、热词。
@@ -189,7 +193,7 @@ pub struct OfflineQwen3ASRModelConfig {
 | A7 | `crates/lt-asr/src/manager.rs` | 无需改码：`engine_family("nano")→"funasr"`（:83）与 nano padding 跳过（:304-312）均已就位。补一条集成断言防回归 |
 | A8 | `crates/lt-ui/src/windows/panel/vad.rs:62-74` | 不改结构；可选：display 追加实测速度提示（新 i18n 键）。WP-2 计划中的"置灰"步骤**作废**（由实装取代） |
 | A9 | `assets/i18n/zh.yaml` + `en.yaml` | 新增 `model_nano_hint`（zh："Fun-ASR-Nano：LLM 解码架构，实验性；纯 CPU 实测约 6 倍实时（2 线程），首次加载较慢" / en 对应）。两份 yaml 必须同步 |
-| A10 | 文档回写 | `RESEARCH.md` §3.3/R-3：实装完成记录 + RTF 实测数据 + 甄别结论（官方 2512 int8 包非换皮）；`docs/parity-closure-plan.md` WP-2 勾销（处置方式 = 实装而非置灰，含 D-6 决议"resolve_funasr_entry 维持不回退"的落实说明）；`AGENTS.md` 待办勾销 |
+| A10 | 文档回写 | `docs/archive/rewrite-research.md` §3.3/R-3：实装完成记录 + RTF 实测数据 + 甄别结论（官方 2512 int8 包非换皮）；`docs/archive/parity-closure.md` WP-2 勾销（处置方式 = 实装而非置灰，含 D-6 决议"resolve_funasr_entry 维持不回退"的落实说明）；`AGENTS.md` 待办勾销 |
 | A11 | 冒烟验收 | 临时 `LIVETRANSLATE_CONFIG_DIR`（settings.json 显式 `models_dir` 指真实缓存）：选 nano → 下载 964MB → 引擎切换成功 → 中/英/粤各一段实音识别 → 语言显示正确 → padding 滑杆对 nano 无效（日志无 padding 下发）→ 切回 sensevoice 正常 |
 
 ### 3.3 风险与对策
@@ -240,7 +244,7 @@ pub struct OfflineQwen3ASRModelConfig {
 | B8 | `crates/lt-asr/src/manager.rs:81-87` | `engine_family` 加 `"qwen3" → "qwen3"`（padding 挂起键无 UI 来源 → 天然 no-op，语义显式化） |
 | B9 | `crates/lt-ui/src/windows/panel/vad.rs:26-30` | `ENGINES` 尾部追加 `("qwen3", "engine_display_qwen3", "Qwen3-ASR")`；pad 组可见性逻辑确认对 qwen3 隐藏（现逻辑按引擎家族显隐，需过一遍） |
 | B10 | `assets/i18n/zh.yaml` + `en.yaml` | `engine_display_qwen3`（"Qwen3-ASR（多语种，实验性）"）+ 模型说明 hint 键；两 yaml 同步 |
-| B11 | 文档回写 | RESEARCH.md 新偏差记录（建议编号顺延，如 D-17：新增 Qwen3-ASR-0.6B 引擎，动机/范围/不支持项：无语言指定、无热词 UI、不接 1.7B）；AGENTS.md 待办 |
+| B11 | 文档回写 | docs/archive/rewrite-research.md 新偏差记录（阶段二起编号自 D-22 起步，如：新增 Qwen3-ASR-0.6B 引擎，动机/范围/不支持项：无语言指定、无热词 UI、不接 1.7B）；AGENTS.md 待办 |
 | B12 | 验收 | spike 四项结论确认 → 下载 941MB → 引擎切换/回滚链路 → 中/粤/英/日实音对照 test_wavs 转写 → 实机 5 分钟会议音频 → CPU/内存采样 → `cargo test --workspace` 全绿 |
 
 ### 4.5 风险与对策
@@ -299,7 +303,7 @@ pub struct OfflineQwen3ASRModelConfig {
 
 1. 近两年"效果最好"的一档（Voxtral Small、Canary-Qwen、Kimi-Audio 等）几乎全是 **LLM 架构 + 多 B 参数**，其精度优势以 GPU/vLLM 运行时为前提，与本项目"纯 CPU + 单 exe"硬约束正面冲突——**CPU 约束下，0.6B 级 LLM 解码模型（nano / qwen3-0.6B）就是质量上限，且两者恰好都有官方 sherpa-onnx 转换**。这个结论反过来印证了 WP-A/WP-B 就是当前技术约束下的最优集合。
 2. zh 场景的现有组合（SenseVoice 秒级 + whisper turbo/medium 质量档 + nano/qwen3 新档）在速度/质量/语言覆盖三维上已无空洞。
-3. 值得持续盯的只有两个：**Cohere Transcribe**（sherpa 字段已预留，等官方转换包 + CPU RTF 数据）与 **FireRedASR2-CTC**（zh 质量备选，接法零新增模式）。触发条件写入 RESEARCH.md 即可，不需要现在排期。
+3. 值得持续盯的只有两个：**Cohere Transcribe**（sherpa 字段已预留，等官方转换包 + CPU RTF 数据）与 **FireRedASR2-CTC**（zh 质量备选，接法零新增模式）。触发条件写入 docs/archive/rewrite-research.md 即可，不需要现在排期。
 
 ### 6.3 MLT 的有条件解锁路径（供决策，默认不动）
 

@@ -578,7 +578,7 @@ runtime_gate_retry: "重试"
 runtime_gate_quit: "退出"
 runtime_gate_failed: "安装失败：{error}"
 runtime_gate_full_package: "网络持续故障？可重新运行完整安装包离线修复。"
-# ── Rust 版新增：下载闭环 / 翻译反馈 / 日志页 / 提示统一（ux-feedback-plan N1-N2）──
+# ── Rust 版新增：下载闭环 / 翻译反馈 / 日志页 / 提示统一（docs/archive/ux-feedback.md N1-N2）──
 tab_log: "日志"
 asr_unavailable: "ASR 不可用"
 downloading: "正在下载"

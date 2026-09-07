@@ -1,8 +1,12 @@
 # LiveTranslate-rs 实施计划（施工图）
 
-> 版本：1.0（2026-09-05，基于 RESEARCH.md r8 定稿编制）
-> 定位：**写代码时的唯一依据**。选型理由与调研证据见 `RESEARCH.md`；本文档只写"怎么干"。
-> 硬约束（全程有效）：纯 CPU、单 exe、`~/.config/livetranslate`、GUI/逻辑与原版 1:1（刻意偏差以 RESEARCH.md §1.5 D-1~D-16 为准，本文不重复论证）。
+> 【已归档】阶段一（Python 1:1 复刻期，2026-09-05～09-07）文档。2026-09-07 起本版不再追求与原版 1:1，Python 原版仅作行为参考；本文仅作决策史，不再作为施工依据（活跃文档见 AGENTS.md 与 docs/README.md）。
+> 内含 M0~M6 施工图与经验教训（§6）；§9 验收清单以「对原版 1:1」为准，仅属阶段一。
+
+
+> 版本：1.0（2026-09-05，基于 rewrite-research.md r8 定稿编制）
+> 定位：**写代码时的唯一依据**。选型理由与调研证据见 `rewrite-research.md`；本文档只写"怎么干"。
+> 硬约束（全程有效）：纯 CPU、单 exe、`~/.config/livetranslate`、GUI/逻辑与原版 1:1（刻意偏差以 rewrite-research.md §1.5 D-1~D-16 为准，本文不重复论证）。
 > 标记约定：**【V】**=已在线核实过的事实；**【M0】【M3】**等=对应里程碑首日必须实测确认的点；其余为设计决策。
 
 ---
@@ -645,6 +649,6 @@ pad_bucket(audio, quantum=round(16000*pad)): remainder==0 原样; 否则尾部�
 
 ---
 
-## 附：与 RESEARCH.md 的条款映射
+## 附：与 rewrite-research.md 的条款映射
 
-本计划所有决策源自 RESEARCH.md r8：选型依据 §2、模型表 §3、架构 §4、偏差 D-1~D-16、风险 R-1~R-13。冲突时以本文档的任务分解为准、以 RESEARCH.md 的决策记录为解释。
+本计划所有决策源自 rewrite-research.md r8：选型依据 §2、模型表 §3、架构 §4、偏差 D-1~D-16、风险 R-1~R-13。冲突时以本文档的任务分解为准、以 rewrite-research.md 的决策记录为解释。

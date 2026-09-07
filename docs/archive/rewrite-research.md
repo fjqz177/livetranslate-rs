@@ -1,5 +1,9 @@
 # LiveTranslate → Rust 完整重写研究文档
 
+> 【已归档】阶段一（Python 1:1 复刻期，2026-09-05～09-07）文档。2026-09-07 起本版不再追求与原版 1:1，Python 原版仅作行为参考；本文仅作决策史，不再作为施工依据（活跃文档见 AGENTS.md 与 docs/README.md）。
+> 内含决策史：选型结论、偏差 D-1~D-21、风险 R-1~R-14；新阶段的行为差异另行落档并自 D-22 起编号。
+
+
 > 日期：2026-09-05 ｜ 修订：r2 纯 CPU ｜ r3 复核 ｜ r4 裁剪远程 ASR ｜ r5 async-openai ｜ r6 裁剪三个高危引擎变体 ｜ r7（音频跨平台抽象）｜ **r8（2026-09-05：ASR 引擎分析完结——用户决策：Nano 恢复实验性、Anime 确认裁剪、Whisper 加 turbo 档；whisper 引擎经补充调研采纳 whisper.cpp 双栈建议）**｜ 状态：研究完成并已对照源码复核，等待开工指令
 > 原版：`LiveTranslate/`（Python 3.10 + PyQt6 + PyTorch，Windows 平台，MIT 协议）
 > 目标：**单文件 exe、纯 CPU、零运行时依赖、功能与 GUI 尽可能 1:1**，配置放 `~/.config/livetranslate`，模型缓存路径可在配置中指定。
@@ -131,7 +135,7 @@
 | D-14 | **FunASR Nano / MLT 恢复为实验性**（r8 用户决定，取代 D-13 的 nano 裁剪部分）：`funasr_model` 下拉恢复 3 项 1:1 结构——sensevoice-small（默认）/ funasr-nano-2512（标实验性）/ funasr-mlt-nano-2512（置灰，待上游转换）；UI+文档明示 CPU 慢（2-4s/段）与转换质量告警；不移植 Qwen3 下载链路 | 用户决定（r8） |
 | D-15 | **Whisper 档位增加 turbo**（r8 用户决定）：6 档 = tiny/base/small/medium/large-v3/turbo（`ggml-org/whisper-large-v3-turbo`，~809MB，速度≈medium 质量≈large-v3）；large-v3 保留但 UI 标注 CPU 慢 | 用户决定（r8），超出原版的增补 |
 | D-16 | **whisper 引擎使用 whisper.cpp（GGML）而非 sherpa 统一栈**（r8，经用户授权的补充调研后采纳）：动因是 sherpa whisper 确认仅 greedy（官方 #671 无计划支持 beam）+ 未解的 3 倍 CER 告警（#2900）；代价 = 第二条原生构建链 + GGML 格式 + 二进制 ~3-4MB | 质量对齐优先（r8） |
-| D-17 | **字体默认统一内嵌思源黑体（Noto Sans CJK SC = Source Han Sans SC，OFL 1.1）+ 行级级联**（2026-09-07 用户裁决）：① 界面/悬浮窗/字幕行字体默认全部指向内嵌思源（契约默认值从原版 "Microsoft YaHei" 改为空串=跟随）；② 新增 Rust 专属键 `ui_font_family`/`subtitle_font_family`（原版无对应设置，默认 "Noto Sans CJK SC"）；③ 主设置键整体切换界面/字幕字体，行级键可独立覆盖（空串=跟随；旧文件显式 "Microsoft YaHei" 仍被尊重=原版导入 1:1）；④ 系统字体经注册表扫描 + 选择器（搜索/刷新/预览），内嵌思源恒为链尾兜底（缺任何系统字体都不方块）；⑤ 渲染差异：思源与雅黑文字度量不同，视觉 parity 检查需按 D-17 重基线（docs/visual-parity-plan.md 复核项）。相关实施文档：docs/font-system-plan.md | 用户 2026-09-07 裁决（全盘默认思源 + UI/字幕独立可调） |
+| D-17 | **字体默认统一内嵌思源黑体（Noto Sans CJK SC = Source Han Sans SC，OFL 1.1）+ 行级级联**（2026-09-07 用户裁决）：① 界面/悬浮窗/字幕行字体默认全部指向内嵌思源（契约默认值从原版 "Microsoft YaHei" 改为空串=跟随）；② 新增 Rust 专属键 `ui_font_family`/`subtitle_font_family`（原版无对应设置，默认 "Noto Sans CJK SC"）；③ 主设置键整体切换界面/字幕字体，行级键可独立覆盖（空串=跟随；旧文件显式 "Microsoft YaHei" 仍被尊重=原版导入 1:1）；④ 系统字体经注册表扫描 + 选择器（搜索/刷新/预览），内嵌思源恒为链尾兜底（缺任何系统字体都不方块）；⑤ 渲染差异：思源与雅黑文字度量不同，视觉 parity 检查需按 D-17 重基线（docs/archive/visual-parity.md 复核项）。相关实施文档：docs/archive/font-system.md | 用户 2026-09-07 裁决（全盘默认思源 + UI/字幕独立可调） |
 
 ---
 

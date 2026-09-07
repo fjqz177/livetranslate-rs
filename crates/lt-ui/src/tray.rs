@@ -1,5 +1,5 @@
 //! 托盘（M0.5）：完整菜单树 + 运行时绘制图标 + 事件转发进 winit 循环。
-//! 菜单结构逐项对照 RESEARCH.md §1.3（原版 main.py 托盘段）。
+//! 菜单结构逐项对照 docs/archive/rewrite-research.md §1.3（原版 main.py 托盘段）。
 
 use lt_proto::UiMsg;
 use muda::{accelerator::Accelerator, Menu, MenuId, MenuItem, PredefinedMenuItem};

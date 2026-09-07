@@ -1,4 +1,4 @@
-//! 通用字体行控件（docs/font-system-plan.md §4.3.4）：
+//! 通用字体行控件（docs/archive/font-system.md §4.3.4）：
 //! ComboBox（内嵌置顶 + 系统扫描 + 搜索过滤）+ 行内小样 + 「跟随」首项（行级用）
 //! + 刷新 + 缺字提示。
 //!
