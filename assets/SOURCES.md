@@ -62,3 +62,13 @@
 - `tray_run_48.png`（2,663 B）sha256 `2e66515831bf3a43f23b7e77e09f0f8ae5ad72d9439642eaadf39a861606e46e`
 - `tray_run_512.png`（29,485 B）sha256 `5002f142262e7073fda77d792889959f3c7ffc46e9ba20d267592bff6700414b`
 - `tray_run_64.png`（3,485 B）sha256 `3a50fd4dad8f0813607e074206bcec1243feaef2a44e898e690da1e914969b6d`
+
+## fonts/（2026-09-07 按 docs/font-system-plan.md W-1 入资产，D-17 默认内嵌字体）
+
+- `NotoSansCJKsc-Regular.otf`（16,437,364 B）sha256 `2c76254f6fc379fddfce0a7e84fb5385bb135d3e399294f6eeb6680d0365b74b`
+  - 字体：Noto Sans CJK SC Regular（= Adobe Source Han Sans SC 思源黑体，同一设计；区域包全字库：汉字/假名/韩文音节/拉丁）
+  - 来源：notofonts/noto-cjk 发布 Sans2.004，资产 `08_NotoSansCJKsc.zip`（94,523,633 B）内解出
+    `https://github.com/notofonts/noto-cjk/releases/tag/Sans2.004`
+  - 许可：SIL Open Font License 1.1（OFL.txt 随附；允许内嵌商业分发；CFL/Reserved Font Name 'Source' 属 Adobe）
+- `OFL.txt`（4,388 B）sha256 `1c05c68c34f9708415aada51f17e1b0092d2cea709bf4a94cd38114f9e73d7d9`
+  - 来源：google/fonts 仓 `ofl/notosanssc/OFL.txt`（同一许可文本，随附于发行版）
