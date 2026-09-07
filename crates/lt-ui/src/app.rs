@@ -1493,6 +1493,32 @@ fn install_cjk_fonts(ctx: &Context) {
     if !cjk_loaded {
         tracing::warn!("未找到中文字体文件，界面将回退默认字体");
     }
+    // 韩文字体兜底：微软雅黑只含 Hangul 兼容 Jamo，无韩文音节块（U+AC00–U+D7AF），
+    // 韩国语（한국어）等需 Malgun Gothic 字形。追加族尾仅补缺字。
+    let mut ko_loaded = false;
+    for path in [
+        r"C:\Windows\Fonts\malgun.ttf", // Malgun Gothic（系统默认韩文字体）
+        r"C:\Windows\Fonts\gulim.ttc",
+        r"C:\Windows\Fonts\dotum.ttc",
+        r"C:\Windows\Fonts\batang.ttc",
+    ] {
+        if let Ok(bytes) = std::fs::read(path) {
+            fonts
+                .font_data
+                .insert("ko".to_string(), egui::FontData::from_owned(bytes).into());
+            for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+                if let Some(list) = fonts.families.get_mut(&family) {
+                    list.push("ko".to_string());
+                }
+            }
+            tracing::info!("韩文字体已加载: {path}");
+            ko_loaded = true;
+            break;
+        }
+    }
+    if !ko_loaded {
+        tracing::warn!("未找到韩文字体文件，韩文将显示为缺字方块");
+    }
     // 符号兜底追加族尾（仅补缺字，不影响常规渲染）
     if let Ok(bytes) = std::fs::read(r"C:\Windows\Fonts\seguisym.ttf") {
         fonts
@@ -1506,4 +1532,25 @@ fn install_cjk_fonts(ctx: &Context) {
         tracing::info!("符号字体已加载: seguisym.ttf");
     }
     ctx.set_fonts(fonts);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::install_cjk_fonts;
+
+    /// 韩文音节（U+AC00–U+D7AF）必须命中系统韩文字体回落：
+    /// 微软雅黑只含 Hangul 兼容 Jamo，缺音节块，曾致「한국어」三字全方块。
+    /// 属本机烟测（Windows 系统字体），无 Malgun Gothic 时跳过。
+    #[test]
+    fn hangul_syllables_resolve_via_system_font_fallback() {
+        if !std::path::Path::new(r"C:\Windows\Fonts\malgun.ttf").exists() {
+            eprintln!("系统无韩文字体，跳过（韩文将显示为方块）");
+            return;
+        }
+        let ctx = egui::Context::default();
+        install_cjk_fonts(&ctx);
+        ctx.begin_pass(egui::RawInput::default());
+        let ok = ctx.fonts_mut(|f| f.has_glyphs(&egui::FontId::proportional(16.0), "한국어"));
+        assert!(ok, "한국어 字形应命中系统韩文字体回落");
+    }
 }
