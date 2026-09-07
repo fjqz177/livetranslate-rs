@@ -1,7 +1,8 @@
 //! AsrWorkerClient：worker 子进程的父端代理（原版 asr_client.py 1:1）。
 //!
 //! 状态机 created→starting→loading→ready⇄busy→…→stopped/failed/exited；
-//! 超时表：ready 180s / transcribe 60s / set_* min(10s) / shutdown 5s→kill。
+//! 超时表：ready 180s / transcribe·set_* 60s（AH-8：nano 语言切换重建识别器
+//! 需重载模型，10s 慢机不足）/ shutdown 5s→kill（AH-2 兜底）。
 //! 读响应以 0.2s 步进轮询，期间监测子进程退出（对齐原版 conn.poll + exitcode）。
 
 use crate::frame::{FrameReader, FrameWriter, ReqKind, Request, Response, ReadyInfo};
@@ -197,11 +198,14 @@ impl AsrWorkerClient {
         }
     }
 
+    // AH-8/H16：set_* 超时与 transcribe 对齐（request_timeout=60s）——nano
+    // set_language 重建识别器需重载 963MB（本机 4.15s），10s 预算慢机不足，
+    // 超时即 kill+重启白烧配额；代价=真挂死时等待与识别同级（语义一致）
     pub fn set_language(&mut self, language: &str) -> Result<(), AsrClientError> {
         self.request(
             ReqKind::SetLanguage { language: language.into() },
             &[],
-            Duration::from_secs(10).min(self.request_timeout),
+            self.request_timeout,
         )
         .map(|_| ())
     }
@@ -210,7 +214,7 @@ impl AsrWorkerClient {
         self.request(
             ReqKind::SetInputPadding { pad_seconds },
             &[],
-            Duration::from_secs(10).min(self.request_timeout),
+            self.request_timeout,
         )
         .map(|_| ())
     }

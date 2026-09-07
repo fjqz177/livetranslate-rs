@@ -196,15 +196,19 @@ impl AppShell {
             Cmd::ApplySettings(s) => {
                 let s = *s;
                 if let Some(p) = &self.pipeline {
-                    p.update_vad_settings(lt_pipeline::VadSettings {
-                        mode: s.vad_mode.clone(),
-                        threshold: s.vad_threshold as f64,
-                        energy_threshold: s.energy_threshold as f64,
-                        min_speech_duration: s.min_speech_duration as f64,
-                        max_speech_duration: s.max_speech_duration as f64,
-                        silence_mode: s.silence_mode.clone(),
-                        silence_duration: s.silence_duration as f64,
-                    });
+                    // AH-8/D-28：VAD 生效值按当前引擎钳制（qwen3 ≤15s）
+                    p.update_vad_settings(crate::pipeline::clamp_vad_for_engine(
+                        &s.asr_engine,
+                        lt_pipeline::VadSettings {
+                            mode: s.vad_mode.clone(),
+                            threshold: s.vad_threshold as f64,
+                            energy_threshold: s.energy_threshold as f64,
+                            min_speech_duration: s.min_speech_duration as f64,
+                            max_speech_duration: s.max_speech_duration as f64,
+                            silence_mode: s.silence_mode.clone(),
+                            silence_duration: s.silence_duration as f64,
+                        },
+                    ));
                     p.set_translator_target_language(&s.target_language);
                     p.set_translator_timeout(s.timeout);
                     // 增量识别重放（原版 settings_changed 同步 _incremental_enabled/

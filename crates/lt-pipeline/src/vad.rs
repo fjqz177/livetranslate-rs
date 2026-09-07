@@ -329,10 +329,27 @@ impl<C: ConfidenceSource> VadProcessor<C> {
         }
     }
 
+    /// 引擎段长上限钳制（AH-8/D-28）：qwen3 的 `MAX_TOTAL_LEN=512` 为
+    /// audio+输出共享 token 预算，超长段有静默截尾风险——生效值超上限则收敛。
+    /// 返回是否发生钳制（供调用方记日志）；settings/UI 保存值不动。
+    /// 注意：后续 `update_settings`（面板「应用」全量重放）会整体覆盖本值，
+    /// 调用方须在应用点同步钳制。
+    pub fn clamp_max_speech(&mut self, engine: &str, max_secs: f64) -> bool {
+        if engine != "qwen3" {
+            return false;
+        }
+        let cap_samples = (max_secs * self.sample_rate as f64) as usize;
+        if self.max_speech_samples > cap_samples {
+            self.max_speech_samples = cap_samples;
+            true
+        } else {
+            false
+        }
+    }
+
     /// 对齐原版 update_settings：mode/threshold/energy/min/max/silence 全量热更新。
     /// 模式切换时同步替换置信度源的行为由调用方（持有源）负责；本结构只更新阈值语义。
-    pub fn update_settings(&mut self, s: &VadSettings) {
-        self.mode = s.mode.clone();
+    pub fn update_settings(&mut self, s: &VadSettings) {        self.mode = s.mode.clone();
         self.threshold = s.threshold;
         self.energy_threshold = s.energy_threshold;
         self.min_speech_samples = (s.min_speech_duration * self.sample_rate as f64) as usize;
@@ -931,6 +948,23 @@ mod tests {
         assert!(p2.is_speaking());
         let seg = p2.flush().expect("达标应出段");
         assert_eq!(seg.len(), 40 * 512);
+    }
+
+    #[test]
+    fn clamp_max_speech_only_qwen3_and_only_down() {
+        // AH-8/D-28：仅 qwen3 生效且只向下收敛（update_settings 之后调用可收敛）
+        let mut s = VadSettings::default();
+        s.max_speech_duration = 30.0;
+        let mut p = make(&[]);
+        p.update_settings(&s);
+        assert!(!p.clamp_max_speech("funasr", 15.0), "非 qwen3 不钳制");
+        assert_eq!(p.max_speech_samples, (30.0f64 * 16000.0) as usize);
+        let mut p2 = make(&[]);
+        p2.update_settings(&s);
+        assert!(p2.clamp_max_speech("qwen3", 15.0));
+        assert_eq!(p2.max_speech_samples, (15.0f64 * 16000.0) as usize);
+        // 已达上限不再动
+        assert!(!p2.clamp_max_speech("qwen3", 15.0));
     }
 
     #[test]

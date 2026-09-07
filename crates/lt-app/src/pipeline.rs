@@ -359,7 +359,8 @@ impl Pipeline {
         // ── capture 线程：VAD 状态机 ──
         let vad_update: Arc<std::sync::Mutex<Option<lt_pipeline::VadSettings>>> =
             Arc::new(std::sync::Mutex::new(None));
-        let vad_settings = vad_settings_from(settings);
+        let vad_settings =
+            clamp_vad_for_engine(&settings.asr_engine, vad_settings_from(settings));
         let confidence = lt_pipeline::vad::make_confidence_source(
             &settings.vad_mode,
             settings.energy_threshold as f64,
@@ -599,6 +600,23 @@ fn vad_settings_from(s: &lt_proto::Settings) -> VadSettings {
         silence_mode: s.silence_mode.clone(),
         silence_duration: s.silence_duration as f64,
     }
+}
+
+/// qwen3 生效段长上限（AH-8/D-28）：`MAX_TOTAL_LEN=512` 为 audio+输出共享
+/// token 预算，超长段有静默截尾风险；15s 为保守取值，S0 校准（docs/
+/// asr-hardening.md §6-T1）实测后可调
+pub(crate) const QWEN3_MAX_SEGMENT_SECS: f64 = 15.0;
+
+/// 按引擎钳制 VAD 生效值（AH-8/D-28）：settings/UI 保存原值，仅生效值收敛
+pub(crate) fn clamp_vad_for_engine(engine: &str, mut s: VadSettings) -> VadSettings {
+    if engine == "qwen3" && s.max_speech_duration > QWEN3_MAX_SEGMENT_SECS {
+        tracing::info!(
+            "qwen3: max_speech_duration 生效值钳制为 {QWEN3_MAX_SEGMENT_SECS}s（设置值 {}s）",
+            s.max_speech_duration
+        );
+        s.max_speech_duration = QWEN3_MAX_SEGMENT_SECS;
+    }
+    s
 }
 
 /// 过滤原因（供 run_asr_thread 按层分级记日志，单测断言用）
@@ -1038,6 +1056,13 @@ fn run_asr_thread(
                                 // 日志按引擎打实际模型键（whisper 打 funasr_model 会误导诊断）
                                 let model_key =
                                     engine_model_key(&engine, &funasr_model, &whisper_model_size);
+                                // AH-8/D-28：按新引擎钳制段长上限（qwen3 ≤15s）。
+                                // 直接改共享 VAD 生效值——不能用启动快照重发
+                                // vad_update 槽（会覆盖用户的运行时 VAD 修改）；
+                                // 切离 qwen3 后由用户下次「应用」设置恢复完整值
+                                if vad.lock().unwrap().clamp_max_speech(&engine, QWEN3_MAX_SEGMENT_SECS) {
+                                    tracing::info!("qwen3: max_speech_duration 生效值钳制为 {QWEN3_MAX_SEGMENT_SECS}s");
+                                }
                                 tracing::info!("引擎已切换: {engine}/{model_key}");
                             }
                         }
@@ -1464,6 +1489,19 @@ mod tests {
             assert!(got.is_some(), "引擎 {engine} 缓存齐全时应可装配");
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── AH-8/D-28：qwen3 段长钳制 ──
+
+    #[test]
+    fn clamp_vad_only_affects_qwen3() {
+        let mk = |max: f64| VadSettings { mode: "silero".into(), threshold: 0.5, energy_threshold: 0.02, min_speech_duration: 1.0, max_speech_duration: max, silence_mode: "auto".into(), silence_duration: 0.8 };
+        // qwen3：超上限收敛、未超不动
+        assert_eq!(clamp_vad_for_engine("qwen3", mk(30.0)).max_speech_duration, QWEN3_MAX_SEGMENT_SECS);
+        assert_eq!(clamp_vad_for_engine("qwen3", mk(8.0)).max_speech_duration, 8.0);
+        // 其它引擎：原值放行
+        assert_eq!(clamp_vad_for_engine("funasr", mk(30.0)).max_speech_duration, 30.0);
+        assert_eq!(clamp_vad_for_engine("whisper", mk(30.0)).max_speech_duration, 30.0);
     }
 
     #[test]
