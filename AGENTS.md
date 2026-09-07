@@ -58,8 +58,9 @@ cargo run -p lt-app               # GUI 冒烟
 
 ## 当前待办（2026-09-07 截点）
 
+- **分发与用户旅程已裁决**（2026-09-07，docs/distribution-plan.md，D-18~D-21）：暂不公开发布（本地 zip）/ 首启直进主界面（D-19 转正，向导代码保留不接线）/ 检查更新按钮（随公开发布）/ 全模型双源（whisper 打破 always-HF 上 MS 镜像 + hub 缺失回落）。阶段一工作包待施工：WD-1 打包脚本、WD-2 版本可见性（VERSIONINFO/--version/UI 版本行）、WD-3 LICENSE+NOTICES+简版 README、WD-4 whisper 双源实测落地、WD-5 二次启动激活已有窗口；WD-6 首启轻引导横幅可选待点头。
 - ErrorBanner（新版悬浮窗错误分类条）、全局热键（hotkeys_group）——两者在 Python 权威副本中不存在，出处待用户裁决（parity-closure-plan WP-8 / D-3、D-4）。
 - ~~M6 interim 装配接线~~ 已完成（2026-09-07：VAD 共享拓扑 + ASR 分流 + 全链热应用接线，290 测全绿，loopback 端到端实证，见 parity-closure-plan WP-3 执行纪要）。
-- FunASR Nano 置灰防坑（WP-2 第 1 步，1 小时级）、CI。
+- FunASR Nano 置灰防坑（WP-2 第 1 步，1 小时级）；CI 已归入分发阶段二（WD-7，随公开发布触发，D-18）。
 - ~~StartDownload targets 动态化~~ 已完成（2026-09-07：backend settings 镜像现场重算，随 whisper 放开落地）。
 - M6 调优三件（启动<2s / 空闲 CPU<1% / 8h 长跑）与内存回收实测；端到端语音复验（需实机非静音时段，interim 已可对照开/关）。
