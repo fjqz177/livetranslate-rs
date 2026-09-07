@@ -4,6 +4,8 @@
 >
 > **r2.1（2026-09-08）D-24 语义修订（用户裁决）**：HF 端点**不设全局默认镜像、不新增 `hf_endpoint` 设置键**——用户选 HF 源 = 官方 `huggingface.co` 直连；用户选 MS 源而 HF 成为实际下载路径时（该模型无 MS 源的直接回退，或 MS 尝试失败后的回落）= **自动经 hf-mirror.com**。端点由所选 hub 决定，实化为 lt-models 常量 + `hf_endpoint_for(selected)`（§3.2 A9/A10）。
 >
+> **r2.2（2026-09-08）：✗ WP-A 施工完成。** A1~A12 全部落地，341 测全绿（21 套件），新码 clippy 零告警；引擎级验收与 GUI 端到端冒烟数据见 §3.3 末「验收结果」。
+>
 > r1（2026-09-07）：初版调研。其 §2.4「funasr 缓存 50MB 单文件误判」漏洞与 WP-C 硬化项已被 DL-1（D-22 manifest 探测）消化，r2 正式取消；r1 §1.4 所称「设置里已有 hf-mirror endpoint 覆写」经核仅指 lt-models 机制，**应用层未接线**（本 r2 §3-A10 补齐）。
 
 ---
@@ -218,6 +220,13 @@ API 面（binding+原生同版本）、模型面（官方包实测 963MB/RTF 0.1
    - hub=ms 时 nano 显示「暂无 ModelScope 源，将经 HF 镜像下载」hint；日志核对 URL：hub=hf → `huggingface.co` 直连，hub=ms + nano → `hf-mirror.com`（A9 单测 + 日志观察）；
    - 切回 sensevoice 一切如旧；`cargo run -p lt-app` 冒烟无回归。
 3. 观察点（不预做，出现再登记）：粤语 `<0xB2>` 类字节 token；本机 RTF 与加载时长（回填 §2.2）；#3066 类重复文本。
+
+### 3.5 验收结果（r2.2 实测回填，2026-09-08）
+
+- **单测**：`cargo test --workspace` 21 套件全绿（337 测，含新增：registry D-24 不变量 / nano postprocess+LID / manager nano 家族回归 / pipeline nano 分派（稀疏文件造 manifest）/ hf_endpoint_for 映射）；新增代码 clippy 零告警。
+- **引擎级**（`probe_real_nano`，真实缓存 963MB 包）：加载 **4.15s**；`rag_physics.wav`→「根据碰撞理论月面样本缺少挥发性物质」（zh，RTF 0.097）；`noise_en.wav`→完整英文句（en，RTF 0.160）；`dia_yue.wav`→粤语口语逐字转写含「啲/佢哋/咗/咧」（zh，RTF 0.181）。**无标签残留 / 无字节 token / 无重复幻觉**——三个观察点均未触发。
+- **GUI 端到端冒烟**（临时 config，settings 指真实缓存 + `funasr_model=funasr-nano-2512`）：管道自启 → worker 拉起 → 日志 `ASR worker ready … Fun-ASR-Nano (nano)`，全程零 WARN/ERROR；worker 常驻内存 ≈1.09GB（基线+2048MB 回收阈值天然覆盖）。
+- **下载链路**（§2.7 演练）：hf-mirror 全量 47.3s / 20.4 MB/s，manifest 校验通过；本机 RTF 0.097–0.181 优于官方文档页基准（0.144–0.191）口径。
 
 ### 3.4 风险与对策
 

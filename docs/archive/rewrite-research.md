@@ -117,6 +117,11 @@
 
 ### 1.5 刻意偏差清单（相对原版的**有意**差异，除此之外全部 1:1）
 
+> **修订（2026-09-08）**：阶段二新偏差编号顺延至此表之后——D-22（探测 manifest 化）、
+> D-23（下载可取消）见 docs/download-overhaul.md；**D-24（诚实下载源：无真实 MS 源模型
+> 禁止伪造 ms 字段，选 MS 时 HF 尝试自动经 hf-mirror）** 见 docs/asr-engine-expansion.md §3.0；
+> 后续自 D-25 起。
+
 | # | 偏差 | 原因 |
 |---|---|---|
 | D-1 | **纯 CPU**：无 CUDA/DirectML/任何 GPU 路径；`asr_device`（cuda/cpu 下拉）从设置界面移除；worker 配置无 device 字段 | 用户明确要求（r2），换最大兼容性与开发便利 |

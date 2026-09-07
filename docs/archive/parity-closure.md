@@ -109,6 +109,11 @@
 
 ## WP-2 FunASR Nano 处置（P0：先防坑，实装另立卡）
 
+> **修订（2026-09-08）：✗ 本卡勾销——处置方式为「实装」而非「置灰防坑」。** WP-A 已落地
+> （docs/asr-engine-expansion.md §3：注册表修正为官方 int8 包六件套 + `engines/nano.rs` +
+> worker `"nano"` 臂 + `build_worker_config` 按 key 分派），本节所述用户陷阱自然消除。
+> 「下载 1.1GB 成功→加载失败」的描述系 DL-2 快速失败之前的行为；DL-2 后为首个清单文件 404 即报错。
+
 ### 现状与证据
 
 - 注册表条目齐全（`crates/lt-models/src/registry.rs:35-44`，HF/MS 双 repo、1.1GB 估计、文件清单）；面板下拉**可选**、标"实验性"（`crates/lt-ui/src/windows/panel/vad.rs:62-68`，`enabled: true`）。
