@@ -63,26 +63,39 @@
 - `tray_run_512.png`（29,485 B）sha256 `5002f142262e7073fda77d792889959f3c7ffc46e9ba20d267592bff6700414b`
 - `tray_run_64.png`（3,485 B）sha256 `3a50fd4dad8f0813607e074206bcec1243feaef2a44e898e690da1e914969b6d`
 
-## fonts/（2026-09-07 按 docs/font-system-plan.md W-1 入资产，D-17 默认内嵌字体）
+## fonts/（W-7 定稿：brotli 压缩资产，运行时一次性解压——字形零损失）
 
-- `NotoSansCJKsc-Regular.otf`（16,437,364 B）sha256 `2c76254f6fc379fddfce0a7e84fb5385bb135d3e399294f6eeb6680d0365b74b`
-  - 字体：Noto Sans CJK SC Regular（= Adobe Source Han Sans SC 思源黑体，同一设计；区域包全字库：汉字/假名/韩文音节/拉丁）
-  - 来源：notofonts/noto-cjk 发布 Sans2.004，资产 `08_NotoSansCJKsc.zip`（94,523,633 B）内解出
-    `https://github.com/notofonts/noto-cjk/releases/tag/Sans2.004`
-  - 许可：SIL Open Font License 1.1（OFL.txt 随附；允许内嵌商业分发；CFL/Reserved Font Name 'Source' 属 Adobe）
-- `OFL.txt`（4,388 B）sha256 `1c05c68c34f9708415aada51f17e1b0092d2cea709bf4a94cd38114f9e73d7d9`
-  - 来源：google/fonts 仓 `ofl/notosanssc/OFL.txt`（同一许可文本，随附于发行版）
+体积策略：全量 OTF/TTF 内嵌共 ~34MB → brotli(q11) 入库 ~12.7MB（exe 中同量）；
+解压发生在进程内一次（启动 +~100ms），解压后 `FontData::from_static` 零拷贝。
 
-## fonts/（W-6 补充：仓库自洽，系统字体仅锦上添花）
+### 压缩资产（仓库实存）
 
-- `NotoSansMonoCJKsc-Regular.otf`（16,393,784 B）sha256 `ec04cc376b34887cedbdf84074e2e226ed2761eeabdcb9173fc1dd7bfd153ef7`
-  - 字体：Noto Sans Mono CJK SC Regular（等宽 chrome 的内嵌保证：系统缺 Consolas 时全机器一致的
-    拉丁/数字/中文等宽回退；Noto Sans Mono 为 OFL 1.1，Consolas 为微软字体不可重分发）
-  - 来源：notofonts/noto-cjk 发布 Sans2.004，资产 `13_NotoSansMonoCJKsc.zip`（27,750,553 B，同上发布页）
-  - 许可：SIL Open Font License 1.1（OFL.txt）
-- `NotoSansSymbols2-Regular.ttf`（1,233,128 B）sha256 `7d5fb73b7ca67a6798101741f5d280a3d016a56a197afcd4199dbb57b4b82a21`
-  - 字体：Noto Sans Symbols 2 Regular（补 ✗ 等思源缺失符号；旧实现依赖系统 seguisym.ttf，
-    微软字体不可重分发——仓库自洽后符号渲染零系统依赖）
-  - 来源：google/fonts 仓 `ofl/notosanssymbols2/NotoSansSymbols2-Regular.ttf`
-    （镜像：`https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/notosanssymbols2/NotoSansSymbols2-Regular.ttf`）
-  - 许可：SIL Open Font License 1.1（OFL.txt）
+| 文件 | 大小 | 压缩体 sha256 |
+|---|---|---|
+| `NotoSansCJKsc-Regular.otf.br` | 11,457,451 B | d35b738332ab714a…（完整见 git 属性） |
+| `NotoSansMono-VF.ttf.br` | 761,491 B | 118384f344fdc8f3d664a3c5fcf49424bdb9793e2c3b60af43270a13420aeec8 |
+| `NotoSansSymbols2-Regular.ttf.br` | 435,506 B | 7ab1b92eae75a194d8ba653e06ab0e60af902d1a6154a082673f87e4c14e5b27 |
+| `OFL.txt` | 4,388 B | 1c05c68c34f9708415aada51f17e1b0092d2cea709bf4a94cd38114f9e73d7d9 |
+
+复现配方（任意机器可验证）：
+
+```bash
+# 解压（需 brotli/pip install brotli，或 brotli CLI）
+python -c "import brotli;open('NotoSansCJKsc-Regular.otf','wb').write(brotli.decompress(open('NotoSansCJKsc-Regular.otf.br','rb').read()))"
+# 压缩（重建资产）
+python -c "import brotli;open('x.br','wb').write(brotli.compress(open('x','rb').read(),quality=11))"
+```
+
+### 原始字体来源（解压后 sha256 可核对上游）
+
+- `NotoSansCJKsc-Regular.otf`（解压后 16,437,364 B）sha256 `2c76254f6fc379fddfce0a7e84fb5385bb135d3e399294f6eeb6680d0365b74b`
+  - 思源黑体 SC（Noto Sans CJK SC = Adobe Source Han Sans SC 同设计；区域包全字库：汉字/假名/韩文音节/拉丁）
+  - notofonts/noto-cjk 发布 Sans2.004 资产 `08_NotoSansCJKsc.zip`：`https://github.com/notofonts/noto-cjk/releases/tag/Sans2.004`
+- `NotoSansMono-VF.ttf`（解压后 1,708,408 B）sha256 `2cb2adb378a8f574e21323df697050b83c54c27df465a2015552740b2769a081`
+  - Noto Sans Mono 变量字体（默认实例 Regular，等宽 chrome 保证回退；Consolas 为微软字体不可重分发，仅系统增强）
+  - google/fonts 仓 `ofl/notosansmono/`（镜像 jsDelivr：`https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/notosansmono/NotoSansMono%5Bwdth%2Cwght%5D.ttf`）
+- `NotoSansSymbols2-Regular.ttf`（解压后 1,233,128 B）sha256 `7d5fb73b7ca67a6798101741f5d280a3d016a56a197afcd4199dbb57b4b82a21`
+  - Noto Sans Symbols 2 Regular（补 ✗ 等思源缺失符号；segui_sym 微软字体已移出）
+  - google/fonts 仓 `ofl/notosanssymbols2/`（镜像 jsDelivr 同目录）
+- 许可：三者均 SIL Open Font License 1.1（OFL.txt 随附）
+- 裁剪记录（2026-09-07）：NotoSansMonoCJKsc 已移除——等宽 chrome 的中文回落思源（与有 Consolas 机器现状一致）；区域子集（NotoSansSC 8.3MB）经实测缺失韩文音节，否决不采纳。

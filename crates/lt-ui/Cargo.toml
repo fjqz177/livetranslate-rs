@@ -27,6 +27,8 @@ pollster = { workspace = true }
 tracing = { workspace = true }
 parking_lot = { workspace = true }
 sysinfo = { workspace = true }
+# 内嵌字体 brotli 解压（纯 Rust；启动一次性）
+brotli = "7"
 
 [dev-dependencies]
 # 字形覆盖断言用（与 epaint 同栈同版本；仅测试，不进 exe）

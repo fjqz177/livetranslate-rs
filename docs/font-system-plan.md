@@ -321,7 +321,7 @@ pub fn apply_fonts(ctx: &egui::Context, settings: &Settings, fonts: &mut FontsSt
 | 族 | 链（优先级从高到低） |
 |---|---|
 | `Proportional` | [选中界面字体（内嵌或系统，注册失败跳过）] → [内嵌思源 `sans-cjk-sc`] → [内嵌符号 `sans-symbols`] → [egui 默认族尾] |
-| `Monospace` | [Consolas（系统，锦上添花）] → [内嵌等宽 `sans-cjk-mono`（MonoCJK，W-6）] → [选中界面字体] → [内嵌思源] → [内嵌符号] → [默认族尾] |
+| `Monospace` | [Consolas（系统，锦上添花）] → [内嵌拉丁等宽 `sans-mono`（Noto Sans Mono，W-7：CJK 回落思源——与有 Consolas 机器现状一致）] → [选中界面字体] → [内嵌思源] → [内嵌符号] → [默认族尾] |
 | `Name(族名)`（行级/字幕字体） | [该族字体字节] → [内嵌思源] → [内嵌符号] |
 （W-6 修订：seguisym 移除——符号由思源+Noto Sans Symbols 2（✗ 等）内嵌覆盖；Consolas 保留为系统增强，缺省回退内嵌等宽；系统符号字体不再读取。）
 
@@ -555,4 +555,5 @@ fn build_definitions(settings: &Settings, system: &[SystemFont], cache: &mut Fon
 | W-3 字体模块+选择器 | `a2ae876` | 303 | 行级选择器在模态内即时预览依赖上次 apply（提交后生效），可接受；字体列表未做虚拟化（搜索框缓解） |
 | W-4 渲染真实化 | `29155a6` | 303 | chrome（Overlay 头/统计行）保持 Consolas 不动（原版 1:1）；TTC 系统字体仅 face 0 |
 | W-5 文档 | 随本提交 | 303 | docs/font-system-plan.md 附录 A 决策点三项均已按用户裁决落地，无未决 |
+| W-7 体积压缩 | （随本提交） | 305 | brotli(q11) 入库 ~12.7MB（原 34MB）运行时一次性解压（字形零损失，启动 +~100ms）；等宽 chrome 换拉丁 Noto Sans Mono（CJK 回落思源=有 Consolas 机器现状）；区域子集经实测缺失韩文音节（한국어）已否决不采纳；exe ~92MB → ~70MB |
 | W-6 仓库自洽 | （随本提交） | 305 | 收敛系统依赖：内嵌等宽 MonoCJK + 符号 NotoSansSymbols2 取代 seguisym（✗ 由符号字体补足）；Consolas 仅作系统增强（原版 1:1，缺则内嵌等宽一致）；注册表扫描 cfg(windows) 门控（非 Windows 空列表，仓库仍可完整渲染）；覆盖测试改 skrifa 解析级（epaint has_glyph 对 replacement-face 有启发式假阴性，见其 TODO） |

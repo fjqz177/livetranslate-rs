@@ -1,14 +1,17 @@
-//! 字体系统（docs/font-system-plan.md W-3/W-6）：仓库自洽——所有字形由内嵌字体保证，
+//! 字体系统（docs/font-system-plan.md W-3/W-6/W-7）：仓库自洽——所有字形由内嵌字体保证，
 //! 系统字体仅作增强（锦上添花），任何开发者 clone 仓库即得一致渲染、零系统污染。
 //!
 //! - 内嵌思源黑体（Noto Sans CJK SC = Source Han Sans SC，OFL 1.1）恒在
 //!   Proportional / Monospace / 命名族三条链的兜底位，任何系统字体缺失都不方块；
-//! - 内嵌 Noto Sans Mono CJK SC（同发行源）作为等宽 chrome 的保证回退：
+//! - 内嵌 Noto Sans Mono（拉丁/数字等宽，OFL）为 chrome 的保证回退：
 //!   系统有 Consolas 时保持原版 1:1（Consolas 为微软字体不可重分发/不内嵌）；
-//! - UI 符号（✓ ✗ ● ▲ ▼ 等）由思源覆盖，不再依赖系统 seguisym；
+//! - UI 符号（✓ ✗ ● ▲ ▼ 等）由思源 + Noto Sans Symbols 2 覆盖，不再依赖系统 seguisym；
 //! - 行级字体键空串 = 跟随主设置（D-17 级联模型，见 [`resolve_family`]）；
 //! - 系统字体经注册表枚举 + 懒加载字节（只读选中/注册的族；Windows 专属，
 //!   其他平台为空列表——仓库内仍可完整渲染）。
+//!
+//! 体积策略（W-7）：资产以 brotli 压缩入库（~12.7MB 代替 ~34MB），运行时一次性
+//! 解压进内存（'static 泄漏，与 include_bytes 同生命周期；启动 +~100ms，字形零损失）。
 //!
 //! 渲染侧约定：`FontFamily::Name(族名)` 只出现在 [`FontsState::resolved`]（已注册者）
 //! —— epaint 的 `FontsImpl::font` 对未绑定族名会 panic，绝不直接构造未注册的 Name。
@@ -20,26 +23,58 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-/// 内嵌思源黑体（W-1 入库，OFL 1.1）；`FontData::from_static` 零拷贝。
-pub const EMBEDDED_BYTES: &[u8] = include_bytes!("../../../assets/fonts/NotoSansCJKsc-Regular.otf");
-/// 内嵌等宽字体（W-6 入库，与思源同 noto-cjk 发布源/同设计；系统缺 Consolas 时保证
-/// 等宽 chrome（含 CJK）全机器一致。Consolas 为微软字体不可重分发，故仅系统增强）。
-pub const MONO_BYTES: &[u8] = include_bytes!("../../../assets/fonts/NotoSansMonoCJKsc-Regular.otf");
-/// 内嵌符号字体（W-6 入库，OFL 1.1；补 ✗ 等思源未覆盖的符号——旧实现靠系统
-/// seguisym.ttf（微软字体不可重分发），仓库自洽后符号渲染不再依赖系统）。
-pub const SYMBOLS_BYTES: &[u8] = include_bytes!("../../../assets/fonts/NotoSansSymbols2-Regular.ttf");
+/// 内嵌思源黑体（brotli 压缩资产；经 [`embedded_sans`] 运行时解压）。
+static SANS_BR: &[u8] = include_bytes!("../../../assets/fonts/NotoSansCJKsc-Regular.otf.br");
+/// 内嵌拉丁等宽（brotli 压缩资产；经 [`embedded_mono`] 运行时解压）。
+/// 裁剪决定（W-7）：等宽 chrome 的中文字符（"时/秒"等）回落内嵌思源——
+/// 与"有 Consolas 的机器"现状行为一致，肉眼无可察觉差异；省 ~16.4MB。
+static MONO_BR: &[u8] = include_bytes!("../../../assets/fonts/NotoSansMono-VF.ttf.br");
+/// 内嵌符号字体（brotli 压缩资产；经 [`embedded_symbols`] 运行时解压）。
+static SYMBOLS_BR: &[u8] = include_bytes!("../../../assets/fonts/NotoSansSymbols2-Regular.ttf.br");
 /// 内嵌字体「展示族名」：设置键默认值 + 选择器首项显示。
 pub const EMBEDDED_FAMILY: &str = "Noto Sans CJK SC";
 /// 内嵌思源在 `FontDefinitions.font_data` 中的注册名（链尾兜底 + 命名族链尾部）。
 pub const EMBEDDED_KEY: &str = "sans-cjk-sc";
 /// 内嵌等宽字体的注册名（Monospace 链内，兜底位）。
-pub const MONO_KEY: &str = "sans-cjk-mono";
+pub const MONO_KEY: &str = "sans-mono";
 /// 内嵌符号字体的注册名（各链尾部；✓ ✗ 等）。
 pub const SYMBOLS_KEY: &str = "sans-symbols";
 /// 中英韩样例：UI 预览卡与字形覆盖测试共用（防漂移）。
 pub const SAMPLE_TEXT: &str = "天地玄黄 宇宙洪荒 The quick brown fox 한국어 어둠 0123456789";
 /// 字形覆盖检查样例（选择器缺字提示与覆盖测试用）。
 pub const CJK_SAMPLE: &str = "天地玄黄宇宙洪荒한국어日本語";
+
+/// brotli 解压内嵌字体（进程生命期一次；'static = include_bytes 同语义）。
+fn inflate_embedded(compressed: &'static [u8], name: &str) -> &'static [u8] {
+    let start = std::time::Instant::now();
+    let mut out = Vec::new();
+    brotli::BrotliDecompress(&mut std::io::Cursor::new(compressed), &mut out)
+        .unwrap_or_else(|e| panic!("内嵌字体解压失败（{name}，资产损坏）: {e}"));
+    tracing::info!(
+        "内嵌字体解压: {name}（{}ms，{:.1}MB）",
+        start.elapsed().as_millis(),
+        out.len() as f64 / 1e6
+    );
+    Box::leak(out.into_boxed_slice())
+}
+
+/// 解压后的内嵌思源字节。
+pub fn embedded_sans() -> &'static [u8] {
+    static S: std::sync::OnceLock<&'static [u8]> = std::sync::OnceLock::new();
+    *S.get_or_init(|| inflate_embedded(SANS_BR, "Noto Sans CJK SC"))
+}
+
+/// 解压后的内嵌等宽字节。
+pub fn embedded_mono() -> &'static [u8] {
+    static M: std::sync::OnceLock<&'static [u8]> = std::sync::OnceLock::new();
+    *M.get_or_init(|| inflate_embedded(MONO_BR, "Noto Sans Mono"))
+}
+
+/// 解压后的内嵌符号字节。
+pub fn embedded_symbols() -> &'static [u8] {
+    static S: std::sync::OnceLock<&'static [u8]> = std::sync::OnceLock::new();
+    *S.get_or_init(|| inflate_embedded(SYMBOLS_BR, "Noto Sans Symbols 2"))
+}
 
 /// 系统字体条目：注册表值清洗后的展示族名 + 字体文件路径（字节懒加载）。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -296,11 +331,11 @@ pub fn build_definitions(settings: &Settings, fonts: &mut FontsState) -> FontDef
 
     // 内嵌三字体恒注册：思源（链尾兜底）+ 等宽 MonoCJK（chrome 保证回退）+ 符号
     defs.font_data
-        .insert(EMBEDDED_KEY.into(), FontData::from_static(EMBEDDED_BYTES).into());
+        .insert(EMBEDDED_KEY.into(), FontData::from_static(embedded_sans()).into());
     defs.font_data
-        .insert(MONO_KEY.into(), FontData::from_static(MONO_BYTES).into());
+        .insert(MONO_KEY.into(), FontData::from_static(embedded_mono()).into());
     defs.font_data
-        .insert(SYMBOLS_KEY.into(), FontData::from_static(SYMBOLS_BYTES).into());
+        .insert(SYMBOLS_KEY.into(), FontData::from_static(embedded_symbols()).into());
 
     // 系统锦上添花：Consolas（等宽 chrome，原版 QFont Consolas；缺省回落内嵌等宽）
     let consolas_key = "consolas";
@@ -394,7 +429,7 @@ fn resolve_font_data(family: &str, fonts: &mut FontsState) -> Option<(String, Ar
     if family.eq_ignore_ascii_case(EMBEDDED_FAMILY) {
         return Some((
             EMBEDDED_KEY.into(),
-            Arc::new(FontData::from_static(EMBEDDED_BYTES)),
+            Arc::new(FontData::from_static(embedded_sans())),
         ));
     }
     let sys = fonts
@@ -545,7 +580,7 @@ mod tests {
         let mut missing: Vec<char> = ALL
             .chars()
             .filter(|c| {
-                ![EMBEDDED_BYTES, MONO_BYTES, SYMBOLS_BYTES]
+                ![embedded_sans(), embedded_mono(), embedded_symbols()]
                     .iter()
                     .any(|b| font_missing(b, &c.to_string()).is_empty())
             })
@@ -557,15 +592,15 @@ mod tests {
         );
         // 语义职责：思源=中/英/韩；等宽=chrome 拉丁/数字/中文；符号=✗（思源所缺）
         assert!(
-            font_missing(EMBEDDED_BYTES, "天地玄黄宇宙洪荒한국어日本語 ABZdef0123456789").is_empty(),
+            font_missing(embedded_sans(), "天地玄黄宇宙洪荒한국어日本語 ABZdef0123456789").is_empty(),
             "思源应覆盖中英韩"
         );
         assert!(
-            font_missing(MONO_BYTES, "LiveTranslate 0123456789 。").is_empty(),
-            "等宽应覆盖 chrome"
+            font_missing(embedded_mono(), "LiveTranslate 0123456789 %:. ,-").is_empty(),
+            "等宽应覆盖 chrome 拉丁/数字（中文回落思源，见下）"
         );
         assert!(
-            font_missing(SYMBOLS_BYTES, "✓✗●").is_empty(),
+            font_missing(embedded_symbols(), "✓✗●").is_empty(),
             "符号应覆盖 ✓✗●（旧实现依赖系统 seguisym.ttf 的理由）"
         );
         // 链装配：三条链必须各自包含对应内嵌字体（结构保证）
@@ -584,7 +619,8 @@ mod tests {
     /// MonoCJK 提供拉丁/数字/中文等宽渲染（仓库自洽第二条保证）。
     #[test]
     fn embedded_mono_covers_chrome() {
-        const MONO_SAMPLE: &str = "LiveTranslate ASR 0123456789 时秒MB CPU%";
+        // 拉丁/数字/单位（中文字符回落内嵌思源——与有 Consolas 机器现状一致）
+        const MONO_SAMPLE: &str = "LiveTranslate ASR 0123456789 MB CPU%";
         let ctx = egui::Context::default();
         let settings = Settings::default();
         let mut fonts = FontsState::default();
