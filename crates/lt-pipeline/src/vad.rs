@@ -245,6 +245,11 @@ pub struct VadProcessor<C: ConfidenceSource = Box<dyn ConfidenceSource + Send>> 
     adaptive_min: f64,            // 0.3
     adaptive_max: f64,            // 2.0
 
+    /// 缓冲代际（AH-4/D-27）：peek→识别→trim 的增量通道跨线程非原子，
+    /// 识别期间 VAD 收段/切分后旧 trim 依据失效——代际在 reset 与
+    /// split_at_best_pause（缓冲头部变更的两个漏斗）各 +1，trim 前校验
+    pub(crate) generation: u64,
+
     pub last_confidence: f64,
 }
 
@@ -281,6 +286,7 @@ impl<C: ConfidenceSource> VadProcessor<C> {
             pause_history: VecDeque::with_capacity(50),
             adaptive_min: 0.3,
             adaptive_max: 2.0,
+            generation: 0,
             last_confidence: 0.0,
         };
         p
@@ -539,6 +545,8 @@ impl<C: ConfidenceSource> VadProcessor<C> {
         self.speech_samples = remain_samples;
         self.is_speaking = true;
         self.silence_counter = 0;
+        // 缓冲头部已整体更替：作废在途增量通道的 trim 依据（AH-4/D-27）
+        self.generation = self.generation.wrapping_add(1);
         Some(segment)
     }
 
@@ -581,19 +589,39 @@ impl<C: ConfidenceSource> VadProcessor<C> {
         self.is_speaking = false;
         self.silence_counter = 0;
         self.was_trimmed = false;
+        // 缓冲清空：作废在途增量通道的 trim 依据（AH-4/D-27）
+        self.generation = self.generation.wrapping_add(1);
     }
 
-    /// 读取当前缓冲（增量 ASR 用；不冲刷）
-    pub fn peek_buffer(&self) -> Option<(Vec<f32>, f64)> {
+    /// 读取当前缓冲（增量 ASR 用；不冲刷）。返回 `(音频, 时长, 代际)`——
+    /// 代际供 `trim_front_checked` 校验（AH-4/D-27）
+    pub fn peek_buffer(&self) -> Option<(Vec<f32>, f64, u64)> {
         if self.speech_buffer.is_empty() || !self.is_speaking {
             return None;
         }
         let audio = self.concat_buffer();
         let duration = self.speech_samples as f64 / self.sample_rate as f64;
-        Some((audio, duration))
+        Some((audio, duration, self.generation))
     }
 
-    /// 从缓冲头部移除 n_samples（增量 ASR 消费；部分裁剪置 was_trimmed）
+    /// 从缓冲头部移除 n_samples（增量 ASR 消费；部分裁剪置 was_trimmed）。
+    /// 带代际校验（AH-4/D-27）：peek 之后若 VAD 已收段/切分（代际推进），
+    /// 本次 trim 依据的音频边界已失效——放弃裁剪并返回 false，防误裁新段
+    /// 头部（识别期间 capture 线程仍在写 VAD，全程持锁会阻塞采集）
+    pub fn trim_front_checked(&mut self, n_samples: usize, generation: u64) -> bool {
+        if self.generation != generation {
+            tracing::debug!(
+                "trim_front_checked: 代际不符（peek={generation} 当前={}），放弃本次裁剪",
+                self.generation
+            );
+            return false;
+        }
+        self.trim_front(n_samples);
+        true
+    }
+
+    /// 从缓冲头部移除 n_samples（无校验；增量通道应优先用
+    /// [`Self::trim_front_checked`]，AH-4/D-27）
     pub fn trim_front(&mut self, n_samples: usize) {
         if n_samples == 0 {
             return;
@@ -889,7 +917,7 @@ mod tests {
         for _ in 0..10 {
             p.process_chunk(&chunk);
         }
-        let (audio, dur) = p.peek_buffer().expect("说话中应有缓冲");
+        let (audio, dur, _gen) = p.peek_buffer().expect("说话中应有缓冲");
         assert_eq!(audio.len(), 10 * 512);
         assert!((dur - 0.32).abs() < 1e-9);
         // flush：min=1s 未达 → 丢弃
@@ -903,5 +931,32 @@ mod tests {
         assert!(p2.is_speaking());
         let seg = p2.flush().expect("达标应出段");
         assert_eq!(seg.len(), 40 * 512);
+    }
+
+    #[test]
+    fn trim_checked_rejects_after_generation_bump() {
+        // AH-4/D-27：同代裁剪成功；peek 后缓冲被收段/清空（reset 代际推进）
+        // → 裁剪必须被拒绝（防误裁新段头部）
+        let chunk = vec![0.5f32; 512];
+        let mut p = make(&[0.9; 10]);
+        for _ in 0..10 {
+            p.process_chunk(&chunk);
+        }
+        let (_, _, gen) = p.peek_buffer().expect("说话中应有缓冲");
+        assert!(p.trim_front_checked(512, gen), "同代裁剪应成功");
+
+        let mut p2 = make(&[0.9; 10]);
+        for _ in 0..10 {
+            p2.process_chunk(&chunk);
+        }
+        let (_, _, gen2) = p2.peek_buffer().expect("说话中应有缓冲");
+        p2.reset(); // 模拟识别期间 capture 线程侧收段（flush→reset）
+        // 新语音已开始积累（新代际）
+        for _ in 0..4 {
+            p2.process_chunk(&chunk);
+        }
+        assert!(!p2.trim_front_checked(512, gen2), "代际推进后裁剪必须被拒绝");
+        // 新段缓冲完好未裁（防误裁新段头部）
+        assert_eq!(p2.speech_samples, 4 * 512);
     }
 }

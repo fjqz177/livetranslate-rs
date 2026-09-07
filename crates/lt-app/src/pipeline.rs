@@ -1177,9 +1177,10 @@ fn run_interim_pass(
     tl: Option<&TlRig>,
     proxy: &EventLoopProxy<UiMsg>,
 ) -> bool {
-    // ① 锁内 peek，立即解锁（原版 with self._vad_lock: peek_buffer）
+    // ① 锁内 peek，立即解锁（原版 with self._vad_lock: peek_buffer）；
+    // 代际随行（AH-4/D-27）——识别期间 VAD 可能被 capture 线程收段/切分
     let peek = vad.lock().unwrap().peek_buffer();
-    let Some((audio, duration)) = peek else {
+    let Some((audio, duration, generation)) = peek else {
         return false;
     };
     if duration < 1.5 {
@@ -1238,9 +1239,11 @@ fn run_interim_pass(
     if !committed {
         return false;
     }
-    // ⑦ 裁剪已消费音频 + 记录 tail（末 50 字符）+ 置 active
+    // ⑦ 裁剪已消费音频（带代际校验，AH-4/D-27：识别期间 VAD 已收段/切分则
+    // 放弃裁剪，防误裁新段头部；committed_tail 回声剥离仍兜底收尾段重复）
+    // + 记录 tail（末 50 字符）+ 置 active
     if trim > 0 {
-        vad.lock().unwrap().trim_front(trim);
+        vad.lock().unwrap().trim_front_checked(trim, generation);
     }
     let tail_start = committed_text
         .char_indices()
