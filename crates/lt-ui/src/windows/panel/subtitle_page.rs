@@ -172,10 +172,10 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
         ui.horizontal(|ui| {
             ui.label(RichText::new(format!("{} ", lt_i18n::t("subwin_bg_opacity"))).color(pal.text));
             let mut pct = (f64::from(state.settings.subtitle_mode.bg_opacity) / 255.0 * 100.0).round() as i32;
-            if ui
+            let resp = ui
                 .add(egui::Slider::new(&mut pct, 0..=100).custom_formatter(|v, _| format!("{v:.0}%")))
-                .changed()
-            {
+                .on_hover_text(lt_i18n::t("subwin_bg_opacity_hint"));
+            if resp.changed() {
                 state.settings.subtitle_mode.bg_opacity = (f64::from(pct.clamp(0, 100)) / 100.0 * 255.0).round() as u32;
                 mark_settings_dirty(state);
             }

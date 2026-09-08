@@ -445,7 +445,9 @@ impl Default for SubtitleMode {
             window_width: 1000,
             line_spacing: 8,
             bg_color: "#000000".into(),
-            bg_opacity: 76,
+            // D-36：76→190（原版 30% 在单窗 uniform alpha 下文字过淡；190=深色胶带
+            // 观感：背景透 25%，文字对比足——见 docs/subtitle-window-overhaul.md §5.5）
+            bg_opacity: 190,
             bg_image: String::new(),
             border_radius: 8,
             auto_hide_timeout: 5,
@@ -462,6 +464,14 @@ impl Default for SubtitleMode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// D-36：字幕窗默认背景不透明度 = 190（深色胶带观感：背景透 25%、
+    /// 文字对比足；原版 76 在单窗 uniform alpha 下文字过淡）
+    #[test]
+    fn subtitle_default_bg_opacity_190() {
+        assert_eq!(SubtitleMode::default().bg_opacity, 190);
+        assert_eq!(SubtitleMode::default().bg_color, "#000000");
+    }
 
     /// 与原版首启向导写入的 13 键默认块对照（dialogs.py:344-355）
     #[test]
