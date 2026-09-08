@@ -58,46 +58,71 @@ Rust 原生实时音频翻译应用：实时捕获系统声音（可选叠加麦
 
 ## 二、从源码构建（完整开发流程）
 
-### 1. 编译机环境清单
+> 本节写给开发者：装机 → 克隆 → 首次构建 → 测试 → 冒烟，以及改代码前要知道的分层规矩、提交纪律与常见排错。改码前务必先读一次 [AGENTS.md](AGENTS.md)（项目定位/硬性约束/已知大坑/当前待办）。
 
-| 软件 | 用途 | 安装方式 / 链接 |
+### 1. 装环境（一次性，四件套）
+
+| 软件 | 用途 | 安装 |
 |---|---|---|
-| **Rust stable**（`x86_64-pc-windows-msvc` 工具链） | 主语言 | [rustup.rs](https://rustup.rs) → `rustup default stable-x86_64-pc-windows-msvc` |
-| **VS Build Tools 2019/2022**，工作负载「使用 C++ 的桌面开发」（MSVC + Windows SDK） | whisper.cpp / sherpa-onnx 的 C++ 链接器、Windows SDK | [下载页](https://visualstudio.microsoft.com/visual-cpp-build-tools/) |
-| **CMake** | whisper-rs-sys（whisper.cpp）构建 | `winget install Kitware.CMake` 或 [cmake.org/download](https://cmake.org/download/) |
-| **uv** | 构建期 libclang：钉版 18.1.1 装进仓库内 `.venv`（供 whisper-rs-sys 的 bindgen 用，约 25MB，免装整套 LLVM） | `winget install astral-sh.uv` 或 [uv 官网](https://docs.astral.sh/uv/)（[安装脚本](https://docs.astral.sh/uv/getting-started/installation/)） |
+| **Rust stable**（`x86_64-pc-windows-msvc` 工具链） | 主语言 | [rustup.rs](https://rustup.rs) 后执行 `rustup default stable-x86_64-pc-windows-msvc` |
+| **VS Build Tools 2019/2022**，工作负载「使用 C++ 的桌面开发」（MSVC + Windows SDK） | whisper.cpp / sherpa-onnx 的 C++ 链接器与 Windows SDK | [下载页](https://visualstudio.microsoft.com/visual-cpp-build-tools/) |
+| **CMake** | whisper-rs-sys 构建 whisper.cpp | `winget install Kitware.CMake` 或 [cmake.org/download](https://cmake.org/download/) |
+| **uv** | 构建期 libclang：钉版 18.1.1 装进仓库内 `.venv`，供 whisper-rs-sys 的 bindgen 用（约 25MB，免装整套 LLVM） | `winget install astral-sh.uv` 或 [uv 官网](https://docs.astral.sh/uv/) |
 
-装齐后首次构建约十几分钟（依赖多、要编译 whisper.cpp 与 onnxruntime 绑定）。**注意**：构建前必须先 `uv sync`（见 2.2），这一步把钉版 libclang 装进仓库内 `.venv`——`cargo` 通过 `.cargo/config.toml` 的 `LIBCLANG_PATH`（`relative=true`，相对仓库路径）指向它，clone 后无需任何本机路径配置。若你机器上已有默认位置安装的 LLVM，把该 `LIBCLANG_PATH` 行删掉也能编译（clang-sys 会按内置路径自动发现），二选一即可。
+装完自检：`rustc -V`、`cmake --version`、`uv --version` 都能出版本号即可开工。首次构建约十几分钟（要编译 whisper.cpp 与 onnxruntime 绑定）；之后日常构建是增量。**clone 后不需要任何本机路径配置**——libclang 怎么来的见第 2 节。
 
-### 2. 克隆与首次准备（uv sync）
+> 备选路线：机器上已装有默认位置（如 `C:\Program Files\LLVM`）的 LLVM 时，删掉 `.cargo/config.toml` 里的 `LIBCLANG_PATH` 行也能编（clang-sys 会按内置目录自动发现）。uv 路线与 LLVM 路线**二选一，不混用**。
+
+### 2. 克隆 + 首次依赖（一条命令）
 
 ```bash
 git clone <你的仓库地址> livetranslate-rs
 cd livetranslate-rs
-uv sync   # 首次一次性：创建 .venv 并安装钉版 libclang（约 25MB；幂等，之后秒级）
+uv sync        # 创建仓库内 .venv 并安装钉版 libclang（首次约 25MB；之后幂等，秒级）
 ```
 
-- `.cargo/config.toml` 里 `LIBCLANG_PATH = { value = ".venv/Lib/site-packages/clang/native", relative = true, force = true }`：`relative` 使路径相对配置文件目录解析（**零机器相关绝对路径**，换机器/重 clone 不用改）；`force` 保证即使系统里残留了别的 `LIBCLANG_PATH` 也不短路（clang-sys 对已设变量只搜该目录）。
-- `.venv/` 已入 `.gitignore`；`pyproject.toml`（libclang==18.1.1 钉版）+ `uv.lock`（wheel 哈希）入库，构建依赖可复现。
-- 删除 `.venv` 或换机器后重新 `uv sync` 即可；`uv sync` 需要网络（首次下载约 25MB）。
+**为什么必须跑这一步**：whisper-rs-sys 构建时用 bindgen 生成绑定，bindgen 需要一个 `libclang.dll`。仓库用 uv 把 libclang 钉死（`pyproject.toml` dev 组 `libclang==18.1.1`，`uv.lock` 锁 wheel 哈希），装进仓库内 `.venv`，再由 cargo 配置指过去：
 
-同文件其余两行（`CMAKE_POLICY_DEFAULT_CMP0091=NEW` + `CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded`）是**双栈 CRT 对齐的既定解**（sherpa-onnx 预编译静态库为静态 CRT，whisper.cpp 默认 /MD，直接链接会 LNK2005/LNK1169 冲突，M5.1 解决），**不要动**。
+```toml
+[env]
+LIBCLANG_PATH = { value = ".venv/Lib/site-packages/clang/native", relative = true, force = true }
+```
 
-### 3. 构建、测试、运行
+- `relative = true`：路径相对配置文件所在目录解析 → **零机器相关绝对路径**，换机器/重 clone 都不用改；
+- `force = true`：覆盖系统残留的 `LIBCLANG_PATH`（clang-sys 对已设变量只搜那一个目录，残留会导致莫名找不到 DLL）；
+- `.venv/` 已入 `.gitignore`；删除 `.venv` 或换机器后重跑 `uv sync` 即可（需要网络）。
+
+### 3. 构建与测试（质量门）
 
 ```bash
-uv sync                               # 先执行（见 2.2；.venv 已存在时秒级跳过实际工作）
-cargo test --workspace                # 全量测试：当前基线 399 测全绿 + 6 个 ignored
-                                      #（ignored = 真模型/真网络探针的离线纪律，不联网不跑）
-cargo build --release -p lt-app       # 单 exe：target/release/livetranslate.exe（约 62MB）
-cargo run -p lt-app                   # GUI 冒烟
+cargo test --workspace              # 全量：399 测全绿 + 6 个 ignored（真模型/真网络探针的离线纪律，平时不联网不跑）
+cargo build --release -p lt-app     # 单 exe：target/release/livetranslate.exe（约 62MB；分发请一并附 VC 运行库说明）
+cargo run -p lt-app                 # GUI 冒烟
 ```
 
-收工前提 = `cargo test --workspace` 全绿 + clippy 零告警（lt-ui 的 clippy 基线 20 条、零净增）。
+**收工前提（两条都满足才算完成）**：
 
-### 4. GUI 冒烟（关键细节）
+1. `cargo test --workspace` 全绿；
+2. `cargo clippy --workspace` 零告警（lt-ui 基线 20 条、零净增）。
 
-**方式 A（推荐，验证真实模型缓存命中）**——设临时配置目录，且其 `settings.json` **必须显式写 `models_dir`** 指向已有模型的目录（Git Bash 示例）：
+- 只跑某个 crate：`cargo test -p lt-ui`（其余类似 lt-proto / lt-models / lt-asr …）；
+- 手动跑 ignored 探针：`cargo test --workspace -- --ignored`（需真模型/真网络，**平时不要跑**）。
+
+### 4. GUI 冒烟（两种方式）
+
+**方式 A（推荐）：验证真实模型缓存命中。** 设临时配置目录，且其 `settings.json` **必须显式写 `models_dir`** 指向已缓存模型的目录——不写的话默认模型路径是 `~/.config/livetranslate/models`，临时目录下会全部探测失败（悬浮窗显示 `unavailable`）。
+
+PowerShell：
+
+```powershell
+$env:LIVETRANSLATE_CONFIG_DIR = "D:\tmp\lt-smoke"
+New-Item -ItemType Directory -Force $env:LIVETRANSLATE_CONFIG_DIR | Out-Null
+'{ "models_dir": "C:/Users/<你的用户名>/.config/livetranslate/models" }' |
+  Set-Content -Encoding UTF8 "$env:LIVETRANSLATE_CONFIG_DIR\settings.json"
+cargo run -p lt-app
+```
+
+Git Bash：
 
 ```bash
 export LIVETRANSLATE_CONFIG_DIR=/d/tmp/lt-smoke
@@ -108,11 +133,9 @@ EOF
 cargo run -p lt-app
 ```
 
-不写 `models_dir` 时默认模型路径是 `~/.config/livetranslate/models`，临时目录下会全部探测失败（`unavailable`）。
+**方式 B（开发期灵活）**：直接 `cargo run -p lt-app`，模型未缓存时在「设置 → VAD / ASR」页点「开始下载」现场下载。
 
-**方式 B**：直接 `cargo run -p lt-app`，模型未缓存时在「设置 → VAD / ASR」页点「开始下载」现场下载。
-
-> debug 构建带控制台窗口（tracing 输出）；release 构建 `windows_subsystem=windows` 无控制台。工作区测试可 `cargo test -p lt-<crate>`；忽略项手动跑：`cargo test --workspace -- --ignored`（需真模型/真网络）。
+> debug 构建带控制台窗口（tracing 输出）；release 构建无控制台（`windows_subsystem=windows`）。
 
 ### 5. 代码结构（分层规则）
 
@@ -139,11 +162,13 @@ lt-proto → lt-i18n → lt-models → lt-pipeline → lt-asr → lt-translate �
 - 新增 UI 能力**不得扩 lt-proto 契约**（日志经 `LogLine { target }` 回流）；Settings 运行时落盘走 `Cmd::PersistSettings`，由 backend 统一写（300ms 防抖对齐原版）；
 - 参考副本 `LiveTranslate/`（Python 原版）仅供参考，新功能不必拘泥其行为。
 
-### 6. 提交与文档纪律
+**新功能从哪改**：新增 ASR 引擎 → `crates/lt-models/src/registry.rs` 登记 + `crates/lt-app/src/main.rs` 加 worker 臂（详见 [docs/asr-engine-expansion.md](docs/asr-engine-expansion.md)）；新增 UI 字符串 → 按红线见 `lt-i18n`；引擎/性能实测 → `docs/asr-hardening.md` 等活跃文档。
 
-- 里程碑/任务卡完成且测试全绿即**自主中文提交**：`feat(scope): 中文主题`（如 `feat(subtitle-drag): D-37 字幕窗拖动修复`）；文档类 `docs(scope): …`。多代理并行期提交前 `git status` / `git diff` 复核。
-- docs 时机：计划/调研/决策文档定稿即独立 `docs(scope)` 提交，且**先于**对应实现提交；计划完成标记随工作包提交同步，**禁止事后补 docs 提交**。
-- **禁用 `git add -A` / `git add .`**，逐项显式 pathspec；生成副产物不入库（`docs/architecture/`、`docs/ui-audit/` 已 gitignore）。
+### 6. 提交与文档纪律（约定俗成，别破坏）
+
+1. **自主中文提交**：里程碑/任务卡完成且测试全绿即提交，格式 `feat(scope): 中文主题`（如 `feat(subtitle-drag): D-37 字幕窗拖动修复`）；文档类 `docs(scope): …`。多代理并行期提交前 `git status` / `git diff` 复核。
+2. **docs 先于实现**：计划/调研/决策文档定稿即独立 `docs(scope)` 提交，且先于对应实现；计划完成标记随工作包提交同步，**禁止事后补 docs 提交**。
+3. **不用 `git add -A` / `git add .`**：逐项显式 pathspec，提交前核对「提交主题 vs 文件清单」；生成副产物不入库（`docs/architecture/`、`docs/ui-audit/` 已 gitignore）。
 
 ### 7. 改码前必读：AGENTS.md「已知大坑」
 
@@ -160,15 +185,29 @@ lt-proto → lt-i18n → lt-models → lt-pipeline → lt-asr → lt-translate �
 
 （其余：edition 2021 if-let 临时值自死锁、egui 0.36 `request_inner_size`/fonts 闭包 API、`crate::windows` 遮蔽 windows crate、`block_on` 外 `tokio::time::timeout` 必 panic、双栈 CRT 勿动等，见 AGENTS.md。）
 
-### 8. 常用命令备忘
+### 8. 常见问题排错
+
+| 症状 | 原因 → 解法 |
+|---|---|
+| 构建报 `couldn't find any valid shared libraries ... set the LIBCLANG_PATH` | 没跑 `uv sync`，或 `.venv` 被删 → 执行 `uv sync` |
+| `cmake` 命令找不到 / CMake 报错 | 未装 CMake → `winget install Kitware.CMake` |
+| 链接报 LNK2005 / LNK1169（CRT 冲突） | `.cargo/config.toml` 里两行 `CMAKE_*` 被改动（双栈 CRT 对齐，**勿动**） |
+| 测试报 StorageFull / GDI+ Save 失败（假死） | C 盘满，默认 TEMP 在 C 盘 → 临时把 `TMPDIR` 指到 D 盘 |
+| 模型下载失败 / 极慢 | 在「设置 → VAD/ASR」切下载源（ModelScope 国内快）与代理模式；无 MS 源的模型自动走 hf-mirror.com |
+| 启动提示「已在运行」 | 单实例设计 → 从托盘退出，或任务管理器结束旧进程 |
+| 切换界面语言不生效 | 语言在「设置 → VAD/ASR」页底部切换，**重启生效** |
+
+### 9. 常用命令备忘
 
 ```bash
-uv sync                                     # 重建/刷新构建期 libclang 环境（.venv）
-cargo test -p lt-ui                         # 只跑某 crate 测试
+uv sync                                     # 重建 .venv（删除/换机器后）
+cargo test --workspace                      # 全量测试
+cargo test -p lt-ui                         # 单 crate 测试
 cargo test --workspace -- --ignored         # 手动跑 ignored 探针（需真模型/真网络）
-cargo clippy --workspace                    # lint
-cargo run -p lt-ui --example notify_spike   # 实机验证 Windows 原生通知链路
-cargo build --release -p lt-app             # 产出 target/release/livetranslate.exe
+cargo clippy --workspace                    # lint 检查
+cargo run -p lt-app                         # 本地运行
+cargo run -p lt-ui --example notify_spike   # 原生通知链路实机验证
+cargo build --release -p lt-app             # 产物 target/release/livetranslate.exe
 ```
 
 ---
