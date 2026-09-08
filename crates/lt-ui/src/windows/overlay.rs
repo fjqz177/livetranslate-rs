@@ -337,11 +337,14 @@ fn toggle_mode(state: &mut AppState, to_compact: bool) {
 
 fn monitor_bar(ui: &mut Ui, state: &AppState, opa_pct: u32) {
     ui.horizontal(|ui| {
-        // 原版：MIC 条仅在麦克风启用（mic_rms 有值）时出现；各条 QProgressBar
-        // stretch 平分整行（26=原版标签定宽，12=行内间距余量）
-        let n_bars = if state.monitor.mic_rms.is_some() { 3.0 } else { 2.0 };
+        // D-29：MIC 条显隐按"启用意图"（settings.mic_device 有值）驱动，mic_rms 仅作为
+        // 条值填充。原版以 mic_rms 有值驱动，而事件只在有 loopback 数据时到达 →
+        // 系统首次出声才"冒出" MIC 条（用户实测幽灵条根因）。
+        let mic_active = mic_bar_active(state);
+        let n_bars = if mic_active { 3.0 } else { 2.0 };
         let bar_w = ((ui.available_width() - 26.0 * n_bars - 12.0) / n_bars).max(60.0);
-        if let Some(mic) = state.monitor.mic_rms {
+        if mic_active {
+            let mic = state.monitor.mic_rms.unwrap_or(0.0);
             level_bar(ui, "MIC", mic, BAR_MIC, opa_pct, bar_w);
         }
         level_bar(ui, "RMS:", state.monitor.rms, BAR_RMS, opa_pct, bar_w);
@@ -350,6 +353,12 @@ fn monitor_bar(ui: &mut Ui, state: &AppState, opa_pct: u32) {
     ui.add_space(2.0);
     stats_line(ui, state, opa_pct);
     ui.add_space(2.0);
+}
+
+/// MIC 条显隐：以麦克风启用意图为准（D-29，见 monitor_bar 注）。启用但尚无音频数据
+/// 时 mic_rms 为 None → 显示 0%（而非隐藏，避免"幽灵出现"观感）。
+fn mic_bar_active(state: &AppState) -> bool {
+    state.settings.mic_device.is_some()
 }
 
 /// 原版 update_audio：value = min(100, int(v * 500))
@@ -635,5 +644,27 @@ fn resize_grip(ui: &mut Ui, state: &mut AppState) {
         .drag_started()
     {
         state.enqueue_action(WinId::Overlay, WinAction::ResizeSouthEast);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::AppState;
+
+    /// D-29：MIC 条显隐跟随"启用意图"（mic_device 有值），与是否有监控数据无关。
+    /// 默认禁用 → 恒不显示；启用（默认/具名）→ 立即显示。
+    #[test]
+    fn mic_bar_follows_enable_intent() {
+        let base = lt_proto::Settings::default();
+        assert!(!mic_bar_active(&AppState::new(base.clone())), "默认 mic_device=None = 禁用");
+
+        let mut s = base.clone();
+        s.mic_device = Some("__default__".into());
+        assert!(mic_bar_active(&AppState::new(s)), "系统默认 = 启用");
+
+        let mut s = base;
+        s.mic_device = Some("Mic X".into());
+        assert!(mic_bar_active(&AppState::new(s)), "具名设备 = 启用");
     }
 }

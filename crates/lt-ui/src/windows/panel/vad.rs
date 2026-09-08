@@ -180,6 +180,11 @@ pub fn mic_setting_for(index: usize, inputs: &[String]) -> Option<String> {
     }
 }
 
+/// D-29：麦克风输入启用态 = settings.mic_device 有值（UI「启用麦克风输入」勾选框状态）
+pub fn mic_enabled_for(setting: &Option<String>) -> bool {
+    setting.is_some()
+}
+
 // ── 模型缓存探测（原版 _update_whisper_size_label / is_asr_cached 语义）──
 
 /// 缓存状态（Cached/Missing 携带注册表体积估计，用于"已缓存 ✓ 大小"展示）
@@ -515,17 +520,22 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
             }
         });
 
-        // 麦克风：禁用/系统默认/具名（settings None=禁用）
-        let m_idx = mic_index_for(state.settings.mic_device.as_deref(), &inputs);
+        // 麦克风（D-29）：显式「启用麦克风输入」勾选框 + 设备下拉（未勾选置灰）。
+        // 原版为"禁用/系统默认/具名"三值下拉、禁用藏在下拉第一项 → 用户感知不到开关；
+        // 勾选=true 写 __default__/具名，取消=false 写 None（后端立即停采）。
+        let m_enabled = mic_enabled_for(&state.settings.mic_device);
+        // 下拉从"系统默认"起（1）；未勾选时同样显示"系统默认"预览（置灰不可交互）
+        let m_idx = mic_index_for(state.settings.mic_device.as_deref(), &inputs).max(1);
         ui.horizontal(|ui| {
-            ui.label(RichText::new(format!("{} ", lt_i18n::t("label_mic"))).color(pal.text));
-            egui::ComboBox::from_id_salt("panel_mic_device")
+            let mut enabled = m_enabled;
+            if ui.checkbox(&mut enabled, lt_i18n::t("mic_enable")).changed() {
+                apply_mic_setting(state, if enabled { Some("__default__".into()) } else { None });
+            }
+            let combo = egui::ComboBox::from_id_salt("panel_mic_device")
                 .selected_text(device_label(m_idx, &inputs, lt_i18n::t("mic_disabled")))
-                .width(300.0)
-                .show_ui(ui, |ui| {
-                    if ui.selectable_label(m_idx == 0, lt_i18n::t("mic_disabled")).clicked() && m_idx != 0 {
-                        apply_mic_setting(state, mic_setting_for(0, &inputs));
-                    }
+                .width(300.0);
+            ui.add_enabled_ui(m_enabled, |ui| {
+                combo.show_ui(ui, |ui| {
                     if ui.selectable_label(m_idx == 1, lt_i18n::t("system_default")).clicked() && m_idx != 1 {
                         apply_mic_setting(state, mic_setting_for(1, &inputs));
                     }
@@ -536,7 +546,11 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
                         }
                     }
                 });
+            });
         });
+        if m_enabled {
+            hint_line(ui, pal, &lt_i18n::t("mic_enable_hint"));
+        }
         if let Some(def) = &devices.default_output {
             hint_line(ui, pal, &format!("{}: {def}", lt_i18n::t("system_default")));
         }
@@ -1235,6 +1249,22 @@ mod tests {
         assert!(matches!(a, AudioDeviceChoice::Disabled));
         let m: MicDeviceChoice = mic_setting_for(1, &inputs).into();
         assert!(matches!(m, MicDeviceChoice::Default));
+    }
+
+    /// D-29：显式开关语义 —— 勾选态 = settings.mic_device 有值；勾选/取消动作
+    /// 分别写入 __default__ / None；UI 下拉以 max(1) 从"系统默认"起（禁用也显示预览）
+    #[test]
+    fn mic_toggle_semantics() {
+        assert!(!mic_enabled_for(&None), "默认禁用");
+        assert!(mic_enabled_for(&Some("__default__".into())));
+        assert!(mic_enabled_for(&Some("Mic X".into())));
+        // 勾选 → 写入系统默认；取消 → None
+        assert_eq!(mic_setting_for(1, &[]).as_deref(), Some("__default__"));
+        assert_eq!(mic_setting_for(0, &[]), None);
+        // 下拉索引：禁用态显示"系统默认"预览（max(1)），具名设备正常
+        let inputs = dev(&["Mic X"]);
+        assert_eq!(mic_index_for(None, &inputs).max(1), 1);
+        assert_eq!(mic_index_for(Some("Mic X"), &inputs).max(1), 2);
     }
 
     // ── 模型缓存判定（临时目录 fixture）──

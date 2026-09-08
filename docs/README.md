@@ -12,7 +12,7 @@
 | `asr-engine-expansion.md` | ASR 引擎扩展：✗ FunASR Nano 实装（WP-A，D-24）/ ✗ Qwen3-ASR-0.6B 实装（WP-B r3.1，D-25，目标仓 `csukuangfj2/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25`）/ 开源模型扫描 | 全部完工（2026-09-08，349 测；验收数据在 §3.5/§4.8） |
 | `download-overhaul.md` | 模型下载链路审计与改造（13 项发现证据 + DEC-1~5 决策 + DL-1~6 施工卡；D-22/D-23 登记） | 完成（2026-09-08，334 测；DL-1~6 全落地） |
 | `asr-hardening.md` | ASR 子系统加固与状态机收口（21 项发现 H1~H21 + DEC-1~7 决策 + AH-1~AH-10 施工卡；D-26~D-28 登记） | 完成（2026-09-08，363 测；GUI 冒烟 A/B/C 待实机） |
-| `mic-monitor-fix.md` | 麦克风输入开关与监视条（幽灵 MIC 条根因=mic_rms 代理启用状态+无 chunk 不发事件；DEC-1~5 + MC-1~4 施工卡；D-29 登记） | 计划（2026-09-08，待施工） |
+| `mic-monitor-fix.md` | 麦克风输入开关与监视条（幽灵 MIC 条根因=mic_rms 代理启用状态+无 chunk 不发事件；DEC-1~5 + MC-1~4 施工卡；D-29 登记） | 完成（2026-09-08，368 测；MC-1~3 落地，实机双场景冒烟过） |
 
 ## 归档文档（`docs/archive/`，只读决策史）
 

@@ -137,3 +137,15 @@
 
 1. 用户侧设置：`mic_device` 为 `__default__` 是何时/何操作写入的（UI 下拉选过"系统默认"？）——不影响方案，仅记录决策史。
 2. 无声时段 MIC 条数值样式：启用未收到任何 chunk 时显示 0%（而非隐藏）——MC-1 已覆盖，实机 A/B 确认观感。
+
+## 7. 施工与验收回写（2026-09-08，已入库）
+
+**MC-1~MC-3 全部落地，368 测全绿（基线 363 + 新增 5），clippy 新增零告警，release 构建通过**：
+
+- MC-1：`overlay.rs` MIC 条显隐改由 `mic_bar_active(state)`（`settings.mic_device.is_some()`）驱动，`mic_rms` 仅作条值（`unwrap_or(0.0)`）；新增 `mic_bar_follows_enable_intent` 三态测试。
+- MC-2：`wasapi_win.rs` 新增 `MAX_MIC_BUF`（10s）与 `cap_mic_buf`（超限丢最旧，幂等），`handle_mic` 每轮调用；新增 3 测试（超限丢最旧/未超限不动/临界与空）。
+- MC-3：`vad.rs` 设备组改为「启用麦克风输入」勾选框（`mic_enabled_for` ↔ `mic_device` 有值）+ 设备下拉（未勾选 `add_enabled_ui` 置灰，`max(1)` 从"系统默认"起）；启用时提示行 `mic_enable_hint`；新增 `mic_toggle_semantics` 测试；i18n zh/en 各增 `mic_enable`/`mic_enable_hint` 两键（`label_mic`/`mic_disabled` 键保留未删）。
+- MC-4 实机（release exe + 临时 `LIVETRANSLATE_CONFIG_DIR`，双场景）：
+  - 启用场景（`mic_device=__default__`）：日志出现 `Mic device: 麦克风 (2- NICEHCK HiFi Audio) (48000Hz, 1ch)` → 麦克风流确实打开；`ASR worker ready SenseVoice Small`；零 ERROR。
+  - 禁用场景（`mic_device=null`）：无任何 mic 流日志、`ASR worker ready`、零 ERROR → 禁用路径彻底不采集。
+  - 其余（GUI 窗口观感验证 A/B/C/D）仍按 §5.2 实证清单执行，需要实机人工过一遍：勾选→启动即显 MIC 条、取消→≤1 帧内消失、无声长跑 RSS 平稳。

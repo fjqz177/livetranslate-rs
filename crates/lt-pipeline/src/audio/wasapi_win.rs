@@ -333,6 +333,18 @@ fn take_native_chunks(st: &mut LoopStream, out: &mut Vec<Vec<f32>>) {
     }
 }
 
+/// mic 缓冲上限：10s（16k mono f32）。loopback 静音期 mic 数据只进不出（原版同款
+/// np.concatenate），超限从**最旧**丢弃——防止长跑无界增长（~64KB/s，8h ≈ 1.8GB）。
+/// 丢弃仅发生在静音期，恢复消费瞬间至多 10s 的混音相位错位，不影响 VAD 判定。
+const MAX_MIC_BUF: usize = TARGET_RATE as usize * 10;
+
+/// 超限裁剪（保留最近 MAX_MIC_BUF 样本；幂等）
+fn cap_mic_buf(buf: &mut Vec<f32>) {
+    if buf.len() > MAX_MIC_BUF {
+        buf.drain(..buf.len() - MAX_MIC_BUF);
+    }
+}
+
 /// mic 流排空到积压（原版：一次读光 get_read_available）。
 /// 返回 `false` = 读失败（AH-7/H12：调用方 warn+退避重开，镜像 loopback
 /// 恢复语义——原实现静默 break，mic 被抢占后无声消失且无任何日志）
@@ -403,6 +415,8 @@ fn read_loop(
                         .ok();
                 }
             }
+            // MC-2/D-29：静音期只进不出 → 有界化（丢弃最旧）
+            cap_mic_buf(mic_buf);
         };
 
     while running.load(Ordering::Relaxed) {
@@ -530,4 +544,40 @@ fn read_loop(
     close_loopback(&mut st);
     close_mic(&mut mic);
     tracing::info!("Audio capture stopped");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// MC-2/D-29：超限裁剪保留最近段、丢弃最旧（静音期无限累积的防护语义）
+    #[test]
+    fn mic_buf_capped_drops_oldest() {
+        let mut buf: Vec<f32> = (0..(MAX_MIC_BUF + 1000)).map(|i| i as f32).collect();
+        cap_mic_buf(&mut buf);
+        assert_eq!(buf.len(), MAX_MIC_BUF);
+        assert_eq!(buf[0], 1000.0, "最旧 1000 样本被丢弃，缓冲起点=第 1000 样本");
+        assert_eq!(buf[MAX_MIC_BUF - 1], (MAX_MIC_BUF + 999) as f32, "末端保留最新样本");
+    }
+
+    /// 不超过上限时原样保留（裁剪幂等）
+    #[test]
+    fn mic_buf_under_cap_untouched() {
+        let mut buf: Vec<f32> = vec![0.0; MAX_MIC_BUF - 1];
+        buf[0] = 42.0;
+        cap_mic_buf(&mut buf);
+        assert_eq!(buf.len(), MAX_MIC_BUF - 1);
+        assert_eq!(buf[0], 42.0);
+    }
+
+    /// 恰好等于上限也不裁；清空边界不 panic
+    #[test]
+    fn mic_buf_at_cap_and_empty() {
+        let mut buf = vec![1.0; MAX_MIC_BUF];
+        cap_mic_buf(&mut buf);
+        assert_eq!(buf.len(), MAX_MIC_BUF);
+        let mut empty: Vec<f32> = Vec::new();
+        cap_mic_buf(&mut empty);
+        assert!(empty.is_empty());
+    }
 }
