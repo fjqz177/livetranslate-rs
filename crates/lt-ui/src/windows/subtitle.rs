@@ -30,7 +30,7 @@ use crate::state::{
     WinId,
 };
 use crate::style::parse_color;
-use egui::{Align2, Color32, FontId, Sense, Ui};
+use egui::{Align2, Color32, FontId, RichText, Sense, Stroke, Ui};
 use lt_proto::SubtitleLine;
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
@@ -42,6 +42,10 @@ const MARGIN_V: f32 = 8.0;
 const HEIGHT_ANIM_MS: u64 = 150;
 /// 位置可见性判定边距（原版 _is_pos_visible margin=50）
 const POS_MARGIN: i32 = 50;
+/// 顶条高度（逻辑 px；D-36 分区穿透的豁免区/拖动柄/悬停工具条高度）
+pub const STRIP_H: f32 = 18.0;
+/// 顶条绘制圆角
+const STRIP_RADIUS: f32 = 4.0;
 /// 断点优先字符集（原版 split_text 的 `" ,，。、!！?？;；:：."`）
 const BREAK_CHARS: &[char] = &[' ', ',', '，', '。', '、', '!', '！', '?', '？', ';', '；', ':', '：', '.'];
 /// 描边偏移方向（原版圆头描边的 8 方向近似）
@@ -55,6 +59,30 @@ const OUTLINE_DIRS: [(f32, f32); 8] = [
     (-1.0, 1.0),
     (1.0, 1.0),
 ];
+
+/// 字幕窗光标分区（D-36：分区穿透——顶条豁免、正文穿透的依据）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubtitleZone {
+    /// 顶条（悬停工具条/拖动柄/按钮命中区；恒非穿透）
+    Strip,
+    /// 正文（穿透开启时挂 WS_EX_TRANSPARENT）
+    Body,
+    /// 窗外（无操作）
+    Outside,
+}
+
+/// 光标在窗内坐标 (逻辑 px, 窗左上为原点) → 分区（原版无对位：Rust 产品化新增）
+pub fn zone_for_cursor(local_x: f32, local_y: f32, win_w: f32, win_h: f32, strip_h: f32) -> SubtitleZone {
+    if local_x < 0.0 || local_y < 0.0 || local_x >= win_w || local_y >= win_h {
+        return SubtitleZone::Outside;
+    }
+    if local_y < strip_h { SubtitleZone::Strip } else { SubtitleZone::Body }
+}
+
+/// 穿透位目标值：正文穿透 + 顶条豁免 + Ctrl 临时恢复（全部区域解穿透）
+pub fn transparent_desired(enabled: bool, zone: SubtitleZone, ctrl: bool) -> bool {
+    enabled && zone == SubtitleZone::Body && !ctrl
+}
 
 /// pt → 逻辑 px（Qt 1pt ≈ 96/72 px，与 overlay::pt 一致）
 fn pt(size: u32) -> f32 {
@@ -268,7 +296,7 @@ pub fn subtitle_ui(ui: &mut Ui, state: &mut AppState) {
     let full = ui.available_rect_before_wrap();
 
     // 帧内借用拆分（字幕配置只读 / 字幕状态可变），帧后统一投递动作
-    let (drag, height_cmd, height_settled) = {
+    let (drag, height_cmd, height_settled, through_toggle, lock_toggle, hide, open_settings, reset_pos) = {
         // 借用拆分：不相交字段
         let sm = &state.settings.subtitle_mode;
         let sub = &mut state.subtitle;
@@ -420,14 +448,106 @@ pub fn subtitle_ui(ui: &mut Ui, state: &mut AppState) {
             }
         }
 
-        // 7) 全窗中键拖动（原版 mousePressEvent MiddleButton；全窗穿透开启时输入不会到达）
-        let drag = ui
-            .interact(full, ui.id().with("sub_drag"), Sense::click_and_drag())
+        // 8) 顶条淡入/淡出推进（进行中持续重绘；结束帧收敛终态）
+        if let Some(a) = &sub.toolbar_anim {
+            if a.current(now).is_none() {
+                sub.toolbar_anim = None;
+            } else {
+                ui.ctx().request_repaint();
+            }
+        }
+        let strip_alpha = sub.toolbar_opacity(now);
+
+        // 9) 交互区（D-36）：正文区中键拖动（原版全窗中键语义保留给正文）；
+        //    顶条 = 任意键拖动 + 右键菜单 + 三按钮（按钮在此后注册 = 同层命中优先）
+        let strip_rect = egui::Rect::from_min_size(full.min, egui::vec2(full.width(), STRIP_H));
+        let body_rect = egui::Rect::from_min_max(
+            egui::pos2(full.left(), full.top() + STRIP_H),
+            full.right_bottom(),
+        );
+        let mut drag = ui
+            .interact(body_rect, ui.id().with("sub_body_drag"), Sense::click_and_drag())
             .drag_started_by(egui::PointerButton::Middle);
+
+        let mut through_toggle = false;
+        let mut lock_toggle = false;
+        let mut hide = false;
+        let mut open_settings = false;
+        let mut reset_pos = false;
+        let strip_resp = ui.interact(strip_rect, ui.id().with("sub_strip"), Sense::click_and_drag());
+        if strip_resp.drag_started() && !sub.locked {
+            drag = true;
+        }
+        // 顶条右键菜单（全部走既有 action 通路禁模态；D-33 纪律）
+        strip_resp.context_menu(|ui| {
+            if ui.button(lt_i18n::t("subwin_menu_open_settings")).clicked() {
+                open_settings = true;
+                ui.close();
+            }
+            if ui.button(lt_i18n::t("subwin_menu_reset_pos")).clicked() {
+                reset_pos = true;
+                ui.close();
+            }
+            ui.separator();
+            if ui.button(lt_i18n::t("subwin_menu_hide")).clicked() {
+                hide = true;
+                ui.close();
+            }
+        });
+
+        // 10) 顶条绘制（D-36：覆盖式——浮现/隐没不动文字布局；无布局参与）
+        if strip_alpha > 0.02 {
+            let bg = Color32::from_rgba_unmultiplied(0x26, 0x26, 0x2e, (210.0 * strip_alpha).round() as u8);
+            ui.painter()
+                .rect_filled(strip_rect, egui::CornerRadius::same(STRIP_RADIUS as u8), bg);
+            // 右侧按钮组（右→左：关闭 / 锁定 / 穿透；宽度按文案测宽）
+            let font = FontId::proportional(9.5);
+            let mut bx = full.right() - 8.0;
+            for (i, (label, tip, on)) in [
+                (lt_i18n::t("subwin_tb_close"), lt_i18n::t("subwin_tb_close_hint"), false),
+                (lt_i18n::t("subwin_tb_lock"), lt_i18n::t("subwin_tb_lock_hint"), sub.locked),
+                (lt_i18n::t("subwin_tb_through"), lt_i18n::t("subwin_tb_through_hint"), sm.click_through),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let w = text_width(ui, &font, &label) + 14.0;
+                let rect = egui::Rect::from_min_size(
+                    egui::pos2(bx - w, full.top() + 2.0),
+                    egui::vec2(w, 14.0),
+                );
+                bx -= w + 4.0;
+                let (fill, stroke, fg) = strip_button_colors(on);
+                let resp = ui.put(
+                    rect,
+                    egui::Button::new(RichText::new(label).size(9.5).color(fg))
+                        .fill(fill)
+                        .stroke(Stroke::new(1.0, stroke))
+                        .corner_radius(3.0),
+                );
+                if resp.clicked() {
+                    match i {
+                        0 => hide = true,
+                        1 => lock_toggle = true,
+                        _ => through_toggle = true,
+                    }
+                }
+                resp.on_hover_text(tip);
+            }
+            // 左端 ☰ 拖动提示图标（纯提示，不响应；区带交互由 strip_resp 承担）
+            ui.painter().text(
+                strip_rect.left_center() + egui::vec2(6.0, 0.0),
+                Align2::LEFT_CENTER,
+                "\u{2630}",
+                FontId::proportional(12.0),
+                Color32::from_rgba_unmultiplied(0xaa, 0xaa, 0xaa, (255.0 * strip_alpha).round() as u8),
+            );
+        }
+        strip_resp.on_hover_text(lt_i18n::t("subwin_tb_strip_hint"));
 
         // 撑满布局（窗口即内容尺寸）
         ui.allocate_space(full.size());
-        (drag, height_cmd, height_settled)
+        (drag, height_cmd, height_settled, through_toggle, lock_toggle, hide, open_settings, reset_pos)
     };
 
     // 帧后动作
@@ -439,6 +559,46 @@ pub fn subtitle_ui(ui: &mut Ui, state: &mut AppState) {
     }
     if drag {
         state.enqueue_action(WinId::Subtitle, WinAction::DragSubtitle);
+    }
+    if through_toggle {
+        let ct = !state.settings.subtitle_mode.click_through;
+        state.settings.subtitle_mode.click_through = ct;
+        crate::windows::panel::mark_settings_dirty(state);
+        if ct && *state.visible.get(&WinId::Subtitle).unwrap_or(&false) {
+            state.schedule_subtitle_window_poll();
+        }
+    }
+    if lock_toggle {
+        state.subtitle.locked = !state.subtitle.locked;
+    }
+    if hide {
+        // 与悬浮窗"字幕"按钮同路径：enabled 翻转 + ToggleSubtitle
+        state.settings.subtitle_mode.enabled = false;
+        state.enqueue_action(WinId::Subtitle, WinAction::ToggleSubtitle);
+    }
+    if open_settings {
+        state.panel.page = crate::state::PanelPage::Subtitle;
+        state.enqueue_action(WinId::Panel, WinAction::ShowPanel);
+    }
+    if reset_pos {
+        state.enqueue_action(WinId::Subtitle, WinAction::ResetSubtitlePos);
+    }
+}
+
+/// 顶条按钮三态色（开=绿系（对齐悬浮窗字幕钮 SUBTITLE_ON_* 语义），关=中性）
+fn strip_button_colors(on: bool) -> (Color32, Color32, Color32) {
+    if on {
+        (
+            Color32::from_rgba_premultiplied(13, 40, 20, 160),
+            Color32::from_rgba_premultiplied(40, 100, 50, 200),
+            Color32::from_rgb(0x9f, 0xd8, 0x9f),
+        )
+    } else {
+        (
+            Color32::from_rgba_premultiplied(34, 34, 40, 120),
+            Color32::from_rgba_premultiplied(70, 70, 80, 140),
+            Color32::from_rgb(0xaa, 0xaa, 0xaa),
+        )
     }
 }
 
@@ -730,5 +890,62 @@ mod tests {
         assert_eq!(clamp_to_screen(-100, -100, 1000, 160, &monitors), (0, 0));
         // 窗比屏宽：min/max 组合兜底到屏左/上沿（i32::clamp 会 panic 的边界）
         assert_eq!(clamp_to_screen(300, 200, 3840, 2160, &monitors), (0, 0));
+    }
+
+    // ── D-36 分区穿透（光标分区 + 穿透位目标矩阵）──
+
+    #[test]
+    fn zone_for_cursor_matrix() {
+        // 窗内顶条（y < 18；x 覆盖整宽）
+        assert_eq!(zone_for_cursor(10.0, 5.0, 1000.0, 160.0, STRIP_H), SubtitleZone::Strip);
+        assert_eq!(zone_for_cursor(999.5, 17.9, 1000.0, 160.0, STRIP_H), SubtitleZone::Strip);
+        // 窗内正文（y >= 18）
+        assert_eq!(zone_for_cursor(10.0, 18.0, 1000.0, 160.0, STRIP_H), SubtitleZone::Body);
+        assert_eq!(zone_for_cursor(500.0, 159.0, 1000.0, 160.0, STRIP_H), SubtitleZone::Body);
+        // 窗外（四缘 0.1px 越界）
+        assert_eq!(zone_for_cursor(-0.1, 50.0, 1000.0, 160.0, STRIP_H), SubtitleZone::Outside);
+        assert_eq!(zone_for_cursor(50.0, -0.1, 1000.0, 160.0, STRIP_H), SubtitleZone::Outside);
+        assert_eq!(zone_for_cursor(1000.0, 50.0, 1000.0, 160.0, STRIP_H), SubtitleZone::Outside);
+        assert_eq!(zone_for_cursor(50.0, 160.0, 1000.0, 160.0, STRIP_H), SubtitleZone::Outside);
+    }
+
+    #[test]
+    fn transparent_desired_matrix() {
+        // 关穿透：任何区域都不穿
+        assert!(!transparent_desired(false, SubtitleZone::Strip, false));
+        assert!(!transparent_desired(false, SubtitleZone::Body, false));
+        // 开穿透：正文穿、顶条豁免、窗外无动作
+        assert!(transparent_desired(true, SubtitleZone::Body, false));
+        assert!(!transparent_desired(true, SubtitleZone::Strip, false));
+        assert!(!transparent_desired(true, SubtitleZone::Outside, false));
+        // Ctrl 临时恢复：全部区域解穿透（拖动可达）
+        assert!(!transparent_desired(true, SubtitleZone::Body, true));
+        assert!(!transparent_desired(true, SubtitleZone::Strip, true));
+    }
+
+    /// D-36 顶条 headless 冒烟：悬停态（含按钮/菜单路径）与隐藏+锁定态各跑两帧不 panic
+    #[test]
+    fn subtitle_ui_headless_smoke_with_toolbar() {
+        let ctx = egui::Context::default();
+        let mut st = crate::state::AppState::new(lt_proto::Settings::default());
+        st.settings.subtitle_mode.click_through = true;
+        st.settings.subtitle_mode.enabled = true;
+        // 悬停中（源于 Win32 轮询注入——穿透开启时 egui 收不到输入，状态由宿主写入）
+        st.subtitle.toolbar_hover = true;
+        st.subtitle.toolbar_anim = None;
+        for _ in 0..2 {
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                crate::windows::subtitle::subtitle_ui(ui, &mut st)
+            });
+            assert!(!out.shapes.is_empty(), "字幕窗（含顶条）应产出图元");
+            out.textures_delta.clear();
+        }
+        // 隐藏态 + 锁定：不 panic、图元仍在（背景+文字）
+        st.subtitle.toolbar_hover = false;
+        st.subtitle.locked = true;
+        let out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            crate::windows::subtitle::subtitle_ui(ui, &mut st)
+        });
+        assert!(!out.shapes.is_empty());
     }
 }

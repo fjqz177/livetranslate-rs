@@ -15,7 +15,9 @@ use crate::state::{
 };
 use crate::tray::{self, Tray};
 use crate::windows;
-use crate::windows::subtitle::{MonoRect, clamp_to_screen, is_pos_visible};
+use crate::windows::subtitle::{
+    clamp_to_screen, is_pos_visible, transparent_desired, zone_for_cursor, MonoRect, SubtitleZone,
+};
 use egui::{Context, ViewportId};
 use egui_wgpu::winit::Painter;
 use lt_proto::UiMsg;
@@ -965,10 +967,8 @@ impl MultiWindowApp {
                         if self.app_state.take_subtitle_hint() {
                             crate::notifications::show_subtitle_hint();
                         }
-                        // 开启即恢复 500ms 穿透断言轮询（原版 showEvent 重断言 + _ct_timer）
-                        if self.app_state.settings.subtitle_mode.click_through {
-                            self.app_state.schedule_subtitle_click_through_tick();
-                        }
+                        // D-36：可见即续 100ms 分区穿透/悬停轮询（不再仅穿透开启时）
+                        self.app_state.schedule_subtitle_window_poll();
                     }
                 }
                 WinAction::ApplyOverlayFlags => {
@@ -1032,6 +1032,19 @@ impl MultiWindowApp {
                         window.set_outer_position(winit::dpi::LogicalPosition::new(f64::from(x), f64::from(y)));
                     }
                     self.app_state.schedule_subtitle_pos_save((x, y));
+                }
+                WinAction::ResetSubtitlePos => {
+                    // D-36 字幕窗复位（顶条右键菜单/字幕页按钮）：回 (100,100)，
+                    // 位置直写 settings + 防抖基准同步（同 ResetPositions 的字幕分支）
+                    if let Some(sub) = self.find_mut(WinId::Subtitle) {
+                        sub.window.set_outer_position(winit::dpi::LogicalPosition::new(100.0, 100.0));
+                    }
+                    self.app_state.settings.subtitle_mode.window_x = Some(100);
+                    self.app_state.settings.subtitle_mode.window_y = Some(100);
+                    self.app_state.subtitle.last_saved_pos = Some((100, 100));
+                    self.app_state.send_cmd(lt_proto::Cmd::PersistSettings(Box::new(
+                        self.app_state.settings.clone(),
+                    )));
                 }
                 WinAction::ResetPositions => {
                     // 原版 app_shell._on_reset_positions：字幕窗回 (100,100)；
@@ -1212,7 +1225,7 @@ impl MultiWindowApp {
         if unsafe { GetCursorPos(&mut pt) }.is_err() {
             return;
         }
-        let scale = window.scale_factor() as f64;
+        let scale = window.scale_factor();
         let logical = window.inner_size().to_logical::<f32>(window.scale_factor());
         let local_x = (pt.x as f64 - win_pos.x as f64) / scale;
         let local_y = (pt.y as f64 - win_pos.y as f64) / scale;
@@ -1224,17 +1237,51 @@ impl MultiWindowApp {
         Self::set_window_transparent(&window, !in_header);
     }
 
-    /// 字幕窗穿透轮询（原版 _ct_timer 500ms → _apply_click_through：
-    /// 全窗穿透 `winutil.set_click_through(self, "all")`，无头部例外）。
-    /// Qt 需定时重断言（show/raise 会清扩展样式），此处按位去重读写等效。
-    /// 仅 Windows。
+    /// 字幕窗 100ms 光标感知轮询（D-36）：分区穿透（正文穿透 + 顶条豁免 +
+    /// Ctrl 临时恢复）与顶条悬停工具条显隐的**单一事实源**——穿透开启时 egui
+    /// 收不到鼠标事件，悬停判定只能走 Win32 GetCursorPos（不受 WS_EX_TRANSPARENT
+    /// 影响）。原版 _ct_timer 500ms 全窗穿透 -> 100ms 分区判定。仅 Windows。
     #[cfg(windows)]
-    fn poll_subtitle_click_through(&mut self) {
+    fn poll_subtitle_window(&mut self) {
+        use ::windows::Win32::Foundation::POINT;
+        use ::windows::Win32::UI::Input::KeyboardAndMouse::{
+            GetAsyncKeyState, VK_CONTROL,
+        };
+        use ::windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
         let Some(hw) = self.find(WinId::Subtitle) else { return };
         let window = hw.window.clone();
-        let enabled = self.app_state.settings.subtitle_mode.click_through
-            && *self.app_state.visible.get(&WinId::Subtitle).unwrap_or(&false);
-        Self::set_window_transparent(&window, enabled);
+        let visible = *self.app_state.visible.get(&WinId::Subtitle).unwrap_or(&false);
+        if !visible {
+            return;
+        }
+        let enabled = self.app_state.settings.subtitle_mode.click_through;
+        let mut zone = SubtitleZone::Outside;
+        let mut ctrl = false;
+        let mut pt = POINT::default();
+        if unsafe { GetCursorPos(&mut pt) }.is_ok() {
+            if let Ok(pos) = window.outer_position() {
+                let scale = window.scale_factor();
+                let logical = window.inner_size().to_logical::<f32>(window.scale_factor());
+                zone = zone_for_cursor(
+                    ((pt.x as f64 - pos.x as f64) / scale) as f32,
+                    ((pt.y as f64 - pos.y as f64) / scale) as f32,
+                    logical.width,
+                    logical.height,
+                    crate::windows::subtitle::STRIP_H,
+                );
+            }
+            // VK_CONTROL=17：Ctrl 临时恢复穿透（全区域可交互，support drag during CT）
+            ctrl = unsafe { (GetAsyncKeyState(i32::from(VK_CONTROL.0)) as u16) & 0x8000 != 0 };
+        }
+        Self::set_window_transparent(&window, transparent_desired(enabled, zone, ctrl));
+        // 顶条悬停工具条推进（状态变化才重绘；动画期由渲染帧 request_repaint 跟帧）
+        if self
+            .app_state
+            .subtitle
+            .set_toolbar_hover(zone != SubtitleZone::Outside, std::time::Instant::now())
+        {
+            self.redraw(WinId::Subtitle);
+        }
     }
 
     /// 非 Windows 兜底（无穿透能力）
@@ -1243,7 +1290,7 @@ impl MultiWindowApp {
 
     /// 非 Windows 兜底（无穿透能力）
     #[cfg(not(windows))]
-    fn poll_subtitle_click_through(&mut self) {}
+    fn poll_subtitle_window(&mut self) {}
 
     /// WS_EX_TRANSPARENT 位切换（悬浮窗/字幕窗共用的通用窗口层函数）。
     /// 窗口已挂 WS_EX_LAYERED（apply_layered），这里只增删 TRANSPARENT 位，
@@ -1334,17 +1381,15 @@ impl MultiWindowApp {
 
     /// 启动即安排节拍（由 lt-app 在 run 前调用）：
     /// 悬浮窗监视节拍（overlay 行为不变）+ 启动流节拍（向导倒计时/收尾延迟）
-    /// + 字幕窗穿透轮询（原版 set_click_through 即启动 500ms 计时）
+    /// + 字幕窗 100ms 光标感知轮询（D-36：可见即续，穿透开关不再决定链的存续）
     pub fn kick_ticks(&mut self) {
         self.app_state.schedule_monitor_tick(WinId::Overlay);
         self.app_state.kick_setup_tick();
         if self.app_state.ov_click_through {
             self.app_state.schedule_click_through_tick();
         }
-        if self.app_state.settings.subtitle_mode.click_through
-            && *self.app_state.visible.get(&WinId::Subtitle).unwrap_or(&false)
-        {
-            self.app_state.schedule_subtitle_click_through_tick();
+        if *self.app_state.visible.get(&WinId::Subtitle).unwrap_or(&false) {
+            self.app_state.schedule_subtitle_window_poll();
         }
     }
 }
@@ -1460,13 +1505,11 @@ impl ApplicationHandler<UiMsg> for MultiWindowApp {
                 },
                 TickKind::ClickThrough => match tick.win {
                     WinId::Subtitle => {
-                        // 字幕窗 500ms 全窗穿透断言（原版 _ct_timer 周期重申）
-                        self.poll_subtitle_click_through();
-                        // 开关开启期间由宿主续拍（关闭/隐藏即断链）
-                        if self.app_state.settings.subtitle_mode.click_through
-                            && *self.app_state.visible.get(&WinId::Subtitle).unwrap_or(&false)
-                        {
-                            self.app_state.schedule_subtitle_click_through_tick();
+                        // 字幕窗 100ms 分区穿透 + 顶条悬停轮询（D-36：可见即续拍，
+                        // 穿透开关不再决定链的存续——悬停工具条在非穿透态也需要）
+                        self.poll_subtitle_window();
+                        if *self.app_state.visible.get(&WinId::Subtitle).unwrap_or(&false) {
+                            self.app_state.schedule_subtitle_window_poll();
                         }
                     }
                     _ => {

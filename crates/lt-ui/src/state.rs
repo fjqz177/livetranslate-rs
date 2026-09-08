@@ -145,6 +145,9 @@ pub enum WinAction {
     SetSubtitleHeight(f32),
     /// 字幕窗高度落定后的多屏钳制（原版 on_finished → _clamp_to_screen + position_changed）
     ClampSubtitlePos,
+    /// 字幕窗复位（D-36：顶条右键菜单 / 字幕页按钮；原版 _on_reset_positions 的字幕分支：
+    /// 回 (100,100) 后走既有 Moved 防抖保存）
+    ResetSubtitlePos,
     /// 常规页"重置窗口位置"（原版 _on_reset_positions：字幕窗回 (100,100)、
     /// 悬浮窗回主屏右下角；宿主移动窗口后走既有 Moved 防抖保存）
     ResetPositions,
@@ -405,6 +408,13 @@ impl LogWindowState {
 /// 最小显示时间 ms（原版 _min_display_ms = 1500：上句插入后须满此时长才能被替换）
 pub const SUBTITLE_MIN_DISPLAY_MS: u64 = 1500;
 
+/// 字幕窗 100ms 光标感知轮询周期（D-36：分区穿透 + 顶条悬停工具条的
+/// 单一事实源；原版 _ct_timer 500ms 对分区判定偏慢，对齐悬浮窗 50ms 一档）
+pub const SUBTITLE_POLL_MS: u64 = 100;
+
+/// 顶条淡入淡出时长 ms（原版 150ms 动画系）
+pub const SUBTITLE_STRIP_FADE_MS: u64 = 150;
+
 /// 字幕窗句子（原版 _sentences 元组 `(original, {lang: text})` 的结构化形态）
 #[derive(Debug, Clone, PartialEq)]
 pub struct SubtitleSentence {
@@ -422,7 +432,7 @@ pub enum Easing {
 
 /// 通用缓动动画（原版 QPropertyAnimation：起止值 + 自定义时长 + 缓动；
 /// [`HeightAnim`] 的泛化版——字幕窗高度 150ms 与淡入淡出自定义时长共用）
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct EaseAnim {
     pub from: f32,
     pub to: f32,
@@ -499,6 +509,13 @@ pub struct SubtitleUiState {
     pub pos_dirty_since: Option<Instant>,
     /// 上次保存的位置 (x, y)，未变化不触发
     pub last_saved_pos: Option<(i32, i32)>,
+    /// 顶条工具条悬停状态（D-36：宿主 Win32 光标轮询驱动——穿透开启时 egui
+    /// 收不到鼠标事件，此状态只源于 GetCursorPos，单一事实源）
+    pub toolbar_hover: bool,
+    /// 顶条淡入/淡出动画（None=静止；终态由 [`Self::toolbar_opacity`] 兜底）
+    pub toolbar_anim: Option<EaseAnim>,
+    /// 锁定（冻结拖动；顶条锁按钮翻转，内存态）
+    pub locked: bool,
 }
 
 impl SubtitleUiState {
@@ -596,6 +613,37 @@ impl SubtitleUiState {
             Some(a) => a.current(now).unwrap_or(a.to),
             None => {
                 if self.hidden_by_timeout { 0.0 } else { 1.0 }
+            }
+        }
+    }
+
+    /// 顶条可见性推进：hover 状态变化时启动 150ms 淡入/淡出（reduce_motion 直接落位）。
+    /// 返回是否发生状态变化（宿主据此触发重绘）。
+    pub fn set_toolbar_hover(&mut self, hover: bool, now: Instant) -> bool {
+        if self.toolbar_hover == hover {
+            return false;
+        }
+        self.toolbar_hover = hover;
+        self.toolbar_anim = if self.reduce_motion {
+            None
+        } else {
+            Some(EaseAnim {
+                from: if hover { 0.0 } else { 1.0 },
+                to: if hover { 1.0 } else { 0.0 },
+                start: now,
+                duration: Duration::from_millis(SUBTITLE_STRIP_FADE_MS),
+                easing: if hover { Easing::OutCubic } else { Easing::InCubic },
+            })
+        };
+        true
+    }
+
+    /// 当前顶条不透明度（动画中取缓动值，否则按悬停终态）
+    pub fn toolbar_opacity(&self, now: Instant) -> f32 {
+        match &self.toolbar_anim {
+            Some(a) => a.current(now).unwrap_or(a.to),
+            None => {
+                if self.toolbar_hover { 1.0 } else { 0.0 }
             }
         }
     }
@@ -1697,9 +1745,10 @@ impl AppState {
         self.schedule_subtitle_tick(TickKind::PosSave, at);
     }
 
-    /// 字幕窗 500ms 穿透断言节拍（原版 _ct_timer 500ms；由宿主按开关续拍）
-    pub fn schedule_subtitle_click_through_tick(&mut self) {
-        let at = Instant::now() + Duration::from_millis(500);
+    /// 字幕窗 100ms 光标感知轮询节拍（D-36：分区穿透断言 + 顶条悬停工具的
+    /// 单一事实源；原版 _ct_timer 500ms。可见期间由宿主无需条件地续拍）
+    pub fn schedule_subtitle_window_poll(&mut self) {
+        let at = Instant::now() + Duration::from_millis(SUBTITLE_POLL_MS);
         self.schedule_subtitle_tick(TickKind::ClickThrough, at);
     }
 
@@ -1906,6 +1955,34 @@ mod tests {
         // 独立实例互不影响
         let mut st2 = AppState::new(Settings::default());
         assert!(st2.take_subtitle_hint());
+    }
+
+    /// D-36：顶条悬停状态机——淡入/淡出动画、reduce_motion 瞬时落位、重复幂等
+    #[test]
+    fn subtitle_toolbar_hover_anim_lifecycle() {
+        let mut sub = SubtitleUiState::default();
+        let t0 = Instant::now();
+        // 悬停进入：0→1 OutCubic
+        assert!(sub.set_toolbar_hover(true, t0));
+        assert_eq!(sub.toolbar_opacity(t0), 0.0);
+        let mid = t0 + Duration::from_millis(SUBTITLE_STRIP_FADE_MS / 2);
+        let o = sub.toolbar_opacity(mid);
+        assert!(o > 0.0 && o < 1.0, "淡入进行中: {o}");
+        let end = t0 + Duration::from_millis(SUBTITLE_STRIP_FADE_MS + 1);
+        assert_eq!(sub.toolbar_opacity(end), 1.0);
+        // 重复幂等：状态不变（返回 false，不发生动画重置）
+        assert!(!sub.set_toolbar_hover(true, t0));
+        // 离开：1→0 InCubic；淡出启动 1ms 后接近 1（刚起步），结束+1ms 收敛 0
+        assert!(sub.set_toolbar_hover(false, end));
+        let fade_end = end + Duration::from_millis(SUBTITLE_STRIP_FADE_MS + 1);
+        assert_eq!(sub.toolbar_opacity(fade_end), 0.0);
+        // reduce_motion：瞬时落位（无动画）
+        let mut sub2 = SubtitleUiState { reduce_motion: true, ..Default::default() };
+        assert!(sub2.set_toolbar_hover(true, t0));
+        assert_eq!(sub2.toolbar_opacity(t0), 1.0);
+        assert_eq!(sub2.toolbar_anim, None);
+        assert!(sub2.set_toolbar_hover(false, t0));
+        assert_eq!(sub2.toolbar_opacity(t0), 0.0);
     }
 
     /// D-33/H-3：确认模态——打开/幂等/宿主选择/取消恢复标记（单模态源防嵌套）

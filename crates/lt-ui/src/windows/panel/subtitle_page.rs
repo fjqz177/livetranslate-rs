@@ -228,7 +228,7 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
         {
             state.settings.subtitle_mode.click_through = ct;
             if ct && *state.visible.get(&crate::state::WinId::Subtitle).unwrap_or(&false) {
-                state.schedule_subtitle_click_through_tick();
+                state.schedule_subtitle_window_poll();
             }
             mark_settings_dirty(state);
         }
