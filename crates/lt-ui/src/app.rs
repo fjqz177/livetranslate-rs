@@ -960,9 +960,15 @@ impl MultiWindowApp {
                 WinAction::ToggleSubtitle => {
                     let vis = self.app_state.settings.subtitle_mode.enabled;
                     self.set_visible(WinId::Subtitle, vis);
-                    // 开启即恢复 500ms 穿透断言轮询（原版 showEvent 重断言 + _ct_timer）
-                    if vis && self.app_state.settings.subtitle_mode.click_through {
-                        self.app_state.schedule_subtitle_click_through_tick();
+                    if vis {
+                        // WP-1：首次开启弹拖动提示（原版 _subwin_notified 会话内一次性）
+                        if self.app_state.take_subtitle_hint() {
+                            crate::notifications::show_subtitle_hint();
+                        }
+                        // 开启即恢复 500ms 穿透断言轮询（原版 showEvent 重断言 + _ct_timer）
+                        if self.app_state.settings.subtitle_mode.click_through {
+                            self.app_state.schedule_subtitle_click_through_tick();
+                        }
                     }
                 }
                 WinAction::ApplyOverlayFlags => {

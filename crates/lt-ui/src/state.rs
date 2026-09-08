@@ -1387,6 +1387,8 @@ pub struct AppState {
     pub overlay: OverlayUiState,
     /// 字幕窗 UI 伴生状态（M4.2：句子队列/自动隐藏/高度动画/渲染缓存）
     pub subtitle: SubtitleUiState,
+    /// 字幕窗首启拖动提示是否已弹（WP-1：原版 _subwin_notified 会话内一次性）
+    pub subtitle_hint_shown: bool,
     /// UI 帧内请求的窗口动作（宿主在帧后消费；Drag/Resize/Hide/ShowPanel）
     pub actions: Vec<(WinId, WinAction)>,
     /// 右键"清空列表"请求（帧后消费）
@@ -1475,6 +1477,7 @@ impl AppState {
             stats: OverlayStats::default(),
             overlay: OverlayUiState::default(),
             subtitle: SubtitleUiState::default(),
+            subtitle_hint_shown: false,
             actions: Vec::new(),
             clear_request: false,
             logwin: LogWindowState::default(),
@@ -1603,6 +1606,16 @@ impl AppState {
     /// 关闭确认模态并返回原状态（渲染帧执行确定效果 / 取消恢复逻辑）
     pub fn take_confirm(&mut self) -> Option<ConfirmUi> {
         self.confirm.take()
+    }
+
+    /// 字幕窗拖动提示的一次性消费（原版 _subwin_notified：会话内只弹一次）。
+    /// 返回 true = 本次应弹（首次）；false = 已弹过。
+    pub fn take_subtitle_hint(&mut self) -> bool {
+        if self.subtitle_hint_shown {
+            return false;
+        }
+        self.subtitle_hint_shown = true;
+        true
     }
 
     /// 悬浮窗持久化几何 (x, y, w, h)（settings.overlay_* 四键齐备才生效）
@@ -1883,6 +1896,17 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// WP-1：字幕窗拖动提示会话内一次性（原版 _subwin_notified 语义）
+    #[test]
+    fn subtitle_hint_once_per_session() {
+        let mut st = AppState::new(Settings::default());
+        assert!(st.take_subtitle_hint(), "首次应弹提示");
+        assert!(!st.take_subtitle_hint(), "会话内不重复弹");
+        // 独立实例互不影响
+        let mut st2 = AppState::new(Settings::default());
+        assert!(st2.take_subtitle_hint());
+    }
 
     /// D-33/H-3：确认模态——打开/幂等/宿主选择/取消恢复标记（单模态源防嵌套）
     #[test]

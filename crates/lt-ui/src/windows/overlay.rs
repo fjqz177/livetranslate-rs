@@ -158,13 +158,16 @@ fn row1(ui: &mut Ui, state: &mut AppState, compact: bool, opa_pct: u32) {
         // 字幕按钮（紧凑模式隐藏；开启时绿底，原版 set_subtitle_checked）
         if !compact {
             let on = state.settings.subtitle_mode.enabled;
-            let sub = ui.add(small_btn(
-                lt_i18n::t("subtitle"),
-                if on { SUBTITLE_ON_FILL } else { BTN_FILL },
-                if on { SUBTITLE_ON_STROKE } else { BTN_STROKE },
-                BTN_TEXT,
-                opa_pct,
-            ));
+            // WP-1：手势提示悬停文案（首次开启另有 toast，见 app.rs ToggleSubtitle）
+            let sub = ui
+                .add(small_btn(
+                    lt_i18n::t("subtitle"),
+                    if on { SUBTITLE_ON_FILL } else { BTN_FILL },
+                    if on { SUBTITLE_ON_STROKE } else { BTN_STROKE },
+                    BTN_TEXT,
+                    opa_pct,
+                ))
+                .on_hover_text(lt_i18n::t("subwin_btn_hint"));
             if sub.clicked() {
                 // 原版 subtitle_toggled → 切换字幕窗可见性
                 let vis = !state.settings.subtitle_mode.enabled;

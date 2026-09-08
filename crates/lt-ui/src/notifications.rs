@@ -35,6 +35,21 @@ pub fn hidden_hint_texts() -> (String, String) {
     (lt_i18n::t("hide_tray_hint_title"), lt_i18n::t("hide_tray_hint"))
 }
 
+/// 字幕窗首启拖动提示入口（WP-1：原版 first-show 托盘气泡的一次性等价；
+/// 结果仅记日志，不可阻断 UI）
+pub fn show_subtitle_hint() {
+    let (title, body) = subtitle_hint_texts();
+    match show(&title, &body) {
+        Ok(()) => tracing::info!("已发送原生通知：{title}"),
+        Err(e) => tracing::warn!("原生通知失败: {e}"),
+    }
+}
+
+/// 字幕窗拖动提示文案（纯函数；zh/en 对齐断言用）
+pub fn subtitle_hint_texts() -> (String, String) {
+    (lt_i18n::t("subwin_drag_hint_title"), lt_i18n::t("subwin_drag_hint"))
+}
+
 /// 生成 ToastText02 模板 XML（标题/正文两行；字符串装配避开
 /// XmlNode→IXmlNodeSerializer 强转链，LoadXml 一步到位）
 pub fn build_toast_xml(title: &str, body: &str) -> String {
