@@ -41,7 +41,7 @@ windows = { workspace = true, features = [
     "Win32_UI_Input_KeyboardAndMouse", # D-36：GetAsyncKeyState/VK_CONTROL（Ctrl 临时恢复穿透）
     "Win32_Graphics_Gdi",
     "Win32_System_Registry",        # 常规页：开机自启（HKCU Run 键）
-    # ── 原生通知（D-33/H-2，docs/hide-quit-flow-overhaul.md 附录 B）──
+    # ── 原生通知（D-33/H-2，docs/archive/hide-quit-flow-overhaul.md 附录 B）──
     "UI_Notifications",               # ToastNotificationManager/ToastNotifier
     "Data_Xml_Dom",                   # XmlDocument::LoadXml（Toast XML 装配）
     "Win32_UI_Shell",                 # IShellLinkW/ShellLink GUID/SetCurrentProcessExplicitAppUserModelID

@@ -1,4 +1,4 @@
-# 模型下载链路审计与改造方案（docs/download-overhaul.md）
+# 模型下载链路审计与改造方案（docs/archive/download-overhaul.md）
 
 > 状态：**阶段二活跃文档**（2026-09-08 审计定稿并**施工完成**：DL-1~6 全部落地 + clippy 清理，334 测全绿；实机冒烟=真实缓存 manifest 命中 → ASR worker ready）。审计范围：`lt-models`（download/cache/registry）+ `lt-app`（backend/shell 编排）+ `lt-ui`（四态卡片/进度渲染）。
 > 结论：骨架合理（断点续传/双 hub 同约定布局/失败前缀分类/四态卡片），但存在 **2 高危 + 1 功能失效 + 4 中 + 6 低** 共 13 项问题。

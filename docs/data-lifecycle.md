@@ -81,7 +81,7 @@
 | `cargo test --workspace` | 收工前提 | 滚动基线（AGENTS 当前 396 测全绿）+ 6 个 `#[ignore]` 默认跳过（见 2.2） |
 | `cargo build --release -p lt-app` | 出分发 exe | 产物 `target/release/livetranslate.exe`（72.2 MiB）+ `livetranslate.pdb` 30.7MB（调试符号，**不分发**） |
 | `cargo run -p lt-app` | GUI 冒烟 | 必须先设 `LIVETRANSLATE_CONFIG_DIR`（见 2.3），否则写真实配置 |
-| `cargo clippy --workspace --all-targets` | lint | 无硬性基线（无 `[workspace.lints]`、无 deny 属性）；软约定「新码零告警」，存量快照 60 warning / 0 error（docs/asr-hardening.md:54；lt-ui 子集基线 20 条） |
+| `cargo clippy --workspace --all-targets` | lint | 无硬性基线（无 `[workspace.lints]`、无 deny 属性）；软约定「新码零告警」，存量快照 60 warning / 0 error（docs/archive/asr-hardening.md:54；lt-ui 子集基线 20 条） |
 
 ### 2.2 ignored 探针清单（实测 6 个；AGENTS 写「5 个」已滞后）
 

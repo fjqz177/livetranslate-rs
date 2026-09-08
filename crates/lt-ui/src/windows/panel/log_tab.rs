@@ -4,7 +4,7 @@
 //! - 级别色 + 时间 + target + 消息，最新在底部；
 //! - 布局：工具行恒置顶 + 日志滚动区占满剩余——本页不经过 panel 的页面级
 //!   ScrollArea（panel_ui 特判），否则内容溢出时会出现第二根滚动条（LT-1，
-//!   见 docs/log-tab-redesign.md）；
+//!   见 docs/archive/log-tab-redesign.md）；
 //! - 交互（D-31）：显示 DEBUG 渲染期过滤（勾选即回溯显示历史）；自动滚动 =
 //!   贴底跟随（上翻挂起 +「回到最新」浮钮）；
 //! - 数据零新增：LogLine 事件流（logging.rs BroadcastLayer）本来就全量到达 UI。
@@ -190,7 +190,7 @@ mod tests {
     }
 
     /// 防回归（LT-1）：固定高度下渲染本页后不得有尾随内容——有尾随内容即
-    /// 重新引入 panel 页面级滚动条（双滚动条根因，见 docs/log-tab-redesign.md §2.2）。
+    /// 重新引入 panel 页面级滚动条（双滚动条根因，见 docs/archive/log-tab-redesign.md §2.2）。
     #[test]
     fn log_tab_leaves_no_tailing_content() {
         let ctx = egui::Context::default();

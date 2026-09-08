@@ -373,7 +373,7 @@ fn line(proxy: &EventLoopProxy<UiMsg>, s: &str) {
 }
 
 /// 下载事件 → 对话框日志行（进度走日志流，原版 UI 形态）。
-/// DL-3（docs/download-overhaul.md DEC-2）：进度行尾部附 `\t` 机器段
+/// DL-3（docs/archive/download-overhaul.md DEC-2）：进度行尾部附 `\t` 机器段
 /// `"{file}\t{k} {n} {done_bytes} {total_bytes}"`（total 未知为 0），UI 按
 /// 精确字节驱动进度条；人读段保持原样进日志，旧格式行（无 `\t`）被 UI 忽略。
 fn format_event(ev: &DownloadEvent) -> String {

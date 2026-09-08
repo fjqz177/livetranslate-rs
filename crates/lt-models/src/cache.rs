@@ -1,4 +1,4 @@
-//! 缓存探测（原版 model_manager.py 探测语义的阶段二改造，DL-1 / docs/download-overhaul.md DEC-1）：
+//! 缓存探测（原版 model_manager.py 探测语义的阶段二改造，DL-1 / docs/archive/download-overhaul.md DEC-1）：
 //! - 完整性 = 注册表 manifest 逐文件「存在 + len ≥ 下限」（files_min_bytes），
 //!   取代原版「递归体积 ≥ 阈值」启发式——半截 .incomplete / 空文件 / 占位估计
 //!   都不再可能被判「已缓存」（假阴性=多下一次可自愈，假阳性=死局）

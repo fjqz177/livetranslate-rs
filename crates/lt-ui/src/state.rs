@@ -276,7 +276,7 @@ pub fn is_near_bottom(viewport_max_y: f32, content_h: f32, tol: f32) -> bool {
     content_h - viewport_max_y <= tol
 }
 
-/// D-31 日志视图状态（docs/log-tab-redesign.md）：缓冲全级别保留 + 渲染期过滤，
+/// D-31 日志视图状态（docs/archive/log-tab-redesign.md）：缓冲全级别保留 + 渲染期过滤，
 /// 另附显示行缓存与贴底跟随状态（日志窗与面板日志 tab 共享同一实例）。
 #[derive(Default)]
 pub struct LogWindowState {

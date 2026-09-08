@@ -1,4 +1,4 @@
-//! 通用 egui 确认模态（D-33/H-3~H-5，docs/hide-quit-flow-overhaul.md）。
+//! 通用 egui 确认模态（D-33/H-3~H-5，docs/archive/hide-quit-flow-overhaul.md）。
 //!
 //! 替代事件循环线程内的 rfd 同步 MessageBoxW：egui 帧内绘制、不阻塞、单模态源。
 //! 同一时刻至多一个（`AppState::request_confirm` 幂等）；宿主窗口 = Overlay 或

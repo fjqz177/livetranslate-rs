@@ -3,22 +3,35 @@
 > 2026-09-07 归档重组：阶段一（Python 1:1 复刻期，2026-09-05～09-07）文档全部归档至 `docs/archive/`（只读决策史）；
 > 阶段二（Rust 自有产品化）施工依据为本目录活跃文档 + `AGENTS.md` 待办。阶段一后 Python 原版仅作行为参考，
 > 新增能力以产品体验为准，行为差异落档为 D-22 起新编号（决策史目录：`docs/archive/rewrite-research.md` §1.5）。
+> 2026-09-09 二次归档：阶段二已完工的 11 份工作包文档移入 `docs/archive/`（全仓引用路径同步更新），
+> 活跃文档仅剩 `distribution.md`（WD-1~WD-5 待施工）与 `data-lifecycle.md`（12 项整改候选待裁决）。
 
 ## 活跃文档（阶段二施工依据）
 
 | 文档 | 内容 | 状态 |
 |---|---|---|
-| `data-lifecycle.md` | 数据生命周期与足迹盘点：干净机开发环境/命令纪律、分发产物自包含性（VC Redist 必需实锤）、运行时文件系统+系统级+网络三层面足迹、卸载清单（lnk 顺序陷阱）、整齐度评估 | 调研完成（2026-09-08，五子代理证据化；12 项整改候选待裁决） |
 | `distribution.md` | 分发与用户旅程（D-18~D-21 裁决 + WD-1~WD-10 两阶段） | 阶段一 WD-1~WD-5 待施工，阶段二预案 |
-| `asr-engine-expansion.md` | ASR 引擎扩展：✗ FunASR Nano 实装（WP-A，D-24）/ ✗ Qwen3-ASR-0.6B 实装（WP-B r3.1，D-25，目标仓 `csukuangfj2/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25`）/ 开源模型扫描 | 全部完工（2026-09-08，349 测；验收数据在 §3.5/§4.8） |
-| `download-overhaul.md` | 模型下载链路审计与改造（13 项发现证据 + DEC-1~5 决策 + DL-1~6 施工卡；D-22/D-23 登记） | 完成（2026-09-08，334 测；DL-1~6 全落地） |
-| `asr-hardening.md` | ASR 子系统加固与状态机收口（21 项发现 H1~H21 + DEC-1~7 决策 + AH-1~AH-10 施工卡；D-26~D-28 登记） | 完成（2026-09-08，363 测；GUI 冒烟 A/B/C 待实机） |
-| `mic-monitor-fix.md` | 麦克风输入开关与监视条（幽灵 MIC 条根因=mic_rms 代理启用状态+无 chunk 不发事件；DEC-1~5 + MC-1~4 施工卡；D-29 登记） | 完成（2026-09-08，368 测；MC-1~3 落地，实机双场景冒烟过） |
-| `log-tab-redesign.md` | 面板「日志」tab 界面改造（双滚动条根因=外层 ScrollArea 溢出+叠内层日志滚动区；LT-1~6 施工卡；D-31 登记） | 完成（2026-09-08，378 测，416bbfd；实机用户截图对照过） |
-| `sensevoice-language-fix.md` | SenseVoice 语言恒 auto（三优先语言决策 resolve_language；SV-1~3 施工卡；D-30 登记） | 完成（2026-09-08，369 测，66871a0；实机探针 6 组全绿） |
-| `button-press-feedback.md` | 悬浮窗行1按钮按压文字右移（根因=egui button_style 内边距公式×stabilize 基准×overlay active 未覆盖；BP-1~3 施工卡；D-32 登记） | 完成（2026-09-08，380 测，4054f4b；实机长按确认待用户截图） |
+| `data-lifecycle.md` | 数据生命周期与足迹盘点：干净机开发环境/命令纪律、分发产物自包含性（VC Redist 必需实锤）、运行时文件系统+系统级+网络三层面足迹、卸载清单（lnk 顺序陷阱）、整齐度评估 | 调研完成（2026-09-08，五子代理证据化；12 项整改候选待裁决） |
 
-## 归档文档（`docs/archive/`，只读决策史）
+## 归档文档（`docs/archive/`，只读）
+
+### 阶段二已完工工作包记录（2026-09-09 归档）
+
+| 文档 | 内容 | 完工状态 |
+|---|---|---|
+| `asr-engine-expansion.md` | ASR 引擎扩展：✗ FunASR Nano 实装（WP-A，D-24）/ ✗ Qwen3-ASR-0.6B 实装（WP-B r3.1，D-25，目标仓 `csukuangfj2/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25`）/ 开源模型扫描 | 全部完工（2026-09-08，349 测；验收数据在 §3.5/§4.8） |
+| `asr-hardening.md` | ASR 子系统加固与状态机收口（21 项发现 H1~H21 + DEC-1~7 决策 + AH-1~AH-10 施工卡；D-26~D-28 登记） | 完成（2026-09-08，363 测；GUI 冒烟 A/B/C 待实机） |
+| `download-overhaul.md` | 模型下载链路审计与改造（13 项发现证据 + DEC-1~5 决策 + DL-1~6 施工卡；D-22/D-23 登记） | 完成（2026-09-08，334 测；DL-1~6 全落地） |
+| `mic-monitor-fix.md` | 麦克风输入开关与监视条（幽灵 MIC 条根因=mic_rms 代理启用状态+无 chunk 不发事件；DEC-1~5 + MC-1~4 施工卡；D-29 登记） | 完成（2026-09-08，368 测，f1f5464；实机双场景冒烟过） |
+| `sensevoice-language-fix.md` | SenseVoice 语言恒 auto（三优先语言决策 resolve_language；SV-1~3 施工卡；D-30 登记） | 完成（2026-09-08，369 测，66871a0；实机探针 6 组全绿） |
+| `log-tab-redesign.md` | 面板「日志」tab 界面改造（双滚动条根因=外层 ScrollArea 溢出+叠内层日志滚动区；LT-1~6 施工卡；D-31 登记） | 完成（2026-09-08，378 测，416bbfd；实机用户截图对照过） |
+| `button-press-feedback.md` | 悬浮窗行1按钮按压文字右移（根因=egui button_style 内边距公式×stabilize 基准×overlay active 未覆盖；BP-1~3 施工卡；D-32 登记） | 完成（2026-09-08，380 测，4054f4b；实机长按确认待用户截图） |
+| `hide-quit-flow-overhaul.md` | 主界面隐藏/退出流程改造（rfd 同步模态 MessageBoxW 三症状同源；H-1~H-6 施工卡=先藏后提示/Windows 原生 Toast/egui 内嵌模态；D-33 登记） | 完成（2026-09-08，386 测，adf5a50；toast 视觉确认待用户） |
+| `hide-transparency-fix.md` | 悬浮窗隐藏→托盘重显示半透明丢失（winit apply_diff 整体重写 EXSTYLE 清手工 WS_EX_LAYERED；每帧实测缺位重挂自愈） | 完成（2026-09-08，9f27077，D-34） |
+| `tray-menu-blocking-fix.md` | 托盘菜单打开主界面卡死（tray-icon TrackPopupMenu 模态循环占死 winit 线程；托盘移专用线程 lt-tray + GetMessage 泵） | 完成（2026-09-08，4fc96f0，D-35） |
+| `subtitle-window-overhaul.md` | 字幕窗体验改造（顶条工具条/分区穿透/Z 序定型/重叠避让/工作区钳制/默认 bg_opacity 190；WP-1~WP-5；D-36 登记） | 完成（2026-09-08，396 测；实机走查清单见 §7.1） |
+
+### 阶段一决策史（2026-09-07 归档）
 
 | 文档 | 内容 | 阶段一状态 |
 |---|---|---|

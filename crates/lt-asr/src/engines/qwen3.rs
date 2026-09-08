@@ -1,4 +1,4 @@
-//! Qwen3-ASR 引擎（sherpa-onnx 离线识别；WP-B，docs/asr-engine-expansion.md §4）。
+//! Qwen3-ASR 引擎（sherpa-onnx 离线识别；WP-B，docs/archive/asr-engine-expansion.md §4）。
 //!
 //! 与 nano 的差异（§4.3）：无 language/prompt 字段——纯 auto-LID，`set_language`
 //! 对非 auto 诚实返回 `Unsupported`（auto 放行 no-op，免挂起命令噪音）；

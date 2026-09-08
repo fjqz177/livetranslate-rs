@@ -1,7 +1,7 @@
 //! ModelScope 文件直链（API v1 repo 端点；响应结构已于 M1 实测：302→文件流）。
 
 /// 单文件下载 URL；`endpoint` 默认 https://modelscope.cn。
-/// DL-6/F11（docs/download-overhaul.md）：经 `Url::parse_with_params` 正确
+/// DL-6/F11（docs/archive/download-overhaul.md）：经 `Url::parse_with_params` 正确
 /// 编码 Revision/FilePath——文件名含空格/中文/特殊字符不再裸拼。
 pub fn file_url(endpoint: &str, repo: &str, path: &str) -> String {
     reqwest::Url::parse_with_params(

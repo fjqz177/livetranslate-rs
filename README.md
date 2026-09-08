@@ -179,7 +179,7 @@ lt-proto → lt-i18n → lt-models → lt-pipeline → lt-asr → lt-translate �
 - 新增 UI 能力**不得扩 lt-proto 契约**（日志经 `LogLine { target }` 回流）；Settings 运行时落盘走 `Cmd::PersistSettings`，由 backend 统一写（300ms 防抖对齐原版）；
 - 参考副本 `LiveTranslate/`（Python 原版）仅供参考，新功能不必拘泥其行为。
 
-**新功能从哪改**：新增 ASR 引擎 → `crates/lt-models/src/registry.rs` 登记 + `crates/lt-app/src/main.rs` 加 worker 臂（详见 [docs/asr-engine-expansion.md](docs/asr-engine-expansion.md)）；新增 UI 字符串 → 按红线见 `lt-i18n`；引擎/性能实测 → `docs/asr-hardening.md` 等活跃文档。
+**新功能从哪改**：新增 ASR 引擎 → `crates/lt-models/src/registry.rs` 登记 + `crates/lt-app/src/main.rs` 加 worker 臂（做法详见 [docs/archive/asr-engine-expansion.md](docs/archive/asr-engine-expansion.md)，已完工归档）；新增 UI 字符串 → 按红线见 `lt-i18n`；引擎/性能实测记录 → `docs/archive/asr-hardening.md` 等已完工归档文档。
 
 ### 6. 提交与文档纪律（约定俗成，别破坏）
 
@@ -238,9 +238,9 @@ cargo build --release -p lt-app             # 产物 target/release/livetranslat
 |---|---|
 | [AGENTS.md](AGENTS.md) | 项目定位/硬性约束/分层规则/已知大坑/当前待办与建议分工（施工第一参考） |
 | [docs/README.md](docs/README.md) | 文档体系索引：活跃文档（阶段二施工依据）+ 归档决策史 |
-| [docs/distribution.md](docs/distribution.md) | 分发路线图：D-18~D-21 裁决、打包规范、发布手册 |
-| [docs/asr-engine-expansion.md](docs/asr-engine-expansion.md) | ASR 引擎扩展：FunASR Nano、Qwen3-ASR 实装详情与验收数据 |
-| [docs/archive/](docs/archive/) | 阶段一决策史（选型研究 rewrite-research、施工图 rewrite-plan、偏差 D-1~D-21），**只读** |
+| [docs/distribution.md](docs/distribution.md) | 分发路线图：D-18~D-21 裁决、打包规范、发布手册（WD-1~WD-5 待施工） |
+| [docs/archive/asr-engine-expansion.md](docs/archive/asr-engine-expansion.md) | ASR 引擎扩展：FunASR Nano、Qwen3-ASR 实装详情与验收数据（已完工归档） |
+| [docs/archive/](docs/archive/) | 阶段一决策史（选型研究 rewrite-research、施工图 rewrite-plan、偏差 D-1~D-21）+ 阶段二已完工工作包文档（ASR 扩展/加固、下载链路改造、UI 修复系列），**只读** |
 
 ## 四、许可
 

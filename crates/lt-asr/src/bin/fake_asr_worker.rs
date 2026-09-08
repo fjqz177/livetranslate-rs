@@ -1,5 +1,5 @@
 //! 测试用假 ASR worker：复用真实 [`lt_asr::worker::run`] 主循环 + echo 引擎工厂
-//! （AH-9a，docs/asr-hardening.md H17：此前本文件独立复刻主循环，真实循环零测试
+//! （AH-9a，docs/archive/asr-hardening.md H17：此前本文件独立复刻主循环，真实循环零测试
 //! 覆盖，且两份循环行为会漂移——如 SetLanguage 错误处理一个是 panic 一个是 error 帧）。
 //!
 //! 通过 WorkerConfig.options 注入行为：

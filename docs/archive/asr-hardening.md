@@ -1,4 +1,4 @@
-# ASR 子系统加固与状态机收口方案（docs/asr-hardening.md）
+# ASR 子系统加固与状态机收口方案（docs/archive/asr-hardening.md）
 
 > 状态：**阶段二活跃文档**（2026-09-08 五路并行审计定稿：进程/IPC、引擎实现、pipeline 集成、注册表/下载链路、测试/文档一致性五切面；全部 P0/P1 发现经主线程逐条复核源码确认）。施工包 **AH-1~AH-10**，新偏差自 **D-26** 起。
 >
@@ -27,7 +27,7 @@
 | H5 | **P1** | interim 的 peek→识别→trim 非原子，识别期间 VAD flush 会致 trim 误裁**下一段**头部音频。**原版同拓扑**（见 §1.3），非移植偏差，但竞态后果真实 | `pipeline.rs:1068`（peek 即解锁）、`:1077`（秒级推理无锁）、`:1129-1131`（回头 trim）；`capture.rs:140-144`（采集线程持锁写 VAD） | AH-4 |
 | H6 | P2 | `shutdown()` 文档承诺"超时→kill"但实现无 kill，`finish_stop` 无界 `child.wait()`；worker 异常滞留时**整个应用退出挂死** | `client.rs:218`（文档）、`:219-244`（实现）、`shell.rs:53-55`（UI 线程 join） | AH-2 |
 | H7 | P2 | total 未知时跳过长度校验（`gzip` feature 使 total=None 现实可达）+ 注册表下限刻意远低实际 → 截断文件可被永久判"已缓存"成死局（探测已缓存→下载幂等直成功→引擎加载失败） | `download/mod.rs:441-450`；`registry.rs:21-25`（qwen3 decoder 实际 756MB/下限 350MB）；`backend.rs:174-178`（幂等直成功）；`Cargo.toml:66`（gzip feature） | AH-5 |
-| H8 | P2 | 全链路无内容哈希校验；docs 仅记录 sha256 **前 16 位**（§2.2/§4.2），代码零消费。D-24 下 hub=ms 唯一路径即第三方镜像 hf-mirror | `registry.rs:5-26`（无哈希字段）；`docs/asr-engine-expansion.md:297`（"LFS sha256（前 16 位）"） | AH-5 |
+| H8 | P2 | 全链路无内容哈希校验；docs 仅记录 sha256 **前 16 位**（§2.2/§4.2），代码零消费。D-24 下 hub=ms 唯一路径即第三方镜像 hf-mirror | `registry.rs:5-26`（无哈希字段）；`docs/archive/asr-engine-expansion.md:297`（"LFS sha256（前 16 位）"） | AH-5 |
 | H9 | P2 | 数据/存储页缓存扫描漏 qwen3：**941MB 模型在应用内不可见、不可删（含"删除全部"）**——分派臂漂移的既成事实 | `data.rs:44-77`（只扫 FUNASR_KEYS + 硬编码 whisper 仓，grep qwen3 零命中） | AH-6 |
 | H10 | P2 | "引擎→条目"分派臂 8 处手写无编译期强制；`is_asr_cached` 自称统一入口却无生产调用方 | `cache.rs:146/179`、`vad.rs:197-242/444-457`、`pipeline.rs:648-724`、`data.rs:56`、`vad.rs:24`（ENGINES 表） | AH-6 |
 | H11 | P2 | 两级音频队列满=静默丢最旧，无日志无计数：引擎装载期/峰值时段丢段完全不可诊断 | `audio/mod.rs:169-176`（push 丢最旧零记录）；`pipeline.rs:42,344`（cap=16/100） | AH-7 |

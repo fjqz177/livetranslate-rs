@@ -168,7 +168,7 @@ pub fn panel_ui(ui: &mut Ui, state: &mut AppState) {
     if page == PanelPage::Log {
         // 日志页自带滚动区（工具行置顶 + 单滚动条），不套页面级 ScrollArea：
         // 一旦内容（底部提示行等）超出 pane 高度会出现第二根滚动条（LT-1，
-        // 见 docs/log-tab-redesign.md）。
+        // 见 docs/archive/log-tab-redesign.md）。
         Frame::NONE
             .inner_margin(egui::Margin::same(12))
             .show(ui, |ui| log_tab::page(ui, state, &pal));

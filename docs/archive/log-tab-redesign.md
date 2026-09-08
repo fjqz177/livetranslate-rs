@@ -5,7 +5,7 @@
 > 滚动条不应存在，只应保留日志列表自己那根滚动条；③ 总诉求：**简洁、方便、逻辑
 > 清晰、无让用户不爽的机制**。本文给出证据链、根因、目标设计与改造方案。
 > 施工卡编号 LT-1~LT-6；行为差异落档 **D-31**（自 D-31 起新编号，见
-> docs/sensevoice-language-fix.md 收尾注记）。
+> docs/archive/sensevoice-language-fix.md 收尾注记）。
 
 > **✅ 已完工（2026-09-08，416bbfd）**：LT-1~LT-6 全部落地——378 测全绿（净增 8，
 > 无新 clippy 告警）+ release 单 exe 构建过 + 实机对照用户截图（2026-09-08 用户
@@ -284,7 +284,7 @@ ScrollArea 中拔出。
 ## 6. 偏差登记（D-31）
 
 > 文档编号顺延规则（docs/archive/rewrite-research.md §1.5 + AGENTS）：新阶段行为
-> 差异自 D-22 起，当前已占用至 D-30（见 docs/sensevoice-language-fix.md），**本次
+> 差异自 D-22 起，当前已占用至 D-30（见 docs/archive/sensevoice-language-fix.md），**本次
 > 登记 D-31**。
 
 - **D-31 日志视图显示/滚动交互重设计（2026-09-08，已生效 416bbfd）**：`log_window`（复刻）
@@ -306,7 +306,7 @@ ScrollArea 中拔出。
 | `lt-ui/src/app.rs` | LogLine 附加面板重绘 | LT-5 |
 | `assets/i18n/zh.yaml`、`en.yaml` | log_open_dir / log_copied / hover 键 | LT-4 |
 | 测试 | §5.1 五组单测 + 冒烟回归 | 各卡 |
-| `docs/log-tab-redesign.md` | 本文 | — |
+| `docs/archive/log-tab-redesign.md` | 本文 | — |
 | `AGENTS.md` | 待办区登记 | — |
 
 提交顺序（docs 先行惯例，AGENTS「docs 提交时机」）：① 本文 + 索引 + AGENTS 待办

@@ -1,7 +1,7 @@
 //! 托盘（M0.5）：完整菜单树 + 运行时绘制图标 + 事件转发进 winit 循环。
 //! 菜单结构逐项对照 docs/archive/rewrite-research.md §1.3（原版 main.py 托盘段）。
 //!
-//! 线程模型（D-35，docs/tray-menu-blocking-fix.md）：托盘图标/菜单/文字更新全部
+//! 线程模型（D-35，docs/archive/tray-menu-blocking-fix.md）：托盘图标/菜单/文字更新全部
 //! 运行在专用线程 `lt-tray`（自带 Win32 消息泵）。根因 = tray-icon 0.24 在托盘窗
 //! WndProc 内直调 `TrackPopupMenu`（platform_impl/windows/mod.rs:542-558）跑嵌套
 //! 模态循环——托盘建于 winit 事件循环线程时点开菜单即挂死 winit 主循环

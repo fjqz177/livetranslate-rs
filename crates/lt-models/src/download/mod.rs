@@ -1,5 +1,5 @@
 //! 双 hub 模型下载器（PLAN §2.10；原版 hf-hub/modelscope SDK 的自控替代，M-01；
-//! DL-2 改造见 docs/download-overhaul.md）。
+//! DL-2 改造见 docs/archive/download-overhaul.md）。
 //!
 //! - 布局自控（写入与 [`crate::cache`] 探测共用同一约定）：
 //!   MS → `modelscope/models/{org}--{name}/snapshots/master/{path}`

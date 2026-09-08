@@ -118,9 +118,9 @@
 ### 1.5 刻意偏差清单（相对原版的**有意**差异，除此之外全部 1:1）
 
 > **修订（2026-09-08）**：阶段二新偏差编号顺延至此表之后——D-22（探测 manifest 化）、
-> D-23（下载可取消）见 docs/download-overhaul.md；**D-24（诚实下载源：无真实 MS 源模型
-> 禁止伪造 ms 字段，选 MS 时 HF 尝试自动经 hf-mirror）** 见 docs/asr-engine-expansion.md §3.0；
-> **D-25（新增 Qwen3-ASR-0.6B 引擎，2026-09-08）** 见 docs/asr-engine-expansion.md §4.0
+> D-23（下载可取消）见 docs/archive/download-overhaul.md；**D-24（诚实下载源：无真实 MS 源模型
+> 禁止伪造 ms 字段，选 MS 时 HF 尝试自动经 hf-mirror）** 见 docs/archive/asr-engine-expansion.md §3.0；
+> **D-25（新增 Qwen3-ASR-0.6B 引擎，2026-09-08）** 见 docs/archive/asr-engine-expansion.md §4.0
 > （B-α 拓扑：asr_engine 第三值；不支持项：无源语言指定/无热词 UI/不接 1.7B 与 fp32）；
 > 后续自 D-26 起。（r3.1 修订注记 2026-09-08）
 

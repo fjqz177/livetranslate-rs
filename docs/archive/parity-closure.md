@@ -1,7 +1,7 @@
 # 与 Python 原版对齐收口施工计划（parity-closure）
 
 > 【已归档】阶段一（Python 1:1 复刻期，2026-09-05～09-07）文档。2026-09-07 起本版不再追求与原版 1:1，Python 原版仅作行为参考；本文仅作决策史，不再作为施工依据（活跃文档见 AGENTS.md 与 docs/README.md）。
-> 复刻收口九 WP 处置：WP-1/3/4 已完成；WP-2 由 docs/asr-engine-expansion.md WP-A 实装取代；WP-5/6/7/8 不再默认按复刻执行（有产品价值时按阶段二裁决）；WP-9 实机调优保留（见 AGENTS.md 待办）。
+> 复刻收口九 WP 处置：WP-1/3/4 已完成；WP-2 由 docs/archive/asr-engine-expansion.md WP-A 实装取代；WP-5/6/7/8 不再默认按复刻执行（有产品价值时按阶段二裁决）；WP-9 实机调优保留（见 AGENTS.md 待办）。
 
 
 > 制定日期：2026-09-06　基线：HEAD `a3ecaf1`（279 测全绿，release 59MB 单 exe 已验证）
@@ -110,7 +110,7 @@
 ## WP-2 FunASR Nano 处置（P0：先防坑，实装另立卡）
 
 > **修订（2026-09-08）：✗ 本卡勾销——处置方式为「实装」而非「置灰防坑」。** WP-A 已落地
-> （docs/asr-engine-expansion.md §3：注册表修正为官方 int8 包六件套 + `engines/nano.rs` +
+> （docs/archive/asr-engine-expansion.md §3：注册表修正为官方 int8 包六件套 + `engines/nano.rs` +
 > worker `"nano"` 臂 + `build_worker_config` 按 key 分派），本节所述用户陷阱自然消除。
 > 「下载 1.1GB 成功→加载失败」的描述系 DL-2 快速失败之前的行为；DL-2 后为首个清单文件 404 即报错。
 

@@ -2,7 +2,7 @@
 //! 深色只读文本区（Consolas 9pt，#1e1e1e/#d4d4d4）+ 底部控件行
 //! （自动滚动 / 显示 DEBUG / 清空）；级别配色 + ASR/Translate/Segment
 //! 内容高亮三色；环形 2000 行。
-//! D-31（docs/log-tab-redesign.md）：级别过滤移到渲染期（勾选 show_debug 即回溯
+//! D-31（docs/archive/log-tab-redesign.md）：级别过滤移到渲染期（勾选 show_debug 即回溯
 //! 历史，原版为追加期过滤）+ 自动滚动改贴底跟随（上翻挂起 +「回到最新」浮钮）。
 
 use crate::state::{AppState, LogView, LogWindowState};

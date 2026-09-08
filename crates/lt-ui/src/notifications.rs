@@ -4,7 +4,7 @@
 //! `System.AppUserModel.ID` 属性**的快捷方式（微软官方 DesktopToasts 示例注释
 //! "a desktop application must have a shortcut on the Start menu"）。首次发送时自动
 //! 注册：RoInitialize（winit 已用 COINIT_APARTMENTTHREADED 初始化 → 本线程为 STA，
-//! 必须 RO_INIT_SINGLETHREADED，见 docs/hide-quit-flow-overhaul.md 附录 B）+
+//! 必须 RO_INIT_SINGLETHREADED，见 docs/archive/hide-quit-flow-overhaul.md 附录 B）+
 //! SetCurrentProcessExplicitAppUserModelID + 快捷方式创建（图标 = 内嵌 app.ico 经
 //! 配置目录解压）。任一步失败：`tracing::warn` + 返回 Err，**绝不回退阻塞弹窗**。
 

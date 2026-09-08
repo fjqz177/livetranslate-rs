@@ -19,7 +19,7 @@ pub struct ModelEntry {
     /// 完整性所需的核心文件（下载清单 = 缓存探测目标）
     pub files: &'static [&'static str],
     /// 每个清单文件的字节数下限（与 files 等长 zip；0 = 仅要求存在）。
-    /// 探测语义（DL-1，docs/download-overhaul.md DEC-1）：manifest 逐文件
+    /// 探测语义（DL-1，docs/archive/download-overhaul.md DEC-1）：manifest 逐文件
     /// 「存在 + len ≥ 下限」，取代原版体积阈值启发式——下限刻意取远低于
     /// 实际值（假阴性 = 多下一次，可自愈；假阳性 = 判已缓存却加载失败）。
     pub files_min_bytes: &'static [u64],
@@ -27,7 +27,7 @@ pub struct ModelEntry {
     /// 空串 = 渐进登记未完成（无网络实机的档位），下载器跳过内容校验。
     /// 已登记项在下载 finalize 前流式校验，不匹配按 Length 快速失败并删除
     /// `.incomplete`。来源：本地真实缓存 sha256sum 实测（2026-09-08），qwen3
-    /// decoder 前缀与 docs/asr-engine-expansion.md §4.2 记录交叉核对一致。
+    /// decoder 前缀与 docs/archive/asr-engine-expansion.md §4.2 记录交叉核对一致。
     pub files_sha256: &'static [&'static str],
 }
 
@@ -50,7 +50,7 @@ pub const SENSEVOICE_SMALL: ModelEntry = ModelEntry {
 };
 
 /// funasr-nano（WP-A 实装）。【2026-09-08 核实】sherpa-onnx 官方 int8 包，
-/// 仓/清单/字节数经 HF API 实测（docs/asr-engine-expansion.md §2.2）。
+/// 仓/清单/字节数经 HF API 实测（docs/archive/asr-engine-expansion.md §2.2）。
 /// D-24：MS 无官方单仓 → ms=None 诚实留空（禁止伪造 ms 字段），always_hf=true，
 /// 国内经 hf-mirror 镜像下载（download::hf_endpoint_for）。
 /// files_min_bytes 刻意远低于实测（假阴性=多下一次可自愈；假阳性=判已缓存却加载失败）。
@@ -88,7 +88,7 @@ pub const FUNASR_NANO: ModelEntry = ModelEntry {
 };
 
 /// Qwen3-ASR-0.6B（WP-B 实装）。【2026-09-08 核实】sherpa-onnx 官方 int8 包，
-/// 仓/清单/字节数经 HF API 实测（docs/asr-engine-expansion.md §4.2）；
+/// 仓/清单/字节数经 HF API 实测（docs/archive/asr-engine-expansion.md §4.2）；
 /// 注意作者是 csukuangfj**2**（`csukuangfj/` 同名仓不存在）。
 /// D-24：MS 无官方单仓（csukuangfj2/csukuangfj 双 404）→ ms=None 诚实留空，
 /// always_hf=true，国内经 hf-mirror 镜像下载（download::hf_endpoint_for）。
@@ -116,7 +116,7 @@ pub const QWEN3_ASR: ModelEntry = ModelEntry {
         5_000,
         1_000_000,
     ],
-    // decoder 前缀 4f6885be5959ae26 与 docs/asr-engine-expansion.md §4.2 记录一致
+    // decoder 前缀 4f6885be5959ae26 与 docs/archive/asr-engine-expansion.md §4.2 记录一致
     files_sha256: &[
         "d22dc4423e0940e49884e903d2ea2f7e5567c14fc1aed97e4e26d6b8f208ef9e",
         "60748d3e6744a57c9c91e1b17424a6c2990567e8adceb0783940c03ed98fa9d9",

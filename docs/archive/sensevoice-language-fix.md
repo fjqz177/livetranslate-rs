@@ -140,7 +140,7 @@ match Self::postprocess(&result.text) {
 
 ## 7. 偏差登记（决策史）
 
-> **D-30（SenseVoice 语言字段恒 "auto"，2026-09-08）** 见 docs/sensevoice-language-fix.md。
+> **D-30（SenseVoice 语言字段恒 "auto"，2026-09-08）** 见 docs/archive/sensevoice-language-fix.md。
 > 行为差异：原版（FunASR）标签驱动、可区分 yue；sherpa-onnx 转换包输出无标签，本版改为
 > 「显式设置 > 模型标签 > 启发式」三优先决策，粤语在 auto 下归 zh（启发式无 yue）。
 > 阶段二产品化定位：差异不回追原版，以用户体验为准（避免白翻译/全丢两缺陷）。

@@ -457,7 +457,7 @@ impl Default for SubtitleMode {
             line_spacing: 8,
             bg_color: "#000000".into(),
             // D-36：76→190（原版 30% 在单窗 uniform alpha 下文字过淡；190=深色胶带
-            // 观感：背景透 25%，文字对比足——见 docs/subtitle-window-overhaul.md §5.5）
+            // 观感：背景透 25%，文字对比足——见 docs/archive/subtitle-window-overhaul.md §5.5）
             bg_opacity: 190,
             bg_image: String::new(),
             border_radius: 8,

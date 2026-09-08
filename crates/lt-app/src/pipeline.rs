@@ -641,8 +641,8 @@ fn vad_settings_from(s: &lt_proto::Settings) -> VadSettings {
 }
 
 /// qwen3 生效段长上限（AH-8/D-28）：`MAX_TOTAL_LEN=512` 为 audio+输出共享
-/// token 预算，超长段有静默截尾风险；15s 为保守取值，S0 校准（docs/
-/// asr-hardening.md §6-T1）实测后可调
+/// token 预算，超长段有静默截尾风险；15s 为保守取值，S0 校准
+/// （docs/archive/asr-hardening.md §6-T1）实测后可调
 pub(crate) const QWEN3_MAX_SEGMENT_SECS: f64 = 15.0;
 
 /// 按引擎钳制 VAD 生效值（AH-8/D-28）：settings/UI 保存原值，仅生效值收敛
