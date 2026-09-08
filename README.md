@@ -65,35 +65,32 @@ Rust 原生实时音频翻译应用：实时捕获系统声音（可选叠加麦
 | **Rust stable**（`x86_64-pc-windows-msvc` 工具链） | 主语言 | [rustup.rs](https://rustup.rs) → `rustup default stable-x86_64-pc-windows-msvc` |
 | **VS Build Tools 2019/2022**，工作负载「使用 C++ 的桌面开发」（MSVC + Windows SDK） | whisper.cpp / sherpa-onnx 的 C++ 链接器、Windows SDK | [下载页](https://visualstudio.microsoft.com/visual-cpp-build-tools/) |
 | **CMake** | whisper-rs-sys（whisper.cpp）构建 | `winget install Kitware.CMake` 或 [cmake.org/download](https://cmake.org/download/) |
-| **libclang（LLVM）** | whisper-rs-sys 的 bindgen（生成 Rust 绑定）需要 | `winget install LLVM.LLVM`（[llvm.org](https://llvm.org)），或 `pip install libclang`（[PyPI](https://pypi.org/project/libclang/)） |
+| **uv** | 构建期 libclang：钉版 18.1.1 装进仓库内 `.venv`（供 whisper-rs-sys 的 bindgen 用，约 25MB，免装整套 LLVM） | `winget install astral-sh.uv` 或 [uv 官网](https://docs.astral.sh/uv/)（[安装脚本](https://docs.astral.sh/uv/getting-started/installation/)） |
 
-装齐后首次构建约十几分钟（依赖多、要编译 whisper.cpp 与 onnxruntime 绑定）。**注意**：`cargo test` 构建时会需要 `LIBCLANG_PATH` 指向 libclang 所在目录（见下一步），LLVM 也可以只装 VS Build Tools 里的「C++ 桌面开发」自带 LLVM 组件。
+装齐后首次构建约十几分钟（依赖多、要编译 whisper.cpp 与 onnxruntime 绑定）。**注意**：构建前必须先 `uv sync`（见 2.2），这一步把钉版 libclang 装进仓库内 `.venv`——`cargo` 通过 `.cargo/config.toml` 的 `LIBCLANG_PATH`（`relative=true`，相对仓库路径）指向它，clone 后无需任何本机路径配置。若你机器上已有默认位置安装的 LLVM，把该 `LIBCLANG_PATH` 行删掉也能编译（clang-sys 会按内置路径自动发现），二选一即可。
 
-### 2. 克隆与 LIBCLANG_PATH 修正
+### 2. 克隆与首次准备（uv sync）
 
 ```bash
 git clone <你的仓库地址> livetranslate-rs
 cd livetranslate-rs
+uv sync   # 首次一次性：创建 .venv 并安装钉版 libclang（约 25MB；幂等，之后秒级）
 ```
 
-`.cargo/config.toml` 中固化着一行本机绝对路径：
-
-```toml
-[env]
-LIBCLANG_PATH = "C:/Users/fjqz177/AppData/Local/Programs/Python/Python313/Lib/site-packages/clang/native"
-```
-
-clone 后**必须**按你的机器调整（Edit 该文件，或设置系统/用户环境变量 `LIBCLANG_PATH`——cargo 的 `[env]` 默认**不覆盖**已存在的环境变量，所以设环境变量即可不改仓库文件；`pip install libclang` 后路径为 `<site-packages>/clang/native`，winget 装 LLVM 后为 `C:\Program Files\LLVM\bin`）。
+- `.cargo/config.toml` 里 `LIBCLANG_PATH = { value = ".venv/Lib/site-packages/clang/native", relative = true, force = true }`：`relative` 使路径相对配置文件目录解析（**零机器相关绝对路径**，换机器/重 clone 不用改）；`force` 保证即使系统里残留了别的 `LIBCLANG_PATH` 也不短路（clang-sys 对已设变量只搜该目录）。
+- `.venv/` 已入 `.gitignore`；`pyproject.toml`（libclang==18.1.1 钉版）+ `uv.lock`（wheel 哈希）入库，构建依赖可复现。
+- 删除 `.venv` 或换机器后重新 `uv sync` 即可；`uv sync` 需要网络（首次下载约 25MB）。
 
 同文件其余两行（`CMAKE_POLICY_DEFAULT_CMP0091=NEW` + `CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded`）是**双栈 CRT 对齐的既定解**（sherpa-onnx 预编译静态库为静态 CRT，whisper.cpp 默认 /MD，直接链接会 LNK2005/LNK1169 冲突，M5.1 解决），**不要动**。
 
 ### 3. 构建、测试、运行
 
 ```bash
-cargo test --workspace             # 全量测试：当前基线 399 测全绿 + 5 个 ignored
-                                   #（ignored = 真模型/真网络探针的离线纪律，不联网不跑）
-cargo build --release -p lt-app    # 单 exe：target/release/livetranslate.exe（约 62MB）
-cargo run -p lt-app                # GUI 冒烟
+uv sync                               # 先执行（见 2.2；.venv 已存在时秒级跳过实际工作）
+cargo test --workspace                # 全量测试：当前基线 399 测全绿 + 6 个 ignored
+                                      #（ignored = 真模型/真网络探针的离线纪律，不联网不跑）
+cargo build --release -p lt-app       # 单 exe：target/release/livetranslate.exe（约 62MB）
+cargo run -p lt-app                   # GUI 冒烟
 ```
 
 收工前提 = `cargo test --workspace` 全绿 + clippy 零告警（lt-ui 的 clippy 基线 20 条、零净增）。
@@ -166,11 +163,12 @@ lt-proto → lt-i18n → lt-models → lt-pipeline → lt-asr → lt-translate �
 ### 8. 常用命令备忘
 
 ```bash
-cargo test -p lt-ui                        # 只跑某 crate 测试
-cargo test --workspace -- --ignored        # 手动跑 ignored 探针（需真模型/真网络）
-cargo clippy --workspace                   # lint
-cargo run -p lt-ui --example notify_spike  # 实机验证 Windows 原生通知链路
-cargo build --release -p lt-app            # 产出 target/release/livetranslate.exe
+uv sync                                     # 重建/刷新构建期 libclang 环境（.venv）
+cargo test -p lt-ui                         # 只跑某 crate 测试
+cargo test --workspace -- --ignored         # 手动跑 ignored 探针（需真模型/真网络）
+cargo clippy --workspace                    # lint
+cargo run -p lt-ui --example notify_spike   # 实机验证 Windows 原生通知链路
+cargo build --release -p lt-app             # 产出 target/release/livetranslate.exe
 ```
 
 ---

@@ -1,0 +1,7 @@
+# 构建期辅助依赖：libclang（whisper-rs-sys 的 bindgen 需要）。
+# 不打包任何 Python 项目产物，uv 仅用于把钉版 libclang.dll 装进仓库内 .venv，
+# .cargo/config.toml 的 LIBCLANG_PATH 经 relative=true 指向它（零绝对路径）。
+[dependency-groups]
+dev = [
+    "libclang==18.1.1",
+]

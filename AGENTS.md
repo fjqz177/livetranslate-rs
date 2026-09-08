@@ -18,7 +18,8 @@ Rust 原生实时音频翻译应用 **LiveTranslate-rs**（Python(PyQt6) 原版 
 ## 构建与测试
 
 ```bash
-cargo test --workspace            # 全量测试（滚动基线：当前 363 测全绿 + 5 个 ignored = 真模型/真网络探针离线纪律），收工前提
+uv sync                           # 首次/换机器后：构建期 libclang 由 uv 钉版管理（pyproject.toml dev 组 libclang==18.1.1；.cargo/config.toml [env] LIBCLANG_PATH relative=.venv + force 覆盖残留），clone 后零本机路径配置
+cargo test --workspace            # 全量测试（滚动基线：当前 399 测全绿 + 6 个 ignored = 真模型/真网络探针离线纪律），收工前提
 cargo build --release -p lt-app   # 单 exe（现有 ~62MB；onnxruntime.dll + silero_vad.onnx 内嵌，启动解压到配置目录）
 cargo run -p lt-app               # GUI 冒烟
 ```
@@ -40,7 +41,7 @@ cargo run -p lt-app               # GUI 冒烟
 2. egui 0.36：`set_inner_size` → `request_inner_size`；`ctx.fonts()` 是闭包 API 不能取 owned；Color32 仅 premultiplied 常量是 const。
 3. lt-ui 内 `crate::windows` 模块**遮蔽 windows crate**——引用必须写 `::windows::`。
 4. 外部 `MoveWindow` 移动 winit 透明窗口会 DXGI 表面失配白屏——兜底 = `Moved` 事件时以当前尺寸强制 `painter.on_window_resized`（幂等）。
-5. **双栈 CRT 已解决勿动**：sherpa-onnx（静态 CRT）与 whisper-rs（/MD）冲突由 `.cargo/config.toml` 的 `CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded` + `CMAKE_POLICY_DEFAULT_CMP0091=NEW` 解决；`LIBCLANG_PATH` 已固化（whisper-rs-sys bindgen 依赖）。
+5. **双栈 CRT 已解决勿动**：sherpa-onnx（静态 CRT）与 whisper-rs（/MD）冲突由 `.cargo/config.toml` 的 `CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded` + `CMAKE_POLICY_DEFAULT_CMP0091=NEW` 解决；`LIBCLANG_PATH` 由 uv 管理（钉版 `libclang==18.1.1` 装进仓库内 `.venv`，cargo `[env]` `relative=true`+`force=true` 指向它，见根目录 pyproject.toml）——首次构建前必须 `uv sync`，勿改回本机绝对路径（data-lifecycle ③ 已根治）。
 6. `block_on` 外求值 `tokio::time::timeout` 必 panic；async-openai 0.41 需显式 `_api` feature。
 7. tray-icon 0.24 无气泡 API（做气泡需 Shell_NotifyIcon 直调或换库）。
 8. 字幕窗 30% 黑底叠白窗呈现的 179 灰是正常 alpha 合成，勿误判为渲染 bug。
@@ -79,5 +80,5 @@ cargo run -p lt-app               # GUI 冒烟
 - **托盘菜单打开主界面卡死（docs/tray-menu-blocking-fix.md，已完工 ✗，D-35）**：✗ 修复落地——根因=tray-icon 0.24 在托盘窗 WndProc 直调 TrackPopupMenu（542-558 行）跑嵌套模态循环，托盘建于 winit 事件循环线程 → 点开菜单即挂死 winit 主循环（整 UI 冻结、管道正常；Qt 原版集成自身 event loop 故不冻结）；修复=托盘整体移入专用线程 lt-tray（自带 GetMessage 泵），主线程仅经 mpsc + PostThreadMessageW(WM_APP+1) 唤醒发命令（set_status/set_status_line/set_pause_label/set_overlay_toggle_label 均非阻塞），菜单事件仍经既有 proxy 回 winit 循环零改动；**D-35 生效，新偏差自 D-36 起**；测试不回退；实机确认待用户（菜单打开期间主界面持续出帧可操作）。
 - **字幕窗体验改造（docs/subtitle-window-overhaul.md，已完工 ✗，D-36）**：✗ WP-1~WP-5 全部落地（2026-09-08，396 测全绿净增 9；lt-ui clippy 基线 21→20 条零净增）——根因=中键拖动无提示（subwin_drag_hint 键存在从未接线）+ 穿透后整窗不可达 + 整窗 uniform alpha 文字随背景变淡 + Z 序/钳屏无定义；✗ WP-1 首启拖动 toast 接线 + 字幕按钮 hover 文案（会话内一次性）/ ✗ WP-2 悬停顶条工具条（☰+穿透/锁定/关闭三按钮 + 右键菜单：打开设置/复位位置/隐藏；150ms 淡入淡出覆盖式零 reflow）+ 分区穿透（正文穿透、顶条豁免、Ctrl 临时恢复；悬停/穿透判定统一 100ms Win32 轮询=单一事实源）+ 锁定 + ResetSubtitlePos / ✗ WP-3 Z 序定型（悬浮窗>字幕窗恒置顶：show 后 SetWindowPos 下沉/抬顶）+ 拖动落点重叠避让（24px 安全距、四向推出+钳屏、屏壁夹死保持现状）+ GetMonitorInfoW rcWork 工作区钳制（钳屏不再压任务栏）/ ✗ WP-4 默认 bg_opacity 76→190 + 滑杆悬停说明（wgpu-hal 30.0.1 WndHandle 仅 Opaque 实锤，单窗逐像素不可达；双窗/DComp 为远期研究）/ ✗ WP-5 字幕页"重置字幕窗位置"按钮 + 穿透文案分区化。**D-36 生效，新偏差自 D-37 起**；剩余：实机走查清单见该文档 §7.1（Toast 视觉/穿透交互/避让/全屏视频/200% DPI/任务栏钳制/OBS 捕获画面）；WP-6（托盘字幕勾选项）/WP-7（多语言行、双窗逐像素 alpha）为远期。
 - **字幕窗拖动失效修复（D-37，2026-09-08，399 测全绿净增 3）**：用户反馈中键/顶条☰均无法移动——根因=egui 判定链路正常（headless 指针探针实证），卡在 `window.drag_window()`：winit 0.30.13 系统标题栏模态循环被自家哑 `WM_MOUSEMOVE(0,0)` 取消（LAYERED+TRANSPARENT 窗探针实测 0 位移/偶发挂死）+ 中键下循环根本不启动（文档「left mouse button」）；修复=弃 drag_window，egui 报起止 → 宿主 `SetCapture` + `GetCursorPos` 绝对跟踪 `set_outer_position`（`WinAction::SubtitleDragStart/End` + `update_subtitle_drag`，原版 Qt 语义）；D-37 另收紧：锁定漏网的正文中键拖动一并禁；拖动中穿透轮询豁免恒非穿透；拖动中隐藏窗口补 ReleaseCapture。**悬浮窗 `WinAction::Drag` 同病（drag_window），改期按同法修**；实机拖动确认待用户（顶条任意键/正文中键/穿透+Ctrl 场景）。
-- **数据生命周期与足迹盘点（docs/data-lifecycle.md，调研完成 2026-09-08）**：五子代理证据化盘点干净机开发环境/命令纪律、分发产物自包含性、运行时文件系统+系统级+网络三层面足迹、卸载清单与整齐度。关键实锤：①分发需 VC++ 2015-2022 x64 Redist（exe 导入 VCRUNTIME140/140_1，解压出的 onnxruntime.dll 另需 MSVCP140/140_1；distribution.md「无 VC 运行库依赖」断言被推翻）；②logs/transcripts 无限累积无保留策略（实测 4 天 43 文件 33MB）；③.cargo/config.toml LIBCLANG_PATH 固化本机绝对路径=clone 后非零配置；④lnk 仅 Toast 发送时检查重建（卸载先删 exe 即无复活）；⑤运行期 TEMP/注册表零足迹、音频零出网、开始菜单 lnk 为唯一系统级落盘。**12 项整改候选待裁决（新偏差自 D-38 起——D-37 已被字幕窗拖动修复 12a9327 占用）**。
+- **数据生命周期与足迹盘点（docs/data-lifecycle.md，调研完成 2026-09-08）**：五子代理证据化盘点干净机开发环境/命令纪律、分发产物自包含性、运行时文件系统+系统级+网络三层面足迹、卸载清单与整齐度。关键实锤：①分发需 VC++ 2015-2022 x64 Redist（exe 导入 VCRUNTIME140/140_1，解压出的 onnxruntime.dll 另需 MSVCP140/140_1；distribution.md「无 VC 运行库依赖」断言被推翻）；②logs/transcripts 无限累积无保留策略（实测 4 天 43 文件 33MB）；③.cargo/config.toml LIBCLANG_PATH 固化本机绝对路径=clone 后非零配置（**已根治**：uv 钉版 libclang + cargo [env] relative/force，见根目录 pyproject.toml）；④lnk 仅 Toast 发送时检查重建（卸载先删 exe 即无复活）；⑤运行期 TEMP/注册表零足迹、音频零出网、开始菜单 lnk 为唯一系统级落盘。**12 项整改候选待裁决（新偏差自 D-38 起——D-37 已被字幕窗拖动修复 12a9327 占用）**。
 - **UX 三期可选项（docs/archive/ux-feedback.md）**：前缀码改结构化枚举、设置保存失败 UI 流、P2-4 错误译文样式。
