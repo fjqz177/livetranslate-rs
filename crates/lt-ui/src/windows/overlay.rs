@@ -37,6 +37,8 @@ const BTN_FILL: Color32 = Color32::from_rgba_premultiplied(20, 20, 20, 20);
 const BTN_STROKE: Color32 = Color32::from_rgba_premultiplied(40, 40, 40, 40);
 /// 按钮/下拉 hover 底（原版 _BTN_CSS hover：rgba(255,255,255,40)）
 const BTN_HOVER_FILL: Color32 = Color32::from_rgba_premultiplied(40, 40, 40, 40);
+/// 按钮按压底（D-32：按压反馈仅底色加深，几何/描边/字重三态全等）
+const BTN_PRESSED_FILL: Color32 = Color32::from_rgba_premultiplied(50, 55, 60, 60);
 const QUIT_FILL: Color32 = Color32::from_rgba_premultiplied(31, 9, 9, 40);
 const QUIT_STROKE: Color32 = Color32::from_rgba_premultiplied(63, 19, 19, 80);
 const PAUSED_FILL: Color32 = Color32::from_rgba_premultiplied(43, 35, 12, 50);
@@ -82,11 +84,18 @@ pub fn overlay_ui(ui: &mut Ui, state: &mut AppState) {
             ui.spacing_mut().button_padding = Vec2::new(6.0, 0.0);
             ui.spacing_mut().item_spacing = Vec2::new(6.0, 2.0);
             ui.spacing_mut().interact_size = Vec2::new(8.0, 18.0);
+            // 三态必须每帧成对覆盖（D-32）：按钮文字位置 = 内边距 − 该状态
+            // bg_stroke.width（egui button_style），只设 inactive/hovered 会让
+            // active 沿用宿主 stabilize 的 0 宽描边 → 按压时文字右移 1 逻辑 px。
+            // 几何/描边宽/字重/圆角三态全等，按压反馈 = 仅底色加深。
             let vis = &mut ui.style_mut().visuals;
             vis.widgets.inactive.bg_fill = BTN_FILL;
             vis.widgets.inactive.bg_stroke = Stroke::new(1.0, BTN_STROKE);
             vis.widgets.hovered.bg_fill = BTN_HOVER_FILL;
             vis.widgets.hovered.bg_stroke = Stroke::new(1.0, BTN_STROKE);
+            vis.widgets.active.bg_fill = BTN_PRESSED_FILL;
+            vis.widgets.active.bg_stroke = Stroke::new(1.0, BTN_STROKE);
+            vis.widgets.active.corner_radius = vis.widgets.inactive.corner_radius;
 
             drag_handle(ui, state, compact, opa_pct);
             if !compact {

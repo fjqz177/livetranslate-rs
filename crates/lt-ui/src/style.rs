@@ -173,18 +173,26 @@ pub fn preset_style(name: &str) -> Style {
     s
 }
 
-// ── 全局控件三态稳定（WP-B，消 hover 文字微移） ──
+// ── 全局控件三态稳定（WP-B 消 hover 微移；D-32 补齐 active 侧） ──
 
 /// egui 0.36 按钮内边距公式 = `button_padding − bg_stroke.width`
-/// （egui widget_style.rs button_style）。dark/light 默认三态描边宽度不一致
-/// （inactive 0 / hovered·active 1）→ hover 时内容区每边扩 1px、文字横移
-/// 0.5px；fg_stroke 宽 1.0→1.5 还会让文字 hover 变粗。
+/// （egui widget_style.rs button_style）——文字横向位置随"该状态"描边宽度
+/// 变化。dark/light 默认三态描边宽度不一致（inactive 0 / hovered·active 1）
+/// → hover 时内容区每边扩 1px、文字横移；fg_stroke 宽 1.0→1.5 还会让文字
+/// hover 变粗。
 ///
-/// 以 inactive 态为基准把 hovered/active 的描边与字重拉齐：静止外观不变，
-/// hover 反馈只剩底色/字色变化（对齐原版 QSS hover 语义 = 只变底色字色，
+/// 三态几何稳定原则：以 inactive 为基准把 hovered/active 的描边宽度与字重
+/// 拉齐，静止外观不变；并且基准**下限取 1.0**——dark 默认 inactive 为
+/// 0 宽（Stroke::NONE，色透明，仅几何为 0），若照抄 0 则 hovered/active
+/// 同为 0 宽、只消除了 hover 位移，按压态一旦有半覆盖（如悬浮窗只设
+/// inactive/hovered）就会压出 1px 按压位移（D-32）。下限把 inactive 一并
+/// 抬到 1.0：描边色透明故外观不变，三态内边距`button_padding − width`才
+/// 真正全等（仅抬 hovered/active 会让 dark 窗 inactive→hover 回归 1px 位移）。
+/// hover/active 反馈只剩底色/字色变化（对齐原版 QSS 语义 = 只变底色字色，
 /// 不动布局不变粗）。
 pub fn stabilize_widget_strokes(v: &mut egui::Visuals) {
-    let stroke_w = v.widgets.inactive.bg_stroke.width;
+    let stroke_w = v.widgets.inactive.bg_stroke.width.max(1.0);
+    v.widgets.inactive.bg_stroke.width = stroke_w;
     v.widgets.hovered.bg_stroke.width = stroke_w;
     v.widgets.active.bg_stroke.width = stroke_w;
     let fg_w = v.widgets.inactive.fg_stroke.width;
