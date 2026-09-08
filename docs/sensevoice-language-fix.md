@@ -6,6 +6,11 @@
 > 施工卡编号起 **SV-1**（避免与 WD/ASR 扩展/AH/MC 等既有序列混淆）；行为差异落档 **D-30**
 > （次新偏差自 D-31 起）。
 
+> **✅ 已完工（2026-09-08，66871a0）**：SV-1~SV-3 全部落地——369 测全绿（净增 1）+ clippy
+> 相关文件零告警 + release 单 exe 构建过 + 实机探针 6 组全绿 + GUI 冒烟实测
+> `Same language (zh), no translation` 反复出现（修复前此处为白翻译）。
+> 探针 `probe_real_sensevoice_lang_decision`（ignored）留档供 AI 引擎级回归复用。
+
 ## 1. 现象
 
 实机（GUI 冒烟路径观察 + 引擎级复现，2026-09-08）：
@@ -127,11 +132,11 @@ match Self::postprocess(&result.text) {
 
 ## 6. 施工卡
 
-| 卡 | 内容 | 文件 | 验收 |
+| 卡 | 内容 | 文件 | 验收（✅ 落定 2026-09-08，66871a0） |
 | --- | --- | --- | --- |
-| **SV-1** | `resolve_language` 纯函数 + postprocess 语义注释更新 + transcribe 接线；单测：resolve_language 全分支（设置优先/标签优先/兜底 zh-en-ja-ko 边界/空 text 不入 resolve）、postprocess 既有断言复核（无标签 → ("…", "auto") 语义保留、标签路径不变、纯标签 None 不变） | `crates/lt-asr/src/sensevoice.rs` | `cargo test -p lt-asr` 新增用例绿 |
-| **SV-2** | 实机探针断言固化（验收工具）：auto→noise_en=en、rag_physics=zh、dia_yue=zh；显式→zh=zh / en=en / yue=yue | 同上 probe 模块（ignored） | `probe_real_sensevoice -- --ignored --nocapture` 全绿并打印 raw |
-| **SV-3** | 全量回归 + GUI 冒烟：① auto+目标 zh：中文语音→徽标 `[zh]`、无译文行（免翻译）、无 UpdateTranslation 事件；② 显式 zh：段正常显示（不再全丢）；③ en 语音目标 zh→仍正常翻译；④ 临时切 nano/Qwen3 对照行为一致 | workspace | `cargo test --workspace`（368 基线,净增若干）/ `cargo build --release -p lt-app` / LIVETRANSLATE_CONFIG_DIR 冒烟 |
+| **SV-1** ✅ | `resolve_language` 纯函数 + postprocess 语义注释更新 + transcribe 接线；单测：resolve_language 全分支（设置优先/标签优先/兜底 zh-en-ja-ko 边界/空 text 不入 resolve）、postprocess 既有断言复核（无标签 → ("…", "auto") 语义保留、标签路径不变、纯标签 None 不变） | `crates/lt-asr/src/sensevoice.rs` | `resolve_language_three_way_priority` 9 断言全绿 |
+| **SV-2** ✅ | 实机探针断言固化（验收工具）：auto→noise_en=en、rag_physics=zh、dia_yue=zh；显式→zh=zh / en=en / yue=yue | 同上 probe 模块（ignored） | `probe_real_sensevoice_lang_decision -- --ignored --nocapture` 6 组全绿（7.4s，真实缓存模型 + 真实语音 wav） |
+| **SV-3** ✅ | 全量回归 + GUI 冒烟：① auto+目标 zh：中文语音→徽标 `[zh]`、无译文行（免翻译）、无 UpdateTranslation 事件；② 显式 zh：段正常显示（不再全丢）；③ en 语音目标 zh→仍正常翻译；④ 临时切 nano/Qwen3 对照行为一致 | workspace | `cargo test --workspace` 369 全绿（净增 1）/ `cargo build --release -p lt-app` 过 / GUI 冒烟（临时配置目录 + 真实缓存）：worker ready `SenseVoice Small (sensevoice)` + 实测 `Same language (zh), no translation` 反复出现；显式 zh 路径由引擎探针等价覆盖 |
 
 ## 7. 偏差登记（决策史）
 
