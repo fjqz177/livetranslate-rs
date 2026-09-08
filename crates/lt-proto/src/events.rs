@@ -26,7 +26,7 @@ pub enum UiEvent {
     /// 新识别消息（add_message_signal）
     AddMessage {
         id: u64,
-        timestamp: String,   // "HH:MM:SS"
+        timestamp: String, // "HH:MM:SS"
         original: String,
         lang: String,
         asr_ms: f64,
@@ -36,15 +36,29 @@ pub enum UiEvent {
     /// 流式译文增量（update_streaming_signal；UI 侧 50ms 节流）
     UpdateStreaming { id: u64, partial: String },
     /// 音频监视（update_monitor_signal：rms / vad 置信度 / 可选 mic_rms）
-    UpdateMonitor { rms: f32, vad: f32, mic_rms: Option<f32> },
+    UpdateMonitor {
+        rms: f32,
+        vad: f32,
+        mic_rms: Option<f32>,
+    },
     /// 统计（update_stats_signal）
-    UpdateStats { asr_n: u64, tl_n: u64, prompt_tokens: u64, completion_tokens: u64, cost: f64 },
+    UpdateStats {
+        asr_n: u64,
+        tl_n: u64,
+        prompt_tokens: u64,
+        completion_tokens: u64,
+        cost: f64,
+    },
     /// ASR 设备标签（"SenseVoice Small" 等；不可用时 "ASR unavailable"）
     AsrDevice(String),
     /// ASR 完全不可用
     AsrUnavailable,
     /// 日志行（tracing broadcast → 日志窗/下载框）
-    LogLine { level: u8, target: String, msg: String },
+    LogLine {
+        level: u8,
+        target: String,
+        msg: String,
+    },
     /// 下载进度/日志行（向导与缺模型下载对话框共用的日志流形态；
     /// 承载 Downloader 事件与下载期间 INFO 级 tracing 行）
     DownloadProgress(String),
@@ -62,7 +76,12 @@ pub enum UiEvent {
     /// 翻译装置构建失败（配置无效等）：整条翻译静默不可用的唯一用户可见通道
     TranslatorUnavailable { reason: String },
     /// 翻译配置「测试连接」结果（Cmd::TestTranslator 的回执）
-    TestTranslatorResult { name: String, ok: bool, error: Option<String>, ms: u64 },
+    TestTranslatorResult {
+        name: String,
+        ok: bool,
+        error: Option<String>,
+        ms: u64,
+    },
 }
 
 /// UI → 管道的命令
@@ -73,7 +92,10 @@ pub enum Cmd {
     Resume,
     Stop,
     /// 首启向导/缺模型对话框：开始下载（hub: "ms"|"hf"；proxy: "none"|"system"|URL）
-    StartDownload { hub: String, proxy: String },
+    StartDownload {
+        hub: String,
+        proxy: String,
+    },
     /// 取消在途下载（DL-4/D-23）：backend 置会话取消令牌，Downloader 在文件
     /// 边界/重试间隙/读块检查点停止并保留 .incomplete 续传现场（仅追加成员）
     CancelDownload,
@@ -86,7 +108,10 @@ pub enum Cmd {
         language: String,
     },
     SetAsrLanguage(String),
-    SetPadding { engine: String, secs: f32 },
+    SetPadding {
+        engine: String,
+        secs: f32,
+    },
     SetAudioDevice(AudioDeviceChoice),
     SetMicDevice(MicDeviceChoice),
     /// 悬浮窗位置/尺寸防抖到期（宿主写盘；500ms 一次，原版 position_changed）
@@ -96,7 +121,10 @@ pub enum Cmd {
     SwitchTranslator(Box<ModelConfig>),
     SetTargetLanguage(String),
     SetTimeout(u32),
-    IncrementalAsr { enabled: bool, interval: f32 },
+    IncrementalAsr {
+        enabled: bool,
+        interval: f32,
+    },
     /// 翻译配置「测试连接」：构建临时装置发一次最简请求，回执 TestTranslatorResult
     TestTranslator(Box<ModelConfig>),
 }
@@ -164,7 +192,11 @@ mod tests {
 
     #[test]
     fn device_choice_roundtrip() {
-        for src in [None, Some("__disabled__".to_string()), Some("扬声器".to_string())] {
+        for src in [
+            None,
+            Some("__disabled__".to_string()),
+            Some("扬声器".to_string()),
+        ] {
             let rt: Option<String> = AudioDeviceChoice::from(src.clone()).into();
             assert_eq!(rt, src);
         }

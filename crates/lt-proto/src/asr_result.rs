@@ -36,10 +36,7 @@ pub enum EngineError {
     #[error("模型加载失败: {0}")]
     Load(String),
     #[error("{message}")]
-    Runtime {
-        message: String,
-        recoverable: bool,
-    },
+    Runtime { message: String, recoverable: bool },
     #[error("请求超时")]
     Timeout,
     #[error("worker 进程退出: {0}")]
@@ -61,13 +58,34 @@ impl EngineError {
 /// 语言显示名表（translator.py LANGUAGE_DISPLAY，29 项）
 pub fn language_display(code: &str) -> &str {
     match code {
-        "en" => "English", "ja" => "Japanese", "zh" => "Chinese", "ko" => "Korean",
-        "fr" => "French", "de" => "German", "es" => "Spanish", "ru" => "Russian",
-        "pt" => "Portuguese", "it" => "Italian", "nl" => "Dutch", "pl" => "Polish",
-        "tr" => "Turkish", "ar" => "Arabic", "th" => "Thai", "vi" => "Vietnamese",
-        "id" => "Indonesian", "ms" => "Malay", "hi" => "Hindi", "uk" => "Ukrainian",
-        "cs" => "Czech", "ro" => "Romanian", "el" => "Greek", "hu" => "Hungarian",
-        "sv" => "Swedish", "da" => "Danish", "fi" => "Finnish", "no" => "Norwegian",
+        "en" => "English",
+        "ja" => "Japanese",
+        "zh" => "Chinese",
+        "ko" => "Korean",
+        "fr" => "French",
+        "de" => "German",
+        "es" => "Spanish",
+        "ru" => "Russian",
+        "pt" => "Portuguese",
+        "it" => "Italian",
+        "nl" => "Dutch",
+        "pl" => "Polish",
+        "tr" => "Turkish",
+        "ar" => "Arabic",
+        "th" => "Thai",
+        "vi" => "Vietnamese",
+        "id" => "Indonesian",
+        "ms" => "Malay",
+        "hi" => "Hindi",
+        "uk" => "Ukrainian",
+        "cs" => "Czech",
+        "ro" => "Romanian",
+        "el" => "Greek",
+        "hu" => "Hungarian",
+        "sv" => "Swedish",
+        "da" => "Danish",
+        "fi" => "Finnish",
+        "no" => "Norwegian",
         "he" => "Hebrew",
         other => other,
     }
@@ -80,8 +98,16 @@ mod tests {
     #[test]
     fn error_recoverable_semantics() {
         assert!(!EngineError::Load("x".into()).recoverable());
-        assert!(EngineError::Runtime { message: "x".into(), recoverable: true }.recoverable());
-        assert!(!EngineError::Runtime { message: "x".into(), recoverable: false }.recoverable());
+        assert!(EngineError::Runtime {
+            message: "x".into(),
+            recoverable: true
+        }
+        .recoverable());
+        assert!(!EngineError::Runtime {
+            message: "x".into(),
+            recoverable: false
+        }
+        .recoverable());
         assert!(!EngineError::WorkerExited("1".into()).recoverable());
     }
 

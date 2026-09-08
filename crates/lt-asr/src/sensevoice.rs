@@ -12,9 +12,7 @@
 use crate::engine::AsrEngine;
 use crate::engines::{describe_model_files, guess_language, sherpa_create_failure_hint};
 use lt_proto::{AsrResult, EngineError};
-use sherpa_onnx::{
-    OfflineRecognizer, OfflineRecognizerConfig, OfflineSenseVoiceModelConfig,
-};
+use sherpa_onnx::{OfflineRecognizer, OfflineRecognizerConfig, OfflineSenseVoiceModelConfig};
 use std::path::{Path, PathBuf};
 
 /// 语言标签表（原版 LANG_MAP；首个命中定语言）
@@ -41,11 +39,18 @@ pub struct SenseVoiceEngine {
 
 impl SenseVoiceEngine {
     /// 从模型目录加载：`model.int8.onnx`（或 `model.onnx`）+ `tokens.txt`
-    pub fn load(model_dir: &Path, pad_seconds: Option<f32>, language: &str) -> Result<Self, EngineError> {
+    pub fn load(
+        model_dir: &Path,
+        pad_seconds: Option<f32>,
+        language: &str,
+    ) -> Result<Self, EngineError> {
         let model = pick_model_file(model_dir)?;
         let tokens = model_dir.join("tokens.txt");
         if !tokens.is_file() {
-            return Err(EngineError::Load(format!("tokens.txt 不存在: {}", tokens.display())));
+            return Err(EngineError::Load(format!(
+                "tokens.txt 不存在: {}",
+                tokens.display()
+            )));
         }
         let language = normalize_language(language);
         let pad = pad_seconds.unwrap_or(DEFAULT_PAD_SECONDS);
@@ -158,7 +163,13 @@ fn build_recognizer(
             model.display(),
             describe_model_files(
                 model.parent().unwrap_or(model),
-                &[model.file_name().and_then(|s| s.to_str()).unwrap_or("model.onnx"), "tokens.txt"],
+                &[
+                    model
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("model.onnx"),
+                    "tokens.txt"
+                ],
             ),
             sherpa_create_failure_hint(),
         ))
@@ -173,13 +184,18 @@ fn pad_to_len(audio: &[f32], target: usize) -> Vec<f32> {
 }
 
 impl AsrEngine for SenseVoiceEngine {
-    fn transcribe(&mut self, audio: &[f32], _word_timestamps: bool) -> Result<AsrResult, EngineError> {
+    fn transcribe(
+        &mut self,
+        audio: &[f32],
+        _word_timestamps: bool,
+    ) -> Result<AsrResult, EngineError> {
         if audio.is_empty() {
             return Ok(AsrResult::default());
         }
         // pad 桶（原版 _prepare_audio_input：尾部补零至 quantum 整倍）
         let padded;
-        let audio: &[f32] = if self.pad_quantum > 0 && !audio.len().is_multiple_of(self.pad_quantum) {
+        let audio: &[f32] = if self.pad_quantum > 0 && !audio.len().is_multiple_of(self.pad_quantum)
+        {
             let target = (audio.len() / self.pad_quantum + 1) * self.pad_quantum;
             padded = pad_to_len(audio, target);
             &padded

@@ -1,6 +1,9 @@
 //! AsrManager 语义测试（真子进程；原版 _run_asr/_recover_asr_worker 行为对照）。
 
-use lt_asr::{AsrClientError, AsrManager, AsrManagerError, AsrPendingHandle, AsrWorkerClient, Spawner, WorkerConfig};
+use lt_asr::{
+    AsrClientError, AsrManager, AsrManagerError, AsrPendingHandle, AsrWorkerClient, Spawner,
+    WorkerConfig,
+};
 use std::path::PathBuf;
 
 fn fake_spawn() -> Spawner {
@@ -75,7 +78,10 @@ fn success_path_resets_and_ready() {
 #[test]
 fn crash_restarts_then_exhausts_to_unavailable() {
     let mut m = AsrManager::with_spawner(fake_spawn());
-    let c = cfg("Crash", serde_json::json!({"fake": {"crash_on_transcribe": true}}));
+    let c = cfg(
+        "Crash",
+        serde_json::json!({"fake": {"crash_on_transcribe": true}}),
+    );
     m.ensure_started(&c).expect("start");
 
     // 每次识别都崩 worker → 恢复重启；配额 3 次耗尽后不可用
@@ -102,7 +108,10 @@ fn crash_restarts_then_exhausts_to_unavailable() {
 #[test]
 fn engine_switch_revives_unavailable() {
     let mut m = AsrManager::with_spawner(fake_spawn());
-    let bad = cfg("Crash", serde_json::json!({"fake": {"crash_on_transcribe": true}}));
+    let bad = cfg(
+        "Crash",
+        serde_json::json!({"fake": {"crash_on_transcribe": true}}),
+    );
     m.ensure_started(&bad).expect("start");
     for _ in 0..4 {
         let _ = m.transcribe(&audio(), false);
@@ -119,7 +128,10 @@ fn engine_switch_revives_unavailable() {
 #[test]
 fn three_consecutive_recoverable_errors_mark_unavailable() {
     let mut m = AsrManager::with_spawner(fake_spawn());
-    let c = cfg("Flaky", serde_json::json!({"fake": {"fail_transcribe": true}}));
+    let c = cfg(
+        "Flaky",
+        serde_json::json!({"fake": {"fail_transcribe": true}}),
+    );
     m.ensure_started(&c).expect("start");
     for n in 1..=3 {
         match m.transcribe(&audio(), false) {
@@ -154,7 +166,8 @@ fn config_change_replaces_worker() {
 fn pending_language_applied_and_committed() {
     let handle = AsrPendingHandle::default();
     let mut m = AsrManager::with_spawner_and_pending(fake_spawn(), handle.clone());
-    m.ensure_started(&cfg("Echo", serde_json::json!({}))).expect("start");
+    m.ensure_started(&cfg("Echo", serde_json::json!({})))
+        .expect("start");
     assert_eq!(m.config().unwrap().language, "auto");
 
     // UI 线程挂起 → ASR 线程 transcribe 前应用并提交（写回 restart config）
@@ -175,8 +188,12 @@ fn pending_padding_wrong_family_ignored() {
     let handle = AsrPendingHandle::default();
     let mut m = AsrManager::with_spawner_and_pending(fake_spawn(), handle.clone());
     // sensevoice → funasr 家族：挂起 whisper 家族的 padding 不应影响它
-    m.ensure_started(&cfg_engine("sensevoice", "SenseVoice", serde_json::json!({})))
-        .expect("start");
+    m.ensure_started(&cfg_engine(
+        "sensevoice",
+        "SenseVoice",
+        serde_json::json!({}),
+    ))
+    .expect("start");
     let before = m.config().unwrap().pad_seconds;
 
     handle.set_padding("whisper", 1.0);
@@ -192,7 +209,10 @@ fn pending_padding_wrong_family_ignored() {
 fn pending_kept_when_worker_dies_during_apply() {
     let handle = AsrPendingHandle::default();
     let mut m = AsrManager::with_spawner_and_pending(fake_spawn(), handle.clone());
-    let crash = cfg("CrashLang", serde_json::json!({"fake": {"crash_on_set_language": true}}));
+    let crash = cfg(
+        "CrashLang",
+        serde_json::json!({"fake": {"crash_on_set_language": true}}),
+    );
     m.ensure_started(&crash).expect("start");
     handle.set_language("zh");
 
@@ -205,7 +225,8 @@ fn pending_kept_when_worker_dies_during_apply() {
     assert_eq!(m.config().unwrap().language, "auto");
 
     // 挂起保持：切到正常 worker 后首次 transcribe 前被应用并提交
-    m.ensure_started(&cfg("Echo", serde_json::json!({}))).expect("switch");
+    m.ensure_started(&cfg("Echo", serde_json::json!({})))
+        .expect("switch");
     m.transcribe(&audio(), false).expect("transcribe");
     assert_eq!(m.config().unwrap().language, "zh");
     m.shutdown();
@@ -222,7 +243,10 @@ fn engine_switch_failure_rolls_back() {
     // 切到 bad 引擎：加载失败 → 用旧配置恢复旧 worker，manager 仍可用
     let bad = cfg_engine("bad", "Bad", serde_json::json!({}));
     let err = m.ensure_started(&bad).expect_err("切换应失败");
-    assert!(!err.unavailable(), "回滚成功后应仍可用（Failed 而非 Unavailable）: {err}");
+    assert!(
+        !err.unavailable(),
+        "回滚成功后应仍可用（Failed 而非 Unavailable）: {err}"
+    );
     assert!(m.is_ready());
     assert_eq!(m.config().unwrap().engine, "echo");
     assert!(m.transcribe(&audio(), false).is_ok());
@@ -232,7 +256,9 @@ fn engine_switch_failure_rolls_back() {
 #[test]
 fn first_start_failure_has_no_rollback() {
     let mut m = AsrManager::with_spawner(failing_spawn());
-    let err = m.ensure_started(&cfg("Echo", serde_json::json!({}))).expect_err("首次启动应失败");
+    let err = m
+        .ensure_started(&cfg("Echo", serde_json::json!({})))
+        .expect_err("首次启动应失败");
     // 首次启动本就没有旧 worker：仅 Failed，不标记不可用
     assert!(!err.unavailable(), "首次失败应仅 Failed: {err}");
     assert!(!m.is_unavailable());
@@ -277,7 +303,8 @@ fn failed_recover_gap_rebuilds_then_marks_unavailable() {
     assert!(err.unavailable(), "实际: {err}");
     assert!(m.is_unavailable());
     // 换配置（引擎切换语义）→ 复活（注入第 3 次起成功）
-    m.ensure_started(&cfg("Echo2", serde_json::json!({}))).expect("复活");
+    m.ensure_started(&cfg("Echo2", serde_json::json!({})))
+        .expect("复活");
     assert!(m.transcribe(&audio(), false).is_ok());
     m.shutdown();
 }
@@ -299,7 +326,10 @@ fn load_failure_frame_marks_first_start_failed() {
 fn set_language_recoverable_fail_still_commits_pending() {
     let handle = AsrPendingHandle::default();
     let mut m = AsrManager::with_spawner_and_pending(fake_spawn(), handle.clone());
-    let c = cfg("Echo", serde_json::json!({"fake": {"fail_set_language": true}}));
+    let c = cfg(
+        "Echo",
+        serde_json::json!({"fake": {"fail_set_language": true}}),
+    );
     m.ensure_started(&c).expect("start");
     handle.set_language("zh");
     let res = m.transcribe(&audio(), false).expect("transcribe");

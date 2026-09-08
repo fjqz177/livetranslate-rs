@@ -85,7 +85,14 @@ pub enum ProxyMode {
 #[derive(Debug, Clone)]
 pub enum DownloadEvent {
     /// 单文件进度（total 未知时为 None；k/n = 当前第 k 个文件/清单共 n 个，DL-3）
-    Progress { repo: String, file: String, k: usize, n: usize, done: u64, total: Option<u64> },
+    Progress {
+        repo: String,
+        file: String,
+        k: usize,
+        n: usize,
+        done: u64,
+        total: Option<u64>,
+    },
     /// 单文件完成
     FileDone { repo: String, file: String },
     /// 全部完成（快照目录）
@@ -167,7 +174,10 @@ pub struct DlError {
 
 impl DlError {
     fn new(kind: FailKind, message: impl Into<String>) -> Self {
-        Self { kind, message: message.into() }
+        Self {
+            kind,
+            message: message.into(),
+        }
     }
 }
 
@@ -289,12 +299,18 @@ impl Downloader {
         let n = files.len();
         for (idx, (file, min_bytes, sha256)) in files.iter().enumerate() {
             if cancel.load(Ordering::Relaxed) {
-                return Err(anyhow::Error::new(DlError::new(FailKind::Cancelled, "已取消")));
+                return Err(anyhow::Error::new(DlError::new(
+                    FailKind::Cancelled,
+                    "已取消",
+                )));
             }
             let target = dir.join(file);
             match skip_decision(&target, *min_bytes) {
                 SkipDecision::Skip => {
-                    self.emit(tx, DownloadEvent::Log(format!("[{repo}] 已存在，跳过 {file}")));
+                    self.emit(
+                        tx,
+                        DownloadEvent::Log(format!("[{repo}] 已存在，跳过 {file}")),
+                    );
                     continue;
                 }
                 SkipDecision::Redo { have } => {
@@ -319,9 +335,21 @@ impl Downloader {
                 sha256,
             };
             self.download_one(&client, hub, &job, cancel, tx)?;
-            self.emit(tx, DownloadEvent::FileDone { repo: repo.into(), file: (*file).into() });
+            self.emit(
+                tx,
+                DownloadEvent::FileDone {
+                    repo: repo.into(),
+                    file: (*file).into(),
+                },
+            );
         }
-        self.emit(tx, DownloadEvent::Done { repo: repo.into(), dir: dir.clone() });
+        self.emit(
+            tx,
+            DownloadEvent::Done {
+                repo: repo.into(),
+                dir: dir.clone(),
+            },
+        );
         Ok(dir)
     }
 
@@ -389,7 +417,10 @@ impl Downloader {
             if !supports_resume && !status.is_success() {
                 if status == reqwest::StatusCode::RANGE_NOT_SATISFIABLE && done > 0 {
                     // .incomplete 比远端文件长（陈旧残留）：删除重下
-                    self.emit(tx, DownloadEvent::Log(format!("[{repo}] {file} 续传偏移失效，重新下载")));
+                    self.emit(
+                        tx,
+                        DownloadEvent::Log(format!("[{repo}] {file} 续传偏移失效，重新下载")),
+                    );
                     let _ = std::fs::remove_file(incomplete);
                     done = 0;
                     continue;
@@ -415,7 +446,11 @@ impl Downloader {
             // 打开续传临时文件：续传走追加；全新/重写走截断
             // （Windows 上 append 句柄 set_len 会报拒绝访问，不能混用）
             let mut f = if supports_resume && done > 0 {
-                std::fs::OpenOptions::new().create(true).append(true).open(incomplete).map_err(disk_err)?
+                std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(incomplete)
+                    .map_err(disk_err)?
             } else {
                 done = 0;
                 let _ = std::fs::remove_file(incomplete);
@@ -435,9 +470,9 @@ impl Downloader {
                     // 保留 .incomplete 续传现场直接返回
                     return Err(DlError::new(FailKind::Cancelled, "已取消"));
                 }
-                let n = resp.read(&mut buf).map_err(|e| {
-                    DlError::new(FailKind::Net, format!("网络读取中断: {e}"))
-                })?;
+                let n = resp
+                    .read(&mut buf)
+                    .map_err(|e| DlError::new(FailKind::Net, format!("网络读取中断: {e}")))?;
                 if n == 0 {
                     break;
                 }
@@ -549,7 +584,10 @@ impl Downloader {
 
 /// 续传临时文件路径：`model.bin` → `model.bin.incomplete`（无扩展名同样处理）
 fn incomplete_path(target: &Path) -> PathBuf {
-    let mut name = target.file_name().map(|s| s.to_os_string()).unwrap_or_default();
+    let mut name = target
+        .file_name()
+        .map(|s| s.to_os_string())
+        .unwrap_or_default();
     name.push(".incomplete");
     target.with_file_name(name)
 }
@@ -615,8 +653,14 @@ mod tests {
     fn hub_chain_selected_first_with_fallback() {
         let hf = Some("a/b");
         let ms = Some("c/d");
-        assert_eq!(hub_chain(Hub::Ms, hf, ms, false), vec![(Hub::Ms, "c/d"), (Hub::Hf, "a/b")]);
-        assert_eq!(hub_chain(Hub::Hf, hf, ms, false), vec![(Hub::Hf, "a/b"), (Hub::Ms, "c/d")]);
+        assert_eq!(
+            hub_chain(Hub::Ms, hf, ms, false),
+            vec![(Hub::Ms, "c/d"), (Hub::Hf, "a/b")]
+        );
+        assert_eq!(
+            hub_chain(Hub::Hf, hf, ms, false),
+            vec![(Hub::Hf, "a/b"), (Hub::Ms, "c/d")]
+        );
         // whisper 现状（always_hf 且无 MS 镜像）→ 单源
         assert_eq!(
             hub_chain(Hub::Ms, Some("g/whisper.cpp"), None, true),
@@ -681,7 +725,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let target = dir.join("m.bin");
-        assert!(matches!(skip_decision(&target, 1_000), SkipDecision::Missing));
+        assert!(matches!(
+            skip_decision(&target, 1_000),
+            SkipDecision::Missing
+        ));
         std::fs::write(&target, vec![0u8; 2_000]).unwrap();
         assert!(matches!(skip_decision(&target, 1_000), SkipDecision::Skip));
         // 半截终版文件（无 Content-Length 下载残留/外部拷贝坏档）→ 重下
@@ -706,7 +753,9 @@ mod tests {
         std::fs::write(snap.join("m.bin"), vec![0u8; 2_000]).unwrap();
         std::fs::write(snap.join("tokens.txt"), vec![0u8; 16]).unwrap();
         let (tx, rx) = std::sync::mpsc::channel();
-        let got = d.download_files(Hub::Hf, "a/b", files, &AtomicBool::new(false), Some(&tx)).expect("足额应全跳过并成功");
+        let got = d
+            .download_files(Hub::Hf, "a/b", files, &AtomicBool::new(false), Some(&tx))
+            .expect("足额应全跳过并成功");
         assert_eq!(got, snap);
         let mut logs = Vec::new();
         let mut done = false;
@@ -719,7 +768,10 @@ mod tests {
         }
         assert!(done, "应发 Done 事件");
         assert!(logs.iter().any(|s| s.contains("跳过 m.bin")), "{logs:?}");
-        assert!(logs.iter().any(|s| s.contains("跳过 tokens.txt")), "{logs:?}");
+        assert!(
+            logs.iter().any(|s| s.contains("跳过 tokens.txt")),
+            "{logs:?}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -749,7 +801,10 @@ mod tests {
             incomplete_path(Path::new("/x/tokens.txt")),
             Path::new("/x/tokens.txt.incomplete")
         );
-        assert_eq!(incomplete_path(Path::new("/x/model")), Path::new("/x/model.incomplete"));
+        assert_eq!(
+            incomplete_path(Path::new("/x/model")),
+            Path::new("/x/model.incomplete")
+        );
     }
 
     #[test]
@@ -758,12 +813,17 @@ mod tests {
         let d = Downloader::new(&dir, ProxyMode::None);
         // MS 布局
         let ms = d.snapshot_dir(Hub::Ms, "iic/SenseVoiceSmall");
-        assert!(ms.ends_with(r"modelscope\models\iic--SenseVoiceSmall\snapshots\master")
-            || ms.ends_with("modelscope/models/iic--SenseVoiceSmall/snapshots/master"));
+        assert!(
+            ms.ends_with(r"modelscope\models\iic--SenseVoiceSmall\snapshots\master")
+                || ms.ends_with("modelscope/models/iic--SenseVoiceSmall/snapshots/master")
+        );
         // HF 布局
         let hf = d.snapshot_dir(Hub::Hf, "ggml-org/whisper-tiny");
         let s = hf.to_string_lossy().replace('\\', "/");
-        assert!(s.ends_with("huggingface/hub/models--ggml-org--whisper-tiny/snapshots/main"), "{s}");
+        assert!(
+            s.ends_with("huggingface/hub/models--ggml-org--whisper-tiny/snapshots/main"),
+            "{s}"
+        );
         // 与 cache 探测互通：目录创建后 ms_model_path 应命中同一处
         std::fs::create_dir_all(&ms).unwrap();
         assert_eq!(crate::cache::ms_model_path(&dir, "iic/SenseVoiceSmall"), ms);
@@ -832,17 +892,37 @@ mod probe_nano_tmp {
         let mut last_pct = [0usize; 6];
         while let Ok(ev) = rx.recv() {
             match ev {
-                DownloadEvent::Progress { file, k, n, done, total, .. } => {
-                    let (tot, pct) = (total.unwrap_or(0), |d: u64, t: u64| if t > 0 { (d * 100 / t) as usize } else { 0 });
+                DownloadEvent::Progress {
+                    file,
+                    k,
+                    n,
+                    done,
+                    total,
+                    ..
+                } => {
+                    let (tot, pct) = (total.unwrap_or(0), |d: u64, t: u64| {
+                        if t > 0 {
+                            (d * 100 / t) as usize
+                        } else {
+                            0
+                        }
+                    });
                     let p = pct(done, tot);
                     if p >= last_pct[k - 1] + 25 || done == tot {
                         last_pct[k - 1] = p;
-                        println!("[{k}/{n}] {file}: {done}/{tot} ({p}%)  t={:?}", t0.elapsed());
+                        println!(
+                            "[{k}/{n}] {file}: {done}/{tot} ({p}%)  t={:?}",
+                            t0.elapsed()
+                        );
                     }
                 }
-                DownloadEvent::FileDone { file, .. } => println!("✓ FileDone {file}  t={:?}", t0.elapsed()),
+                DownloadEvent::FileDone { file, .. } => {
+                    println!("✓ FileDone {file}  t={:?}", t0.elapsed())
+                }
                 DownloadEvent::Log(m) => println!("… {m}"),
-                DownloadEvent::Done { dir, .. } => println!("★ Done → {dir:?}  t={:?}", t0.elapsed()),
+                DownloadEvent::Done { dir, .. } => {
+                    println!("★ Done → {dir:?}  t={:?}", t0.elapsed())
+                }
             }
         }
         let snapshot = worker.join().expect("下载线程 panic").expect("下载失败");

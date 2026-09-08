@@ -20,8 +20,13 @@ use lt_proto::ModelConfig;
 
 /// prompt 预设下拉 i18n 键（daily/esports/anime/webid/custom；顺序同
 /// lt_translate::PROMPT_PRESETS，末位 custom）
-pub const PROMPT_PRESET_KEYS: [&str; 5] =
-    ["prompt_daily", "prompt_esports", "prompt_anime", "prompt_webid", "prompt_custom"];
+pub const PROMPT_PRESET_KEYS: [&str; 5] = [
+    "prompt_daily",
+    "prompt_esports",
+    "prompt_anime",
+    "prompt_webid",
+    "prompt_custom",
+];
 
 /// overrides 六行 i18n 键（原版 adv_layout addRow 顺序）
 const OVERRIDE_LABEL_KEYS: [&str; 6] = [
@@ -36,11 +41,11 @@ const OVERRIDE_LABEL_KEYS: [&str; 6] = [
 /// 高级参数行数值范围/步进（原版 QDoubleSpinBox/QSpinBox 设置）：
 /// (min, max, step)；整数行以 step=1.0 表达
 const OVERRIDE_RANGES: [(f64, f64, f64); 6] = [
-    (0.0, 2.0, 0.1),   // temperature
-    (0.0, 1.0, 0.05),  // top_p
-    (1.0, 32768.0, 1.0), // max_tokens
-    (-2.0, 2.0, 0.1),  // frequency_penalty
-    (-2.0, 2.0, 0.1),  // presence_penalty
+    (0.0, 2.0, 0.1),             // temperature
+    (0.0, 1.0, 0.05),            // top_p
+    (1.0, 32768.0, 1.0),         // max_tokens
+    (-2.0, 2.0, 0.1),            // frequency_penalty
+    (-2.0, 2.0, 0.1),            // presence_penalty
     (0.0, 2_000_000_000.0, 1.0), // seed
 ];
 
@@ -55,8 +60,15 @@ fn override_is_int(i: usize) -> bool {
 /// proxy 非 none 时追加 "  [proxy: url]"；第二行 "     api_base  |  model"）
 pub fn model_row_text(index: usize, active: usize, m: &ModelConfig) -> String {
     let prefix = if index == active { ">>> " } else { "    " };
-    let proxy_tag = if m.proxy != "none" { format!("  [proxy: {}]", m.proxy) } else { String::new() };
-    format!("{prefix}{}{proxy_tag}\n     {}  |  {}", m.name, m.api_base, m.model)
+    let proxy_tag = if m.proxy != "none" {
+        format!("  [proxy: {}]", m.proxy)
+    } else {
+        String::new()
+    };
+    format!(
+        "{prefix}{}{proxy_tag}\n     {}  |  {}",
+        m.name, m.api_base, m.model
+    )
 }
 
 /// system_prompt → 预设下拉索引（原版构造函数语义：精确匹配 4 预设 → 对应项；
@@ -204,7 +216,10 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
         // 四按钮行（原版 btn_row：添加/编辑/复制/删除）
         ui.horizontal(|ui| {
             if ui
-                .add(egui::Button::new(RichText::new(lt_i18n::t("btn_add")).size(12.5)).corner_radius(6.0))
+                .add(
+                    egui::Button::new(RichText::new(lt_i18n::t("btn_add")).size(12.5))
+                        .corner_radius(6.0),
+                )
                 .clicked()
             {
                 state.panel.model_editor = Some(ModelEditState::new_add());
@@ -213,7 +228,8 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
             if ui
                 .add_enabled(
                     edit_target.is_some(),
-                    egui::Button::new(RichText::new(lt_i18n::t("btn_edit")).size(12.5)).corner_radius(6.0),
+                    egui::Button::new(RichText::new(lt_i18n::t("btn_edit")).size(12.5))
+                        .corner_radius(6.0),
                 )
                 .clicked()
             {
@@ -238,11 +254,13 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
                     }
                 }
             }
-            let can_remove = state.settings.models.len() > 1 && state.panel.model_selected.is_some();
+            let can_remove =
+                state.settings.models.len() > 1 && state.panel.model_selected.is_some();
             if ui
                 .add_enabled(
                     can_remove,
-                    egui::Button::new(RichText::new(lt_i18n::t("btn_remove")).size(12.5)).corner_radius(6.0),
+                    egui::Button::new(RichText::new(lt_i18n::t("btn_remove")).size(12.5))
+                        .corner_radius(6.0),
                 )
                 .clicked()
             {
@@ -269,11 +287,13 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
             if ui
                 .add_enabled(
                     test_cfg.is_some() && !testing,
-                    egui::Button::new(RichText::new(match testing {
-                        true => lt_i18n::t("test_translator_testing"),
-                        false => lt_i18n::t("test_translator_btn"),
-                    })
-                    .size(12.5))
+                    egui::Button::new(
+                        RichText::new(match testing {
+                            true => lt_i18n::t("test_translator_testing"),
+                            false => lt_i18n::t("test_translator_btn"),
+                        })
+                        .size(12.5),
+                    )
                     .corner_radius(6.0),
                 )
                 .clicked()
@@ -316,7 +336,9 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
         let cur = prompt_preset_index(&state.settings.system_prompt);
         let mut next = cur;
         ui.horizontal(|ui| {
-            ui.label(RichText::new(format!("{} ", lt_i18n::t("label_prompt_preset"))).color(pal.text));
+            ui.label(
+                RichText::new(format!("{} ", lt_i18n::t("label_prompt_preset"))).color(pal.text),
+            );
             egui::ComboBox::from_id_salt("panel_prompt_preset")
                 .selected_text(lt_i18n::t(PROMPT_PRESET_KEYS[cur]))
                 .width(220.0)
@@ -385,8 +407,14 @@ fn render_model_editor(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
     let mut accepted: Option<ModelConfig> = None;
     {
         let panel = &mut state.panel;
-        let Some(ed) = panel.model_editor.as_mut() else { return };
-        let title = if ed.is_new { lt_i18n::t("dialog_add_model") } else { lt_i18n::t("dialog_edit_model") };
+        let Some(ed) = panel.model_editor.as_mut() else {
+            return;
+        };
+        let title = if ed.is_new {
+            lt_i18n::t("dialog_add_model")
+        } else {
+            lt_i18n::t("dialog_edit_model")
+        };
         let extra_valid = ed.parse_extra_body().is_ok();
         egui::Window::new(RichText::new(title).strong())
             .open(&mut open)
@@ -476,13 +504,19 @@ fn editor_fields(ui: &mut Ui, ed: &mut ModelEditState, pal: &Palette) {
 
             // 代理三模式 + URL（原版 _proxy_mode / _proxy_url）
             ui.label(lt_i18n::t("label_proxy"));
-            let modes = [lt_i18n::t("proxy_none"), lt_i18n::t("proxy_system"), lt_i18n::t("proxy_custom")];
+            let modes = [
+                lt_i18n::t("proxy_none"),
+                lt_i18n::t("proxy_system"),
+                lt_i18n::t("proxy_custom"),
+            ];
             egui::ComboBox::from_id_salt("model_edit_proxy_mode")
                 .selected_text(modes[ed.proxy_index].clone())
                 .width(240.0)
                 .show_ui(ui, |ui| {
                     for (i, label) in modes.iter().enumerate() {
-                        if ui.selectable_label(ed.proxy_index == i, label.clone()).clicked()
+                        if ui
+                            .selectable_label(ed.proxy_index == i, label.clone())
+                            .clicked()
                             && ed.proxy_index != i
                         {
                             ed.proxy_index = i; // 原版 _on_proxy_mode_changed：URL 仅 custom 可编辑
@@ -510,7 +544,9 @@ fn editor_fields(ui: &mut Ui, ed: &mut ModelEditState, pal: &Palette) {
                 .width(240.0)
                 .show_ui(ui, |ui| {
                     for (i, label) in styles.iter().enumerate() {
-                        if ui.selectable_label(ed.thinking_index == i, label.clone()).clicked()
+                        if ui
+                            .selectable_label(ed.thinking_index == i, label.clone())
+                            .clicked()
                             && ed.thinking_index != i
                         {
                             ed.thinking_index = i;
@@ -532,7 +568,10 @@ fn editor_fields(ui: &mut Ui, ed: &mut ModelEditState, pal: &Palette) {
             // 上下文数（原版 _context_turns 0-20）
             ui.label(lt_i18n::t("label_context_turns"));
             let mut turns = ed.context_turns;
-            if ui.add(egui::DragValue::new(&mut turns).range(0..=20)).changed() {
+            if ui
+                .add(egui::DragValue::new(&mut turns).range(0..=20))
+                .changed()
+            {
                 ed.context_turns = turns;
             }
             ui.end_row();
@@ -540,8 +579,20 @@ fn editor_fields(ui: &mut Ui, ed: &mut ModelEditState, pal: &Palette) {
 
     // 行为复选（原版 addRow 顺序：streaming / json_response / no_system_role）
     ui.add_space(2.0);
-    checkbox_row(ui, "model_edit_streaming", &mut ed.streaming, "streaming", "streaming_hint");
-    checkbox_row(ui, "model_edit_json", &mut ed.json_response, "json_response", "json_response_hint");
+    checkbox_row(
+        ui,
+        "model_edit_streaming",
+        &mut ed.streaming,
+        "streaming",
+        "streaming_hint",
+    );
+    checkbox_row(
+        ui,
+        "model_edit_json",
+        &mut ed.json_response,
+        "json_response",
+        "json_response_hint",
+    );
     checkbox_row(
         ui,
         "model_edit_nsr",
@@ -559,11 +610,18 @@ fn editor_fields(ui: &mut Ui, ed: &mut ModelEditState, pal: &Palette) {
         .spacing([8.0, 5.0])
         .min_col_width(120.0)
         .show(ui, |ui| {
-            for (i, (label_key, row)) in OVERRIDE_LABEL_KEYS.iter().zip(ed.overrides.iter_mut()).enumerate() {
+            for (i, (label_key, row)) in OVERRIDE_LABEL_KEYS
+                .iter()
+                .zip(ed.overrides.iter_mut())
+                .enumerate()
+            {
                 ui.label(lt_i18n::t(label_key));
                 ui.horizontal(|ui| {
                     let mut current = *row;
-                    if ui.checkbox(&mut current.enabled, lt_i18n::t("override_enable")).changed() {
+                    if ui
+                        .checkbox(&mut current.enabled, lt_i18n::t("override_enable"))
+                        .changed()
+                    {
                         *row = current;
                     }
                     ui.add_enabled(current.enabled, override_drag(i, &mut row.value));
@@ -612,7 +670,13 @@ fn price_drag(ui: &mut Ui, id: &str, value: &mut f64) {
                     .range(0.0..=999.0)
                     .speed(0.1)
                     .fixed_decimals(2)
-                    .custom_formatter(|v, _| if v <= 0.0 { "—".into() } else { format!("{v:.2}") }),
+                    .custom_formatter(|v, _| {
+                        if v <= 0.0 {
+                            "—".into()
+                        } else {
+                            format!("{v:.2}")
+                        }
+                    }),
             )
             .changed();
         if resp {
@@ -657,13 +721,26 @@ mod tests {
         ed.context_turns = 4;
         ed.input_price = 0.27;
         ed.output_price = 1.1;
-        ed.overrides[0] = OverrideRow { enabled: true, value: 0.7 }; // temperature
-        ed.overrides[2] = OverrideRow { enabled: true, value: 512.0 }; // max_tokens
-        ed.overrides[1] = OverrideRow { enabled: false, value: 0.9 }; // 未勾选不写
+        ed.overrides[0] = OverrideRow {
+            enabled: true,
+            value: 0.7,
+        }; // temperature
+        ed.overrides[2] = OverrideRow {
+            enabled: true,
+            value: 512.0,
+        }; // max_tokens
+        ed.overrides[1] = OverrideRow {
+            enabled: false,
+            value: 0.9,
+        }; // 未勾选不写
         ed.extra_body_text = r#"{"thinking": {"type": "disabled"}}"#.into();
         let cfg = ed.build().expect("extra_body 合法");
 
-        let obj = serde_json::to_value(&cfg).unwrap().as_object().unwrap().clone();
+        let obj = serde_json::to_value(&cfg)
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .clone();
         // serde_json::Map 默认按字典序存键 → 键集合按排序比较（契约只锁键集合）
         let mut keys: Vec<_> = obj.keys().map(String::as_str).collect();
         keys.sort_unstable();
@@ -688,15 +765,22 @@ mod tests {
             "键集合应与原版 get_data 条件序列化形状一致（无额外键）"
         );
         // 契约冻结：额外键不出现
-        assert!(obj.get("json_schema_mode").is_none(), "json_schema_mode 不在契约内");
-        assert!(obj.get("no_think").is_none(), "no_think 已迁移为 thinking_style");
+        assert!(
+            obj.get("json_schema_mode").is_none(),
+            "json_schema_mode 不在契约内"
+        );
+        assert!(
+            obj.get("no_think").is_none(),
+            "no_think 已迁移为 thinking_style"
+        );
         // overrides 只含勾选行（BTreeMap 键序）
         assert_eq!(
             obj["overrides"],
             serde_json::json!({"max_tokens": 512, "temperature": 0.7})
         );
         // 反序列化往返（形状即契约）
-        let round: ModelConfig = serde_json::from_value(serde_json::to_value(&cfg).unwrap()).unwrap();
+        let round: ModelConfig =
+            serde_json::from_value(serde_json::to_value(&cfg).unwrap()).unwrap();
         assert_eq!(round, cfg);
     }
 
@@ -719,22 +803,48 @@ mod tests {
             assert!(!obj.contains_key(key), "默认模型不应写出 {key}");
         }
         // thinking_style=auto 同样不写（skip_thinking_auto）
-        let auto = ModelConfig { thinking_style: Some("auto".into()), ..Default::default() };
-        assert!(!serde_json::to_value(auto).unwrap().as_object().unwrap().contains_key("thinking_style"));
+        let auto = ModelConfig {
+            thinking_style: Some("auto".into()),
+            ..Default::default()
+        };
+        assert!(!serde_json::to_value(auto)
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .contains_key("thinking_style"));
     }
 
     /// 模型列表摘要行（refresh_model_list 形状：前缀/proxy 标签/第二行）
     #[test]
     fn model_row_text_formats_like_original() {
-        let plain = ModelConfig { name: "A".into(), api_base: "http://b".into(), model: "m1".into(), ..Default::default() };
+        let plain = ModelConfig {
+            name: "A".into(),
+            api_base: "http://b".into(),
+            model: "m1".into(),
+            ..Default::default()
+        };
         assert_eq!(model_row_text(0, 0, &plain), ">>> A\n     http://b  |  m1");
         assert_eq!(model_row_text(1, 0, &plain), "    A\n     http://b  |  m1");
-        let proxied = ModelConfig { proxy: "http://p:7890".into(), name: "B".into(), api_base: "u".into(), model: "m2".into(), ..Default::default() };
+        let proxied = ModelConfig {
+            proxy: "http://p:7890".into(),
+            name: "B".into(),
+            api_base: "u".into(),
+            model: "m2".into(),
+            ..Default::default()
+        };
         let text = model_row_text(0, 0, &proxied);
         assert!(text.contains(">>> B  [proxy: http://p:7890]"), "{text}");
         assert!(text.contains("\n     u  |  m2"));
         // system 代理同样带标签；none 不带
-        assert!(model_row_text(0, 0, &ModelConfig { proxy: "system".into(), ..plain.clone() }).contains("[proxy: system]"));
+        assert!(model_row_text(
+            0,
+            0,
+            &ModelConfig {
+                proxy: "system".into(),
+                ..plain.clone()
+            }
+        )
+        .contains("[proxy: system]"));
         assert!(!model_row_text(0, 0, &plain).contains("[proxy"));
     }
 
@@ -756,11 +866,18 @@ mod tests {
     /// 删除模型：单行守卫 + active 钳制 + 行前移修正
     #[test]
     fn remove_model_guards_and_active_adjustment() {
-        let mk = |n: &str| ModelConfig { name: n.into(), ..Default::default() };
+        let mk = |n: &str| ModelConfig {
+            name: n.into(),
+            ..Default::default()
+        };
         let mut models = vec![mk("a"), mk("b"), mk("c")];
         let mut active = 2;
         assert!(remove_model(&mut models, &mut active, 0));
-        assert_eq!((models.len(), active), (2, 1), "删行在 active 前 → active 前移");
+        assert_eq!(
+            (models.len(), active),
+            (2, 1),
+            "删行在 active 前 → active 前移"
+        );
         assert_eq!(models[active].name, "c", "active 仍指向 c");
         // active 越界钳制（原版语义）
         let mut models = vec![mk("a"), mk("b")];
@@ -778,7 +895,11 @@ mod tests {
     /// 复制模型：表尾追加 + " (copy)" 后缀 + 越界 None
     #[test]
     fn duplicate_model_appends_copy() {
-        let mk = |n: &str| ModelConfig { name: n.into(), model: "m".into(), ..Default::default() };
+        let mk = |n: &str| ModelConfig {
+            name: n.into(),
+            model: "m".into(),
+            ..Default::default()
+        };
         let mut models = vec![mk("a"), mk("b")];
         assert_eq!(duplicate_model(&mut models, 0), Some(2));
         assert_eq!(models.len(), 3);
@@ -797,7 +918,10 @@ mod tests {
             model: "glm-4".into(),
             proxy: "system".into(),
             thinking_style: Some("deepseek".into()),
-            overrides: Some(BTreeMap::from([("top_p".to_string(), serde_json::json!(0.9))])),
+            overrides: Some(BTreeMap::from([(
+                "top_p".to_string(),
+                serde_json::json!(0.9),
+            )])),
             ..Default::default()
         };
         let ed = ModelEditState::new_edit(0, &cfg);
@@ -814,8 +938,9 @@ mod tests {
         ed.extra_body_text = "{\"a\": 1}".into();
         st.panel.model_editor = Some(ed);
         for _ in 0..2 {
-            let mut out =
-                ctx.run_ui(egui::RawInput::default(), |ui| crate::windows::panel::panel_ui(ui, &mut st));
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                crate::windows::panel::panel_ui(ui, &mut st)
+            });
             assert!(!out.shapes.is_empty(), "编辑器打开态应产出图元");
             out.textures_delta.clear();
         }

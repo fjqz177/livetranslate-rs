@@ -73,10 +73,16 @@ pub fn bench_ui(ui: &mut Ui, state: &mut AppState) {
         lang_combo(ui, "bench_src", &mut state.bench_src, &BENCH_SRC_LANGS);
         ui.label(RichText::new(lt_i18n::t("target_label")).size(12.5));
         lang_combo(ui, "bench_tgt", &mut state.bench_tgt, &BENCH_TGT_LANGS);
-        let btn_text =
-            if state.bench_running { lt_i18n::t("testing") } else { lt_i18n::t("btn_test_all") };
+        let btn_text = if state.bench_running {
+            lt_i18n::t("testing")
+        } else {
+            lt_i18n::t("btn_test_all")
+        };
         if ui
-            .add_enabled(!state.bench_running, egui::Button::new(RichText::new(btn_text).size(12.5)))
+            .add_enabled(
+                !state.bench_running,
+                egui::Button::new(RichText::new(btn_text).size(12.5)),
+            )
             .clicked()
         {
             start_benchmark(state);
@@ -111,7 +117,12 @@ pub fn bench_ui(ui: &mut Ui, state: &mut AppState) {
                     for line in &state.bench_lines {
                         let text = RichText::new(line).monospace().size(12.0).color(LOG_FG);
                         if line == "__DONE__" {
-                            ui.label(RichText::new(line).monospace().size(12.0).color(Color32::GRAY));
+                            ui.label(
+                                RichText::new(line)
+                                    .monospace()
+                                    .size(12.0)
+                                    .color(Color32::GRAY),
+                            );
                         } else if line.starts_with("  FAILED") || line.starts_with("  FAIL ") {
                             ui.label(
                                 RichText::new(line)
@@ -131,7 +142,10 @@ pub fn bench_ui(ui: &mut Ui, state: &mut AppState) {
     // ── 关闭行（原版 row + close_btn）──
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
         if ui.button(lt_i18n::t("btn_close")).clicked() {
-            state.enqueue_action(crate::state::WinId::Benchmark, crate::state::WinAction::Hide);
+            state.enqueue_action(
+                crate::state::WinId::Benchmark,
+                crate::state::WinAction::Hide,
+            );
         }
     });
 }
@@ -218,7 +232,11 @@ mod tests {
         assert_eq!(b.proxy, "system");
         assert!(b.no_system_role);
         // 基准所需之外的字段（价格/overrides/prompt）不参与转换
-        let cfg2 = ModelConfig { context_turns: 9, input_price: 3.0, ..cfg };
+        let cfg2 = ModelConfig {
+            context_turns: 9,
+            input_price: 3.0,
+            ..cfg
+        };
         let b2 = to_bench_model(&cfg2);
         assert_eq!(b2.name, "glm");
         assert_eq!(b2.model, "glm-4");
@@ -227,11 +245,17 @@ mod tests {
     /// 基准 prompt：缺省回退 DEFAULT_PROMPT + 显示名占位填充
     #[test]
     fn bench_prompt_fills_display_names() {
-        assert_eq!(bench_prompt("", "ja", "zh"), lt_translate::DEFAULT_PROMPT
-            .replace("{source_lang}", "Japanese")
-            .replace("{target_lang}", "Chinese"));
+        assert_eq!(
+            bench_prompt("", "ja", "zh"),
+            lt_translate::DEFAULT_PROMPT
+                .replace("{source_lang}", "Japanese")
+                .replace("{target_lang}", "Chinese")
+        );
         let custom = "Translate {source_lang} to {target_lang} now.";
-        assert_eq!(bench_prompt(custom, "en", "ru"), "Translate English to Russian now.");
+        assert_eq!(
+            bench_prompt(custom, "en", "ru"),
+            "Translate English to Russian now."
+        );
         // 未知码原样返回（language_display 兜底）
         assert_eq!(bench_prompt("x {source_lang}", "zz", "zh"), "x zz");
     }
@@ -255,7 +279,10 @@ mod tests {
     #[test]
     fn bench_lang_tables_match_original() {
         assert_eq!(BENCH_SRC_LANGS, ["ja", "en", "zh", "ko", "fr", "de"]);
-        assert_eq!(BENCH_TGT_LANGS, ["zh", "en", "ja", "ko", "fr", "de", "es", "ru"]);
+        assert_eq!(
+            BENCH_TGT_LANGS,
+            ["zh", "en", "ja", "ko", "fr", "de", "es", "ru"]
+        );
     }
 
     /// 基准窗无头渲染冒烟：带模型勾选与输出行跑两帧不 panic；

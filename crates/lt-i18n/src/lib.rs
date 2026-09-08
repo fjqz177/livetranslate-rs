@@ -69,7 +69,11 @@ pub fn get_lang() -> String {
 /// 按 key 查询翻译文本；缺 key 时返回 key 本身（与 Python 原版 t() 语义一致）
 pub fn t(key: &str) -> String {
     let guard = state().read().unwrap_or_else(|e| e.into_inner());
-    guard.map.get(key).cloned().unwrap_or_else(|| key.to_string())
+    guard
+        .map
+        .get(key)
+        .cloned()
+        .unwrap_or_else(|| key.to_string())
 }
 
 /// 按语言码直接查询翻译文本（不触碰全局状态——测试用；避免并行测试对

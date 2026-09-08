@@ -6,12 +6,13 @@
 //! nano 无 padding 语义（原版 funasr_supports_padding: nano=false）——
 //! `set_input_padding` 保持 trait 默认 `Unsupported`，manager 已按引擎名跳过下发。
 
-use super::{describe_model_files, guess_language, normalize_language, sherpa_create_failure_hint, strip_special_tags};
+use super::{
+    describe_model_files, guess_language, normalize_language, sherpa_create_failure_hint,
+    strip_special_tags,
+};
 use crate::engine::AsrEngine;
 use lt_proto::{AsrResult, EngineError};
-use sherpa_onnx::{
-    OfflineFunASRNanoModelConfig, OfflineRecognizer, OfflineRecognizerConfig,
-};
+use sherpa_onnx::{OfflineFunASRNanoModelConfig, OfflineRecognizer, OfflineRecognizerConfig};
 use std::path::{Path, PathBuf};
 
 pub const SAMPLE_RATE: u32 = 16000;
@@ -29,7 +30,11 @@ const OFFICIAL_USER_PROMPT: &str = "语音转写：";
 const NUM_THREADS: i32 = 2;
 
 /// 三 onnx 主件 + tokenizer 目录（官方包根布局；下载清单 = 注册表 files）
-const ONNX_FILES: [&str; 3] = ["embedding.int8.onnx", "encoder_adaptor.int8.onnx", "llm.int8.onnx"];
+const ONNX_FILES: [&str; 3] = [
+    "embedding.int8.onnx",
+    "encoder_adaptor.int8.onnx",
+    "llm.int8.onnx",
+];
 const TOKENIZER_DIR: &str = "Qwen3-0.6B";
 
 pub struct NanoEngine {
@@ -114,14 +119,22 @@ fn build_recognizer(
             "sherpa 创建识别器失败（model={}；文件 [{}]，tokenizer 目录 {}）——{}",
             model_dir.display(),
             describe_model_files(model_dir, &ONNX_FILES),
-            if model_dir.join(TOKENIZER_DIR).is_dir() { "在" } else { "缺" },
+            if model_dir.join(TOKENIZER_DIR).is_dir() {
+                "在"
+            } else {
+                "缺"
+            },
             sherpa_create_failure_hint(),
         ))
     })
 }
 
 impl AsrEngine for NanoEngine {
-    fn transcribe(&mut self, audio: &[f32], _word_timestamps: bool) -> Result<AsrResult, EngineError> {
+    fn transcribe(
+        &mut self,
+        audio: &[f32],
+        _word_timestamps: bool,
+    ) -> Result<AsrResult, EngineError> {
         if audio.is_empty() {
             return Ok(AsrResult::default());
         }
@@ -234,7 +247,13 @@ mod probe_real_nano_tmp {
             let t1 = Instant::now();
             let r = eng.transcribe(wave.samples(), false).expect("transcribe");
             let rtf = t1.elapsed().as_secs_f32() / wave.samples().len() as f32 * SAMPLE_RATE as f32;
-            println!("{rel}: {:?} → text={:?} lang={} (RTF {:.3})", t1.elapsed(), r.text, r.language, rtf);
+            println!(
+                "{rel}: {:?} → text={:?} lang={} (RTF {:.3})",
+                t1.elapsed(),
+                r.text,
+                r.language,
+                rtf
+            );
             assert!(!r.text.is_empty(), "{rel} 转写为空");
             assert_eq!(r.language, expect_lang, "{rel} 语种判定");
         }

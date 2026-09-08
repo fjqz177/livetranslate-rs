@@ -8,14 +8,23 @@
 //! 按压瞬间文字右移 1 逻辑 px（无头探针实测 6.0→7.0）。按压态与基准下限
 //! 一并入钉：任何窗口、任何按钮的三态文字位置都必须完全相等。
 
-use egui::{Color32, CornerRadius, Event, Modifiers, RawInput, Rect, RichText, Sense, Stroke, Vec2};
+use egui::{
+    Color32, CornerRadius, Event, Modifiers, RawInput, Rect, RichText, Sense, Stroke, Vec2,
+};
 
 /// 渲染一帧并返回全部文本 galley 的合并 rect（hover_pos 决定指针位置）
-fn text_bbox(ctx: &egui::Context, hover_pos: egui::Pos2, add: &dyn Fn(&mut egui::Ui)) -> egui::Rect {
+fn text_bbox(
+    ctx: &egui::Context,
+    hover_pos: egui::Pos2,
+    add: &dyn Fn(&mut egui::Ui),
+) -> egui::Rect {
     let mut ri = RawInput::default();
     ri.events.push(Event::PointerMoved(hover_pos));
     let mut out = ctx.run_ui(ri, |ui| {
-        ui.set_clip_rect(egui::Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(600.0, 600.0)));
+        ui.set_clip_rect(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            Vec2::new(600.0, 600.0),
+        ));
         // 占位保证按钮不在指针初始位置上
         ui.allocate_rect(
             egui::Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(50.0, 40.0)),
@@ -54,7 +63,13 @@ fn button_text_does_not_shift_on_hover() {
     };
     let t0 = text_bbox(&ctx, egui::pos2(10.0, 10.0), &draw);
     let t1 = text_bbox(&ctx, egui::pos2(60.0, 30.0), &draw);
-    assert_eq!(t0, t1, "Button hover 前后文本 rect 必须一致（dx={} dy={}）", t1.left() - t0.left(), t1.top() - t0.top());
+    assert_eq!(
+        t0,
+        t1,
+        "Button hover 前后文本 rect 必须一致（dx={} dy={}）",
+        t1.left() - t0.left(),
+        t1.top() - t0.top()
+    );
 }
 
 #[test]
@@ -91,10 +106,19 @@ fn plain_dark_theme_is_stabilized() {
     let plain = egui::Visuals::dark();
     let mut v = egui::Visuals::dark();
     lt_ui::style::stabilize_widget_strokes(&mut v);
-    assert_eq!(v.widgets.hovered.bg_stroke.width, v.widgets.inactive.bg_stroke.width);
-    assert_eq!(v.widgets.active.fg_stroke.width, v.widgets.inactive.fg_stroke.width);
+    assert_eq!(
+        v.widgets.hovered.bg_stroke.width,
+        v.widgets.inactive.bg_stroke.width
+    );
+    assert_eq!(
+        v.widgets.active.fg_stroke.width,
+        v.widgets.inactive.fg_stroke.width
+    );
     // corner_radius 同步拉齐
-    assert_eq!(v.widgets.hovered.corner_radius, v.widgets.inactive.corner_radius);
+    assert_eq!(
+        v.widgets.hovered.corner_radius,
+        v.widgets.inactive.corner_radius
+    );
     let _ = plain;
 }
 
@@ -107,7 +131,10 @@ fn overlay_frame(ctx: &egui::Context, events: Vec<Event>) -> (Rect, Rect) {
     ri.events = events;
     let mut btn = Rect::NOTHING;
     let mut out = ctx.run_ui(ri, |ui| {
-        ui.set_clip_rect(Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(600.0, 600.0)));
+        ui.set_clip_rect(Rect::from_min_size(
+            egui::Pos2::ZERO,
+            Vec2::new(600.0, 600.0),
+        ));
         // host 链（app.rs run_frame：dark + stabilize；每帧重放）
         let mut v = egui::Visuals::dark();
         lt_ui::style::stabilize_widget_strokes(&mut v);
@@ -118,20 +145,33 @@ fn overlay_frame(ctx: &egui::Context, events: Vec<Event>) -> (Rect, Rect) {
         ui.style_mut().spacing.interact_size = Vec2::new(8.0, 18.0);
         let vis = &mut ui.style_mut().visuals;
         vis.widgets.inactive.bg_fill = Color32::from_rgba_premultiplied(20, 20, 20, 20);
-        vis.widgets.inactive.bg_stroke = Stroke::new(1.0, Color32::from_rgba_premultiplied(40, 40, 40, 40));
+        vis.widgets.inactive.bg_stroke =
+            Stroke::new(1.0, Color32::from_rgba_premultiplied(40, 40, 40, 40));
         vis.widgets.hovered.bg_fill = Color32::from_rgba_premultiplied(40, 40, 40, 40);
-        vis.widgets.hovered.bg_stroke = Stroke::new(1.0, Color32::from_rgba_premultiplied(40, 40, 40, 40));
+        vis.widgets.hovered.bg_stroke =
+            Stroke::new(1.0, Color32::from_rgba_premultiplied(40, 40, 40, 40));
         vis.widgets.active.bg_fill = Color32::from_rgba_premultiplied(50, 55, 60, 60);
-        vis.widgets.active.bg_stroke = Stroke::new(1.0, Color32::from_rgba_premultiplied(40, 40, 40, 40));
+        vis.widgets.active.bg_stroke =
+            Stroke::new(1.0, Color32::from_rgba_premultiplied(40, 40, 40, 40));
         vis.widgets.active.corner_radius = vis.widgets.inactive.corner_radius;
         // 占位（button 规格 = row1 small_btn：11px 文字 / 20px 高 / 圆角 3）
-        ui.allocate_rect(Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(50.0, 40.0)), Sense::hover());
+        ui.allocate_rect(
+            Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(50.0, 40.0)),
+            Sense::hover(),
+        );
         let r = ui.add(
-            egui::Button::new(RichText::new("运行").size(11.0).color(Color32::from_rgb(0xaa, 0xaa, 0xaa)))
-                .fill(Color32::from_rgba_premultiplied(20, 20, 20, 20))
-                .stroke(Stroke::new(1.0, Color32::from_rgba_premultiplied(40, 40, 40, 40)))
-                .corner_radius(CornerRadius::same(3))
-                .min_size(Vec2::new(0.0, 20.0)),
+            egui::Button::new(
+                RichText::new("运行")
+                    .size(11.0)
+                    .color(Color32::from_rgb(0xaa, 0xaa, 0xaa)),
+            )
+            .fill(Color32::from_rgba_premultiplied(20, 20, 20, 20))
+            .stroke(Stroke::new(
+                1.0,
+                Color32::from_rgba_premultiplied(40, 40, 40, 40),
+            ))
+            .corner_radius(CornerRadius::same(3))
+            .min_size(Vec2::new(0.0, 20.0)),
         );
         btn = r.rect;
     });
@@ -171,7 +211,8 @@ fn overlay_button_text_does_not_shift_when_pressed() {
     let (_, t4) = overlay_frame(&ctx, press);
     for (i, t) in [&t1, &t2, &t3, &t4].iter().enumerate() {
         assert_eq!(
-            t0, **t,
+            t0,
+            **t,
             "三态文字位置必须全等（idle vs 帧{i}，dx={} dy={}）",
             t.left() - t0.left(),
             t.top() - t0.top()
@@ -190,10 +231,22 @@ fn stabilize_reaches_one_px_floor() {
     assert!(w >= 1.0, "dark inactive 0 宽描边须抬到 ≥1.0，实测 {w}");
     assert_eq!(v.widgets.hovered.bg_stroke.width, w);
     assert_eq!(v.widgets.active.bg_stroke.width, w);
-    assert_eq!(v.widgets.hovered.fg_stroke.width, v.widgets.inactive.fg_stroke.width);
-    assert_eq!(v.widgets.active.fg_stroke.width, v.widgets.inactive.fg_stroke.width);
-    assert_eq!(v.widgets.hovered.corner_radius, v.widgets.inactive.corner_radius);
-    assert_eq!(v.widgets.active.corner_radius, v.widgets.inactive.corner_radius);
+    assert_eq!(
+        v.widgets.hovered.fg_stroke.width,
+        v.widgets.inactive.fg_stroke.width
+    );
+    assert_eq!(
+        v.widgets.active.fg_stroke.width,
+        v.widgets.inactive.fg_stroke.width
+    );
+    assert_eq!(
+        v.widgets.hovered.corner_radius,
+        v.widgets.inactive.corner_radius
+    );
+    assert_eq!(
+        v.widgets.active.corner_radius,
+        v.widgets.inactive.corner_radius
+    );
     // panel_visuals：1.0 基准不动、三态互等（兼防未来回退）
     let mut p = lt_ui::windows::panel::panel_visuals();
     lt_ui::style::stabilize_widget_strokes(&mut p);

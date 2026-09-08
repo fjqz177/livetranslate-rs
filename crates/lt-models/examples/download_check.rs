@@ -14,12 +14,23 @@ fn main() -> anyhow::Result<()> {
     let repo = "pengzhendong/sherpa-onnx-sense-voice-zh-en-ja-ko-yue";
 
     let (tx, rx) = channel();
-    let dir = dl.download_files(Hub::Ms, repo, &[("tokens.txt", 1, "")], &AtomicBool::new(false), Some(&tx))?;
+    let dir = dl.download_files(
+        Hub::Ms,
+        repo,
+        &[("tokens.txt", 1, "")],
+        &AtomicBool::new(false),
+        Some(&tx),
+    )?;
 
     for ev in rx.try_iter() {
         match ev {
-            DownloadEvent::Progress { file, done, total, .. } => {
-                println!("progress {file}: {done}/{}", total.map(|t| t.to_string()).unwrap_or_else(|| "?".into()))
+            DownloadEvent::Progress {
+                file, done, total, ..
+            } => {
+                println!(
+                    "progress {file}: {done}/{}",
+                    total.map(|t| t.to_string()).unwrap_or_else(|| "?".into())
+                )
             }
             DownloadEvent::FileDone { file, .. } => println!("done file: {file}"),
             DownloadEvent::Done { dir, .. } => println!("done dir: {}", dir.display()),
@@ -28,7 +39,10 @@ fn main() -> anyhow::Result<()> {
     }
     let tokens = std::fs::read_to_string(dir.join("tokens.txt"))?;
     let first = tokens.lines().next().unwrap_or("").to_string();
-    println!("tokens.txt 首行: {first:?}（总 {} 行）", tokens.lines().count());
+    println!(
+        "tokens.txt 首行: {first:?}（总 {} 行）",
+        tokens.lines().count()
+    );
     anyhow::ensure!(tokens.lines().count() > 1000, "tokens.txt 行数异常");
     println!("真网冒烟 PASS");
     let _ = std::fs::remove_dir_all(&models_dir);

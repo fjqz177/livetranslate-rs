@@ -41,7 +41,9 @@ pub fn render_confirm_if_host(ui: &mut Ui, state: &mut AppState, host: WinId) {
             });
         });
 
-    let Some(conf) = state.take_confirm() else { return };
+    let Some(conf) = state.take_confirm() else {
+        return;
+    };
     if accepted {
         apply_confirm_kind(ui, state, &conf.kind);
     } else if cancelled || !open {

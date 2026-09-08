@@ -79,16 +79,19 @@ mod tests {
         std::fs::write(settings_file().unwrap(), original_style).unwrap();
         let s = load().unwrap().unwrap();
         assert_eq!(s.asr_engine, "funasr"); // remote-whisper 裁剪回退
-        // no_think=true 迁移为 thinking_style="auto"（内存值；序列化时该值会被跳过）
+                                            // no_think=true 迁移为 thinking_style="auto"（内存值；序列化时该值会被跳过）
         assert_eq!(s.models[0].thinking_style.as_deref(), Some("auto"));
-        assert!(serde_json::to_value(&s).unwrap()["models"][0].get("thinking_style").is_none());
+        assert!(serde_json::to_value(&s).unwrap()["models"][0]
+            .get("thinking_style")
+            .is_none());
         // 未识别键（remote_asr_url 等）被 serde 默认忽略，不报错
     }
 
     #[test]
     fn corrupted_file_treated_as_missing() {
         let _g = crate::ENV_LOCK.lock().unwrap();
-        let dir = std::env::temp_dir().join(format!("lt_settings_bad_{})", std::process::id()).replace(")", ""));
+        let dir = std::env::temp_dir()
+            .join(format!("lt_settings_bad_{})", std::process::id()).replace(")", ""));
         std::env::set_var("LIVETRANSLATE_CONFIG_DIR", &dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(settings_file().unwrap(), "{ 这不是合法 json").unwrap();

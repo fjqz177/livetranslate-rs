@@ -26,7 +26,11 @@ const OFFICIAL_SEED: i32 = 42;
 const NUM_THREADS: i32 = 3;
 
 /// 三 onnx 主件 + tokenizer 目录（官方包根布局；下载清单 = 注册表 files）
-const ONNX_FILES: [&str; 3] = ["conv_frontend.onnx", "encoder.int8.onnx", "decoder.int8.onnx"];
+const ONNX_FILES: [&str; 3] = [
+    "conv_frontend.onnx",
+    "encoder.int8.onnx",
+    "decoder.int8.onnx",
+];
 const TOKENIZER_DIR: &str = "tokenizer";
 
 pub struct Qwen3AsrEngine {
@@ -99,14 +103,22 @@ fn build_recognizer(model_dir: &Path, num_threads: i32) -> Result<OfflineRecogni
             "sherpa 创建识别器失败（model={}；文件 [{}]，tokenizer 目录 {}）——{}",
             model_dir.display(),
             describe_model_files(model_dir, &ONNX_FILES),
-            if model_dir.join(TOKENIZER_DIR).is_dir() { "在" } else { "缺" },
+            if model_dir.join(TOKENIZER_DIR).is_dir() {
+                "在"
+            } else {
+                "缺"
+            },
             sherpa_create_failure_hint(),
         ))
     })
 }
 
 impl AsrEngine for Qwen3AsrEngine {
-    fn transcribe(&mut self, audio: &[f32], _word_timestamps: bool) -> Result<AsrResult, EngineError> {
+    fn transcribe(
+        &mut self,
+        audio: &[f32],
+        _word_timestamps: bool,
+    ) -> Result<AsrResult, EngineError> {
         if audio.is_empty() {
             return Ok(AsrResult::default());
         }
@@ -155,9 +167,15 @@ mod tests {
             Qwen3AsrEngine::postprocess("你好，世界。"),
             Some("你好，世界。".into())
         );
-        assert_eq!(Qwen3AsrEngine::postprocess("  hello world  "), Some("hello world".into()));
+        assert_eq!(
+            Qwen3AsrEngine::postprocess("  hello world  "),
+            Some("hello world".into())
+        );
         // 防御性：万一出现标签也清理（与 nano 共享 strip）
-        assert_eq!(Qwen3AsrEngine::postprocess("<|zh|>你好"), Some("你好".into()));
+        assert_eq!(
+            Qwen3AsrEngine::postprocess("<|zh|>你好"),
+            Some("你好".into())
+        );
         // 空/纯空白 → None（worker 层语义：无结果）
         assert_eq!(Qwen3AsrEngine::postprocess(""), None);
         assert_eq!(Qwen3AsrEngine::postprocess("   "), None);
@@ -187,7 +205,10 @@ mod tests {
             std::fs::write(dir.join(name), b"x").unwrap();
         }
         let err = Qwen3AsrEngine::load(&dir);
-        assert!(matches!(err, Err(EngineError::Load(_))), "缺 tokenizer 目录必须报错");
+        assert!(
+            matches!(err, Err(EngineError::Load(_))),
+            "缺 tokenizer 目录必须报错"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
@@ -239,7 +260,11 @@ mod probe_real_qwen3_tmp {
             let t1 = Instant::now();
             let r = e.transcribe(&audio, false).expect("transcribe");
             let rtf = t1.elapsed().as_secs_f32() / audio.len() as f32 * SAMPLE_RATE as f32;
-            println!("threads={threads}: RTF {:.3} len={}", rtf, r.text.chars().count());
+            println!(
+                "threads={threads}: RTF {:.3} len={}",
+                rtf,
+                r.text.chars().count()
+            );
         }
 
         // 验收：中/粤/日/语码切换 对照 transcript.txt（文本人工比对打印，
@@ -261,7 +286,10 @@ mod probe_real_qwen3_tmp {
             let t1 = Instant::now();
             let r = eng.transcribe(&audio, false).expect("transcribe");
             let rtf = t1.elapsed().as_secs_f32() / audio.len() as f32 * SAMPLE_RATE as f32;
-            println!("{rel}: lang={} RTF {:.3}\n  text={:?}", r.language, rtf, r.text);
+            println!(
+                "{rel}: lang={} RTF {:.3}\n  text={:?}",
+                r.language, rtf, r.text
+            );
             assert!(!r.text.is_empty(), "{rel} 转写为空");
             assert_eq!(r.language, expect_lang, "{rel} 语种判定");
         }

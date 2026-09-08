@@ -6,7 +6,7 @@
 //!   有声期 RMS 明显非零
 //! - 如听到本机在放音，RMS 应明显非零
 
-use lt_pipeline::audio::{wasapi_win::WasapiBackend, BoundedDropQueue, AudioBackend, TARGET_RATE};
+use lt_pipeline::audio::{wasapi_win::WasapiBackend, AudioBackend, BoundedDropQueue, TARGET_RATE};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -44,7 +44,11 @@ fn main() -> anyhow::Result<()> {
                 if r > max_rms {
                     max_rms = r;
                 }
-                println!("chunk {:3} len={:4} rate={TARGET_RATE} rms={r:.4}", n, chunk.len());
+                println!(
+                    "chunk {:3} len={:4} rate={TARGET_RATE} rms={r:.4}",
+                    n,
+                    chunk.len()
+                );
             }
             None => {
                 dropped_wait += 1;

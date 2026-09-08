@@ -9,159 +9,133 @@ use lt_proto::Style;
 /// 预设覆盖表：预设名 → 覆写字段（未列出的字段 = BASE 默认值）。
 /// 顺序即面板下拉顺序（default 之外的 13 个主题 + compact）。
 pub const PRESET_OVERRIDES: &[(&str, fn(&mut Style))] = &[
-    (
-        "transparent",
-        |s| {
-            s.bg_opacity = 120;
-            s.header_opacity = 120;
-            s.window_opacity = 70;
-        },
-    ),
-    (
-        "compact",
-        |s| {
-            s.original_font_size = 9;
-            s.translation_font_size = 11;
-        },
-    ),
-    (
-        "light",
-        |s| {
-            s.bg_color = "#e8e8f0".into();
-            s.bg_opacity = 230;
-            s.header_color = "#c8c8d8".into();
-            s.header_opacity = 220;
-            s.original_color = "#333333".into();
-            s.translation_color = "#111111".into();
-            s.timestamp_color = "#666688".into();
-        },
-    ),
-    (
-        "dracula",
-        |s| {
-            s.bg_color = "#282a36".into();
-            s.bg_opacity = 235;
-            s.header_color = "#44475a".into();
-            s.header_opacity = 230;
-            s.original_color = "#f8f8f2".into();
-            s.translation_color = "#f8f8f2".into();
-            s.timestamp_color = "#6272a4".into();
-        },
-    ),
-    (
-        "nord",
-        |s| {
-            s.bg_color = "#2e3440".into();
-            s.bg_opacity = 235;
-            s.header_color = "#3b4252".into();
-            s.header_opacity = 230;
-            s.original_color = "#d8dee9".into();
-            s.translation_color = "#eceff4".into();
-            s.timestamp_color = "#4c566a".into();
-        },
-    ),
-    (
-        "monokai",
-        |s| {
-            s.bg_color = "#272822".into();
-            s.bg_opacity = 235;
-            s.header_color = "#3e3d32".into();
-            s.header_opacity = 230;
-            s.original_color = "#f8f8f2".into();
-            s.translation_color = "#f8f8f2".into();
-            s.timestamp_color = "#75715e".into();
-        },
-    ),
-    (
-        "solarized",
-        |s| {
-            s.bg_color = "#002b36".into();
-            s.bg_opacity = 235;
-            s.header_color = "#073642".into();
-            s.header_opacity = 230;
-            s.original_color = "#839496".into();
-            s.translation_color = "#eee8d5".into();
-            s.timestamp_color = "#586e75".into();
-        },
-    ),
-    (
-        "gruvbox",
-        |s| {
-            s.bg_color = "#282828".into();
-            s.bg_opacity = 235;
-            s.header_color = "#3c3836".into();
-            s.header_opacity = 230;
-            s.original_color = "#ebdbb2".into();
-            s.translation_color = "#fbf1c7".into();
-            s.timestamp_color = "#928374".into();
-        },
-    ),
-    (
-        "tokyo_night",
-        |s| {
-            s.bg_color = "#1a1b26".into();
-            s.bg_opacity = 235;
-            s.header_color = "#24283b".into();
-            s.header_opacity = 230;
-            s.original_color = "#a9b1d6".into();
-            s.translation_color = "#c0caf5".into();
-            s.timestamp_color = "#565f89".into();
-        },
-    ),
-    (
-        "catppuccin",
-        |s| {
-            s.bg_color = "#1e1e2e".into();
-            s.bg_opacity = 235;
-            s.header_color = "#313244".into();
-            s.header_opacity = 230;
-            s.original_color = "#cdd6f4".into();
-            s.translation_color = "#cdd6f4".into();
-            s.timestamp_color = "#6c7086".into();
-        },
-    ),
-    (
-        "one_dark",
-        |s| {
-            s.bg_color = "#282c34".into();
-            s.bg_opacity = 235;
-            s.header_color = "#3e4452".into();
-            s.header_opacity = 230;
-            s.original_color = "#abb2bf".into();
-            s.translation_color = "#e5c07b".into();
-            s.timestamp_color = "#636d83".into();
-        },
-    ),
-    (
-        "everforest",
-        |s| {
-            s.bg_color = "#2d353b".into();
-            s.bg_opacity = 235;
-            s.header_color = "#343f44".into();
-            s.header_opacity = 230;
-            s.original_color = "#d3c6aa".into();
-            s.translation_color = "#d3c6aa".into();
-            s.timestamp_color = "#859289".into();
-        },
-    ),
-    (
-        "kanagawa",
-        |s| {
-            s.bg_color = "#1f1f28".into();
-            s.bg_opacity = 235;
-            s.header_color = "#2a2a37".into();
-            s.header_opacity = 230;
-            s.original_color = "#dcd7ba".into();
-            s.translation_color = "#dcd7ba".into();
-            s.timestamp_color = "#54546d".into();
-        },
-    ),
+    ("transparent", |s| {
+        s.bg_opacity = 120;
+        s.header_opacity = 120;
+        s.window_opacity = 70;
+    }),
+    ("compact", |s| {
+        s.original_font_size = 9;
+        s.translation_font_size = 11;
+    }),
+    ("light", |s| {
+        s.bg_color = "#e8e8f0".into();
+        s.bg_opacity = 230;
+        s.header_color = "#c8c8d8".into();
+        s.header_opacity = 220;
+        s.original_color = "#333333".into();
+        s.translation_color = "#111111".into();
+        s.timestamp_color = "#666688".into();
+    }),
+    ("dracula", |s| {
+        s.bg_color = "#282a36".into();
+        s.bg_opacity = 235;
+        s.header_color = "#44475a".into();
+        s.header_opacity = 230;
+        s.original_color = "#f8f8f2".into();
+        s.translation_color = "#f8f8f2".into();
+        s.timestamp_color = "#6272a4".into();
+    }),
+    ("nord", |s| {
+        s.bg_color = "#2e3440".into();
+        s.bg_opacity = 235;
+        s.header_color = "#3b4252".into();
+        s.header_opacity = 230;
+        s.original_color = "#d8dee9".into();
+        s.translation_color = "#eceff4".into();
+        s.timestamp_color = "#4c566a".into();
+    }),
+    ("monokai", |s| {
+        s.bg_color = "#272822".into();
+        s.bg_opacity = 235;
+        s.header_color = "#3e3d32".into();
+        s.header_opacity = 230;
+        s.original_color = "#f8f8f2".into();
+        s.translation_color = "#f8f8f2".into();
+        s.timestamp_color = "#75715e".into();
+    }),
+    ("solarized", |s| {
+        s.bg_color = "#002b36".into();
+        s.bg_opacity = 235;
+        s.header_color = "#073642".into();
+        s.header_opacity = 230;
+        s.original_color = "#839496".into();
+        s.translation_color = "#eee8d5".into();
+        s.timestamp_color = "#586e75".into();
+    }),
+    ("gruvbox", |s| {
+        s.bg_color = "#282828".into();
+        s.bg_opacity = 235;
+        s.header_color = "#3c3836".into();
+        s.header_opacity = 230;
+        s.original_color = "#ebdbb2".into();
+        s.translation_color = "#fbf1c7".into();
+        s.timestamp_color = "#928374".into();
+    }),
+    ("tokyo_night", |s| {
+        s.bg_color = "#1a1b26".into();
+        s.bg_opacity = 235;
+        s.header_color = "#24283b".into();
+        s.header_opacity = 230;
+        s.original_color = "#a9b1d6".into();
+        s.translation_color = "#c0caf5".into();
+        s.timestamp_color = "#565f89".into();
+    }),
+    ("catppuccin", |s| {
+        s.bg_color = "#1e1e2e".into();
+        s.bg_opacity = 235;
+        s.header_color = "#313244".into();
+        s.header_opacity = 230;
+        s.original_color = "#cdd6f4".into();
+        s.translation_color = "#cdd6f4".into();
+        s.timestamp_color = "#6c7086".into();
+    }),
+    ("one_dark", |s| {
+        s.bg_color = "#282c34".into();
+        s.bg_opacity = 235;
+        s.header_color = "#3e4452".into();
+        s.header_opacity = 230;
+        s.original_color = "#abb2bf".into();
+        s.translation_color = "#e5c07b".into();
+        s.timestamp_color = "#636d83".into();
+    }),
+    ("everforest", |s| {
+        s.bg_color = "#2d353b".into();
+        s.bg_opacity = 235;
+        s.header_color = "#343f44".into();
+        s.header_opacity = 230;
+        s.original_color = "#d3c6aa".into();
+        s.translation_color = "#d3c6aa".into();
+        s.timestamp_color = "#859289".into();
+    }),
+    ("kanagawa", |s| {
+        s.bg_color = "#1f1f28".into();
+        s.bg_opacity = 235;
+        s.header_color = "#2a2a37".into();
+        s.header_opacity = 230;
+        s.original_color = "#dcd7ba".into();
+        s.translation_color = "#dcd7ba".into();
+        s.timestamp_color = "#54546d".into();
+    }),
 ];
 
 /// 全部预设名（含 "default"）
-pub const PRESET_NAMES: &[&str] =
-    &["default", "transparent", "compact", "light", "dracula", "nord", "monokai",
-      "solarized", "gruvbox", "tokyo_night", "catppuccin", "one_dark", "everforest", "kanagawa"];
+pub const PRESET_NAMES: &[&str] = &[
+    "default",
+    "transparent",
+    "compact",
+    "light",
+    "dracula",
+    "nord",
+    "monokai",
+    "solarized",
+    "gruvbox",
+    "tokyo_night",
+    "catppuccin",
+    "one_dark",
+    "everforest",
+    "kanagawa",
+];
 
 /// 按预设名从 BASE 生成完整 Style（面板切换预设用，M4.3 消费）
 pub fn preset_style(name: &str) -> Style {

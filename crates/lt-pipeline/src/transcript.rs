@@ -80,7 +80,10 @@ impl TranscriptWriter {
         }
         g.pending.insert(
             msg_id,
-            Pending { timestamp: timestamp.to_string(), original: original.to_string() },
+            Pending {
+                timestamp: timestamp.to_string(),
+                original: original.to_string(),
+            },
         );
         write_kind(&mut g, "original", &format!("[{timestamp}] {original}\n"));
     }
@@ -104,7 +107,11 @@ impl TranscriptWriter {
                 write_kind(&mut g, "all", &format!("[{ts}] -> {translation}\n\n"));
             }
             Some(p) => {
-                write_kind(&mut g, "translation", &format!("[{}] {translation}\n", p.timestamp));
+                write_kind(
+                    &mut g,
+                    "translation",
+                    &format!("[{}] {translation}\n", p.timestamp),
+                );
                 write_kind(
                     &mut g,
                     "all",
@@ -124,7 +131,11 @@ impl TranscriptWriter {
                 if !g.opened {
                     open_session(&self.base_dir, &mut g);
                 }
-                write_kind(&mut g, "all", &format!("[{}] {}\n\n", p.timestamp, p.original));
+                write_kind(
+                    &mut g,
+                    "all",
+                    &format!("[{}] {}\n\n", p.timestamp, p.original),
+                );
             }
         }
     }
@@ -145,7 +156,10 @@ impl TranscriptWriter {
 /// 打开会话三文件（append + 首行会话头；对照 _open_session_locked）
 fn open_session(base_dir: &Path, g: &mut Inner) {
     if let Err(e) = std::fs::create_dir_all(base_dir) {
-        tracing::error!("Failed to create transcript dir {}: {e}", base_dir.display());
+        tracing::error!(
+            "Failed to create transcript dir {}: {e}",
+            base_dir.display()
+        );
         return;
     }
     let session_ts = chrono::Local::now().format("%Y%m%d_%H%M%S");
@@ -153,7 +167,11 @@ fn open_session(base_dir: &Path, g: &mut Inner) {
     for kind in KINDS {
         let path = base_dir.join(format!("livetrans_{session_ts}_{kind}.txt"));
         // 追加模式（会话重开不覆盖）+ 即写即刷（tail -f 可用）
-        match std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        match std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+        {
             Ok(mut fp) => {
                 let _ = writeln!(fp, "# Session started at {header_ts}");
                 g.files.insert(kind, Some(fp));
@@ -222,7 +240,10 @@ mod tests {
         tw.write_original(7, "08:00:01", "hello");
         tw.write_translation(7, "你好");
         let all = read(&dir, "all");
-        assert!(all.contains("[08:00:01] hello\n  -> 你好\n\n"), "all: {all}");
+        assert!(
+            all.contains("[08:00:01] hello\n  -> 你好\n\n"),
+            "all: {all}"
+        );
         let trans = read(&dir, "translation");
         assert!(trans.contains("[08:00:01] 你好\n"));
     }

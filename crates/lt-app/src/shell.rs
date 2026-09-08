@@ -25,7 +25,12 @@ impl AppShell {
         proxy: EventLoopProxy<UiMsg>,
         start_settings: Option<Settings>,
     ) -> Self {
-        let mut shell = Self { ui, proxy, pipeline: None, started: false };
+        let mut shell = Self {
+            ui,
+            proxy,
+            pipeline: None,
+            started: false,
+        };
         if let Some(s) = start_settings {
             shell.start_pipeline(s);
         }
@@ -156,7 +161,13 @@ impl AppShell {
                     tracing::error!("设置保存失败: {e:#}");
                 }
             }
-            Cmd::SwitchEngine { engine, funasr_model, whisper_model_size, hub: _, language } => {
+            Cmd::SwitchEngine {
+                engine,
+                funasr_model,
+                whisper_model_size,
+                hub: _,
+                language,
+            } => {
                 if let Some(p) = self.pipeline.as_ref() {
                     p.switch_engine(&engine, &funasr_model, &whisper_model_size, &language);
                 }
@@ -233,7 +244,6 @@ impl AppShell {
     }
 }
 
-
 impl ApplicationHandler<UiMsg> for AppShell {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         self.ui.resumed(event_loop);
@@ -273,7 +283,6 @@ impl ApplicationHandler<UiMsg> for AppShell {
         }
         self.ui.user_event(event_loop, event);
     }
-
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         self.ui.about_to_wait(event_loop);

@@ -24,8 +24,11 @@ fn sample(seconds: f64) -> Vec<f32> {
 
 #[test]
 fn full_command_roundtrip() {
-    let mut c = AsrWorkerClient::spawn_program(&fake_worker_path(), fake_config("Echo", serde_json::json!({})))
-        .expect("spawn");
+    let mut c = AsrWorkerClient::spawn_program(
+        &fake_worker_path(),
+        fake_config("Echo", serde_json::json!({})),
+    )
+    .expect("spawn");
     assert_eq!(c.status(), Status::Starting);
 
     let ready = c.wait_ready().expect("ready");
@@ -49,7 +52,10 @@ fn full_command_roundtrip() {
 fn crash_during_transcribe_reports_exited() {
     let mut c = AsrWorkerClient::spawn_program(
         &fake_worker_path(),
-        fake_config("Crash", serde_json::json!({"fake": {"crash_on_transcribe": true}})),
+        fake_config(
+            "Crash",
+            serde_json::json!({"fake": {"crash_on_transcribe": true}}),
+        ),
     )
     .expect("spawn");
     c.wait_ready().expect("ready");

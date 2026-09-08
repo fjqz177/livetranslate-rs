@@ -30,7 +30,10 @@ pub enum TranslateError {
 impl TranslateError {
     /// 是否属于"预期内"错误（原版按 warning 记日志，不吐堆栈）
     pub fn is_expected(&self) -> bool {
-        !matches!(self, TranslateError::Other(_) | TranslateError::Repetition(_))
+        !matches!(
+            self,
+            TranslateError::Other(_) | TranslateError::Repetition(_)
+        )
     }
 
     /// UI 渲染文本（原版 `f"[error: {e}]"`）
@@ -78,7 +81,9 @@ fn classify_stream_error(e: StreamError) -> TranslateError {
     match e {
         // SSE 流中断/解析失败 → 连接类（reqwest 读超时仍会以 Reqwest 变体冒泡，
         // 不会落到这里）
-        StreamError::EventStream(msg) => TranslateError::Connection(format!("stream failed: {msg}")),
+        StreamError::EventStream(msg) => {
+            TranslateError::Connection(format!("stream failed: {msg}"))
+        }
         StreamError::UnknownEvent(ev) => {
             TranslateError::Other(format!("unknown stream event: {}", ev.event))
         }
@@ -91,7 +96,10 @@ mod tests {
 
     #[test]
     fn ui_text_wraps_in_error_tag() {
-        let e = TranslateError::Status { code: 500, message: "boom".into() };
+        let e = TranslateError::Status {
+            code: 500,
+            message: "boom".into(),
+        };
         assert_eq!(e.ui_text(), "[error: api error 500: boom]");
     }
 
@@ -99,8 +107,16 @@ mod tests {
     fn expected_classification() {
         assert!(TranslateError::Connection("x".into()).is_expected());
         assert!(TranslateError::Timeout("x".into()).is_expected());
-        assert!(TranslateError::Auth { code: 401, message: "x".into() }.is_expected());
-        assert!(TranslateError::Status { code: 500, message: "x".into() }.is_expected());
+        assert!(TranslateError::Auth {
+            code: 401,
+            message: "x".into()
+        }
+        .is_expected());
+        assert!(TranslateError::Status {
+            code: 500,
+            message: "x".into()
+        }
+        .is_expected());
         assert!(!TranslateError::Other("x".into()).is_expected());
         assert!(!TranslateError::Repetition("x".into()).is_expected());
     }

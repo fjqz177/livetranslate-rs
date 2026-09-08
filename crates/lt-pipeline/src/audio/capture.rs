@@ -42,7 +42,8 @@ impl InterimControl {
     /// 重开从零起算（对齐 vad_flush 复位语义）；开启时不清（原版同）。
     pub fn set(&self, enabled: bool, interval: f32) {
         self.enabled.store(enabled, Ordering::Relaxed);
-        self.interval_bits.store(interval.to_bits(), Ordering::Relaxed);
+        self.interval_bits
+            .store(interval.to_bits(), Ordering::Relaxed);
         if !enabled {
             self.last_interim_samples.store(0, Ordering::Relaxed);
             self.last_check_ms.store(0, Ordering::Relaxed);
@@ -226,7 +227,12 @@ mod tests {
     ) {
         let q = Arc::new(BoundedDropQueue::new(100, "test-chunk"));
         let seg = Arc::new(BoundedDropQueue::new(16, "test-seg"));
-        (q, seg, Arc::new(Mutex::new(Vec::new())), Arc::new(AtomicBool::new(false)))
+        (
+            q,
+            seg,
+            Arc::new(Mutex::new(Vec::new())),
+            Arc::new(AtomicBool::new(false)),
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -262,7 +268,14 @@ mod tests {
     fn monitor_precedes_segment_and_chunk_rms_used() {
         let (q, seg_tx, monitors, paused) = setup();
         let vad = VadProcessor::new(Burst(40.into()), 16000, 0.5, 1.0, 15.0, 0.032);
-        let (h, running) = spawn(q.clone(), seg_tx.clone(), monitors.clone(), paused, vad, Default::default());
+        let (h, running) = spawn(
+            q.clone(),
+            seg_tx.clone(),
+            monitors.clone(),
+            paused,
+            vad,
+            Default::default(),
+        );
         // chunk 值 0.5 → rms=0.5（monitor 回调应携带）
         for _ in 0..65 {
             q.push((vec![0.5f32; 512], Some(0.25f32)));
@@ -290,13 +303,23 @@ mod tests {
         let (q, seg_tx, monitors, paused) = setup();
         paused.store(true, Ordering::Relaxed);
         let vad = VadProcessor::new(Zero, 16000, 0.5, 1.0, 15.0, 0.032);
-        let (h, running) = spawn(q.clone(), seg_tx.clone(), monitors.clone(), paused, vad, Default::default());
+        let (h, running) = spawn(
+            q.clone(),
+            seg_tx.clone(),
+            monitors.clone(),
+            paused,
+            vad,
+            Default::default(),
+        );
         for _ in 0..10 {
             q.push((vec![0.1f32; 512], None));
         }
         std::thread::sleep(Duration::from_millis(200));
         assert!(seg_tx.is_empty(), "暂停时不应产出任何段");
-        assert!(monitors.lock().unwrap().is_empty(), "暂停时不应有任何监视回调");
+        assert!(
+            monitors.lock().unwrap().is_empty(),
+            "暂停时不应有任何监视回调"
+        );
         running.store(true, Ordering::Relaxed);
         let _ = h.join();
     }
@@ -304,8 +327,13 @@ mod tests {
     #[test]
     fn timeout_feeds_silence_to_advance_vad() {
         // 不往队列放数据，VAD 已有缓冲 → 超时路径喂静音收段
-        let q = Arc::new(BoundedDropQueue::<(Vec<f32>, Option<f32>)>::new(100, "test-chunk"));
-        let seg_tx = Arc::new(BoundedDropQueue::<(SegmentSource, Vec<f32>)>::new(16, "test-seg"));
+        let q = Arc::new(BoundedDropQueue::<(Vec<f32>, Option<f32>)>::new(
+            100,
+            "test-chunk",
+        ));
+        let seg_tx = Arc::new(BoundedDropQueue::<(SegmentSource, Vec<f32>)>::new(
+            16, "test-seg",
+        ));
         let paused = Arc::new(AtomicBool::new(false));
         let mut vad = VadProcessor::new(Burst(40.into()), 16000, 0.5, 1.0, 15.0, 0.032);
         let chunk = vec![0.1f32; 512];
@@ -341,10 +369,18 @@ mod tests {
     #[test]
     fn interim_due_truth_table() {
         const NOW: u64 = 1_700_000_000_000; // 任意 epoch 毫秒
-        // 全条件满足（cooldown 从未触发过 → last_check_ms=0 视为远超冷却）
+                                            // 全条件满足（cooldown 从未触发过 → last_check_ms=0 视为远超冷却）
         assert!(interim_due(true, true, 2.0, 16000 * 3, 16000, NOW, 0));
         // 冷却恰好 1s → 通过（原版 >= 1.0）
-        assert!(interim_due(true, true, 2.0, 16000 * 3, 16000, NOW, NOW - 1_000));
+        assert!(interim_due(
+            true,
+            true,
+            2.0,
+            16000 * 3,
+            16000,
+            NOW,
+            NOW - 1_000
+        ));
         // 开关关 → false
         assert!(!interim_due(false, true, 2.0, 16000 * 3, 0, NOW, 0));
         // 不在说话 → false
@@ -356,7 +392,15 @@ mod tests {
         // 距上次消费不足一个间隔（elapsed < interval）→ false
         assert!(!interim_due(true, true, 2.0, 16000 * 3, 16000 * 2, NOW, 0));
         // 冷却不足 1s → false
-        assert!(!interim_due(true, true, 2.0, 16000 * 3, 16000, NOW, NOW - 999));
+        assert!(!interim_due(
+            true,
+            true,
+            2.0,
+            16000 * 3,
+            16000,
+            NOW,
+            NOW - 999
+        ));
     }
 
     #[test]
@@ -386,7 +430,14 @@ mod tests {
         let vad = VadProcessor::new(Burst(200.into()), 16000, 0.5, 1.0, 15.0, 0.032);
         let interim = Arc::new(InterimControl::default());
         interim.set(true, 1.0);
-        let (h, running) = spawn(q.clone(), seg_tx.clone(), _monitors, paused, vad, interim.clone());
+        let (h, running) = spawn(
+            q.clone(),
+            seg_tx.clone(),
+            _monitors,
+            paused,
+            vad,
+            interim.clone(),
+        );
         for _ in 0..80 {
             q.push((vec![0.5f32; 512], None)); // 80×512 = 40960 ≈ 2.6s
         }
@@ -396,7 +447,10 @@ mod tests {
         while std::time::Instant::now() < deadline {
             match seg_tx.pop_timeout(Duration::from_millis(300)) {
                 Some((SegmentSource::Interim, audio)) => {
-                    assert!(audio.is_empty(), "interim 标记必须为空音频（原版 (\"interim\", None)）");
+                    assert!(
+                        audio.is_empty(),
+                        "interim 标记必须为空音频（原版 (\"interim\", None)）"
+                    );
                     got_interim = true;
                     break;
                 }
@@ -418,7 +472,14 @@ mod tests {
         // 未启用：即便长语音也不产 interim 标记
         let vad = VadProcessor::new(Burst(200.into()), 16000, 0.5, 1.0, 15.0, 0.032);
         let interim = Arc::new(InterimControl::default());
-        let (h, running) = spawn(q.clone(), seg_tx.clone(), _monitors.clone(), paused.clone(), vad, interim);
+        let (h, running) = spawn(
+            q.clone(),
+            seg_tx.clone(),
+            _monitors.clone(),
+            paused.clone(),
+            vad,
+            interim,
+        );
         for _ in 0..80 {
             q.push((vec![0.5f32; 512], None));
         }
@@ -432,7 +493,14 @@ mod tests {
         let vad2 = VadProcessor::new(Zero, 16000, 0.5, 1.0, 15.0, 0.032);
         let interim2 = Arc::new(InterimControl::default());
         interim2.set(true, 1.0);
-        let (h2, running2) = spawn(q2.clone(), seg_tx2.clone(), monitors2, paused2, vad2, interim2);
+        let (h2, running2) = spawn(
+            q2.clone(),
+            seg_tx2.clone(),
+            monitors2,
+            paused2,
+            vad2,
+            interim2,
+        );
         for _ in 0..40 {
             q2.push((vec![0.0f32; 512], None));
         }

@@ -28,7 +28,10 @@ pub fn ensure_ort_dylib() -> anyhow::Result<()> {
             let target = dir.join("onnxruntime.dll");
             // 尺寸一致视为已解压（版本随 exe 发布更新时删除旧文件重新解压）
             let need = !target.is_file()
-                || std::fs::metadata(&target).map(|m| m.len() as usize).unwrap_or(0) != ORT_DLL.len();
+                || std::fs::metadata(&target)
+                    .map(|m| m.len() as usize)
+                    .unwrap_or(0)
+                    != ORT_DLL.len();
             if need {
                 let tmp = target.with_extension("dll.tmp");
                 std::fs::write(&tmp, ORT_DLL)?;
@@ -170,7 +173,9 @@ pub fn make_confidence_source(
     energy_threshold: f64,
 ) -> Box<dyn ConfidenceSource + Send> {
     match mode {
-        "energy" => Box::new(EnergyVad { threshold: energy_threshold }),
+        "energy" => Box::new(EnergyVad {
+            threshold: energy_threshold,
+        }),
         "disabled" => Box::new(DisabledVad),
         _ => match SileroVad::new() {
             Ok(v) => Box::new(v),
@@ -186,13 +191,13 @@ pub fn make_confidence_source(
 
 #[derive(Debug, Clone)]
 pub struct VadSettings {
-    pub mode: String,               // silero | energy | disabled
-    pub threshold: f64,             // silero 阈值
-    pub energy_threshold: f64,      // energy 阈值
-    pub min_speech_duration: f64,   // 秒
-    pub max_speech_duration: f64,   // 秒
-    pub silence_mode: String,       // auto | fixed
-    pub silence_duration: f64,      // 秒
+    pub mode: String,             // silero | energy | disabled
+    pub threshold: f64,           // silero 阈值
+    pub energy_threshold: f64,    // energy 阈值
+    pub min_speech_duration: f64, // 秒
+    pub max_speech_duration: f64, // 秒
+    pub silence_mode: String,     // auto | fixed
+    pub silence_duration: f64,    // 秒
 }
 
 impl Default for VadSettings {
@@ -322,9 +327,7 @@ impl<C: ConfidenceSource> VadProcessor<C> {
         let target = self.adaptive_min.max(self.adaptive_max.min(p75 * 1.2));
         let new_limit = self.seconds_to_chunks(target);
         if new_limit != self.silence_limit {
-            tracing::debug!(
-                "Adaptive silence: {target:.2}s ({new_limit} chunks), P75={p75:.2}s"
-            );
+            tracing::debug!("Adaptive silence: {target:.2}s ({new_limit} chunks), P75={p75:.2}s");
             self.silence_limit = new_limit;
         }
     }
@@ -349,7 +352,8 @@ impl<C: ConfidenceSource> VadProcessor<C> {
 
     /// 对齐原版 update_settings：mode/threshold/energy/min/max/silence 全量热更新。
     /// 模式切换时同步替换置信度源的行为由调用方（持有源）负责；本结构只更新阈值语义。
-    pub fn update_settings(&mut self, s: &VadSettings) {        self.mode = s.mode.clone();
+    pub fn update_settings(&mut self, s: &VadSettings) {
+        self.mode = s.mode.clone();
         self.threshold = s.threshold;
         self.energy_threshold = s.energy_threshold;
         self.min_speech_samples = (s.min_speech_duration * self.sample_rate as f64) as usize;
@@ -361,8 +365,11 @@ impl<C: ConfidenceSource> VadProcessor<C> {
         }
         tracing::info!(
             "VAD settings updated: mode={}, threshold={}, silence={} ({} chunks = {:.2}s)",
-            self.mode, self.threshold, self.silence_mode,
-            self.silence_limit, self.silence_limit as f64 * self.chunk_duration
+            self.mode,
+            self.threshold,
+            self.silence_mode,
+            self.silence_limit,
+            self.silence_limit as f64 * self.chunk_duration
         );
     }
 
@@ -395,13 +402,10 @@ impl<C: ConfidenceSource> VadProcessor<C> {
 
     /// 主入口：喂一个 chunk，产出完成的段（无则 None）
     pub fn process_chunk(&mut self, chunk: &[f32]) -> Option<Vec<f32>> {
-        let confidence = self
-            .conf
-            .confidence(chunk)
-            .unwrap_or_else(|e| {
-                tracing::warn!("VAD 置信度计算失败: {e:#}");
-                0.0
-            });
+        let confidence = self.conf.confidence(chunk).unwrap_or_else(|e| {
+            tracing::warn!("VAD 置信度计算失败: {e:#}");
+            0.0
+        });
         self.last_confidence = confidence;
 
         let effective_threshold = self.effective_threshold();
@@ -488,10 +492,7 @@ impl<C: ConfidenceSource> VadProcessor<C> {
             .map(|i| {
                 let lo = i.saturating_sub(half);
                 let hi = (i + half + 1).min(n);
-                self.confidence_history[lo..hi]
-                    .iter()
-                    .sum::<f64>()
-                    / (hi - lo) as f64
+                self.confidence_history[lo..hi].iter().sum::<f64>() / (hi - lo) as f64
             })
             .collect();
 
@@ -542,8 +543,7 @@ impl<C: ConfidenceSource> VadProcessor<C> {
         let idx = split_idx as usize;
         let remain = self.speech_buffer.split_off(idx);
         let remain_confs = self.confidence_history.split_off(idx);
-        let first_samples = self.speech_samples
-            - remain.iter().map(|b| b.len()).sum::<usize>();
+        let first_samples = self.speech_samples - remain.iter().map(|b| b.len()).sum::<usize>();
         let remain_samples = remain.iter().map(|b| b.len()).sum::<usize>();
 
         tracing::info!(
@@ -715,7 +715,10 @@ mod tests {
     }
     impl Script {
         fn new(confs: &[f64]) -> Self {
-            Self { confs: confs.to_vec(), i: 0 }
+            Self {
+                confs: confs.to_vec(),
+                i: 0,
+            }
         }
     }
     impl ConfidenceSource for Script {
@@ -816,8 +819,11 @@ mod tests {
         assert!(!segs.is_empty(), "达到 max 必须出段");
         // 段边界应落在谷底附近（第 54-58 chunk），且余量仍在积累
         let first_samples: usize = segs[0].len();
-        assert!(first_samples >= 54 * 512 && first_samples <= 58 * 512,
-            "split at {} samples, want near chunk 56", first_samples / 512);
+        assert!(
+            first_samples >= 54 * 512 && first_samples <= 58 * 512,
+            "split at {} samples, want near chunk 56",
+            first_samples / 512
+        );
         assert!(p.speech_samples > 0, "余量应保留");
     }
 
@@ -953,7 +959,10 @@ mod tests {
     #[test]
     fn clamp_max_speech_only_qwen3_and_only_down() {
         // AH-8/D-28：仅 qwen3 生效且只向下收敛（update_settings 之后调用可收敛）
-        let s = VadSettings { max_speech_duration: 30.0, ..Default::default() };
+        let s = VadSettings {
+            max_speech_duration: 30.0,
+            ..Default::default()
+        };
         let mut p = make(&[]);
         p.update_settings(&s);
         assert!(!p.clamp_max_speech("funasr", 15.0), "非 qwen3 不钳制");
@@ -984,11 +993,14 @@ mod tests {
         }
         let (_, _, gen2) = p2.peek_buffer().expect("说话中应有缓冲");
         p2.reset(); // 模拟识别期间 capture 线程侧收段（flush→reset）
-        // 新语音已开始积累（新代际）
+                    // 新语音已开始积累（新代际）
         for _ in 0..4 {
             p2.process_chunk(&chunk);
         }
-        assert!(!p2.trim_front_checked(512, gen2), "代际推进后裁剪必须被拒绝");
+        assert!(
+            !p2.trim_front_checked(512, gen2),
+            "代际推进后裁剪必须被拒绝"
+        );
         // 新段缓冲完好未裁（防误裁新段头部）
         assert_eq!(p2.speech_samples, 4 * 512);
     }

@@ -55,7 +55,10 @@ fn is_latin_terminator(c: char) -> bool {
 
 /// 右引号 / 右括号（CJK 终止符后允许吸收，归入当前句）
 fn is_closer(c: char) -> bool {
-    matches!(c, '」' | '』' | '）' | '】' | '〉' | '》' | '〕' | '"' | '\'' | ')' | ']' | '}')
+    matches!(
+        c,
+        '」' | '』' | '）' | '】' | '〉' | '》' | '〕' | '"' | '\'' | ')' | ']' | '}'
+    )
 }
 
 /// 终止符 '.' 之前紧邻的词是否为缩写（对照 pysbd 缩写保护）。
@@ -331,7 +334,10 @@ mod tests {
     fn split_english_abbreviation_protection() {
         // 对照 test_segmentation.py::test_adapter_handles_english_abbreviations
         let parts = split_sentences("Mr. Smith paid 3.5 dollars. Dr. Lee disagreed.", "en");
-        assert_eq!(parts, vec!["Mr. Smith paid 3.5 dollars.", "Dr. Lee disagreed."]);
+        assert_eq!(
+            parts,
+            vec!["Mr. Smith paid 3.5 dollars.", "Dr. Lee disagreed."]
+        );
     }
 
     #[test]
@@ -373,7 +379,10 @@ mod tests {
     fn split_japanese_basic() {
         // 对照 test_segmentation.py::test_adapter_keeps_pysbd_interface
         let parts = split_sentences("今日はいい天気ですね。散歩に行きましょう。", "ja");
-        assert_eq!(parts, vec!["今日はいい天気ですね。", "散歩に行きましょう。"]);
+        assert_eq!(
+            parts,
+            vec!["今日はいい天気ですね。", "散歩に行きましょう。"]
+        );
     }
 
     #[test]
@@ -577,7 +586,10 @@ mod tests {
     #[test]
     fn pending_merge_prepends_without_separator() {
         // 原版 L1508-1510：text = pending + text，中间无分隔符
-        assert_eq!(pending_merge("好的。", "Hello world."), "好的。Hello world.");
+        assert_eq!(
+            pending_merge("好的。", "Hello world."),
+            "好的。Hello world."
+        );
     }
 
     #[test]

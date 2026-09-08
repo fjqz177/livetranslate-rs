@@ -75,11 +75,20 @@ pub fn lang_options() -> Vec<(String, String)> {
 /// 语言码 → 下拉索引（未知/缺省回退 zh=2；原版 findData 失败停首项，
 /// 此处取更贴近默认配置的 zh。表序 = lt_i18n::LANGUAGES 跳过 auto：ja/en/zh…）
 pub fn lang_index_for(code: &str) -> usize {
-    lang_options().iter().position(|(c, _)| c == code).unwrap_or(2)
+    lang_options()
+        .iter()
+        .position(|(c, _)| c == code)
+        .unwrap_or(2)
 }
 
 /// 通用"下拉 + 索引"（选中项变化时返回新索引；样式页复用）
-pub fn combo_index(ui: &mut Ui, id: &str, current: usize, labels: &[String], width: f32) -> Option<usize> {
+pub fn combo_index(
+    ui: &mut Ui,
+    id: &str,
+    current: usize,
+    labels: &[String],
+    width: f32,
+) -> Option<usize> {
     let mut next = current;
     egui::ComboBox::from_id_salt(id)
         .selected_text(labels[current].clone())
@@ -124,35 +133,69 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
         // 启用字幕窗（settings.subtitle_mode.enabled；联动字幕窗显隐）
         let mut enabled = state.settings.subtitle_mode.enabled;
         if ui
-            .add(egui::Checkbox::new(&mut enabled, RichText::new(lt_i18n::t("subwin_show")).color(pal.text)))
+            .add(egui::Checkbox::new(
+                &mut enabled,
+                RichText::new(lt_i18n::t("subwin_show")).color(pal.text),
+            ))
             .changed()
         {
             state.settings.subtitle_mode.enabled = enabled;
             // 原版 subtitle_settings_changed → app_shell 按开关显隐字幕窗
-            state.enqueue_action(crate::state::WinId::Panel, crate::state::WinAction::ToggleSubtitle);
+            state.enqueue_action(
+                crate::state::WinId::Panel,
+                crate::state::WinAction::ToggleSubtitle,
+            );
             mark_settings_dirty(state);
         }
         // 显示句数 1..=10（原版 _sentences_spin）
         let mut v = state.settings.subtitle_mode.sentences.clamp(1, 10) as i32;
-        if number_row(ui, "sub_sentences", &lt_i18n::t("subwin_sentences"), &mut v, 1..=10, "") {
+        if number_row(
+            ui,
+            "sub_sentences",
+            &lt_i18n::t("subwin_sentences"),
+            &mut v,
+            1..=10,
+            "",
+        ) {
             state.settings.subtitle_mode.sentences = v as u32;
             mark_settings_dirty(state);
         }
         // 窗口宽度 200..=3840 px（原版 _width_spin）
         let mut v = state.settings.subtitle_mode.window_width.clamp(200, 3840) as i32;
-        if number_row(ui, "sub_width", &lt_i18n::t("subwin_window_width"), &mut v, 200..=3840, " px") {
+        if number_row(
+            ui,
+            "sub_width",
+            &lt_i18n::t("subwin_window_width"),
+            &mut v,
+            200..=3840,
+            " px",
+        ) {
             state.settings.subtitle_mode.window_width = v as u32;
             mark_settings_dirty(state);
         }
         // 行间距 0..=40 px
         let mut v = state.settings.subtitle_mode.line_spacing.min(40) as i32;
-        if number_row(ui, "sub_spacing", &lt_i18n::t("subwin_line_spacing"), &mut v, 0..=40, " px") {
+        if number_row(
+            ui,
+            "sub_spacing",
+            &lt_i18n::t("subwin_line_spacing"),
+            &mut v,
+            0..=40,
+            " px",
+        ) {
             state.settings.subtitle_mode.line_spacing = v as u32;
             mark_settings_dirty(state);
         }
         // 圆角 0..=30 px
         let mut v = state.settings.subtitle_mode.border_radius.min(30) as i32;
-        if number_row(ui, "sub_radius", &lt_i18n::t("subwin_border_radius"), &mut v, 0..=30, " px") {
+        if number_row(
+            ui,
+            "sub_radius",
+            &lt_i18n::t("subwin_border_radius"),
+            &mut v,
+            0..=30,
+            " px",
+        ) {
             state.settings.subtitle_mode.border_radius = v as u32;
             mark_settings_dirty(state);
         }
@@ -165,7 +208,10 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
                 )
                 .clicked()
             {
-                state.enqueue_action(crate::state::WinId::Subtitle, crate::state::WinAction::ResetSubtitlePos);
+                state.enqueue_action(
+                    crate::state::WinId::Subtitle,
+                    crate::state::WinAction::ResetSubtitlePos,
+                );
             }
         });
     });
@@ -182,13 +228,20 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
             }
         });
         ui.horizontal(|ui| {
-            ui.label(RichText::new(format!("{} ", lt_i18n::t("subwin_bg_opacity"))).color(pal.text));
-            let mut pct = (f64::from(state.settings.subtitle_mode.bg_opacity) / 255.0 * 100.0).round() as i32;
+            ui.label(
+                RichText::new(format!("{} ", lt_i18n::t("subwin_bg_opacity"))).color(pal.text),
+            );
+            let mut pct =
+                (f64::from(state.settings.subtitle_mode.bg_opacity) / 255.0 * 100.0).round() as i32;
             let resp = ui
-                .add(egui::Slider::new(&mut pct, 0..=100).custom_formatter(|v, _| format!("{v:.0}%")))
+                .add(
+                    egui::Slider::new(&mut pct, 0..=100)
+                        .custom_formatter(|v, _| format!("{v:.0}%")),
+                )
                 .on_hover_text(lt_i18n::t("subwin_bg_opacity_hint"));
             if resp.changed() {
-                state.settings.subtitle_mode.bg_opacity = (f64::from(pct.clamp(0, 100)) / 100.0 * 255.0).round() as u32;
+                state.settings.subtitle_mode.bg_opacity =
+                    (f64::from(pct.clamp(0, 100)) / 100.0 * 255.0).round() as u32;
                 mark_settings_dirty(state);
             }
         });
@@ -213,8 +266,10 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
         }
         // 隐藏动画（none/fade/slide_down 三项）
         let hide_anims = ["none", "fade", "slide_down"];
-        let labels: Vec<String> =
-            hide_anims.iter().map(|a| lt_i18n::t(&format!("subwin_anim_{a}"))).collect();
+        let labels: Vec<String> = hide_anims
+            .iter()
+            .map(|a| lt_i18n::t(&format!("subwin_anim_{a}")))
+            .collect();
         let idx = hide_anims
             .iter()
             .position(|a| *a == state.settings.subtitle_mode.auto_hide_animation)
@@ -224,22 +279,39 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
             mark_settings_dirty(state);
         }
         // 时长 50..=3000 ms
-        let mut v = state.settings.subtitle_mode.auto_hide_duration.clamp(50, 3000) as i32;
-        if number_row(ui, "sub_hide_dur", &lt_i18n::t("subwin_hide_duration"), &mut v, 50..=3000, " ms") {
+        let mut v = state
+            .settings
+            .subtitle_mode
+            .auto_hide_duration
+            .clamp(50, 3000) as i32;
+        if number_row(
+            ui,
+            "sub_hide_dur",
+            &lt_i18n::t("subwin_hide_duration"),
+            &mut v,
+            50..=3000,
+            " ms",
+        ) {
             state.settings.subtitle_mode.auto_hide_duration = v as u32;
             mark_settings_dirty(state);
         }
         // 鼠标穿透（宿主 500ms 断言轮询按此开关续拍）
         let mut ct = state.settings.subtitle_mode.click_through;
         if ui
-            .add(
-                egui::Checkbox::new(&mut ct, RichText::new(lt_i18n::t("subwin_click_through")).color(pal.text)),
-            )
+            .add(egui::Checkbox::new(
+                &mut ct,
+                RichText::new(lt_i18n::t("subwin_click_through")).color(pal.text),
+            ))
             .on_hover_text(lt_i18n::t("subwin_click_through_hint"))
             .changed()
         {
             state.settings.subtitle_mode.click_through = ct;
-            if ct && *state.visible.get(&crate::state::WinId::Subtitle).unwrap_or(&false) {
+            if ct
+                && *state
+                    .visible
+                    .get(&crate::state::WinId::Subtitle)
+                    .unwrap_or(&false)
+            {
                 state.schedule_subtitle_window_poll();
             }
             mark_settings_dirty(state);
@@ -279,7 +351,10 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             if ui
-                .add(egui::Button::new(RichText::new(lt_i18n::t("btn_add")).size(12.5)).corner_radius(6.0))
+                .add(
+                    egui::Button::new(RichText::new(lt_i18n::t("btn_add")).size(12.5))
+                        .corner_radius(6.0),
+                )
                 .clicked()
             {
                 let idx = state.settings.subtitle_mode.lines.len();
@@ -289,7 +364,8 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
             if ui
                 .add_enabled(
                     target.is_some(),
-                    egui::Button::new(RichText::new(lt_i18n::t("btn_edit")).size(12.5)).corner_radius(6.0),
+                    egui::Button::new(RichText::new(lt_i18n::t("btn_edit")).size(12.5))
+                        .corner_radius(6.0),
                 )
                 .clicked()
             {
@@ -304,7 +380,8 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
             if ui
                 .add_enabled(
                     can_remove,
-                    egui::Button::new(RichText::new(lt_i18n::t("btn_remove")).size(12.5)).corner_radius(6.0),
+                    egui::Button::new(RichText::new(lt_i18n::t("btn_remove")).size(12.5))
+                        .corner_radius(6.0),
                 )
                 .clicked()
             {
@@ -360,11 +437,16 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
 fn bg_image_row(ui: &mut Ui, state: &mut AppState) {
     ui.horizontal(|ui| {
         ui.label(
-            RichText::new(format!("{} ", lt_i18n::t("subwin_bg_image"))).color(ui.visuals().text_color()),
+            RichText::new(format!("{} ", lt_i18n::t("subwin_bg_image")))
+                .color(ui.visuals().text_color()),
         );
         let mut img = state.settings.subtitle_mode.bg_image.clone();
         if ui
-            .add(egui::TextEdit::singleline(&mut img).hint_text("D:/bg.png").desired_width(260.0))
+            .add(
+                egui::TextEdit::singleline(&mut img)
+                    .hint_text("D:/bg.png")
+                    .desired_width(260.0),
+            )
             .changed()
         {
             state.settings.subtitle_mode.bg_image = img.trim().to_string();
@@ -441,7 +523,9 @@ fn render_line_editor(ui: &mut Ui, state: &mut AppState) {
     {
         // panel.line_editor 与 fonts 是 AppState 不同字段，可并行借用
         let (panel, fonts) = (&mut state.panel, &mut state.fonts);
-        let Some(ed) = panel.line_editor.as_mut() else { return };
+        let Some(ed) = panel.line_editor.as_mut() else {
+            return;
+        };
         egui::Window::new(RichText::new(lt_i18n::t("subwin_edit_line")).strong())
             .open(&mut open)
             .collapsible(false)
@@ -502,14 +586,21 @@ fn line_editor_fields(
 
             // 类型（原文/翻译）
             ui.label(lt_i18n::t("subwin_line_type"));
-            let types = [lt_i18n::t("subwin_original"), lt_i18n::t("subwin_translation")];
-            if let Some(next) = combo_index(ui, "line_edit_type", ed.line_type_index, &types, 200.0) {
+            let types = [
+                lt_i18n::t("subwin_original"),
+                lt_i18n::t("subwin_translation"),
+            ];
+            if let Some(next) = combo_index(ui, "line_edit_type", ed.line_type_index, &types, 200.0)
+            {
                 ed.line_type_index = next;
             }
             ui.end_row();
 
             // 目标语言（仅翻译行可编辑，原版 _update_lang_visibility）
-            ui.add_enabled(ed.line_type_index == 1, egui::Label::new(lt_i18n::t("subwin_target_lang")));
+            ui.add_enabled(
+                ed.line_type_index == 1,
+                egui::Label::new(lt_i18n::t("subwin_target_lang")),
+            );
             let opts = lang_options();
             let idx = opts.iter().position(|(c, _)| *c == ed.lang).unwrap_or(2);
             let labels: Vec<String> = opts.iter().map(|(_, l)| l.clone()).collect();
@@ -544,7 +635,11 @@ fn line_editor_fields(
 
             // 字号 8..=120 pt
             ui.label(lt_i18n::t("subwin_font_size"));
-            ui.add(egui::DragValue::new(&mut ed.font_size).range(8..=120).suffix(" pt"));
+            ui.add(
+                egui::DragValue::new(&mut ed.font_size)
+                    .range(8..=120)
+                    .suffix(" pt"),
+            );
             ui.end_row();
 
             // 颜色
@@ -554,7 +649,10 @@ fn line_editor_fields(
 
             // 不透明度 0-100%
             ui.label(lt_i18n::t("subwin_opacity"));
-            ui.add(egui::Slider::new(&mut ed.opacity_pct, 0..=100).custom_formatter(|v, _| format!("{v:.0}%")));
+            ui.add(
+                egui::Slider::new(&mut ed.opacity_pct, 0..=100)
+                    .custom_formatter(|v, _| format!("{v:.0}%")),
+            );
             ui.end_row();
 
             // 对齐
@@ -577,36 +675,61 @@ fn line_editor_fields(
             color_field(ui, "line_edit_outline_color", &mut ed.outline_color);
             ui.end_row();
             ui.label(lt_i18n::t("subwin_outline_width"));
-            ui.add(egui::DragValue::new(&mut ed.outline_width).range(0..=10).suffix(" px"));
+            ui.add(
+                egui::DragValue::new(&mut ed.outline_width)
+                    .range(0..=10)
+                    .suffix(" px"),
+            );
             ui.end_row();
 
             // 背景图片（文本 + 清除；图片文件选择按钮保留在页面级背景卡）
             ui.label(lt_i18n::t("subwin_bg_image"));
             ui.horizontal(|ui| {
                 ui.add(egui::TextEdit::singleline(&mut ed.bg_image).desired_width(170.0));
-                if ui.small_button(lt_i18n::t("subwin_bg_image_clear")).clicked() {
+                if ui
+                    .small_button(lt_i18n::t("subwin_bg_image_clear"))
+                    .clicked()
+                {
                     ed.bg_image.clear();
                 }
             });
             ui.end_row();
 
             // 入场/退场动画
-            let anim_labels: Vec<String> =
-                ANIM_VALUES.iter().map(|v| lt_i18n::t(&format!("subwin_anim_{v}"))).collect();
+            let anim_labels: Vec<String> = ANIM_VALUES
+                .iter()
+                .map(|v| lt_i18n::t(&format!("subwin_anim_{v}")))
+                .collect();
             ui.label(lt_i18n::t("subwin_entry_anim"));
-            if let Some(next) = combo_index(ui, "line_edit_entry", ed.entry_anim_index, &anim_labels, 200.0) {
+            if let Some(next) = combo_index(
+                ui,
+                "line_edit_entry",
+                ed.entry_anim_index,
+                &anim_labels,
+                200.0,
+            ) {
                 ed.entry_anim_index = next;
             }
             ui.end_row();
             ui.label(lt_i18n::t("subwin_exit_anim"));
-            if let Some(next) = combo_index(ui, "line_edit_exit", ed.exit_anim_index, &anim_labels, 200.0) {
+            if let Some(next) = combo_index(
+                ui,
+                "line_edit_exit",
+                ed.exit_anim_index,
+                &anim_labels,
+                200.0,
+            ) {
                 ed.exit_anim_index = next;
             }
             ui.end_row();
 
             // 动画时长 50..=3000 ms
             ui.label(lt_i18n::t("subwin_anim_duration"));
-            ui.add(egui::DragValue::new(&mut ed.animation_duration).range(50..=3000).suffix(" ms"));
+            ui.add(
+                egui::DragValue::new(&mut ed.animation_duration)
+                    .range(50..=3000)
+                    .suffix(" ms"),
+            );
             ui.end_row();
         });
 }
@@ -624,7 +747,10 @@ mod tests {
         let text = line_row_text(&line);
         assert!(text.starts_with("\u{2713}  |  "), "{text}");
         assert!(text.contains("(en)"), "翻译行带语言后缀: {text}");
-        assert!(text.contains("跟随（默认） 24pt") || text.contains("Follow (default) 24pt"), "{text}");
+        assert!(
+            text.contains("跟随（默认） 24pt") || text.contains("Follow (default) 24pt"),
+            "{text}"
+        );
         assert!(text.contains("#FFFFFF"), "{text}");
         assert!(!text.contains("subwin_"), "i18n 键应已解析: {text}");
         // 5 段：✓ | 类型(语言) | 字体 字号 | 颜色 | 对齐，+ 轮廓 = 6 段
@@ -690,13 +816,20 @@ mod tests {
         let ctx = egui::Context::default();
         let mut st = AppState::new(lt_proto::Settings::default());
         st.panel.page = crate::state::PanelPage::Subtitle;
-        st.panel.line_editor =
-            Some(LineEditState::new_edit(0, &st.settings.subtitle_mode.lines[0]));
+        st.panel.line_editor = Some(LineEditState::new_edit(
+            0,
+            &st.settings.subtitle_mode.lines[0],
+        ));
         for _ in 0..2 {
-            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| crate::windows::panel::panel_ui(ui, &mut st));
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                crate::windows::panel::panel_ui(ui, &mut st)
+            });
             assert!(!out.shapes.is_empty(), "行编辑器打开态应产出图元");
             out.textures_delta.clear();
         }
-        assert!(st.panel.line_editor.is_some(), "编辑器保持打开（状态未被意外消费）");
+        assert!(
+            st.panel.line_editor.is_some(),
+            "编辑器保持打开（状态未被意外消费）"
+        );
     }
 }

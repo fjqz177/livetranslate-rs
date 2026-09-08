@@ -30,7 +30,9 @@ impl MockServer {
                 let req_clone = req_clone.clone();
                 let handler = handler.clone();
                 std::thread::spawn(move || {
-                    let Ok(text) = read_request(&mut stream) else { return };
+                    let Ok(text) = read_request(&mut stream) else {
+                        return;
+                    };
                     req_clone.lock().unwrap().push(text.clone());
                     let resp = handler(&text);
                     let _ = stream.write_all(&resp);
@@ -40,7 +42,10 @@ impl MockServer {
                 });
             }
         });
-        Self { base_url: format!("http://127.0.0.1:{port}/v1"), requests }
+        Self {
+            base_url: format!("http://127.0.0.1:{port}/v1"),
+            requests,
+        }
     }
 
     fn requests(&self) -> Vec<String> {
@@ -153,7 +158,10 @@ fn error_response(status: u16, message: &str) -> Vec<u8> {
         401 => "401 Unauthorized",
         _ => "500 Internal Server Error",
     };
-    non_streaming_response(status_line, &json!({"error": {"message": message, "type": "invalid_request_error"}}))
+    non_streaming_response(
+        status_line,
+        &json!({"error": {"message": message, "type": "invalid_request_error"}}),
+    )
 }
 
 fn translator(base_url: &str) -> Translator {
@@ -225,8 +233,7 @@ fn stream_options_retracted_when_rejected() {
         }
     }));
     let t = translator(&server.base_url);
-    let result: Result<String, lt_translate::TranslateError> =
-        t.translate("hello", "en");
+    let result: Result<String, lt_translate::TranslateError> = t.translate("hello", "en");
     let text = result.expect("重试后应成功");
     assert_eq!(text, "ok");
     assert_eq!(t.last_usage(), (3, 2));
@@ -294,7 +301,10 @@ fn timeout_classified_when_server_stalls() {
         "实际: {err:?}"
     );
     assert!(err.is_expected());
-    assert_eq!(err.ui_text(), "[error: Translation exceeded 1s total timeout]");
+    assert_eq!(
+        err.ui_text(),
+        "[error: Translation exceeded 1s total timeout]"
+    );
 }
 
 #[test]
@@ -306,7 +316,10 @@ fn repetition_error_detected() {
     }));
     let t = translator(&server.base_url);
     let err = t.translate("hello", "en").expect_err("应检出重复");
-    assert!(matches!(err, lt_translate::TranslateError::Repetition(_)), "实际: {err:?}");
+    assert!(
+        matches!(err, lt_translate::TranslateError::Repetition(_)),
+        "实际: {err:?}"
+    );
 }
 
 #[test]
@@ -383,7 +396,10 @@ fn language_display_names_in_prompt() {
     t.translate("hello", "ja").unwrap();
     let body = request_body(&server.requests()[0]);
     let sys = body["messages"][0]["content"].as_str().unwrap();
-    assert!(sys.contains("Translate Japanese into Chinese"), "system prompt: {sys}");
+    assert!(
+        sys.contains("Translate Japanese into Chinese"),
+        "system prompt: {sys}"
+    );
 }
 
 #[test]
@@ -442,7 +458,10 @@ fn json_response_sends_json_schema_format() {
     t.translate("hello", "en").unwrap();
     let body = request_body(&server.requests()[0]);
     let sys = body["messages"][0]["content"].as_str().unwrap();
-    assert!(sys.contains("Respond in JSON format"), "system prompt: {sys}");
+    assert!(
+        sys.contains("Respond in JSON format"),
+        "system prompt: {sys}"
+    );
     let rf = &body["response_format"];
     assert_eq!(rf["type"], "json_schema");
     assert_eq!(rf["json_schema"]["name"], "translation");
@@ -506,7 +525,12 @@ fn benchmark_blocking_against_mock() {
         proxy: "none".into(),
         no_system_role: false,
     };
-    let results = lt_translate::bench::run_benchmark_blocking(&[model], "en", 5, "translate {source_lang} to {target_lang}: {text}");
+    let results = lt_translate::bench::run_benchmark_blocking(
+        &[model],
+        "en",
+        5,
+        "translate {source_lang} to {target_lang}: {text}",
+    );
     assert_eq!(results.len(), 1);
     assert!(results[0].error.is_none(), "error: {:?}", results[0].error);
     assert_eq!(results[0].rounds.len(), 5, "5 轮句组");

@@ -69,7 +69,14 @@ pub const FUNASR_NANO: ModelEntry = ModelEntry {
         "Qwen3-0.6B/tokenizer.json",
         "Qwen3-0.6B/vocab.json",
     ],
-    files_min_bytes: &[100_000_000, 150_000_000, 300_000_000, 1_000_000, 5_000_000, 1_000_000],
+    files_min_bytes: &[
+        100_000_000,
+        150_000_000,
+        300_000_000,
+        1_000_000,
+        5_000_000,
+        1_000_000,
+    ],
     files_sha256: &[
         "95e61cd0c9c3b9543339a4cf973c95c116815e745ccc1e0285cbd81f76d18644",
         "f36dea2e30fbc33b5db1d7a7265cc976c5e5586c77b042d5adb1ad27c72db422",
@@ -101,7 +108,14 @@ pub const QWEN3_ASR: ModelEntry = ModelEntry {
         "tokenizer/tokenizer_config.json",
         "tokenizer/vocab.json",
     ],
-    files_min_bytes: &[20_000_000, 90_000_000, 350_000_000, 1_000_000, 5_000, 1_000_000],
+    files_min_bytes: &[
+        20_000_000,
+        90_000_000,
+        350_000_000,
+        1_000_000,
+        5_000,
+        1_000_000,
+    ],
     // decoder 前缀 4f6885be5959ae26 与 docs/asr-engine-expansion.md §4.2 记录一致
     files_sha256: &[
         "d22dc4423e0940e49884e903d2ea2f7e5567c14fc1aed97e4e26d6b8f208ef9e",
@@ -146,16 +160,80 @@ pub fn whisper_ggml_file(size: &str) -> Option<&'static str> {
 /// estimated_bytes = 仓内实际文件字节数（HF API tree/main 实测，2026-09-06）；
 /// files_min_bytes = 实测半体积（完整下载必过阈）。
 pub const WHISPER_ENTRIES: [ModelEntry; 6] = [
-    ModelEntry { key: "tiny", display: "tiny", hf: Some("ggerganov/whisper.cpp"), ms: None, always_hf: true, estimated_bytes: 32_152_673, files: &["ggml-tiny-q5_1.bin"], files_min_bytes: &[16_076_336], files_sha256: &["818710568da3ca15689e31a743197b520007872ff9576237bda97bd1b469c3d7"] },
-    ModelEntry { key: "base", display: "base", hf: Some("ggerganov/whisper.cpp"), ms: None, always_hf: true, estimated_bytes: 59_707_625, files: &["ggml-base-q5_1.bin"], files_min_bytes: &[29_853_812], files_sha256: &[""] },
-    ModelEntry { key: "small", display: "small", hf: Some("ggerganov/whisper.cpp"), ms: None, always_hf: true, estimated_bytes: 190_085_487, files: &["ggml-small-q5_1.bin"], files_min_bytes: &[95_042_743], files_sha256: &[""] },
-    ModelEntry { key: "medium", display: "medium", hf: Some("ggerganov/whisper.cpp"), ms: None, always_hf: true, estimated_bytes: 539_212_467, files: &["ggml-medium-q5_0.bin"], files_min_bytes: &[269_606_233], files_sha256: &[""] },
-    ModelEntry { key: "large-v3", display: "large-v3", hf: Some("ggerganov/whisper.cpp"), ms: None, always_hf: true, estimated_bytes: 1_081_140_203, files: &["ggml-large-v3-q5_0.bin"], files_min_bytes: &[540_570_101], files_sha256: &[""] },
-    ModelEntry { key: "turbo", display: "turbo", hf: Some("ggerganov/whisper.cpp"), ms: None, always_hf: true, estimated_bytes: 574_041_195, files: &["ggml-large-v3-turbo-q5_0.bin"], files_min_bytes: &[287_020_597], files_sha256: &[""] },
+    ModelEntry {
+        key: "tiny",
+        display: "tiny",
+        hf: Some("ggerganov/whisper.cpp"),
+        ms: None,
+        always_hf: true,
+        estimated_bytes: 32_152_673,
+        files: &["ggml-tiny-q5_1.bin"],
+        files_min_bytes: &[16_076_336],
+        files_sha256: &["818710568da3ca15689e31a743197b520007872ff9576237bda97bd1b469c3d7"],
+    },
+    ModelEntry {
+        key: "base",
+        display: "base",
+        hf: Some("ggerganov/whisper.cpp"),
+        ms: None,
+        always_hf: true,
+        estimated_bytes: 59_707_625,
+        files: &["ggml-base-q5_1.bin"],
+        files_min_bytes: &[29_853_812],
+        files_sha256: &[""],
+    },
+    ModelEntry {
+        key: "small",
+        display: "small",
+        hf: Some("ggerganov/whisper.cpp"),
+        ms: None,
+        always_hf: true,
+        estimated_bytes: 190_085_487,
+        files: &["ggml-small-q5_1.bin"],
+        files_min_bytes: &[95_042_743],
+        files_sha256: &[""],
+    },
+    ModelEntry {
+        key: "medium",
+        display: "medium",
+        hf: Some("ggerganov/whisper.cpp"),
+        ms: None,
+        always_hf: true,
+        estimated_bytes: 539_212_467,
+        files: &["ggml-medium-q5_0.bin"],
+        files_min_bytes: &[269_606_233],
+        files_sha256: &[""],
+    },
+    ModelEntry {
+        key: "large-v3",
+        display: "large-v3",
+        hf: Some("ggerganov/whisper.cpp"),
+        ms: None,
+        always_hf: true,
+        estimated_bytes: 1_081_140_203,
+        files: &["ggml-large-v3-q5_0.bin"],
+        files_min_bytes: &[540_570_101],
+        files_sha256: &[""],
+    },
+    ModelEntry {
+        key: "turbo",
+        display: "turbo",
+        hf: Some("ggerganov/whisper.cpp"),
+        ms: None,
+        always_hf: true,
+        estimated_bytes: 574_041_195,
+        files: &["ggml-large-v3-turbo-q5_0.bin"],
+        files_min_bytes: &[287_020_597],
+        files_sha256: &[""],
+    },
 ];
 
 /// 合法 funasr 模型键（与 lt_proto::FUNASR_MODELS 对齐）
-pub const FUNASR_KEYS: [&str; 3] = ["sensevoice-small", "funasr-nano-2512", "funasr-mlt-nano-2512"];
+pub const FUNASR_KEYS: [&str; 3] = [
+    "sensevoice-small",
+    "funasr-nano-2512",
+    "funasr-mlt-nano-2512",
+];
 
 /// 按键取 funasr 条目；None = 该键当前不可用
 pub fn funasr_entry(key: &str) -> Option<ModelEntry> {
@@ -219,8 +297,14 @@ mod tests {
         assert_eq!(whisper_ggml_file("base"), Some("ggml-base-q5_1.bin"));
         assert_eq!(whisper_ggml_file("small"), Some("ggml-small-q5_1.bin"));
         assert_eq!(whisper_ggml_file("medium"), Some("ggml-medium-q5_0.bin"));
-        assert_eq!(whisper_ggml_file("large-v3"), Some("ggml-large-v3-q5_0.bin"));
-        assert_eq!(whisper_ggml_file("turbo"), Some("ggml-large-v3-turbo-q5_0.bin"));
+        assert_eq!(
+            whisper_ggml_file("large-v3"),
+            Some("ggml-large-v3-q5_0.bin")
+        );
+        assert_eq!(
+            whisper_ggml_file("turbo"),
+            Some("ggml-large-v3-turbo-q5_0.bin")
+        );
         assert_eq!(whisper_ggml_file("nope"), None);
         // files 与映射函数必须一致（下载清单=探测目标）
         for size in ["tiny", "base", "small", "medium", "large-v3", "turbo"] {
@@ -251,10 +335,13 @@ mod tests {
         );
         assert!(FUNASR_NANO.ms.is_none());
         const { assert!(FUNASR_NANO.always_hf) } // 编译期不变量：仅 HF 源
-        // 六件套（三 onnx + Qwen3-0.6B tokenizer 子目录）；实测合计 963MB + 余量
+                                                 // 六件套（三 onnx + Qwen3-0.6B tokenizer 子目录）；实测合计 963MB + 余量
         assert_eq!(FUNASR_NANO.files.len(), 6);
         assert_eq!(FUNASR_NANO.files_min_bytes.len(), 6);
-        assert!(FUNASR_NANO.files.iter().any(|f| f.starts_with("Qwen3-0.6B/")));
+        assert!(FUNASR_NANO
+            .files
+            .iter()
+            .any(|f| f.starts_with("Qwen3-0.6B/")));
         assert_eq!(FUNASR_NANO.estimated_bytes, 1_050_000_000);
     }
 
@@ -285,9 +372,17 @@ mod tests {
             assert_eq!(e.files.len(), e.files_min_bytes.len(), "{}", e.key);
             assert_eq!(e.files_min_bytes[0], e.estimated_bytes / 2, "{}", e.key);
         }
-        for e in [SENSEVOICE_SMALL.clone(), FUNASR_NANO.clone(), QWEN3_ASR.clone()] {
+        for e in [
+            SENSEVOICE_SMALL.clone(),
+            FUNASR_NANO.clone(),
+            QWEN3_ASR.clone(),
+        ] {
             assert_eq!(e.files.len(), e.files_min_bytes.len(), "{}", e.key);
-            assert!(e.files_min_bytes[0] >= 1 && e.files_min_bytes[1] >= 1, "{}", e.key);
+            assert!(
+                e.files_min_bytes[0] >= 1 && e.files_min_bytes[1] >= 1,
+                "{}",
+                e.key
+            );
             // 主文件下限必须远低于估计体积（下限是"远未完成"防线，不是完整性度量）
             assert!(e.files_min_bytes[0] * 2 < e.estimated_bytes, "{}", e.key);
         }
@@ -309,15 +404,18 @@ mod tests {
             assert_eq!(e.files.len(), e.files_sha256.len(), "{}", e.key);
             for h in e.files_sha256 {
                 assert!(
-                    h.is_empty()
-                        || (h.len() == 64 && h.chars().all(|c| c.is_ascii_hexdigit())),
+                    h.is_empty() || (h.len() == 64 && h.chars().all(|c| c.is_ascii_hexdigit())),
                     "{} 含非法 sha256: {h:?}",
                     e.key
                 );
             }
         }
         // 三个 sherpa 包必须全量登记（本地缓存实测在档）
-        for e in [SENSEVOICE_SMALL.clone(), FUNASR_NANO.clone(), QWEN3_ASR.clone()] {
+        for e in [
+            SENSEVOICE_SMALL.clone(),
+            FUNASR_NANO.clone(),
+            QWEN3_ASR.clone(),
+        ] {
             assert!(
                 e.files_sha256.iter().all(|h| h.len() == 64),
                 "{} 应全量登记 sha256",

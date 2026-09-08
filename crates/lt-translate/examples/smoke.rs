@@ -47,5 +47,8 @@ fn main() {
         }
     }
     let (pt, ct) = translator.last_usage();
-    println!("\n完成：{:.0}ms，usage pt={pt} ct={ct}", t0.elapsed().as_secs_f64() * 1000.0);
+    println!(
+        "\n完成：{:.0}ms，usage pt={pt} ct={ct}",
+        t0.elapsed().as_secs_f64() * 1000.0
+    );
 }

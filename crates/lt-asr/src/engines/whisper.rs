@@ -48,15 +48,26 @@ pub struct WhisperEngine {
 
 impl WhisperEngine {
     /// 加载 GGML 模型（worker 进程内调用，180s ready 超时内完成）
-    pub fn load(model_path: &Path, pad_seconds: Option<f32>, language: &str) -> Result<Self, EngineError> {
+    pub fn load(
+        model_path: &Path,
+        pad_seconds: Option<f32>,
+        language: &str,
+    ) -> Result<Self, EngineError> {
         if !model_path.is_file() {
-            return Err(EngineError::Load(format!("模型文件不存在: {}", model_path.display())));
+            return Err(EngineError::Load(format!(
+                "模型文件不存在: {}",
+                model_path.display()
+            )));
         }
         // 纯 CPU 硬约束：显式关 GPU（whisper-rs 编译期也未开任何 GPU feature）
         let mut ctx_params = WhisperContextParameters::new();
         ctx_params.use_gpu = false;
-        let ctx = WhisperContext::new_with_params(model_path, ctx_params)
-            .map_err(|e| EngineError::Load(format!("whisper 上下文创建失败（{}）: {e}", model_path.display())))?;
+        let ctx = WhisperContext::new_with_params(model_path, ctx_params).map_err(|e| {
+            EngineError::Load(format!(
+                "whisper 上下文创建失败（{}）: {e}",
+                model_path.display()
+            ))
+        })?;
         let state = ctx
             .create_state()
             .map_err(|e| EngineError::Load(format!("whisper state 创建失败: {e}")))?;
@@ -125,7 +136,11 @@ fn pad_samples(audio: &[f32], quantum: usize) -> Option<Vec<f32>> {
 }
 
 impl AsrEngine for WhisperEngine {
-    fn transcribe(&mut self, audio: &[f32], _word_timestamps: bool) -> Result<AsrResult, EngineError> {
+    fn transcribe(
+        &mut self,
+        audio: &[f32],
+        _word_timestamps: bool,
+    ) -> Result<AsrResult, EngineError> {
         if audio.is_empty() {
             return Ok(AsrResult::default());
         }
@@ -145,7 +160,7 @@ impl AsrEngine for WhisperEngine {
             patience: -1.0,
         });
         params.set_language(self.language.as_deref()); // None = auto 检测
-        // task 默认 Transcribe（0.16 无 set_task；translate 默认 false）
+                                                       // task 默认 Transcribe（0.16 无 set_task；translate 默认 false）
         params.set_suppress_nst(true);
         // stdout 纪律：全部打印关闭（worker stdout 是协议通道）
         params.set_print_special(false);
@@ -155,7 +170,10 @@ impl AsrEngine for WhisperEngine {
 
         self.state
             .full(params, audio)
-            .map_err(|e| EngineError::Runtime { message: format!("whisper 推理失败: {e}"), recoverable: true })?;
+            .map_err(|e| EngineError::Runtime {
+                message: format!("whisper 推理失败: {e}"),
+                recoverable: true,
+            })?;
 
         let Some(text) = Self::join_segments(&self.state) else {
             return Ok(AsrResult::default());
@@ -275,13 +293,18 @@ mod tests {
     #[test]
     #[ignore = "需真实模型与语音样本：设 LT_WHISPER_MODEL/LT_WHISPER_SPEECH_WAV 后 --ignored 运行"]
     fn real_model_speech() {
-        let (Ok(model), Ok(wav_path)) =
-            (std::env::var("LT_WHISPER_MODEL"), std::env::var("LT_WHISPER_SPEECH_WAV"))
-        else {
+        let (Ok(model), Ok(wav_path)) = (
+            std::env::var("LT_WHISPER_MODEL"),
+            std::env::var("LT_WHISPER_SPEECH_WAV"),
+        ) else {
             return; // 未提供 → 静默跳过
         };
         let audio = read_wav_mono_16k(Path::new(&wav_path)).expect("读取 wav");
-        assert!(audio.len() > 16000, "语音样本应长于 1s: {} 样本", audio.len());
+        assert!(
+            audio.len() > 16000,
+            "语音样本应长于 1s: {} 样本",
+            audio.len()
+        );
 
         let mut engine = WhisperEngine::load(Path::new(&model), Some(0.0), "auto").expect("加载");
         let res = engine.transcribe(&audio, false).expect("推理");
@@ -325,7 +348,9 @@ mod tests {
             pos += 8 + size + (size & 1); // chunk 按字对齐
         }
         if rate != 16000 || channels != 1 || bits != 16 {
-            return Err(format!("仅支持 16kHz/单声道/16-bit，实为 {rate}Hz/{channels}ch/{bits}bit"));
+            return Err(format!(
+                "仅支持 16kHz/单声道/16-bit，实为 {rate}Hz/{channels}ch/{bits}bit"
+            ));
         }
         Ok(pcm
             .ok_or("缺少 data chunk")?

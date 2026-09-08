@@ -29,7 +29,9 @@ pub fn resolve_thinking_style(style: &str, api_base: &str, model: &str) -> &'sta
     let endpoint = api_base.to_lowercase();
     let model_id = model.to_lowercase();
     if NESTED_THINKING_MODELS.iter().any(|m| model_id.contains(m))
-        || NESTED_THINKING_ENDPOINTS.iter().any(|m| endpoint.contains(m))
+        || NESTED_THINKING_ENDPOINTS
+            .iter()
+            .any(|m| endpoint.contains(m))
     {
         return "deepseek";
     }
@@ -58,7 +60,13 @@ mod tests {
 
     /// 对照原版 test_translator_thinking.py：经 Translator.merged_extra_body 观察
     /// extra_body（含 Null=不发）。
-    fn extra_body(api_base: &str, model: &str, thinking_style: Option<&str>, no_think: bool, user_extra: Option<Value>) -> Value {
+    fn extra_body(
+        api_base: &str,
+        model: &str,
+        thinking_style: Option<&str>,
+        no_think: bool,
+        user_extra: Option<Value>,
+    ) -> Value {
         let t = Translator::for_test(api_base, model, thinking_style, no_think, user_extra);
         t.merged_extra_body()
     }
@@ -68,7 +76,13 @@ mod tests {
     #[test]
     fn deepseek_model_uses_nested_thinking_toggle() {
         assert_eq!(
-            extra_body("https://example.com/v1", "deepseek-v4-pro", None, true, None),
+            extra_body(
+                "https://example.com/v1",
+                "deepseek-v4-pro",
+                None,
+                true,
+                None
+            ),
             json!({"thinking": {"type": "disabled"}})
         );
     }
@@ -76,7 +90,13 @@ mod tests {
     #[test]
     fn official_deepseek_endpoint_supports_model_aliases() {
         assert_eq!(
-            extra_body("https://api.deepseek.com/v1", "production-alias", None, true, None),
+            extra_body(
+                "https://api.deepseek.com/v1",
+                "production-alias",
+                None,
+                true,
+                None
+            ),
             json!({"thinking": {"type": "disabled"}})
         );
     }
@@ -84,7 +104,13 @@ mod tests {
     #[test]
     fn deepseek_proxy_endpoint_uses_nested_thinking_toggle() {
         assert_eq!(
-            extra_body("https://deepseek.gateway.example.com/v1", "production-alias", None, true, None),
+            extra_body(
+                "https://deepseek.gateway.example.com/v1",
+                "production-alias",
+                None,
+                true,
+                None
+            ),
             json!({"thinking": {"type": "disabled"}})
         );
     }
@@ -92,7 +118,13 @@ mod tests {
     #[test]
     fn volcano_ark_endpoint_uses_nested_thinking_toggle() {
         assert_eq!(
-            extra_body("https://ark.cn-beijing.volces.com/api/v3", "ep-2026-alias", None, true, None),
+            extra_body(
+                "https://ark.cn-beijing.volces.com/api/v3",
+                "ep-2026-alias",
+                None,
+                true,
+                None
+            ),
             json!({"thinking": {"type": "disabled"}})
         );
     }
@@ -123,7 +155,13 @@ mod tests {
     #[test]
     fn explicit_vllm_style_uses_chat_template_kwargs() {
         assert_eq!(
-            extra_body("https://example.com/v1", "deepseek-r1-distill", Some("vllm"), true, None),
+            extra_body(
+                "https://example.com/v1",
+                "deepseek-r1-distill",
+                Some("vllm"),
+                true,
+                None
+            ),
             json!({"chat_template_kwargs": {"enable_thinking": false}})
         );
     }
@@ -131,20 +169,39 @@ mod tests {
     #[test]
     fn explicit_openai_style_uses_reasoning_effort() {
         assert_eq!(
-            extra_body("https://example.com/v1", "grok-4.3", Some("openai"), true, None),
+            extra_body(
+                "https://example.com/v1",
+                "grok-4.3",
+                Some("openai"),
+                true,
+                None
+            ),
             json!({"reasoning_effort": "none"})
         );
     }
 
     #[test]
     fn explicit_off_style_sends_nothing() {
-        assert!(extra_body("https://example.com/v1", "deepseek-v4", Some("off"), true, None).is_null());
+        assert!(extra_body(
+            "https://example.com/v1",
+            "deepseek-v4",
+            Some("off"),
+            true,
+            None
+        )
+        .is_null());
     }
 
     #[test]
     fn explicit_deepseek_style_overrides_detection() {
         assert_eq!(
-            extra_body("https://example.com/v1", "ep-custom", Some("deepseek"), true, None),
+            extra_body(
+                "https://example.com/v1",
+                "ep-custom",
+                Some("deepseek"),
+                true,
+                None
+            ),
             json!({"thinking": {"type": "disabled"}})
         );
     }
@@ -174,7 +231,13 @@ mod tests {
 
     #[test]
     fn target_language_clone_preserves_thinking_control() {
-        let t = Translator::for_test("https://api.deepseek.com", "deepseek-v4-pro", None, true, None);
+        let t = Translator::for_test(
+            "https://api.deepseek.com",
+            "deepseek-v4-pro",
+            None,
+            true,
+            None,
+        );
         let clone = t.with_target_language("ja");
         assert_eq!(
             clone.merged_extra_body(),
@@ -186,8 +249,14 @@ mod tests {
 
     #[test]
     fn resolve_thinking_style_passthrough() {
-        assert_eq!(resolve_thinking_style("vllm", "https://api.deepseek.com", "x"), "vllm");
-        assert_eq!(resolve_thinking_style("off", "https://api.deepseek.com", "x"), "off");
+        assert_eq!(
+            resolve_thinking_style("vllm", "https://api.deepseek.com", "x"),
+            "vllm"
+        );
+        assert_eq!(
+            resolve_thinking_style("off", "https://api.deepseek.com", "x"),
+            "off"
+        );
     }
 
     #[test]
@@ -195,12 +264,18 @@ mod tests {
         // 原版断言"返回新鲜 dict"；Rust 每次构造新 Value，天然满足
         let first = thinking_disable_body("deepseek");
         assert_eq!(first, json!({"thinking": {"type": "disabled"}}));
-        assert_eq!(thinking_disable_body("deepseek"), json!({"thinking": {"type": "disabled"}}));
+        assert_eq!(
+            thinking_disable_body("deepseek"),
+            json!({"thinking": {"type": "disabled"}})
+        );
     }
 
     #[test]
     fn unknown_style_treated_as_auto() {
         // 非法风格不在 THINKING_STYLES 表内 → 走 auto 启发式
-        assert_eq!(resolve_thinking_style("bogus", "https://example.com/v1", "qwen3"), "qwen");
+        assert_eq!(
+            resolve_thinking_style("bogus", "https://example.com/v1", "qwen3"),
+            "qwen"
+        );
     }
 }

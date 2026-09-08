@@ -12,11 +12,11 @@ pub mod thinking;
 pub mod translator;
 
 pub use error::TranslateError;
+pub(crate) use translator::runtime;
 pub use translator::{
     check_repetition, make_openai_client, TranslateStream, Translator, TranslatorParams,
     DEFAULT_PROMPT, PROMPT_PRESETS,
 };
-pub(crate) use translator::runtime;
 
 /// 累计费用（原版 _compute_cost）：(pt*输入单价 + ct*输出单价) / 1M，
 /// 单价为 0 时不计费返回 0。

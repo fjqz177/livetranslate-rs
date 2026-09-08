@@ -10,7 +10,10 @@
 //! ——WASAPI 回环采集不支持事件驱动（Initialize 带 EVENTCALLBACK 能成功但
 //! 缓冲永远不进数据，实测 RMS 恒 0），无数据时空转 sleep 5ms（=原版 0.005s）。
 
-use super::{mix_with_mic, resample_linear, to_mono, BoundedDropQueue, CHUNK_DURATION, CHUNK_SAMPLES, TARGET_RATE};
+use super::{
+    mix_with_mic, resample_linear, to_mono, BoundedDropQueue, CHUNK_DURATION, CHUNK_SAMPLES,
+    TARGET_RATE,
+};
 use anyhow::Context as _;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -70,7 +73,10 @@ impl super::AudioBackend for WasapiBackend {
     fn current_default_output(&self) -> anyhow::Result<Option<String>> {
         let _ = initialize_mta();
         let en = DeviceEnumerator::new()?;
-        Ok(Some(en.get_default_device(&Direction::Render)?.get_friendlyname()?))
+        Ok(Some(
+            en.get_default_device(&Direction::Render)?
+                .get_friendlyname()?,
+        ))
     }
 
     fn start(
@@ -114,7 +120,11 @@ impl super::AudioBackend for WasapiBackend {
         if mic_device == self.mic_device {
             return;
         }
-        tracing::info!("Mic device changed: {:?} -> {:?}", self.mic_device, mic_device);
+        tracing::info!(
+            "Mic device changed: {:?} -> {:?}",
+            self.mic_device,
+            mic_device
+        );
         self.mic_device = mic_device;
         if let Some(tx) = &self.cmd_tx {
             let _ = tx.send(BackendCmd::SetMic(self.mic_device.clone()));
@@ -233,11 +243,11 @@ fn open_loopback(target: Option<&str>) -> anyhow::Result<LoopStream> {
 fn open_mic(target: Option<&str>) -> anyhow::Result<MicStream> {
     let en = DeviceEnumerator::new()?;
     let device = match target {
-        None | Some("__default__") | Some("default") => en.get_default_device(&Direction::Capture)?,
-        Some(name) => {
-            find_device_by_name(&en, &Direction::Capture, name)?
-                .with_context(|| format!("麦克风设备未找到: {name}"))?
+        None | Some("__default__") | Some("default") => {
+            en.get_default_device(&Direction::Capture)?
         }
+        Some(name) => find_device_by_name(&en, &Direction::Capture, name)?
+            .with_context(|| format!("麦克风设备未找到: {name}"))?,
     };
     let name = device.get_friendlyname()?;
     let mut audio_client = device.get_iaudioclient()?;
@@ -368,7 +378,9 @@ fn drain_mic(mic: &mut MicStream, mic_buf: &mut Vec<f32>) -> bool {
 
 fn query_default_output_name() -> anyhow::Result<String> {
     let en = DeviceEnumerator::new()?;
-    en.get_default_device(&Direction::Render)?.get_friendlyname().map_err(Into::into)
+    en.get_default_device(&Direction::Render)?
+        .get_friendlyname()
+        .map_err(Into::into)
 }
 
 /// 采集线程主循环（原版 _read_loop 1:1）
@@ -471,7 +483,9 @@ fn read_loop(
                         None => true,
                     };
                     if changed {
-                        tracing::info!("System default output changed -> {current}; restarting capture...");
+                        tracing::info!(
+                            "System default output changed -> {current}; restarting capture..."
+                        );
                         close_loopback(&mut st);
                         st = open_loopback(None)
                             .map_err(|e| tracing::error!("设备变更重启失败: {e:#}"))
@@ -556,8 +570,15 @@ mod tests {
         let mut buf: Vec<f32> = (0..(MAX_MIC_BUF + 1000)).map(|i| i as f32).collect();
         cap_mic_buf(&mut buf);
         assert_eq!(buf.len(), MAX_MIC_BUF);
-        assert_eq!(buf[0], 1000.0, "最旧 1000 样本被丢弃，缓冲起点=第 1000 样本");
-        assert_eq!(buf[MAX_MIC_BUF - 1], (MAX_MIC_BUF + 999) as f32, "末端保留最新样本");
+        assert_eq!(
+            buf[0], 1000.0,
+            "最旧 1000 样本被丢弃，缓冲起点=第 1000 样本"
+        );
+        assert_eq!(
+            buf[MAX_MIC_BUF - 1],
+            (MAX_MIC_BUF + 999) as f32,
+            "末端保留最新样本"
+        );
     }
 
     /// 不超过上限时原样保留（裁剪幂等）

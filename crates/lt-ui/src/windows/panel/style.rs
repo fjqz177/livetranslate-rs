@@ -144,7 +144,10 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
                 )
                 .clicked()
             {
-                state.enqueue_action(crate::state::WinId::Panel, crate::state::WinAction::ResetPositions);
+                state.enqueue_action(
+                    crate::state::WinId::Panel,
+                    crate::state::WinAction::ResetPositions,
+                );
             }
         });
         ui.add_space(4.0);
@@ -153,18 +156,54 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
 
     // ── 背景（原版 bg_group：颜色/不透明度/头部颜色/头部不透明度/圆角）──
     group_card(ui, pal, &lt_i18n::t("group_background"), |ui| {
-        style_color_row(ui, state, "style_bg_color", &lt_i18n::t("label_bg_color"), |s| &mut s.bg_color);
-        style_pct_row(ui, state, "style_bg_op", &lt_i18n::t("label_bg_opacity"), |s| &mut s.bg_opacity);
-        style_color_row(ui, state, "style_header_color", &lt_i18n::t("label_header_color"), |s| &mut s.header_color);
-        style_pct_row(ui, state, "style_header_op", &lt_i18n::t("label_header_opacity"), |s| &mut s.header_opacity);
-        style_u32_row(ui, state, "style_radius", &lt_i18n::t("label_border_radius"), |s| &mut s.border_radius, 0..=30, " px");
+        style_color_row(
+            ui,
+            state,
+            "style_bg_color",
+            &lt_i18n::t("label_bg_color"),
+            |s| &mut s.bg_color,
+        );
+        style_pct_row(
+            ui,
+            state,
+            "style_bg_op",
+            &lt_i18n::t("label_bg_opacity"),
+            |s| &mut s.bg_opacity,
+        );
+        style_color_row(
+            ui,
+            state,
+            "style_header_color",
+            &lt_i18n::t("label_header_color"),
+            |s| &mut s.header_color,
+        );
+        style_pct_row(
+            ui,
+            state,
+            "style_header_op",
+            &lt_i18n::t("label_header_opacity"),
+            |s| &mut s.header_opacity,
+        );
+        style_u32_row(
+            ui,
+            state,
+            "style_radius",
+            &lt_i18n::t("label_border_radius"),
+            |s| &mut s.border_radius,
+            0..=30,
+            " px",
+        );
     });
 
     // ── 文字（原版 text_group：两族字体 + 字号 + 三色）──
     group_card(ui, pal, &lt_i18n::t("group_text"), |ui| {
-        font_row(ui, state, "style_orig_font", &lt_i18n::t("label_original_font"), |s| {
-            &mut s.original_font_family
-        });
+        font_row(
+            ui,
+            state,
+            "style_orig_font",
+            &lt_i18n::t("label_original_font"),
+            |s| &mut s.original_font_family,
+        );
         style_u32_row(
             ui,
             state,
@@ -174,12 +213,20 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
             6..=24,
             " pt",
         );
-        style_color_row(ui, state, "style_orig_color", &lt_i18n::t("label_original_color"), |s| {
-            &mut s.original_color
-        });
-        font_row(ui, state, "style_trans_font", &lt_i18n::t("label_translation_font"), |s| {
-            &mut s.translation_font_family
-        });
+        style_color_row(
+            ui,
+            state,
+            "style_orig_color",
+            &lt_i18n::t("label_original_color"),
+            |s| &mut s.original_color,
+        );
+        font_row(
+            ui,
+            state,
+            "style_trans_font",
+            &lt_i18n::t("label_translation_font"),
+            |s| &mut s.translation_font_family,
+        );
         style_u32_row(
             ui,
             state,
@@ -189,18 +236,28 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
             6..=24,
             " pt",
         );
-        style_color_row(ui, state, "style_trans_color", &lt_i18n::t("label_translation_color"), |s| {
-            &mut s.translation_color
-        });
-        style_color_row(ui, state, "style_ts_color", &lt_i18n::t("label_timestamp_color"), |s| {
-            &mut s.timestamp_color
-        });
+        style_color_row(
+            ui,
+            state,
+            "style_trans_color",
+            &lt_i18n::t("label_translation_color"),
+            |s| &mut s.translation_color,
+        );
+        style_color_row(
+            ui,
+            state,
+            "style_ts_color",
+            &lt_i18n::t("label_timestamp_color"),
+            |s| &mut s.timestamp_color,
+        );
     });
 
     // ── 窗口（原版 win_group：窗口透明度 30-100%）──
     group_card(ui, pal, &lt_i18n::t("group_window"), |ui| {
         ui.horizontal(|ui| {
-            ui.label(RichText::new(format!("{} ", lt_i18n::t("label_window_opacity"))).color(pal.text));
+            ui.label(
+                RichText::new(format!("{} ", lt_i18n::t("label_window_opacity"))).color(pal.text),
+            );
             let mut pct = state.settings.style.window_opacity.clamp(30, 100) as i32;
             let resp = ui.add(
                 egui::Slider::new(&mut pct, 30..=100).custom_formatter(|v, _| format!("{v:.0}%")),
@@ -232,12 +289,18 @@ fn style_preview(ui: &mut Ui, state: &AppState, pal: &Palette) {
             ui.label(
                 RichText::new(format!("{} / こんにちは", lt_i18n::t("subwin_original")))
                     .size(st.original_font_size.clamp(6, 24) as f32)
-                    .color(crate::style::parse_color(&st.original_color, Color32::LIGHT_GRAY)),
+                    .color(crate::style::parse_color(
+                        &st.original_color,
+                        Color32::LIGHT_GRAY,
+                    )),
             );
             ui.label(
                 RichText::new(lt_i18n::t("subwin_translation"))
                     .size(st.translation_font_size.clamp(6, 24) as f32)
-                    .color(crate::style::parse_color(&st.translation_color, Color32::WHITE)),
+                    .color(crate::style::parse_color(
+                        &st.translation_color,
+                        Color32::WHITE,
+                    )),
             );
         });
 }
@@ -272,12 +335,17 @@ fn style_pct_row(
     ui.push_id(id, |ui| {
         ui.horizontal(|ui| {
             ui.label(RichText::new(format!("{label} ")).color(ui.visuals().text_color()));
-            let mut pct = (f64::from(*field(&mut state.settings.style)) / 255.0 * 100.0).round() as i32;
+            let mut pct =
+                (f64::from(*field(&mut state.settings.style)) / 255.0 * 100.0).round() as i32;
             let resp = ui
-                .add(egui::Slider::new(&mut pct, 0..=100).custom_formatter(|v, _| format!("{v:.0}%")))
+                .add(
+                    egui::Slider::new(&mut pct, 0..=100)
+                        .custom_formatter(|v, _| format!("{v:.0}%")),
+                )
                 .changed();
             if resp {
-                *field(&mut state.settings.style) = (f64::from(pct.clamp(0, 100)) / 100.0 * 255.0).round() as u32;
+                *field(&mut state.settings.style) =
+                    (f64::from(pct.clamp(0, 100)) / 100.0 * 255.0).round() as u32;
                 mark_custom(&mut state.settings.style);
                 mark_settings_dirty(state);
             }
@@ -327,15 +395,9 @@ fn font_row(
     ui.push_id(id, |ui| {
         let cur = field(&mut state.settings.style).clone();
         let master = state.settings.subtitle_font_family.clone();
-        if let Some(next) = super::font_picker::font_picker_row(
-            ui,
-            &mut state.fonts,
-            id,
-            label,
-            cur,
-            &master,
-            true,
-        ) {
+        if let Some(next) =
+            super::font_picker::font_picker_row(ui, &mut state.fonts, id, label, cur, &master, true)
+        {
             *field(&mut state.settings.style) = next;
             mark_custom(&mut state.settings.style);
             crate::fonts::apply_fonts(ui.ctx(), &state.settings, &mut state.fonts);
@@ -361,7 +423,11 @@ mod tests {
         for label in preset_labels() {
             assert!(!label.is_empty());
         }
-        assert_ne!(preset_labels()[0], "preset_default", "preset_default 键应存在");
+        assert_ne!(
+            preset_labels()[0],
+            "preset_default",
+            "preset_default 键应存在"
+        );
     }
 
     /// 预设套用 → style 字段断言（transparent 只改透明度三键，其余保持 BASE）
@@ -370,7 +436,10 @@ mod tests {
         let mut style = preset_style("default");
         apply_preset(&mut style, "transparent");
         assert_eq!(style.preset, "transparent");
-        assert_eq!((style.bg_opacity, style.header_opacity, style.window_opacity), (120, 120, 70));
+        assert_eq!(
+            (style.bg_opacity, style.header_opacity, style.window_opacity),
+            (120, 120, 70)
+        );
         assert_eq!(style.bg_color, "#000000", "非覆写字段保持 BASE");
         assert_eq!(style.original_font_size, 11);
 

@@ -27,7 +27,7 @@
 //! - 行级 entry/exit 文本切换动画未做（默认 none，不在 M4.2 清单）。
 
 use crate::state::{
-    AppState, Easing, EaseAnim, SubtitleLineKey, SubtitleLineRender, SubtitleUiState, WinAction,
+    AppState, EaseAnim, Easing, SubtitleLineKey, SubtitleLineRender, SubtitleUiState, WinAction,
     WinId,
 };
 use crate::style::parse_color;
@@ -48,7 +48,9 @@ pub const STRIP_H: f32 = 18.0;
 /// 顶条绘制圆角
 const STRIP_RADIUS: f32 = 4.0;
 /// 断点优先字符集（原版 split_text 的 `" ,，。、!！?？;；:：."`）
-const BREAK_CHARS: &[char] = &[' ', ',', '，', '。', '、', '!', '！', '?', '？', ';', '；', ':', '：', '.'];
+const BREAK_CHARS: &[char] = &[
+    ' ', ',', '，', '。', '、', '!', '！', '?', '？', ';', '；', ':', '：', '.',
+];
 /// 描边偏移方向（原版圆头描边的 8 方向近似）
 const OUTLINE_DIRS: [(f32, f32); 8] = [
     (0.0, -1.0),
@@ -73,11 +75,21 @@ pub enum SubtitleZone {
 }
 
 /// 光标在窗内坐标 (逻辑 px, 窗左上为原点) → 分区（原版无对位：Rust 产品化新增）
-pub fn zone_for_cursor(local_x: f32, local_y: f32, win_w: f32, win_h: f32, strip_h: f32) -> SubtitleZone {
+pub fn zone_for_cursor(
+    local_x: f32,
+    local_y: f32,
+    win_w: f32,
+    win_h: f32,
+    strip_h: f32,
+) -> SubtitleZone {
     if local_x < 0.0 || local_y < 0.0 || local_x >= win_w || local_y >= win_h {
         return SubtitleZone::Outside;
     }
-    if local_y < strip_h { SubtitleZone::Strip } else { SubtitleZone::Body }
+    if local_y < strip_h {
+        SubtitleZone::Strip
+    } else {
+        SubtitleZone::Body
+    }
 }
 
 /// 穿透位目标值：正文穿透 + 顶条豁免 + Ctrl 临时恢复（全部区域解穿透）
@@ -107,7 +119,11 @@ fn text_width(ui: &Ui, font: &FontId, s: &str) -> f32 {
 
 /// 单行行高（原版 fm.lineSpacing 对位：单行 galley 高，含上下伸展）
 fn line_height(ui: &Ui, font: &FontId) -> f32 {
-    let g = ui.painter().layout_no_wrap("Ag中文字符，example".to_owned(), font.clone(), Color32::WHITE);
+    let g = ui.painter().layout_no_wrap(
+        "Ag中文字符，example".to_owned(),
+        font.clone(),
+        Color32::WHITE,
+    );
     g.rect.height().max(1.0)
 }
 
@@ -219,7 +235,11 @@ pub fn is_pos_visible(x: i32, y: i32, monitors: &[MonoRect]) -> bool {
 /// 用 max/min 组合（对齐原版写法）：窗比屏宽时 min 先取值、max 兜底到屏左/上沿，
 /// 避免 i32::clamp 的 min>max panic（window_width 最大可配 3840）。
 pub fn clamp_to_screen(x: i32, y: i32, w: i32, h: i32, monitors: &[MonoRect]) -> (i32, i32) {
-    let Some(screen) = monitors.iter().find(|g| g.contains(x, y)).or_else(|| monitors.first()) else {
+    let Some(screen) = monitors
+        .iter()
+        .find(|g| g.contains(x, y))
+        .or_else(|| monitors.first())
+    else {
         return (x, y);
     };
     let nx = screen.x.max(x.min(screen.right() - w));
@@ -234,10 +254,7 @@ pub const OVERLAP_SAFETY: i32 = 24;
 pub fn rects_intersect(a: (i32, i32, i32, i32), b: (i32, i32, i32, i32), safety: i32) -> bool {
     let (ax, ay, aw, ah) = a;
     let (bx, by, bw, bh) = b;
-    ax < bx + bw + safety
-        && bx < ax + aw + safety
-        && ay < by + bh + safety
-        && by < ay + ah + safety
+    ax < bx + bw + safety && bx < ax + aw + safety && ay < by + bh + safety && by < ay + ah + safety
 }
 
 /// 重叠避让（D-36）：把 sub 沿四个方向推出 ov（加安全边距）再钳屏，选移动成本
@@ -252,10 +269,10 @@ pub fn resolve_overlap(
     let (sx, sy, sw, sh) = sub;
     let (ox, oy, ow, oh) = ov;
     let candidates = [
-        (sx, oy - sh - safety),          // 推出到上方
-        (sx, oy + oh + safety),          // 推出到下方
-        (ox - sw - safety, sy),          // 推出到左侧
-        (ox + ow + safety, sy),          // 推出到右侧
+        (sx, oy - sh - safety), // 推出到上方
+        (sx, oy + oh + safety), // 推出到下方
+        (ox - sw - safety, sy), // 推出到左侧
+        (ox + ow + safety, sy), // 推出到右侧
     ];
     let mut best: Option<((i32, i32), i32)> = None;
     for (cx, cy) in candidates {
@@ -313,7 +330,9 @@ fn refresh_display(sub: &mut SubtitleUiState, lines: &[SubtitleLine]) {
         return;
     }
     for (wi, cfg) in enabled.iter().enumerate() {
-        let Some(l) = sub.lines.get_mut(wi) else { break };
+        let Some(l) = sub.lines.get_mut(wi) else {
+            break;
+        };
         let text = if cfg.line_type == "original" {
             let texts: Vec<String> = sub
                 .sentences
@@ -324,8 +343,11 @@ fn refresh_display(sub: &mut SubtitleUiState, lines: &[SubtitleLine]) {
             join_texts(texts)
         } else {
             let lang = cfg.lang.as_deref().unwrap_or("");
-            let texts: Vec<String> =
-                sub.sentences.iter().filter_map(|s| pick_translation(lang, &s.translations)).collect();
+            let texts: Vec<String> = sub
+                .sentences
+                .iter()
+                .filter_map(|s| pick_translation(lang, &s.translations))
+                .collect();
             join_texts(texts)
         };
         if text != l.text {
@@ -342,7 +364,17 @@ pub fn subtitle_ui(ui: &mut Ui, state: &mut AppState) {
     let full = ui.available_rect_before_wrap();
 
     // 帧内借用拆分（字幕配置只读 / 字幕状态可变），帧后统一投递动作
-    let (drag_started, drag_stopped, height_cmd, height_settled, through_toggle, lock_toggle, hide, open_settings, reset_pos) = {
+    let (
+        drag_started,
+        drag_stopped,
+        height_cmd,
+        height_settled,
+        through_toggle,
+        lock_toggle,
+        hide,
+        open_settings,
+        reset_pos,
+    ) = {
         // 借用拆分：不相交字段
         let sm = &state.settings.subtitle_mode;
         let sub = &mut state.subtitle;
@@ -381,7 +413,11 @@ pub fn subtitle_ui(ui: &mut Ui, state: &mut AppState) {
                 ),
             );
             let lh = line_height(ui, &font);
-            let ow = if cfg.outline_enabled { cfg.outline_width as f32 } else { 0.0 };
+            let ow = if cfg.outline_enabled {
+                cfg.outline_width as f32
+            } else {
+                0.0
+            };
             // 原版 split_text：avail_w = widget 宽 - 描边×2（widget 宽 = 窗宽 - 左右边距）
             let avail_w = (full.width() - MARGIN_H * 2.0 - ow * 2.0).max(1.0);
             if !line.text.is_empty() {
@@ -394,7 +430,8 @@ pub fn subtitle_ui(ui: &mut Ui, state: &mut AppState) {
                 };
                 if line.cache_key.as_ref() != Some(&key) {
                     let font_ref = &font;
-                    line.wrapped = wrap_greedy(&line.text, avail_w, &|s: &str| text_width(ui, font_ref, s));
+                    line.wrapped =
+                        wrap_greedy(&line.text, avail_w, &|s: &str| text_width(ui, font_ref, s));
                     line.cache_key = Some(key);
                 }
             }
@@ -445,7 +482,11 @@ pub fn subtitle_ui(ui: &mut Ui, state: &mut AppState) {
         // 整窗 alpha 由宿主 LWA_ALPHA（=bg_opacity，见 app.rs subtitle_layered_alpha）
         // 承担，这里画不透明色——半透明填充在品红键控清除区上会混出色偏
         if sm.bg_opacity > 0 {
-            ui.painter().rect_filled(full, sm.border_radius as f32, parse_color(&sm.bg_color, Color32::BLACK));
+            ui.painter().rect_filled(
+                full,
+                sm.border_radius as f32,
+                parse_color(&sm.bg_color, Color32::BLACK),
+            );
         }
         let opacity = sub.current_opacity(now);
         let content_left = full.left() + MARGIN_H;
@@ -454,7 +495,11 @@ pub fn subtitle_ui(ui: &mut Ui, state: &mut AppState) {
         for (i, (cfg, line)) in enabled.iter().zip(&sub.lines).enumerate() {
             let font = FontId::proportional(pt(cfg.font_size));
             let lh = line_height(ui, &font);
-            let ow = if cfg.outline_enabled { cfg.outline_width as f32 } else { 0.0 };
+            let ow = if cfg.outline_enabled {
+                cfg.outline_width as f32
+            } else {
+                0.0
+            };
             if !line.text.is_empty() {
                 // 行不透明度 = 配置 opacity × 窗级淡入淡出系数（原版 setAlpha × painter opacity）
                 let k = (cfg.opacity.min(255) as f32 / 255.0 * opacity).clamp(0.0, 1.0);
@@ -484,7 +529,8 @@ pub fn subtitle_ui(ui: &mut Ui, state: &mut AppState) {
                         }
                     }
                     // 两遍绘制之二：中心填充
-                    ui.painter().text(pos, Align2::LEFT_TOP, row_text.as_str(), font.clone(), fill);
+                    ui.painter()
+                        .text(pos, Align2::LEFT_TOP, row_text.as_str(), font.clone(), fill);
                     ry += lh;
                 }
             }
@@ -515,19 +561,29 @@ pub fn subtitle_ui(ui: &mut Ui, state: &mut AppState) {
             egui::pos2(full.left(), full.top() + STRIP_H),
             full.right_bottom(),
         );
-        let body_resp = ui.interact(body_rect, ui.id().with("sub_body_drag"), Sense::click_and_drag());
+        let body_resp = ui.interact(
+            body_rect,
+            ui.id().with("sub_body_drag"),
+            Sense::click_and_drag(),
+        );
         let mut through_toggle = false;
         let mut lock_toggle = false;
         let mut hide = false;
         let mut open_settings = false;
         let mut reset_pos = false;
-        let strip_resp = ui.interact(strip_rect, ui.id().with("sub_strip"), Sense::click_and_drag());
+        let strip_resp = ui.interact(
+            strip_rect,
+            ui.id().with("sub_strip"),
+            Sense::click_and_drag(),
+        );
         // 锁定=禁拖动（中键+顶条，原 WP-2 只禁顶条漏了正文中键，D-37 一并收紧；
         // 按钮点击不受影响）
         let drag_started = !sub.locked
-            && (body_resp.drag_started_by(egui::PointerButton::Middle) || strip_resp.drag_started());
+            && (body_resp.drag_started_by(egui::PointerButton::Middle)
+                || strip_resp.drag_started());
         let drag_stopped = !sub.locked
-            && (body_resp.drag_stopped_by(egui::PointerButton::Middle) || strip_resp.drag_stopped());
+            && (body_resp.drag_stopped_by(egui::PointerButton::Middle)
+                || strip_resp.drag_stopped());
         // 顶条右键菜单（全部走既有 action 通路禁模态；D-33 纪律）
         strip_resp.context_menu(|ui| {
             if ui.button(lt_i18n::t("subwin_menu_open_settings")).clicked() {
@@ -547,16 +603,33 @@ pub fn subtitle_ui(ui: &mut Ui, state: &mut AppState) {
 
         // 10) 顶条绘制（D-36：覆盖式——浮现/隐没不动文字布局；无布局参与）
         if strip_alpha > 0.02 {
-            let bg = Color32::from_rgba_unmultiplied(0x26, 0x26, 0x2e, (210.0 * strip_alpha).round() as u8);
+            let bg = Color32::from_rgba_unmultiplied(
+                0x26,
+                0x26,
+                0x2e,
+                (210.0 * strip_alpha).round() as u8,
+            );
             ui.painter()
                 .rect_filled(strip_rect, egui::CornerRadius::same(STRIP_RADIUS as u8), bg);
             // 右侧按钮组（右→左：关闭 / 锁定 / 穿透；宽度按文案测宽）
             let font = FontId::proportional(9.5);
             let mut bx = full.right() - 8.0;
             for (i, (label, tip, on)) in [
-                (lt_i18n::t("subwin_tb_close"), lt_i18n::t("subwin_tb_close_hint"), false),
-                (lt_i18n::t("subwin_tb_lock"), lt_i18n::t("subwin_tb_lock_hint"), sub.locked),
-                (lt_i18n::t("subwin_tb_through"), lt_i18n::t("subwin_tb_through_hint"), sm.click_through),
+                (
+                    lt_i18n::t("subwin_tb_close"),
+                    lt_i18n::t("subwin_tb_close_hint"),
+                    false,
+                ),
+                (
+                    lt_i18n::t("subwin_tb_lock"),
+                    lt_i18n::t("subwin_tb_lock_hint"),
+                    sub.locked,
+                ),
+                (
+                    lt_i18n::t("subwin_tb_through"),
+                    lt_i18n::t("subwin_tb_through_hint"),
+                    sm.click_through,
+                ),
             ]
             .into_iter()
             .enumerate()
@@ -590,14 +663,29 @@ pub fn subtitle_ui(ui: &mut Ui, state: &mut AppState) {
                 Align2::LEFT_CENTER,
                 "\u{2630}",
                 FontId::proportional(12.0),
-                Color32::from_rgba_unmultiplied(0xaa, 0xaa, 0xaa, (255.0 * strip_alpha).round() as u8),
+                Color32::from_rgba_unmultiplied(
+                    0xaa,
+                    0xaa,
+                    0xaa,
+                    (255.0 * strip_alpha).round() as u8,
+                ),
             );
         }
         strip_resp.on_hover_text(lt_i18n::t("subwin_tb_strip_hint"));
 
         // 撑满布局（窗口即内容尺寸）
         ui.allocate_space(full.size());
-        (drag_started, drag_stopped, height_cmd, height_settled, through_toggle, lock_toggle, hide, open_settings, reset_pos)
+        (
+            drag_started,
+            drag_stopped,
+            height_cmd,
+            height_settled,
+            through_toggle,
+            lock_toggle,
+            hide,
+            open_settings,
+            reset_pos,
+        )
     };
 
     // 帧后动作
@@ -664,22 +752,36 @@ mod tests {
 
     /// 假想测宽器：CJK（>0x2E80）=10px、其余=5px，换行用例的确定性基准
     fn fake_advance(s: &str) -> f32 {
-        s.chars().map(|c| if c as u32 > 0x2E80 { 10.0 } else { 5.0 }).sum()
+        s.chars()
+            .map(|c| if c as u32 > 0x2E80 { 10.0 } else { 5.0 })
+            .sum()
     }
 
     fn sentence(original: &str, pairs: &[(&str, &str)]) -> SubtitleSentence {
         SubtitleSentence {
             original: original.into(),
-            translations: pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+            translations: pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
         }
     }
 
     /// 句子排队用 cfg：句数上限 + 自动隐藏秒数（其余字段走默认）
     fn sub_cfg(sentences: u32, auto_hide_timeout: u32) -> lt_proto::SubtitleMode {
-        lt_proto::SubtitleMode { sentences, auto_hide_timeout, ..Default::default() }
+        lt_proto::SubtitleMode {
+            sentences,
+            auto_hide_timeout,
+            ..Default::default()
+        }
     }
 
-    fn insert(sub: &mut SubtitleUiState, s: SubtitleSentence, sm: &lt_proto::SubtitleMode, now: Instant) {
+    fn insert(
+        sub: &mut SubtitleUiState,
+        s: SubtitleSentence,
+        sm: &lt_proto::SubtitleMode,
+        now: Instant,
+    ) {
         sub.insert_sentence(s, sm, now);
     }
 
@@ -808,8 +910,18 @@ mod tests {
         let cfg2 = sub_cfg(2, 0);
         let t0 = Instant::now();
         insert(&mut sub, sentence("a", &[]), &cfg2, t0);
-        insert(&mut sub, sentence("b", &[]), &cfg2, t0 + Duration::from_millis(2000));
-        insert(&mut sub, sentence("c", &[]), &cfg2, t0 + Duration::from_millis(4000));
+        insert(
+            &mut sub,
+            sentence("b", &[]),
+            &cfg2,
+            t0 + Duration::from_millis(2000),
+        );
+        insert(
+            &mut sub,
+            sentence("c", &[]),
+            &cfg2,
+            t0 + Duration::from_millis(4000),
+        );
         let originals: Vec<&str> = sub.sentences.iter().map(|s| s.original.as_str()).collect();
         assert_eq!(originals, vec!["b", "c"]);
     }
@@ -822,15 +934,28 @@ mod tests {
         let t0 = Instant::now();
         insert(&mut sub, sentence("a", &[]), &sub_cfg(1, 5), t0);
         // timeout=0 → 不计时
-        insert(&mut sub, sentence("b", &[]), &sub_cfg(1, 0), t0 + Duration::from_millis(2000));
+        insert(
+            &mut sub,
+            sentence("b", &[]),
+            &sub_cfg(1, 0),
+            t0 + Duration::from_millis(2000),
+        );
         assert_eq!(sub.auto_hide_deadline, None);
 
         // 到点隐藏：置位 + 启动淡出（fade：InCubic → 0，起点为当前不透明度 1.0）
-        insert(&mut sub, sentence("c", &[]), &sub_cfg(1, 5), t0 + Duration::from_millis(4000));
+        insert(
+            &mut sub,
+            sentence("c", &[]),
+            &sub_cfg(1, 5),
+            t0 + Duration::from_millis(4000),
+        );
         let deadline = sub.auto_hide_deadline.unwrap();
         assert!(sub.on_auto_hide_timeout("fade", 300, deadline));
         assert!(sub.hidden_by_timeout);
-        assert!(!sub.on_auto_hide_timeout("fade", 300, deadline), "重复触发无害");
+        assert!(
+            !sub.on_auto_hide_timeout("fade", 300, deadline),
+            "重复触发无害"
+        );
         assert_eq!(sub.current_opacity(deadline), 1.0, "淡出起点不透明");
         // 淡出中点介于 0 与 1 之间
         let mid = deadline + Duration::from_millis(150);
@@ -838,13 +963,21 @@ mod tests {
         assert!((0.0..1.0).contains(&o));
 
         // 新句到达 → 恢复（原版 _insert_sentence → _restore_from_auto_hide：0→1 淡入）
-        insert(&mut sub, sentence("d", &[]), &sub_cfg(1, 5), deadline + Duration::from_millis(1000));
+        insert(
+            &mut sub,
+            sentence("d", &[]),
+            &sub_cfg(1, 5),
+            deadline + Duration::from_millis(1000),
+        );
         assert!(!sub.hidden_by_timeout);
         let o = sub.current_opacity(deadline + Duration::from_millis(1150));
         assert!(o > 0.0 && o < 1.0, "淡入进行中: {o}");
         // none 动画：瞬时切换
         assert!(sub.on_auto_hide_timeout("none", 300, deadline + Duration::from_millis(2000)));
-        assert_eq!(sub.current_opacity(deadline + Duration::from_millis(2000)), 0.0);
+        assert_eq!(
+            sub.current_opacity(deadline + Duration::from_millis(2000)),
+            0.0
+        );
     }
 
     #[test]
@@ -893,9 +1026,20 @@ mod tests {
             ..Default::default()
         };
         let lines = vec![
-            SubtitleLine { line_type: "original".into(), ..Default::default() },
-            SubtitleLine { line_type: "translation".into(), lang: Some("zh".into()), ..Default::default() },
-            SubtitleLine { line_type: "translation".into(), lang: Some("ja".into()), ..Default::default() },
+            SubtitleLine {
+                line_type: "original".into(),
+                ..Default::default()
+            },
+            SubtitleLine {
+                line_type: "translation".into(),
+                lang: Some("zh".into()),
+                ..Default::default()
+            },
+            SubtitleLine {
+                line_type: "translation".into(),
+                lang: Some("ja".into()),
+                ..Default::default()
+            },
         ];
         refresh_display(&mut sub, &lines);
         // 原文行：多句 " | " 连接（空原文不计）
@@ -909,7 +1053,10 @@ mod tests {
         // 空句子队列 → 全行清空
         sub.sentences.clear();
         refresh_display(&mut sub, &lines);
-        assert!(sub.lines.iter().all(|l| l.text.is_empty() && l.wrapped.is_empty()));
+        assert!(sub
+            .lines
+            .iter()
+            .all(|l| l.text.is_empty() && l.wrapped.is_empty()));
     }
 
     // ── 多屏钳制（原版 _is_pos_visible / _clamp_to_screen 用例）──
@@ -917,8 +1064,18 @@ mod tests {
     #[test]
     fn pos_visibility_uses_margin_semantics() {
         let monitors = vec![
-            MonoRect { x: 0, y: 0, w: 1920, h: 1080 },
-            MonoRect { x: 1920, y: 0, w: 1920, h: 1080 },
+            MonoRect {
+                x: 0,
+                y: 0,
+                w: 1920,
+                h: 1080,
+            },
+            MonoRect {
+                x: 1920,
+                y: 0,
+                w: 1920,
+                h: 1080,
+            },
         ];
         // 正常可见 / margin 内贴边可见（x=-30 → x+50=20 ≥ left）
         assert!(is_pos_visible(500, 500, &monitors));
@@ -931,13 +1088,26 @@ mod tests {
     #[test]
     fn clamp_moves_window_into_containing_monitor() {
         let monitors = vec![
-            MonoRect { x: 0, y: 0, w: 1920, h: 1080 },
-            MonoRect { x: 1920, y: 0, w: 1920, h: 1080 },
+            MonoRect {
+                x: 0,
+                y: 0,
+                w: 1920,
+                h: 1080,
+            },
+            MonoRect {
+                x: 1920,
+                y: 0,
+                w: 1920,
+                h: 1080,
+            },
         ];
         // 原位可见 → 不动
         assert_eq!(clamp_to_screen(500, 500, 1000, 160, &monitors), (500, 500));
         // 含点第二屏 → 钳入 right-width（Qt right = left+width-1）
-        assert_eq!(clamp_to_screen(3000, 500, 1000, 160, &monitors), (2839, 500));
+        assert_eq!(
+            clamp_to_screen(3000, 500, 1000, 160, &monitors),
+            (2839, 500)
+        );
         // 越下边 → 钳入 bottom-height
         assert_eq!(clamp_to_screen(500, 2000, 1000, 160, &monitors), (500, 919));
         // 无含点屏（screenAt 未命中）→ 落首屏（原版 primaryScreen 兜底）
@@ -952,16 +1122,40 @@ mod tests {
     #[test]
     fn zone_for_cursor_matrix() {
         // 窗内顶条（y < 18；x 覆盖整宽）
-        assert_eq!(zone_for_cursor(10.0, 5.0, 1000.0, 160.0, STRIP_H), SubtitleZone::Strip);
-        assert_eq!(zone_for_cursor(999.5, 17.9, 1000.0, 160.0, STRIP_H), SubtitleZone::Strip);
+        assert_eq!(
+            zone_for_cursor(10.0, 5.0, 1000.0, 160.0, STRIP_H),
+            SubtitleZone::Strip
+        );
+        assert_eq!(
+            zone_for_cursor(999.5, 17.9, 1000.0, 160.0, STRIP_H),
+            SubtitleZone::Strip
+        );
         // 窗内正文（y >= 18）
-        assert_eq!(zone_for_cursor(10.0, 18.0, 1000.0, 160.0, STRIP_H), SubtitleZone::Body);
-        assert_eq!(zone_for_cursor(500.0, 159.0, 1000.0, 160.0, STRIP_H), SubtitleZone::Body);
+        assert_eq!(
+            zone_for_cursor(10.0, 18.0, 1000.0, 160.0, STRIP_H),
+            SubtitleZone::Body
+        );
+        assert_eq!(
+            zone_for_cursor(500.0, 159.0, 1000.0, 160.0, STRIP_H),
+            SubtitleZone::Body
+        );
         // 窗外（四缘 0.1px 越界）
-        assert_eq!(zone_for_cursor(-0.1, 50.0, 1000.0, 160.0, STRIP_H), SubtitleZone::Outside);
-        assert_eq!(zone_for_cursor(50.0, -0.1, 1000.0, 160.0, STRIP_H), SubtitleZone::Outside);
-        assert_eq!(zone_for_cursor(1000.0, 50.0, 1000.0, 160.0, STRIP_H), SubtitleZone::Outside);
-        assert_eq!(zone_for_cursor(50.0, 160.0, 1000.0, 160.0, STRIP_H), SubtitleZone::Outside);
+        assert_eq!(
+            zone_for_cursor(-0.1, 50.0, 1000.0, 160.0, STRIP_H),
+            SubtitleZone::Outside
+        );
+        assert_eq!(
+            zone_for_cursor(50.0, -0.1, 1000.0, 160.0, STRIP_H),
+            SubtitleZone::Outside
+        );
+        assert_eq!(
+            zone_for_cursor(1000.0, 50.0, 1000.0, 160.0, STRIP_H),
+            SubtitleZone::Outside
+        );
+        assert_eq!(
+            zone_for_cursor(50.0, 160.0, 1000.0, 160.0, STRIP_H),
+            SubtitleZone::Outside
+        );
     }
 
     #[test]
@@ -987,9 +1181,17 @@ mod tests {
         // 边缘相切不算相交
         assert!(!rects_intersect((0, 0, 100, 100), (100, 100, 100, 100), 0));
         // 两轴间距均 < 安全边距 → 视为相交（避让触发带）
-        assert!(rects_intersect((0, 0, 100, 100), (115, 118, 100, 100), OVERLAP_SAFETY));
+        assert!(rects_intersect(
+            (0, 0, 100, 100),
+            (115, 118, 100, 100),
+            OVERLAP_SAFETY
+        ));
         // y 轴间距 30 > 24 安全距 → 不触发
-        assert!(!rects_intersect((0, 0, 100, 100), (115, 130, 100, 100), OVERLAP_SAFETY));
+        assert!(!rects_intersect(
+            (0, 0, 100, 100),
+            (115, 130, 100, 100),
+            OVERLAP_SAFETY
+        ));
         // 部分重叠 / 包含
         assert!(rects_intersect((0, 0, 100, 100), (50, 50, 100, 100), 0));
         assert!(rects_intersect((0, 0, 300, 300), (50, 50, 100, 100), 0));
@@ -997,7 +1199,12 @@ mod tests {
 
     #[test]
     fn resolve_overlap_moves_shortest_direction() {
-        let monitors = vec![MonoRect { x: 0, y: 0, w: 1920, h: 1080 }];
+        let monitors = vec![MonoRect {
+            x: 0,
+            y: 0,
+            w: 1920,
+            h: 1080,
+        }];
         // 悬浮窗在中央偏上，字幕窗在其右下：上方/下方/左/右四候选，
         // 右候选被钳屏拆回窗内而失效，成本最小 = 下移 → 推出到悬浮窗下方
         let sub = (900, 700, 800, 120);
@@ -1012,7 +1219,12 @@ mod tests {
 
     #[test]
     fn resolve_overlap_clamped_fallback() {
-        let monitors = vec![MonoRect { x: 0, y: 0, w: 1920, h: 1080 }];
+        let monitors = vec![MonoRect {
+            x: 0,
+            y: 0,
+            w: 1920,
+            h: 1080,
+        }];
         // 字幕窗与悬浮窗都贴着主屏四周、窗高接近屏高 → 上下方向被屏壁夹死、左右亦然 → None
         let ov = (0, 0, 1920, 1080);
         let sub = (200, 100, 1600, 1000);
@@ -1094,10 +1306,10 @@ mod tests {
             let mut out = ctx.run_ui(ri, |ui| crate::windows::subtitle::subtitle_ui(ui, st));
             out.textures_delta.clear();
             let acts = st.drain_actions();
-            if acts
-                .iter()
-                .any(|(w, a)| w == &crate::state::WinId::Subtitle && a == &crate::state::WinAction::SubtitleDragStart)
-            {
+            if acts.iter().any(|(w, a)| {
+                w == &crate::state::WinId::Subtitle
+                    && a == &crate::state::WinAction::SubtitleDragStart
+            }) {
                 st.subtitle.dragging = true; // 宿主处理 SubtitleDragStart
             }
             collected.extend(acts);
@@ -1112,12 +1324,20 @@ mod tests {
         let mut st = crate::state::AppState::new(lt_proto::Settings::default());
         st.settings.subtitle_mode.enabled = true;
         st.visible.insert(crate::state::WinId::Subtitle, true);
-        let acts = run_drag_frames(&ctx, &mut st, drag_frames(egui::PointerButton::Primary, egui::pos2(500.0, 5.0)));
-        let has = |a: crate::state::WinAction| {
-            acts.contains(&(crate::state::WinId::Subtitle, a))
-        };
-        assert!(has(crate::state::WinAction::SubtitleDragStart), "顶条左键拖动应发 SubtitleDragStart");
-        assert!(has(crate::state::WinAction::SubtitleDragEnd), "松开应发 SubtitleDragEnd");
+        let acts = run_drag_frames(
+            &ctx,
+            &mut st,
+            drag_frames(egui::PointerButton::Primary, egui::pos2(500.0, 5.0)),
+        );
+        let has = |a: crate::state::WinAction| acts.contains(&(crate::state::WinId::Subtitle, a));
+        assert!(
+            has(crate::state::WinAction::SubtitleDragStart),
+            "顶条左键拖动应发 SubtitleDragStart"
+        );
+        assert!(
+            has(crate::state::WinAction::SubtitleDragEnd),
+            "松开应发 SubtitleDragEnd"
+        );
     }
 
     /// 正文中键拖动 → 同上（原版全窗中键语义）
@@ -1127,12 +1347,20 @@ mod tests {
         let mut st = crate::state::AppState::new(lt_proto::Settings::default());
         st.settings.subtitle_mode.enabled = true;
         st.visible.insert(crate::state::WinId::Subtitle, true);
-        let acts = run_drag_frames(&ctx, &mut st, drag_frames(egui::PointerButton::Middle, egui::pos2(500.0, 80.0)));
-        let has = |a: crate::state::WinAction| {
-            acts.contains(&(crate::state::WinId::Subtitle, a))
-        };
-        assert!(has(crate::state::WinAction::SubtitleDragStart), "正文中键拖动应发 SubtitleDragStart");
-        assert!(has(crate::state::WinAction::SubtitleDragEnd), "松开应发 SubtitleDragEnd");
+        let acts = run_drag_frames(
+            &ctx,
+            &mut st,
+            drag_frames(egui::PointerButton::Middle, egui::pos2(500.0, 80.0)),
+        );
+        let has = |a: crate::state::WinAction| acts.contains(&(crate::state::WinId::Subtitle, a));
+        assert!(
+            has(crate::state::WinAction::SubtitleDragStart),
+            "正文中键拖动应发 SubtitleDragStart"
+        );
+        assert!(
+            has(crate::state::WinAction::SubtitleDragEnd),
+            "松开应发 SubtitleDragEnd"
+        );
     }
 
     /// 锁定 = 禁拖动：顶条任意键 + 正文中键均被禁止（D-37 收紧：原 WP-2
@@ -1144,18 +1372,30 @@ mod tests {
         st.settings.subtitle_mode.enabled = true;
         st.visible.insert(crate::state::WinId::Subtitle, true);
         st.subtitle.locked = true;
-        let acts = run_drag_frames(&ctx, &mut st, drag_frames(egui::PointerButton::Primary, egui::pos2(500.0, 5.0)));
-        let has = |a: crate::state::WinAction| {
-            acts.contains(&(crate::state::WinId::Subtitle, a))
-        };
-        assert!(!has(crate::state::WinAction::SubtitleDragStart), "锁定后顶条拖动应被禁止");
+        let acts = run_drag_frames(
+            &ctx,
+            &mut st,
+            drag_frames(egui::PointerButton::Primary, egui::pos2(500.0, 5.0)),
+        );
+        let has = |a: crate::state::WinAction| acts.contains(&(crate::state::WinId::Subtitle, a));
+        assert!(
+            !has(crate::state::WinAction::SubtitleDragStart),
+            "锁定后顶条拖动应被禁止"
+        );
         let mut st2 = crate::state::AppState::new(lt_proto::Settings::default());
         st2.settings.subtitle_mode.enabled = true;
         st2.visible.insert(crate::state::WinId::Subtitle, true);
         st2.subtitle.locked = true;
-        let acts2 = run_drag_frames(&ctx, &mut st2, drag_frames(egui::PointerButton::Middle, egui::pos2(500.0, 80.0)));
+        let acts2 = run_drag_frames(
+            &ctx,
+            &mut st2,
+            drag_frames(egui::PointerButton::Middle, egui::pos2(500.0, 80.0)),
+        );
         assert!(
-            !acts2.contains(&(crate::state::WinId::Subtitle, crate::state::WinAction::SubtitleDragStart)),
+            !acts2.contains(&(
+                crate::state::WinId::Subtitle,
+                crate::state::WinAction::SubtitleDragStart
+            )),
             "锁定后正文中键拖动应被禁止"
         );
     }

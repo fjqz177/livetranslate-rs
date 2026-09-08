@@ -76,12 +76,19 @@ pub fn font_picker_row(
                         let (label, value) = match entry {
                             PickerEntry::Follow => (t("label_font_follow"), String::new()),
                             PickerEntry::Embedded => (
-                                format!("{}（{}）", fonts::EMBEDDED_FAMILY, t("label_font_embedded")),
+                                format!(
+                                    "{}（{}）",
+                                    fonts::EMBEDDED_FAMILY,
+                                    t("label_font_embedded")
+                                ),
                                 fonts::EMBEDDED_FAMILY.to_string(),
                             ),
                             PickerEntry::System(name) => (name.clone(), name),
                         };
-                        if ui.selectable_label(current.trim() == value, label).clicked() {
+                        if ui
+                            .selectable_label(current.trim() == value, label)
+                            .clicked()
+                        {
                             result = Some(value);
                         }
                     }
@@ -89,7 +96,9 @@ pub fn font_picker_row(
             });
 
         if ui
-            .add(egui::Button::new(RichText::new(t("btn_font_rescan")).size(11.5)))
+            .add(egui::Button::new(
+                RichText::new(t("btn_font_rescan")).size(11.5),
+            ))
             .clicked()
         {
             fonts.rescan();

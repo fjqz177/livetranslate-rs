@@ -44,7 +44,10 @@ impl AsrEngine for EchoEngine {
             std::process::abort();
         }
         if self.fail_transcribe {
-            return Err(EngineError::Runtime { message: "注入的可恢复失败".into(), recoverable: true });
+            return Err(EngineError::Runtime {
+                message: "注入的可恢复失败".into(),
+                recoverable: true,
+            });
         }
         if self.hang_ms > 0 {
             std::thread::sleep(std::time::Duration::from_millis(self.hang_ms));
@@ -63,7 +66,10 @@ impl AsrEngine for EchoEngine {
         }
         if self.fail_set_language {
             // 与真实引擎一致的失败形态：error(recoverable=true) 帧，进程继续
-            return Err(EngineError::Runtime { message: "注入的 set_language 可恢复失败".into(), recoverable: true });
+            return Err(EngineError::Runtime {
+                message: "注入的 set_language 可恢复失败".into(),
+                recoverable: true,
+            });
         }
         Ok(())
     }
@@ -81,10 +87,18 @@ fn echo_factory(cfg: &WorkerConfig) -> anyhow::Result<EchoEngine> {
 }
 
 fn opt_bool(options: &serde_json::Value, key: &str) -> bool {
-    options.get("fake").and_then(|f| f.get(key)).and_then(|v| v.as_bool()).unwrap_or(false)
+    options
+        .get("fake")
+        .and_then(|f| f.get(key))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
 }
 fn opt_u64(options: &serde_json::Value, key: &str) -> u64 {
-    options.get("fake").and_then(|f| f.get(key)).and_then(|v| v.as_u64()).unwrap_or(0)
+    options
+        .get("fake")
+        .and_then(|f| f.get(key))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0)
 }
 
 fn main() {

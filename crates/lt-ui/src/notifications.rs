@@ -32,7 +32,10 @@ pub fn show_hidden_hint() {
 
 /// 隐藏提示文案（纯函数；zh/en 对齐断言用）
 pub fn hidden_hint_texts() -> (String, String) {
-    (lt_i18n::t("hide_tray_hint_title"), lt_i18n::t("hide_tray_hint"))
+    (
+        lt_i18n::t("hide_tray_hint_title"),
+        lt_i18n::t("hide_tray_hint"),
+    )
 }
 
 /// 字幕窗首启拖动提示入口（WP-1：原版 first-show 托盘气泡的一次性等价；
@@ -47,7 +50,10 @@ pub fn show_subtitle_hint() {
 
 /// 字幕窗拖动提示文案（纯函数；zh/en 对齐断言用）
 pub fn subtitle_hint_texts() -> (String, String) {
-    (lt_i18n::t("subwin_drag_hint_title"), lt_i18n::t("subwin_drag_hint"))
+    (
+        lt_i18n::t("subwin_drag_hint_title"),
+        lt_i18n::t("subwin_drag_hint"),
+    )
 }
 
 /// 生成 ToastText02 模板 XML（标题/正文两行；字符串装配避开
@@ -62,7 +68,9 @@ pub fn build_toast_xml(title: &str, body: &str) -> String {
 
 /// XML 文本节点转义（当前文案均为 i18n 固定串，转义仅防回归）
 fn xml_escape(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 /// 发送原生通知（非阻塞：Show 交付 Shell 即返回；内部一次性注册 AUMID）
@@ -70,9 +78,7 @@ fn xml_escape(s: &str) -> String {
 pub fn show(title: &str, body: &str) -> anyhow::Result<()> {
     use windows::core::HSTRING;
     use windows::Data::Xml::Dom::XmlDocument;
-    use windows::UI::Notifications::{
-        ToastNotification, ToastNotificationManager,
-    };
+    use windows::UI::Notifications::{ToastNotification, ToastNotificationManager};
 
     imp::ensure_initialized()?;
     let doc = XmlDocument::new()?;
@@ -94,15 +100,19 @@ mod imp {
     use super::*;
     use anyhow::{Context, Result};
     use std::path::{Path, PathBuf};
-    use windows::core::{HSTRING, Interface as _, PWSTR};
+    use windows::core::{Interface as _, HSTRING, PWSTR};
     use windows::Win32::Storage::EnhancedStorage::PKEY_AppUserModel_ID;
     use windows::Win32::Storage::FileSystem::{GetFileAttributesW, INVALID_FILE_ATTRIBUTES};
     use windows::Win32::System::Com::StructuredStorage::PROPVARIANT;
-    use windows::Win32::System::Com::{CoCreateInstance, CoTaskMemAlloc, IPersistFile, CLSCTX_INPROC_SERVER};
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoTaskMemAlloc, IPersistFile, CLSCTX_INPROC_SERVER,
+    };
     use windows::Win32::System::Variant::VT_LPWSTR;
     use windows::Win32::System::WinRT::{RoInitialize, RO_INIT_SINGLETHREADED};
     use windows::Win32::UI::Shell::PropertiesSystem::IPropertyStore;
-    use windows::Win32::UI::Shell::{IShellLinkW, SetCurrentProcessExplicitAppUserModelID, ShellLink};
+    use windows::Win32::UI::Shell::{
+        IShellLinkW, SetCurrentProcessExplicitAppUserModelID, ShellLink,
+    };
 
     /// 进程级一次性注册结果（SetCurrentProcessExplicitAppUserModelID + 快捷方式）；
     /// 错误以字符串缓存（anyhow::Error 不可 Clone，OnceLock 需 Clone 值）
@@ -152,8 +162,7 @@ mod imp {
             Ok(None) => tracing::debug!("app.ico 解压跳过"),
             Err(e) => tracing::warn!("app.ico 解压失败（通知将用默认图标）: {e}"),
         }
-        let store: IPropertyStore =
-            shell.cast().context("IPropertyStore 转换失败")?;
+        let store: IPropertyStore = shell.cast().context("IPropertyStore 转换失败")?;
         // VT_LPWSTR 值必须来自 CoTaskMemAlloc——windows crate 为 PROPVARIANT 生成
         // Drop：析构调 PropVariantClear → 对 pwszVal CoTaskMemFree。传 Rust Vec 指针
         // 会释放非 COM 内存（实机堆损坏 0xc0000374，notify_spike 取证）。
@@ -172,9 +181,10 @@ mod imp {
                         wReserved1: 0,
                         wReserved2: 0,
                         wReserved3: 0,
-                        Anonymous: windows::Win32::System::Com::StructuredStorage::PROPVARIANT_0_0_0 {
-                            pwszVal: PWSTR(buf),
-                        },
+                        Anonymous:
+                            windows::Win32::System::Com::StructuredStorage::PROPVARIANT_0_0_0 {
+                                pwszVal: PWSTR(buf),
+                            },
                     },
                 ),
             },
@@ -216,8 +226,13 @@ mod imp {
         let Ok(persist) = shell.cast::<IPersistFile>() else {
             return false;
         };
-        if unsafe { persist.Load(&HSTRING::from(lnk.to_string_lossy().as_ref()), windows::Win32::System::Com::STGM_READ) }
-            .is_err()
+        if unsafe {
+            persist.Load(
+                &HSTRING::from(lnk.to_string_lossy().as_ref()),
+                windows::Win32::System::Com::STGM_READ,
+            )
+        }
+        .is_err()
         {
             return false;
         }
@@ -275,7 +290,10 @@ mod tests {
         let en_t = lt_i18n::t_for_lang("en", "hide_tray_hint_title");
         let en_b = lt_i18n::t_for_lang("en", "hide_tray_hint");
         assert!(en_t.to_lowercase().contains("hidden"), "en 标题: {en_t}");
-        assert!(en_b.to_lowercase().contains("overlay hidden"), "en 正文: {en_b}");
+        assert!(
+            en_b.to_lowercase().contains("overlay hidden"),
+            "en 正文: {en_b}"
+        );
         // 运行时取词路径（全局状态）仅做非空冒烟，不作语言断言
         let (t, b) = hidden_hint_texts();
         assert!(!t.is_empty() && !b.is_empty());

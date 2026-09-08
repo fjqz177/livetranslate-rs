@@ -103,7 +103,10 @@ pub fn send_switch_engine(state: &AppState) {
 
 /// 当前激活模型配置（active_model 越界时回退首行；sanitize 保证至少一个模型）
 pub fn active_model_config(s: &Settings) -> Option<lt_proto::ModelConfig> {
-    s.models.get(s.active_model).or_else(|| s.models.first()).cloned()
+    s.models
+        .get(s.active_model)
+        .or_else(|| s.models.first())
+        .cloned()
 }
 
 // ── 打开目录/链接（原版 TabBase.open_path / QDesktopServices.openUrl）──
@@ -123,7 +126,9 @@ pub fn open_in_explorer(path: &std::path::Path) {
 /// 用系统默认浏览器打开 URL（原版 QDesktopServices.openUrl）
 pub fn open_url(url: &str) {
     #[cfg(windows)]
-    let result = std::process::Command::new("cmd").args(["/c", "start", "", url]).spawn();
+    let result = std::process::Command::new("cmd")
+        .args(["/c", "start", "", url])
+        .spawn();
     #[cfg(not(windows))]
     let result = std::process::Command::new("xdg-open").arg(url).spawn();
     if let Err(e) = result {
@@ -152,8 +157,12 @@ pub fn panel_ui(ui: &mut Ui, state: &mut AppState) {
     // Tab 页内容区：白底 + 灰边框（pane），内容按需滚动（make_scroll_area）
     let pane = ui.available_rect_before_wrap();
     ui.painter().rect_filled(pane, 0.0, pal.page_bg);
-    ui.painter()
-        .rect_stroke(pane, 0.0, Stroke::new(1.0, pal.card_stroke), egui::StrokeKind::Inside);
+    ui.painter().rect_stroke(
+        pane,
+        0.0,
+        Stroke::new(1.0, pal.card_stroke),
+        egui::StrokeKind::Inside,
+    );
 
     let page = state.panel.page;
     if page == PanelPage::Log {
@@ -195,7 +204,9 @@ fn tab_strip(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
             let label = lt_i18n::t(page.tab_key());
             let font = egui::FontId::proportional(12.5);
             // 预测文本宽定页签宽（Qt 页签 = 文字 + 左右 padding）
-            let probe = ui.painter().layout_no_wrap(label.clone(), font.clone(), Color32::WHITE);
+            let probe = ui
+                .painter()
+                .layout_no_wrap(label.clone(), font.clone(), Color32::WHITE);
             let w = probe.rect.width() + 20.0;
             let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, TAB_H), egui::Sense::click());
             let fill = if selected {
@@ -215,7 +226,13 @@ fn tab_strip(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
                     egui::StrokeKind::Outside,
                 );
             }
-            ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, label, font, pal.text);
+            ui.painter().text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                label,
+                font,
+                pal.text,
+            );
             if resp.clicked() {
                 state.panel.page = page;
             }
@@ -236,10 +253,14 @@ pub fn group_card(ui: &mut Ui, pal: &Palette, title: &str, add: impl FnOnce(&mut
         });
     // 标题盖在框顶线上（底色=页底遮断线，等价 QGroupBox 标题缺口）
     let probe =
-        ui.painter().layout_no_wrap(format!(" {title} "), title_font.clone(), Color32::WHITE);
+        ui.painter()
+            .layout_no_wrap(format!(" {title} "), title_font.clone(), Color32::WHITE);
     let tw = probe.rect.width() + 6.0;
     let tr = egui::Rect::from_min_size(
-        egui::pos2(out.response.rect.left() + 10.0, out.response.rect.top() - 8.0),
+        egui::pos2(
+            out.response.rect.left() + 10.0,
+            out.response.rect.top() - 8.0,
+        ),
         egui::vec2(tw, 16.0),
     );
     ui.painter().rect_filled(tr, 0.0, pal.card);
@@ -277,18 +298,22 @@ pub fn hint_line(ui: &mut Ui, pal: &Palette, text: &str) {
 /// 当前页有参数偏离默认值才显示——蓝色加粗徽标（hover 列出偏离字段）+ 恢复按钮。
 /// `reset` 为页内恢复动作（写回默认 + 按字段重发即时命令，见各页 restore_*）；
 /// 闭包可拿到 `ui`（字体重载等需要 ctx 的恢复项）。
-pub fn reset_toolbar(ui: &mut Ui, pal: &Palette, n: usize, fields: &str, reset: impl FnOnce(&mut Ui)) {
+pub fn reset_toolbar(
+    ui: &mut Ui,
+    pal: &Palette,
+    n: usize,
+    fields: &str,
+    reset: impl FnOnce(&mut Ui),
+) {
     if n == 0 {
         return;
     }
     ui.horizontal(|ui| {
         ui.label(
-            RichText::new(
-                lt_i18n::t("diff_page_badge").replace("{n}", &n.to_string()),
-            )
-            .size(11.5)
-            .color(pal.accent)
-            .strong(),
+            RichText::new(lt_i18n::t("diff_page_badge").replace("{n}", &n.to_string()))
+                .size(11.5)
+                .color(pal.accent)
+                .strong(),
         )
         .on_hover_text(fields);
         if ui
@@ -328,7 +353,8 @@ pub fn color_field(ui: &mut Ui, id: &str, value: &mut String) -> bool {
                     );
                 }
             }
-            ui.add(egui::TextEdit::singleline(value).desired_width(96.0)).changed()
+            ui.add(egui::TextEdit::singleline(value).desired_width(96.0))
+                .changed()
         })
         .inner
     })
@@ -343,8 +369,7 @@ pub fn export_settings_json(s: &Settings) -> String {
 /// 设置导入解析（原版 _import_settings：JSON object → 兼容加载 + sanitize）。
 /// 非 object / 解析失败 → Err（原版 raise ValueError → import_invalid 文案）。
 pub fn import_settings_json(text: &str) -> Result<Settings, String> {
-    let v: serde_json::Value =
-        serde_json::from_str(text).map_err(|e| format!("JSON: {e}"))?;
+    let v: serde_json::Value = serde_json::from_str(text).map_err(|e| format!("JSON: {e}"))?;
     if !v.is_object() {
         return Err("not a JSON object".into());
     }
@@ -387,9 +412,7 @@ pub fn panel_visuals() -> egui::Visuals {
     v.widgets.noninteractive.weak_bg_fill = Color32::TRANSPARENT;
     v.widgets.noninteractive.bg_fill = Color32::TRANSPARENT;
     v.widgets.noninteractive.fg_stroke = Stroke::new(1.0, Palette::NATIVE.text);
-    v.widgets
-        .noninteractive
-        .bg_stroke = Stroke::new(1.0, Palette::NATIVE.card_stroke);
+    v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, Palette::NATIVE.card_stroke);
 
     v.window_stroke = Stroke::new(1.0, Palette::NATIVE.card_stroke);
     v.window_corner_radius = egui::CornerRadius::same(0);
@@ -434,7 +457,12 @@ mod tests {
     fn all_tab_titles_resolve() {
         for page in PanelPage::ALL {
             let label = lt_i18n::t(page.tab_key());
-            assert_ne!(label, page.tab_key().to_string(), "{} 键应存在于 yaml", page.tab_key());
+            assert_ne!(
+                label,
+                page.tab_key().to_string(),
+                "{} 键应存在于 yaml",
+                page.tab_key()
+            );
         }
     }
 

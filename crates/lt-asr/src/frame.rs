@@ -78,22 +78,41 @@ pub struct Response {
 
 impl Response {
     pub fn ready(info: ReadyInfo) -> Self {
-        Self { id: None, ok: true, kind: RespKind::Ready(info) }
+        Self {
+            id: None,
+            ok: true,
+            kind: RespKind::Ready(info),
+        }
     }
     pub fn result(id: &str, result: AsrResult) -> Self {
-        Self { id: Some(id.into()), ok: true, kind: RespKind::Result(result) }
+        Self {
+            id: Some(id.into()),
+            ok: true,
+            kind: RespKind::Result(result),
+        }
     }
     pub fn ack(id: &str) -> Self {
-        Self { id: Some(id.into()), ok: true, kind: RespKind::Ack }
+        Self {
+            id: Some(id.into()),
+            ok: true,
+            kind: RespKind::Ack,
+        }
     }
     pub fn shutdown(id: &str) -> Self {
-        Self { id: Some(id.into()), ok: true, kind: RespKind::Shutdown }
+        Self {
+            id: Some(id.into()),
+            ok: true,
+            kind: RespKind::Shutdown,
+        }
     }
     pub fn error(id: Option<&str>, message: impl Into<String>, recoverable: bool) -> Self {
         Self {
             id: id.map(Into::into),
             ok: false,
-            kind: RespKind::Error(ErrorInfo { message: message.into(), recoverable }),
+            kind: RespKind::Error(ErrorInfo {
+                message: message.into(),
+                recoverable,
+            }),
         }
     }
 
@@ -116,7 +135,10 @@ pub struct FrameWriter<W: Write> {
 
 impl<W: Write> FrameWriter<W> {
     pub fn new(inner: W) -> Self {
-        Self { inner, audio_buf: Vec::new() }
+        Self {
+            inner,
+            audio_buf: Vec::new(),
+        }
     }
 
     fn write_frame(&mut self, json: &[u8], audio: &[f32]) -> std::io::Result<()> {
@@ -219,7 +241,10 @@ impl<R: Read> FrameReader<R> {
             .chunks_exact(4)
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
-        Ok(Some(IncomingRequest { request: req, audio }))
+        Ok(Some(IncomingRequest {
+            request: req,
+            audio,
+        }))
     }
 
     /// 客户端侧：读一条响应（无音频尾巴）
@@ -289,7 +314,9 @@ mod tests {
     fn request_with_audio_roundtrip() {
         let req = Request {
             id: "xyz".into(),
-            kind: ReqKind::Transcribe { word_timestamps: false },
+            kind: ReqKind::Transcribe {
+                word_timestamps: false,
+            },
         };
         let audio: Vec<f32> = (0..512).map(|i| i as f32 * 0.01).collect();
         let mut w = FrameWriter::new(Vec::new());
@@ -306,11 +333,16 @@ mod tests {
     #[test]
     fn request_without_audio() {
         for kind in [
-            ReqKind::SetLanguage { language: "zh".into() },
+            ReqKind::SetLanguage {
+                language: "zh".into(),
+            },
             ReqKind::SetInputPadding { pad_seconds: 0.5 },
             ReqKind::Shutdown,
         ] {
-            let req = Request { id: "a".into(), kind };
+            let req = Request {
+                id: "a".into(),
+                kind,
+            };
             let mut w = FrameWriter::new(Vec::new());
             w.write_request(&req, &[]).unwrap();
             let mut r = FrameReader::new(Cursor::new(w.inner));
@@ -322,7 +354,10 @@ mod tests {
 
     #[test]
     fn half_frame_eof_errors() {
-        let req = Request { id: "a".into(), kind: ReqKind::Shutdown };
+        let req = Request {
+            id: "a".into(),
+            kind: ReqKind::Shutdown,
+        };
         let mut w = FrameWriter::new(Vec::new());
         w.write_request(&req, &[]).unwrap();
         let mut bytes = w.inner;

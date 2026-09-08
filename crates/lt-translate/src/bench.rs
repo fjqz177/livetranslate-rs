@@ -135,7 +135,8 @@ fn test_model(
     timeout_s: u32,
     prompt: &str,
 ) -> Result<Vec<BenchRound>, String> {
-    let client = make_openai_client(&m.api_base, &m.api_key, &m.proxy).map_err(|e| e.to_string())?;
+    let client =
+        make_openai_client(&m.api_base, &m.api_key, &m.proxy).map_err(|e| e.to_string())?;
     let read_timeout = std::time::Duration::from_secs(timeout_s as u64);
     let mut rounds = Vec::new();
     for text in sentences {
@@ -170,9 +171,8 @@ fn test_model(
                 let mut ttft: Option<f64> = None;
                 let mut chunks = Vec::new();
                 loop {
-                    let next = crate::runtime().block_on(async {
-                        tokio::time::timeout(read_timeout, s.next()).await
-                    });
+                    let next = crate::runtime()
+                        .block_on(async { tokio::time::timeout(read_timeout, s.next()).await });
                     match next {
                         Ok(Some(Ok(chunk))) => {
                             if ttft.is_none() {
@@ -190,7 +190,11 @@ fn test_model(
                         Ok(Some(Err(e))) => break Err(e.to_string()),
                         Ok(None) => {
                             let total_ms = t0.elapsed().as_secs_f64() * 1000.0;
-                            break Ok((ttft.unwrap_or(total_ms), total_ms, chunks.join("").trim().to_string()));
+                            break Ok((
+                                ttft.unwrap_or(total_ms),
+                                total_ms,
+                                chunks.join("").trim().to_string(),
+                            ));
                         }
                         Err(_) => break Err(format!("timed out after {timeout_s}s")),
                     }
@@ -255,13 +259,14 @@ pub fn run_benchmark_blocking(
             let sentences = sentences.clone();
             let prompt = prompt.to_string();
             std::thread::spawn(move || {
-                let mut r = BenchResult { name: m.name.clone(), ..Default::default() };
+                let mut r = BenchResult {
+                    name: m.name.clone(),
+                    ..Default::default()
+                };
                 match test_model(&m, &sentences, timeout_s, &prompt) {
                     Ok(rounds) => {
-                        let (ttfts, totals): (Vec<f64>, Vec<f64>) = rounds
-                            .iter()
-                            .map(|(t, tot, _)| (*t, *tot))
-                            .unzip();
+                        let (ttfts, totals): (Vec<f64>, Vec<f64>) =
+                            rounds.iter().map(|(t, tot, _)| (*t, *tot)).unzip();
                         r.rounds = rounds;
                         r.avg_ttft = mean(&ttfts);
                         r.std_ttft = stdev(&ttfts);
@@ -274,7 +279,10 @@ pub fn run_benchmark_blocking(
             })
         })
         .collect();
-    handles.into_iter().map(|h| h.join().unwrap_or_default()).collect()
+    handles
+        .into_iter()
+        .map(|h| h.join().unwrap_or_default())
+        .collect()
 }
 
 /// 后台线程版基准（对照原版 run_benchmark）：逐行回调输出，最后输出 "__DONE__"。
@@ -312,7 +320,10 @@ where
                 let sentences: Vec<&str> = sentences_for(&source_lang).to_vec();
                 let prompt = prompt.clone();
                 std::thread::spawn(move || {
-                    let mut lines = vec![format!("Model: {}", m.name), format!("  {}", "─".repeat(50))];
+                    let mut lines = vec![
+                        format!("Model: {}", m.name),
+                        format!("  {}", "─".repeat(50)),
+                    ];
                     match test_model(&m, &sentences, timeout_s, &prompt) {
                         Ok(rounds) => {
                             for (i, (ttft, total, text)) in rounds.iter().enumerate() {
@@ -333,7 +344,10 @@ where
                                 mean(&ttfts),
                                 stdev(&ttfts),
                             ));
-                            let mut r = BenchResult { name: m.name.clone(), ..Default::default() };
+                            let mut r = BenchResult {
+                                name: m.name.clone(),
+                                ..Default::default()
+                            };
                             r.avg_ttft = mean(&ttfts);
                             r.std_ttft = stdev(&ttfts);
                             r.avg_total = mean(&totals);
@@ -342,7 +356,10 @@ where
                         }
                         Err(e) => {
                             lines.push(format!("  FAILED: {e}"));
-                            let mut r = BenchResult { name: m.name.clone(), ..Default::default() };
+                            let mut r = BenchResult {
+                                name: m.name.clone(),
+                                ..Default::default()
+                            };
                             r.error = Some(e);
                             (lines, Some(r))
                         }
@@ -362,7 +379,11 @@ where
             }
         }
 
-        results.sort_by(|a, b| a.avg_ttft.partial_cmp(&b.avg_ttft).unwrap_or(std::cmp::Ordering::Equal));
+        results.sort_by(|a, b| {
+            a.avg_ttft
+                .partial_cmp(&b.avg_ttft)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         on_line(&format!("\n{}", "=".repeat(60)));
         on_line("Ranking by Avg TTFT:");
         for (i, r) in (1..).zip(results.iter().filter(|r| r.error.is_none())) {
@@ -372,7 +393,11 @@ where
             ));
         }
         for r in results.iter().filter(|r| r.error.is_some()) {
-            on_line(&format!("  FAIL  {}: {}", r.name, r.error.clone().unwrap_or_default()));
+            on_line(&format!(
+                "  FAIL  {}: {}",
+                r.name,
+                r.error.clone().unwrap_or_default()
+            ));
         }
         on_line("__DONE__");
     })

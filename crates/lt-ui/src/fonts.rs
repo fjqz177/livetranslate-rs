@@ -120,7 +120,11 @@ impl FontsState {
 
 /// 级联解析（D-17）：行级键空串 = 跟随主设置。
 pub fn resolve_family<'a>(row: &'a str, master: &'a str) -> &'a str {
-    if row.trim().is_empty() { master } else { row }
+    if row.trim().is_empty() {
+        master
+    } else {
+        row
+    }
 }
 
 /// 渲染侧取 FontFamily：已解析注册则用命名族，否则回落全局链（Proportional）。
@@ -182,10 +186,15 @@ fn system_root() -> PathBuf {
 
 /// 单注册表键枚举：把 (值名, 值数据) 追加到 out。键必然关闭。
 #[cfg(windows)]
-unsafe fn scan_hive(hive: ::windows::Win32::System::Registry::HKEY, out: &mut Vec<(String, String)>) {
-    use ::windows::Win32::Foundation::ERROR_NO_MORE_ITEMS;
-    use ::windows::Win32::System::Registry::{RegCloseKey, RegEnumValueW, RegOpenKeyExW, HKEY, KEY_READ};
+unsafe fn scan_hive(
+    hive: ::windows::Win32::System::Registry::HKEY,
+    out: &mut Vec<(String, String)>,
+) {
     use ::windows::core::{PCWSTR, PWSTR};
+    use ::windows::Win32::Foundation::ERROR_NO_MORE_ITEMS;
+    use ::windows::Win32::System::Registry::{
+        RegCloseKey, RegEnumValueW, RegOpenKeyExW, HKEY, KEY_READ,
+    };
 
     let subkey: Vec<u16> = "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Fonts\0"
         .encode_utf16()
@@ -275,7 +284,10 @@ pub fn strip_registry_suffix(name: &str) -> String {
     if s.ends_with(')') {
         let inside = &s[open + 1..s.len() - 1];
         let l = inside.to_ascii_lowercase();
-        if l.contains("truetype") || l.contains("opentype") || l.contains("all res") || l.contains("font")
+        if l.contains("truetype")
+            || l.contains("opentype")
+            || l.contains("all res")
+            || l.contains("font")
         {
             return s[..open].trim_end().to_string();
         }
@@ -306,7 +318,11 @@ fn resolve_font_path(data: &str, system_root: &Path) -> Option<PathBuf> {
         return None;
     }
     let p = PathBuf::from(normalized);
-    Some(if p.is_absolute() { p } else { system_root.join(p) })
+    Some(if p.is_absolute() {
+        p
+    } else {
+        system_root.join(p)
+    })
 }
 
 // ── 链构建 ──
@@ -330,19 +346,24 @@ pub fn build_definitions(settings: &Settings, fonts: &mut FontsState) -> FontDef
     let mut defs = FontDefinitions::default();
 
     // 内嵌三字体恒注册：思源（链尾兜底）+ 等宽 MonoCJK（chrome 保证回退）+ 符号
-    defs.font_data
-        .insert(EMBEDDED_KEY.into(), FontData::from_static(embedded_sans()).into());
-    defs.font_data
-        .insert(MONO_KEY.into(), FontData::from_static(embedded_mono()).into());
-    defs.font_data
-        .insert(SYMBOLS_KEY.into(), FontData::from_static(embedded_symbols()).into());
+    defs.font_data.insert(
+        EMBEDDED_KEY.into(),
+        FontData::from_static(embedded_sans()).into(),
+    );
+    defs.font_data.insert(
+        MONO_KEY.into(),
+        FontData::from_static(embedded_mono()).into(),
+    );
+    defs.font_data.insert(
+        SYMBOLS_KEY.into(),
+        FontData::from_static(embedded_symbols()).into(),
+    );
 
     // 系统锦上添花：Consolas（等宽 chrome，原版 QFont Consolas；缺省回落内嵌等宽）
     let consolas_key = "consolas";
     let consolas_ok = load_window_font(&mut fonts.consolas, "consola.ttf")
         .map(|d| {
-            defs.font_data
-                .insert(consolas_key.into(), d.into());
+            defs.font_data.insert(consolas_key.into(), d.into());
         })
         .is_some();
 
@@ -393,10 +414,8 @@ pub fn build_definitions(settings: &Settings, fonts: &mut FontsState) -> FontDef
     }
 
     // 全局族（界面字体为 Proportional 链首；chrome 等宽：Consolas→内嵌等宽保证）
-    let default_prop =
-        std::mem::take(defs.families.get_mut(&FontFamily::Proportional).unwrap());
-    let default_mono =
-        std::mem::take(defs.families.get_mut(&FontFamily::Monospace).unwrap());
+    let default_prop = std::mem::take(defs.families.get_mut(&FontFamily::Proportional).unwrap());
+    let default_mono = std::mem::take(defs.families.get_mut(&FontFamily::Monospace).unwrap());
 
     let mut prop = Vec::new();
     if let Some(k) = &ui_key {
@@ -461,7 +480,9 @@ fn resolve_font_data(family: &str, fonts: &mut FontsState) -> Option<(String, Ar
 fn load_window_font(cache: &mut Option<Arc<FontData>>, file: &str) -> Option<Arc<FontData>> {
     if cache.is_none() {
         let path = system_root().join("Fonts").join(file);
-        *cache = std::fs::read(&path).ok().map(|b| Arc::new(FontData::from_owned(b)));
+        *cache = std::fs::read(&path)
+            .ok()
+            .map(|b| Arc::new(FontData::from_owned(b)));
         if cache.is_none() {
             tracing::warn!("系统字体未找到（{file}），相关字符回落内嵌字体");
         }
@@ -507,7 +528,10 @@ mod tests {
             // 相对路径 → 拼系统根
             ("Custom (TrueType)".into(), "fonts\\custom.ttf".into()),
             // %SystemRoot% 前缀展开
-            ("Native (OpenType)".into(), "%SystemRoot%\\Fonts\\native.otf".into()),
+            (
+                "Native (OpenType)".into(),
+                "%SystemRoot%\\Fonts\\native.otf".into(),
+            ),
             // 绝对路径原样
             ("Abs (TrueType)".into(), r"D:\userfonts\abs.ttf".into()),
         ];
@@ -515,13 +539,17 @@ mod tests {
         let names: Vec<&str> = out.iter().map(|f| f.display.as_str()).collect();
         assert_eq!(
             names,
-            vec!["微软雅黑", "Consolas", "Segoe UI", "Custom", "Native", "Abs"]
+            vec![
+                "微软雅黑",
+                "Consolas",
+                "Segoe UI",
+                "Custom",
+                "Native",
+                "Abs"
+            ]
         );
         assert_eq!(out[0].path, PathBuf::from(r"C:\Windows\msyh.ttc"));
-        assert_eq!(
-            out[3].path,
-            PathBuf::from(r"C:\Windows\fonts\custom.ttf")
-        );
+        assert_eq!(out[3].path, PathBuf::from(r"C:\Windows\fonts\custom.ttf"));
         assert_eq!(out[4].path, PathBuf::from(r"C:\Windows\Fonts\native.otf"));
         assert_eq!(out[5].path, PathBuf::from(r"D:\userfonts\abs.ttf"));
     }
@@ -543,7 +571,10 @@ mod tests {
     fn resolve_family_cascade() {
         assert_eq!(resolve_family("", "Noto Sans CJK SC"), "Noto Sans CJK SC");
         assert_eq!(resolve_family("   ", "Master"), "Master");
-        assert_eq!(resolve_family("Microsoft YaHei", "Master"), "Microsoft YaHei");
+        assert_eq!(
+            resolve_family("Microsoft YaHei", "Master"),
+            "Microsoft YaHei"
+        );
     }
 
     /// 内嵌链字形覆盖测试（机器无关：不读任何系统字体文件）。
@@ -575,7 +606,8 @@ mod tests {
     /// 字符集；且链装配必须包含三字体——任何系统字体缺失都不影响渲染。
     #[test]
     fn embedded_fonts_cover_all_ui_glyphs() {
-        const ALL: &str = "天地玄黄宇宙洪荒한국어日本語 ABZdef0123456789✓✗●▲▼◆→←◎▪LiveTranslate%,:.";
+        const ALL: &str =
+            "天地玄黄宇宙洪荒한국어日本語 ABZdef0123456789✓✗●▲▼◆→←◎▪LiveTranslate%,:.";
         // 联合覆盖（= 渲染链覆盖）：任一字符不被三字体之一包含即失败
         let mut missing: Vec<char> = ALL
             .chars()
@@ -592,7 +624,11 @@ mod tests {
         );
         // 语义职责：思源=中/英/韩；等宽=chrome 拉丁/数字/中文；符号=✗（思源所缺）
         assert!(
-            font_missing(embedded_sans(), "天地玄黄宇宙洪荒한국어日本語 ABZdef0123456789").is_empty(),
+            font_missing(
+                embedded_sans(),
+                "天地玄黄宇宙洪荒한국어日本語 ABZdef0123456789"
+            )
+            .is_empty(),
             "思源应覆盖中英韩"
         );
         assert!(
@@ -656,7 +692,10 @@ mod tests {
             fonts.resolved[EMBEDDED_FAMILY],
             FontFamily::Name(Arc::from(EMBEDDED_FAMILY))
         );
-        assert_eq!(font_family_for("不存在的族", &fonts), FontFamily::Proportional);
+        assert_eq!(
+            font_family_for("不存在的族", &fonts),
+            FontFamily::Proportional
+        );
     }
 
     /// 行级键解析 + Name 注册/失败回落：设置一个系统不存在的行级字体。

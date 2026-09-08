@@ -72,7 +72,9 @@ fn walk(path: &str, a: &Value, b: &Value, out: &mut Vec<String>) {
 
 /// 路径集合是否命中任一前缀（组级判定：组内字段路径以给定前缀开头）
 pub fn any_dirty(diffs: &[String], prefixes: &[&str]) -> bool {
-    diffs.iter().any(|p| prefixes.iter().any(|pre| p == pre || p.starts_with(pre)))
+    diffs
+        .iter()
+        .any(|p| prefixes.iter().any(|pre| p == pre || p.starts_with(pre)))
 }
 
 #[cfg(test)]

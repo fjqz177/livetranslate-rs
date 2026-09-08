@@ -49,38 +49,35 @@ pub fn log_ui(ui: &mut Ui, state: &mut AppState) {
     let show_debug = state.logwin.show_debug;
     let auto_scroll = state.logwin.auto_scroll;
     // 文本区（深色背景）
-    egui::Frame::NONE
-        .fill(BG)
-        .inner_margin(4.0)
-        .show(ui, |ui| {
-            let max = ui.available_height() - 28.0;
-            let out = ScrollArea::vertical()
-                .auto_shrink([false, false])
-                .max_height(max)
-                // D-31 贴底跟随（同面板日志 tab）
-                .stick_to_bottom(auto_scroll)
-                .show(ui, |ui| {
-                    let lines = state.logwin.formatted();
-                    for (text, level) in lines {
-                        if !LogWindowState::level_visible(*level, show_debug) {
-                            continue;
-                        }
-                        let color = highlight(text, line_color(*level));
-                        ui.label(RichText::new(text).monospace().color(color).size(12.0));
+    egui::Frame::NONE.fill(BG).inner_margin(4.0).show(ui, |ui| {
+        let max = ui.available_height() - 28.0;
+        let out = ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .max_height(max)
+            // D-31 贴底跟随（同面板日志 tab）
+            .stick_to_bottom(auto_scroll)
+            .show(ui, |ui| {
+                let lines = state.logwin.formatted();
+                for (text, level) in lines {
+                    if !LogWindowState::level_visible(*level, show_debug) {
+                        continue;
                     }
-                });
-            // 用户主动翻离底部且出现未读行：右下角「回到最新（+N）」浮钮
-            if state.logwin.advance_follow(
-                out.state.offset.y,
-                out.inner_rect.height(),
-                out.content_size.y,
-                LogView::LogWin,
-            ) && log_jump_button(ui, state.logwin.new_since_bottom())
-            {
-                ui.scroll_to_cursor(Some(egui::Align::BOTTOM));
-                state.logwin.mark_at_bottom();
-            }
-        });
+                    let color = highlight(text, line_color(*level));
+                    ui.label(RichText::new(text).monospace().color(color).size(12.0));
+                }
+            });
+        // 用户主动翻离底部且出现未读行：右下角「回到最新（+N）」浮钮
+        if state.logwin.advance_follow(
+            out.state.offset.y,
+            out.inner_rect.height(),
+            out.content_size.y,
+            LogView::LogWin,
+        ) && log_jump_button(ui, state.logwin.new_since_bottom())
+        {
+            ui.scroll_to_cursor(Some(egui::Align::BOTTOM));
+            state.logwin.mark_at_bottom();
+        }
+    });
 
     // 控件行（原版布局：文本区在下？——原版先 text 后 controls，此处同序）
     ui.horizontal(|ui| {

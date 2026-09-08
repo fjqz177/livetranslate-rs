@@ -23,12 +23,17 @@ pub mod subtitle;
 pub(crate) fn log_jump_button(ui: &mut Ui, unread: usize) -> bool {
     let text = format!("{} (+{unread})", lt_i18n::t("log_back_to_latest"));
     let font = egui::FontId::proportional(11.5);
-    let galley = ui.painter().layout_no_wrap(text.clone(), font, Color32::WHITE);
+    let galley = ui
+        .painter()
+        .layout_no_wrap(text.clone(), font, Color32::WHITE);
     let pad = egui::vec2(10.0, 6.0);
     let size = galley.size() + pad + pad;
     let frame = ui.max_rect();
     let rect = egui::Rect::from_min_size(
-        egui::pos2(frame.right() - size.x - 10.0, frame.bottom() - size.y - 10.0),
+        egui::pos2(
+            frame.right() - size.x - 10.0,
+            frame.bottom() - size.y - 10.0,
+        ),
         size,
     );
     ui.put(
@@ -51,4 +56,3 @@ pub fn dispatch(win: WinId, ui: &mut Ui, state: &mut AppState) {
         WinId::Benchmark => bench::bench_ui(ui, state),
     }
 }
-

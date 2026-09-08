@@ -21,7 +21,9 @@ pub fn dir_size(path: &std::path::Path) -> u64 {
     let mut total = 0u64;
     let mut stack = vec![path.to_path_buf()];
     while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
         for e in entries.flatten() {
             let p = e.path();
             if p.is_dir() {
@@ -101,12 +103,10 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
         ui.horizontal(|ui| {
             let mut auto_save = state.settings.auto_save_transcript;
             if ui
-                .add(
-                    egui::Checkbox::new(
-                        &mut auto_save,
-                        RichText::new(lt_i18n::t("label_auto_save_transcript")).color(pal.text),
-                    ),
-                )
+                .add(egui::Checkbox::new(
+                    &mut auto_save,
+                    RichText::new(lt_i18n::t("label_auto_save_transcript")).color(pal.text),
+                ))
                 .on_hover_text(lt_i18n::t("auto_save_transcript_tooltip"))
                 .changed()
             {
@@ -138,10 +138,14 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
         // 总量行 + 打开目录 + 删除全部
         ui.horizontal(|ui| {
             ui.label(
-                RichText::new(lt_i18n::t("cache_total").replace("{size}", &super::vad::format_size(total)).replace("{count}", &entries.len().to_string()))
-                    .monospace()
-                    .strong()
-                    .color(pal.text),
+                RichText::new(
+                    lt_i18n::t("cache_total")
+                        .replace("{size}", &super::vad::format_size(total))
+                        .replace("{count}", &entries.len().to_string()),
+                )
+                .monospace()
+                .strong()
+                .color(pal.text),
             );
             if ui
                 .add(
@@ -182,7 +186,11 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
                 })
                 .inner;
             if resp.clicked() {
-                select = if state.panel.cache_selected == Some(i) { None } else { Some(i) };
+                select = if state.panel.cache_selected == Some(i) {
+                    None
+                } else {
+                    Some(i)
+                };
             }
         }
         if entries.is_empty() {
@@ -251,7 +259,9 @@ fn open_models_dir(state: &AppState) {
 /// [`apply_delete_selected`]）。
 fn delete_selected(state: &mut AppState) {
     let entries = state.panel.cache_entries.clone().unwrap_or_default();
-    let Some(i) = state.panel.cache_selected else { return };
+    let Some(i) = state.panel.cache_selected else {
+        return;
+    };
     let Some(e) = entries.get(i) else { return };
     let msg = lt_i18n::t("delete_selected_confirm_msg")
         .replace("{name}", &e.name)
@@ -318,7 +328,8 @@ mod tests {
     use std::path::PathBuf;
 
     fn tmpdir(name: &str) -> PathBuf {
-        let base = std::env::temp_dir().join(format!("lt_panel_data_{name}_{}", std::process::id()));
+        let base =
+            std::env::temp_dir().join(format!("lt_panel_data_{name}_{}", std::process::id()));
         let _ = fs::remove_dir_all(&base);
         fs::create_dir_all(&base).unwrap();
         base
@@ -344,7 +355,11 @@ mod tests {
     fn scan_cache_entries_finds_registered_models() {
         let dir = tmpdir("scan");
         // MS 侧 SenseVoice（下载器布局 models/{org}--{name}）
-        let ms = ms_cache_root(&dir).join("models").join("pengzhendong--sherpa-onnx-sense-voice-zh-en-ja-ko-yue").join("snapshots").join("rev");
+        let ms = ms_cache_root(&dir)
+            .join("models")
+            .join("pengzhendong--sherpa-onnx-sense-voice-zh-en-ja-ko-yue")
+            .join("snapshots")
+            .join("rev");
         fs::create_dir_all(&ms).unwrap();
         fs::write(ms.join("model.int8.onnx"), vec![0u8; 500]).unwrap();
         // HF 侧 SenseVoice（models--org--name）
@@ -355,12 +370,25 @@ mod tests {
 
         let entries = scan_cache_entries(&dir);
         let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
-        assert!(names.contains(&"SenseVoice Small (ModelScope)"), "{names:?}");
-        assert!(names.contains(&"SenseVoice Small (HuggingFace)"), "{names:?}");
+        assert!(
+            names.contains(&"SenseVoice Small (ModelScope)"),
+            "{names:?}"
+        );
+        assert!(
+            names.contains(&"SenseVoice Small (HuggingFace)"),
+            "{names:?}"
+        );
         // whisper 六档共用单仓 → 至多一条
-        assert_eq!(names.iter().filter(|n| n.starts_with("Whisper")).count(), 0, "未下载不应出现");
+        assert_eq!(
+            names.iter().filter(|n| n.starts_with("Whisper")).count(),
+            0,
+            "未下载不应出现"
+        );
         // 体积为实际字节（MS 目录 500B）
-        let ms_entry = entries.iter().find(|e| e.name.ends_with("(ModelScope)")).unwrap();
+        let ms_entry = entries
+            .iter()
+            .find(|e| e.name.ends_with("(ModelScope)"))
+            .unwrap();
         assert_eq!(ms_entry.size, 500);
 
         // whisper 单仓出现时合并为一条
@@ -368,12 +396,18 @@ mod tests {
         fs::create_dir_all(&wh).unwrap();
         let entries = scan_cache_entries(&dir);
         assert_eq!(
-            entries.iter().filter(|e| e.name.starts_with("Whisper")).count(),
+            entries
+                .iter()
+                .filter(|e| e.name.starts_with("Whisper"))
+                .count(),
             1,
             "whisper 单仓应合并为一条"
         );
         // 删除条目路径可用（remove_dir_all 目标即扫描路径）
-        let wh_entry = entries.iter().find(|e| e.name.starts_with("Whisper")).unwrap();
+        let wh_entry = entries
+            .iter()
+            .find(|e| e.name.starts_with("Whisper"))
+            .unwrap();
         assert!(wh_entry.path.exists());
 
         // AH-6/H9 回归钉：qwen3 必须在扫描清单内——此前手写清单漏掉该条目，

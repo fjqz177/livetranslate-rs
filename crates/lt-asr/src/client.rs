@@ -5,7 +5,7 @@
 //! 需重载模型，10s 慢机不足）/ shutdown 5s→kill（AH-2 兜底）。
 //! 读响应以 0.2s 步进轮询，期间监测子进程退出（对齐原版 conn.poll + exitcode）。
 
-use crate::frame::{FrameReader, FrameWriter, ReqKind, Request, Response, ReadyInfo};
+use crate::frame::{FrameReader, FrameWriter, ReadyInfo, ReqKind, Request, Response};
 use crate::job::JobHandle;
 use crate::worker::WorkerConfig;
 use lt_proto::AsrResult;
@@ -131,8 +131,10 @@ impl AsrWorkerClient {
     }
 
     pub fn status(&mut self) -> Status {
-        if matches!(self.status, Status::Starting | Status::Loading | Status::Ready | Status::Busy)
-            && self.child.try_wait().map_or(false, |c| c.is_some())
+        if matches!(
+            self.status,
+            Status::Starting | Status::Loading | Status::Ready | Status::Busy
+        ) && self.child.try_wait().map_or(false, |c| c.is_some())
         {
             self.status = Status::Exited;
         }
@@ -203,7 +205,9 @@ impl AsrWorkerClient {
     // 超时即 kill+重启白烧配额；代价=真挂死时等待与识别同级（语义一致）
     pub fn set_language(&mut self, language: &str) -> Result<(), AsrClientError> {
         self.request(
-            ReqKind::SetLanguage { language: language.into() },
+            ReqKind::SetLanguage {
+                language: language.into(),
+            },
             &[],
             self.request_timeout,
         )
@@ -227,7 +231,10 @@ impl AsrWorkerClient {
         self.status = Status::Stopping;
         let alive = self.child.try_wait().map_or(true, |c| c.is_none());
         if alive {
-            let req = Request { id: uuid::Uuid::new_v4().to_string(), kind: ReqKind::Shutdown };
+            let req = Request {
+                id: uuid::Uuid::new_v4().to_string(),
+                kind: ReqKind::Shutdown,
+            };
             if self.stdin.write_request(&req, &[]).is_ok() {
                 // 给 ack 一个短暂机会；超时/EOF 由后续 kill 兜底
                 for _ in 0..(self.shutdown_timeout.as_millis() / 100).max(1) {
@@ -273,7 +280,10 @@ impl AsrWorkerClient {
             }
             return Err(AsrClientError::Status(format!("worker 未就绪: {st:?}")));
         }
-        let req = Request { id: uuid::Uuid::new_v4().to_string(), kind };
+        let req = Request {
+            id: uuid::Uuid::new_v4().to_string(),
+            kind,
+        };
         self.stdin.write_request(&req, audio)?;
         let prev = self.status;
         if matches!(req.kind, ReqKind::Transcribe { .. }) {

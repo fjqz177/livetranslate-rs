@@ -73,9 +73,7 @@ fn main() -> anyhow::Result<()> {
 #[cfg(windows)]
 fn ensure_single_instance() -> anyhow::Result<()> {
     use windows::core::PCWSTR;
-    use windows::Win32::System::Threading::{
-        CreateMutexW, SYNCHRONIZATION_SYNCHRONIZE,
-    };
+    use windows::Win32::System::Threading::{CreateMutexW, SYNCHRONIZATION_SYNCHRONIZE};
 
     // 裸名（无反斜杠）：落在会话 BaseNamedObjects 根，
     // 带斜杠的名字会被对象命名空间当子目录解析而报 0x80070003
@@ -83,12 +81,8 @@ fn ensure_single_instance() -> anyhow::Result<()> {
     let pcw = PCWSTR(name.as_ptr());
     unsafe {
         // 已有实例持有同名互斥量 → Open 成功即拒绝启动
-        if windows::Win32::System::Threading::OpenMutexW(
-            SYNCHRONIZATION_SYNCHRONIZE,
-            false,
-            pcw,
-        )
-        .is_ok()
+        if windows::Win32::System::Threading::OpenMutexW(SYNCHRONIZATION_SYNCHRONIZE, false, pcw)
+            .is_ok()
         {
             anyhow::bail!("LiveTranslate 已在运行（单实例互斥量已存在）");
         }
@@ -113,23 +107,21 @@ fn asr_worker_entry(cfg_json: &str) -> anyhow::Result<()> {
     init_worker_logging();
     let config: lt_asr::WorkerConfig = serde_json::from_str(cfg_json)?;
     match config.engine.as_str() {
-        "sensevoice" => {
-            lt_asr::worker::run(
-                std::io::stdin().lock(),
-                std::io::stdout().lock(),
-                config,
-                move |cfg| {
-                    let dir = cfg
-                        .options
-                        .get("model_dir")
-                        .and_then(|v| v.as_str())
-                        .map(std::path::PathBuf::from)
-                        .ok_or_else(|| anyhow::anyhow!("缺少 model_dir"))?;
-                    lt_asr::sensevoice::SenseVoiceEngine::load(&dir, cfg.pad_seconds, &cfg.language)
-                        .map_err(|e| anyhow::anyhow!("{e}"))
-                },
-            )
-        }
+        "sensevoice" => lt_asr::worker::run(
+            std::io::stdin().lock(),
+            std::io::stdout().lock(),
+            config,
+            move |cfg| {
+                let dir = cfg
+                    .options
+                    .get("model_dir")
+                    .and_then(|v| v.as_str())
+                    .map(std::path::PathBuf::from)
+                    .ok_or_else(|| anyhow::anyhow!("缺少 model_dir"))?;
+                lt_asr::sensevoice::SenseVoiceEngine::load(&dir, cfg.pad_seconds, &cfg.language)
+                    .map_err(|e| anyhow::anyhow!("{e}"))
+            },
+        ),
         "nano" => {
             lt_asr::worker::run(
                 std::io::stdin().lock(),
@@ -165,17 +157,12 @@ fn asr_worker_entry(cfg_json: &str) -> anyhow::Result<()> {
                 },
             )
         }
-        "whisper" => {
-            lt_asr::worker::run(
-                std::io::stdin().lock(),
-                std::io::stdout().lock(),
-                config,
-                move |cfg| {
-                    lt_asr::WhisperEngine::from_config(cfg)
-                        .map_err(|e| anyhow::anyhow!("{e}"))
-                },
-            )
-        }
+        "whisper" => lt_asr::worker::run(
+            std::io::stdin().lock(),
+            std::io::stdout().lock(),
+            config,
+            move |cfg| lt_asr::WhisperEngine::from_config(cfg).map_err(|e| anyhow::anyhow!("{e}")),
+        ),
         other => anyhow::bail!("未知 worker 引擎: {other}"),
     }
 }

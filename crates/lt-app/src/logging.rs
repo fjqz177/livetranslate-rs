@@ -168,11 +168,7 @@ impl tracing::field::Visit for MsgVisitor {
             self.msg = value.to_string();
         }
     }
-    fn record_debug(
-        &mut self,
-        field: &tracing::field::Field,
-        value: &dyn std::fmt::Debug,
-    ) {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
         if field.name() == "message" {
             self.msg = format!("{value:?}");
         }

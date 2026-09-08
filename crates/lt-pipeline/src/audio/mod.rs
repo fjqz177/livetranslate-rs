@@ -298,7 +298,9 @@ mod tests {
     /// 验证算法自身可重复，逐位一致性由 fixtures 覆盖。
     #[test]
     fn pairwise_sum_repeats() {
-        let a: Vec<f32> = (0..300).map(|i| ((i * 37) % 101) as f32 / 101.0 - 0.5).collect();
+        let a: Vec<f32> = (0..300)
+            .map(|i| ((i * 37) % 101) as f32 / 101.0 - 0.5)
+            .collect();
         assert_eq!(numpy_sum_f32(&a), numpy_sum_f32(&a));
     }
 
@@ -334,7 +336,13 @@ mod tests {
         // mic_rms 与 numpy 逐位一致（f32 bits）
         let want_rms = mic_rms.unwrap();
         let w = mix["mic_rms"].as_f64().unwrap() as f32;
-        assert_eq!(want_rms.to_bits(), w.to_bits(), "mic_rms {} != {}", want_rms, w);
+        assert_eq!(
+            want_rms.to_bits(),
+            w.to_bits(),
+            "mic_rms {} != {}",
+            want_rms,
+            w
+        );
         // mic 缓冲已被消费
         assert!(mic_buf.is_empty());
         // mic 为空时直通

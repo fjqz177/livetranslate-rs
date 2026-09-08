@@ -6,7 +6,7 @@
 //! stdout/stderr 由父进程重定向到日志（E-07：绝不刷 GUI 控制台）。
 
 use crate::engine::AsrEngine;
-use crate::frame::{FrameReader, FrameWriter, ReqKind, Request, Response, ReadyInfo};
+use crate::frame::{FrameReader, FrameWriter, ReadyInfo, ReqKind, Request, Response};
 use std::io::{Read, Write};
 
 /// 引擎工厂：由装配层注入（M2.3 SenseVoice / M5 whisper / 测试 echo）

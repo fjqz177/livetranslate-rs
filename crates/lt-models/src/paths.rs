@@ -65,10 +65,7 @@ mod tests {
     #[test]
     fn cache_layout_compatible_with_original() {
         let md = PathBuf::from("/models");
-        assert_eq!(
-            hf_cache_root(&md),
-            PathBuf::from("/models/huggingface/hub")
-        );
+        assert_eq!(hf_cache_root(&md), PathBuf::from("/models/huggingface/hub"));
         assert_eq!(ms_cache_root(&md), PathBuf::from("/models/modelscope"));
     }
 }

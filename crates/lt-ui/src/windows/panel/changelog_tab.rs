@@ -51,7 +51,12 @@ fn render_markdown(ui: &mut Ui, text: &str) {
         }
         if let Some(date) = trimmed.strip_prefix("## ") {
             ui.add_space(4.0);
-            ui.label(RichText::new(date).strong().size(17.0).color(ui.visuals().text_color()));
+            ui.label(
+                RichText::new(date)
+                    .strong()
+                    .size(17.0)
+                    .color(ui.visuals().text_color()),
+            );
             ui.add_space(2.0);
             continue;
         }
@@ -121,7 +126,11 @@ fn inline_rich(ui: &mut Ui, text: &str, size: f32) {
 
 /// 标记闭合后的跳过长度（** 2 字节 / ` 1 字节；错切多字节 UTF-8 会 panic）
 fn mark_len(is_bold: bool) -> usize {
-    if is_bold { 2 } else { 1 }
+    if is_bold {
+        2
+    } else {
+        1
+    }
 }
 
 #[cfg(test)]

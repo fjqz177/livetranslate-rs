@@ -13,11 +13,12 @@
 //! （winit+wgpu 无安全窗口级透明度 API，视觉等价）；按钮/下拉视觉按 egui 控件
 //! 近似还原 Qt 配色，非逐像素。
 
-use crate::state::{
-    AppState, ConfirmKind, OverlayMessage, OverlayMode, WinAction, WinId,
-};
+use crate::state::{AppState, ConfirmKind, OverlayMessage, OverlayMode, WinAction, WinId};
 use crate::style::{self, parse_color};
-use egui::{Align2, Button, Color32, ComboBox, CornerRadius, FontId, RichText, ScrollArea, Sense, Stroke, Ui, Vec2};
+use egui::{
+    Align2, Button, Color32, ComboBox, CornerRadius, FontId, RichText, ScrollArea, Sense, Stroke,
+    Ui, Vec2,
+};
 
 /// pt → 逻辑 px（Qt 1pt ≈ 96/72 px）
 fn pt(size: u32) -> f32 {
@@ -69,7 +70,11 @@ pub fn overlay_ui(ui: &mut Ui, state: &mut AppState) {
     let radius = st.border_radius as f32;
 
     // 动画驱动：进行中则每帧请求窗口高度调整 + 重绘
-    if let Some(h) = state.overlay.anim.and_then(|a| a.current(std::time::Instant::now())) {
+    if let Some(h) = state
+        .overlay
+        .anim
+        .and_then(|a| a.current(std::time::Instant::now()))
+    {
         state.enqueue_action(WinId::Overlay, WinAction::SetHeight(h));
         ui.ctx().request_repaint();
     }
@@ -151,7 +156,16 @@ fn row1(ui: &mut Ui, state: &mut AppState, compact: bool, opa_pct: u32) {
         }
 
         // 隐藏（原版 hide_btn：隐藏悬浮窗，托盘"显示悬浮窗"可恢复 + 首次气泡提示）
-        if ui.add(small_btn(lt_i18n::t("hide"), BTN_FILL, BTN_STROKE, BTN_TEXT, opa_pct)).clicked() {
+        if ui
+            .add(small_btn(
+                lt_i18n::t("hide"),
+                BTN_FILL,
+                BTN_STROKE,
+                BTN_TEXT,
+                opa_pct,
+            ))
+            .clicked()
+        {
             state.enqueue_action(WinId::Overlay, WinAction::Hide);
         }
 
@@ -185,7 +199,11 @@ fn row1(ui: &mut Ui, state: &mut AppState, compact: bool, opa_pct: u32) {
         };
         let start_stop = ui.add(small_btn(label, fill, stroke, text, opa_pct));
         if start_stop.clicked() {
-            let cmd = if running { lt_proto::Cmd::Pause } else { lt_proto::Cmd::Resume };
+            let cmd = if running {
+                lt_proto::Cmd::Pause
+            } else {
+                lt_proto::Cmd::Resume
+            };
             state.send_cmd(cmd);
             state.running = !running;
         }
@@ -194,7 +212,13 @@ fn row1(ui: &mut Ui, state: &mut AppState, compact: bool, opa_pct: u32) {
         // D-33/H-5：确认改 egui 模态（原位 rfd 同步框会与置顶悬浮窗叠置不可见+阻塞）
         if !compact
             && ui
-                .add(small_btn(lt_i18n::t("clear"), BTN_FILL, BTN_STROKE, BTN_TEXT, opa_pct))
+                .add(small_btn(
+                    lt_i18n::t("clear"),
+                    BTN_FILL,
+                    BTN_STROKE,
+                    BTN_TEXT,
+                    opa_pct,
+                ))
                 .clicked()
         {
             if state.settings.auto_save_transcript {
@@ -210,18 +234,45 @@ fn row1(ui: &mut Ui, state: &mut AppState, compact: bool, opa_pct: u32) {
         }
 
         // 模式切换（full↔compact，200ms 高度动画）
-        let mode_label = if compact { lt_i18n::t("mode_compact") } else { lt_i18n::t("mode_full") };
-        if ui.add(small_btn(mode_label, BTN_FILL, BTN_STROKE, BTN_TEXT, opa_pct)).clicked() {
+        let mode_label = if compact {
+            lt_i18n::t("mode_compact")
+        } else {
+            lt_i18n::t("mode_full")
+        };
+        if ui
+            .add(small_btn(
+                mode_label, BTN_FILL, BTN_STROKE, BTN_TEXT, opa_pct,
+            ))
+            .clicked()
+        {
             toggle_mode(state, compact);
         }
 
-        if ui.add(small_btn(lt_i18n::t("settings"), BTN_FILL, BTN_STROKE, BTN_TEXT, opa_pct)).clicked() {
+        if ui
+            .add(small_btn(
+                lt_i18n::t("settings"),
+                BTN_FILL,
+                BTN_STROKE,
+                BTN_TEXT,
+                opa_pct,
+            ))
+            .clicked()
+        {
             state.enqueue_action(WinId::Overlay, WinAction::ShowPanel);
         }
 
         // 退出（红底；与托盘同一确认语义——P1-1，不再秒退）。
         // D-33/H-3：确认改 egui 模态；紧凑/低矮时模态装不下 → 改由面板宿主。
-        if ui.add(small_btn(lt_i18n::t("quit"), QUIT_FILL, QUIT_STROKE, BTN_TEXT, opa_pct)).clicked() {
+        if ui
+            .add(small_btn(
+                lt_i18n::t("quit"),
+                QUIT_FILL,
+                QUIT_STROKE,
+                BTN_TEXT,
+                opa_pct,
+            ))
+            .clicked()
+        {
             let overlay_ok = !compact && ui.ctx().content_rect().height() >= 280.0;
             let opened = state.request_confirm(
                 ConfirmKind::Quit,
@@ -240,23 +291,47 @@ fn row1(ui: &mut Ui, state: &mut AppState, compact: bool, opa_pct: u32) {
 fn row2_checks(ui: &mut Ui, state: &mut AppState) {
     ui.horizontal(|ui| {
         let mut ct = state.ov_click_through;
-        if ui.add(egui::Checkbox::new(&mut ct, RichText::new(lt_i18n::t("click_through")).size(10.5))).changed() {
+        if ui
+            .add(egui::Checkbox::new(
+                &mut ct,
+                RichText::new(lt_i18n::t("click_through")).size(10.5),
+            ))
+            .changed()
+        {
             state.ov_click_through = ct;
             if ct {
                 state.schedule_click_through_tick();
             }
         }
         let mut tm = state.ov_topmost;
-        if ui.add(egui::Checkbox::new(&mut tm, RichText::new(lt_i18n::t("top_most")).size(10.5))).changed() {
+        if ui
+            .add(egui::Checkbox::new(
+                &mut tm,
+                RichText::new(lt_i18n::t("top_most")).size(10.5),
+            ))
+            .changed()
+        {
             state.ov_topmost = tm;
             state.enqueue_action(WinId::Overlay, WinAction::ApplyOverlayFlags);
         }
         let mut asr = state.ov_auto_scroll;
-        if ui.add(egui::Checkbox::new(&mut asr, RichText::new(lt_i18n::t("auto_scroll")).size(10.5))).changed() {
+        if ui
+            .add(egui::Checkbox::new(
+                &mut asr,
+                RichText::new(lt_i18n::t("auto_scroll")).size(10.5),
+            ))
+            .changed()
+        {
             state.ov_auto_scroll = asr;
         }
         let mut tb = state.ov_taskbar;
-        if ui.add(egui::Checkbox::new(&mut tb, RichText::new(lt_i18n::t("taskbar")).size(10.5))).changed() {
+        if ui
+            .add(egui::Checkbox::new(
+                &mut tb,
+                RichText::new(lt_i18n::t("taskbar")).size(10.5),
+            ))
+            .changed()
+        {
             state.ov_taskbar = tb;
             state.enqueue_action(WinId::Overlay, WinAction::ApplyOverlayFlags);
         }
@@ -267,7 +342,12 @@ fn row2_checks(ui: &mut Ui, state: &mut AppState) {
 fn row2_combos(ui: &mut Ui, state: &mut AppState) {
     ui.horizontal(|ui| {
         let lbl = |ui: &mut Ui, s: String| {
-            ui.label(RichText::new(s).monospace().size(10.5).color(Color32::from_rgb(0x88, 0x88, 0x88)));
+            ui.label(
+                RichText::new(s)
+                    .monospace()
+                    .size(10.5)
+                    .color(Color32::from_rgb(0x88, 0x88, 0x88)),
+            );
         };
         let total = ui.available_width();
         let w_model = total * 0.44;
@@ -275,7 +355,10 @@ fn row2_combos(ui: &mut Ui, state: &mut AppState) {
         let w_tgt = total * 0.24;
 
         lbl(ui, lt_i18n::t("model_label"));
-        let active = state.settings.active_model.min(state.settings.models.len().saturating_sub(1));
+        let active = state
+            .settings
+            .active_model
+            .min(state.settings.models.len().saturating_sub(1));
         ComboBox::from_id_salt("ov_model")
             .width(w_model - 60.0)
             .selected_text(
@@ -348,7 +431,11 @@ fn lang_label(with_auto: bool, code: &str) -> String {
 /// 高度动画的 from/to 由宿主按当前窗口高度计算（原版 _on_mode_changed 的
 /// _height_before_compact/minimumHeight 逻辑在窗口层）。
 fn toggle_mode(state: &mut AppState, to_compact: bool) {
-    state.overlay.mode = if to_compact { OverlayMode::Compact } else { OverlayMode::Full };
+    state.overlay.mode = if to_compact {
+        OverlayMode::Compact
+    } else {
+        OverlayMode::Full
+    };
     state.enqueue_action(WinId::Overlay, WinAction::ToggleMode);
 }
 
@@ -384,14 +471,25 @@ fn mic_bar_active(state: &AppState) -> bool {
 fn level_bar(ui: &mut Ui, label: &str, v: f32, color: Color32, opa_pct: u32, w: f32) {
     const H: f32 = 14.0;
     ui.horizontal(|ui| {
-        ui.label(RichText::new(label).monospace().size(10.5).color(Color32::from_rgb(0x88, 0x88, 0x88)));
+        ui.label(
+            RichText::new(label)
+                .monospace()
+                .size(10.5)
+                .color(Color32::from_rgb(0x88, 0x88, 0x88)),
+        );
         let (rect, _) = ui.allocate_exact_size(Vec2::new(w, H), Sense::hover());
         let pct = (v * 500.0).clamp(0.0, 100.0);
         let painter = ui.painter();
         painter.rect_filled(rect, 3.0, opa(BAR_SLOT, opa_pct));
-        painter.rect_stroke(rect, 3.0, Stroke::new(1.0, opa(BAR_STROKE, opa_pct)), egui::StrokeKind::Inside);
+        painter.rect_stroke(
+            rect,
+            3.0,
+            Stroke::new(1.0, opa(BAR_STROKE, opa_pct)),
+            egui::StrokeKind::Inside,
+        );
         if pct > 1.0 {
-            let fill = egui::Rect::from_min_size(rect.min, Vec2::new(rect.width() * pct / 100.0, H));
+            let fill =
+                egui::Rect::from_min_size(rect.min, Vec2::new(rect.width() * pct / 100.0, H));
             painter.rect_filled(fill, 2.0, opa(color, opa_pct));
         }
         painter.text(
@@ -425,31 +523,103 @@ fn stats_line(ui: &mut Ui, state: &AppState, opa_pct: u32) {
 
     ui.horizontal_wrapped(|ui| {
         if let Some(dev) = &state.asr_label {
-            ui.label(RichText::new(dev.clone()).monospace().size(10.5).color(o(dev_color(dev))));
+            ui.label(
+                RichText::new(dev.clone())
+                    .monospace()
+                    .size(10.5)
+                    .color(o(dev_color(dev))),
+            );
             ui.label(RichText::new("|").monospace().size(10.5).color(o(SEP)));
         }
-        ui.label(RichText::new("CPU").monospace().size(10.5).color(o(style::LANG_BLUE)));
-        ui.label(RichText::new(format!("{:.0}%", m.cpu)).monospace().size(10.5).color(o(STATS_VAL)));
-        ui.label(RichText::new("RAM").monospace().size(10.5).color(o(style::LANG_BLUE)));
-        ui.label(RichText::new(format!("{}MB", m.ram_mb as i64)).monospace().size(10.5).color(o(STATS_VAL)));
-        ui.label(RichText::new("GPU").monospace().size(10.5).color(o(style::LANG_BLUE)));
-        ui.label(RichText::new("N/A").monospace().size(10.5).color(o(STATS_VAL)));
-        ui.label(RichText::new("|").monospace().size(10.5).color(o(SEP)));
-        ui.label(RichText::new("ASR").monospace().size(10.5).color(o(style::ASR_MS)));
-        ui.label(RichText::new(format!("{}", stats.asr_n)).monospace().size(10.5).color(o(STATS_VAL)));
-        ui.label(RichText::new("TL").monospace().size(10.5).color(o(style::TL_MS)));
-        ui.label(RichText::new(format!("{}", stats.tl_n)).monospace().size(10.5).color(o(STATS_VAL)));
-        ui.label(RichText::new("Tok").monospace().size(10.5).color(Color32::from_rgb(0xcc, 0x99, 0xcc)));
-        ui.label(RichText::new(tokens_str).monospace().size(10.5).color(o(STATS_VAL)));
         ui.label(
-            RichText::new(format!("({}\u{2191}{}\u{2193})", stats.prompt_tokens, stats.completion_tokens))
+            RichText::new("CPU")
                 .monospace()
                 .size(10.5)
-                .color(o(Color32::from_rgb(0x66, 0x66, 0x66))),
+                .color(o(style::LANG_BLUE)),
+        );
+        ui.label(
+            RichText::new(format!("{:.0}%", m.cpu))
+                .monospace()
+                .size(10.5)
+                .color(o(STATS_VAL)),
+        );
+        ui.label(
+            RichText::new("RAM")
+                .monospace()
+                .size(10.5)
+                .color(o(style::LANG_BLUE)),
+        );
+        ui.label(
+            RichText::new(format!("{}MB", m.ram_mb as i64))
+                .monospace()
+                .size(10.5)
+                .color(o(STATS_VAL)),
+        );
+        ui.label(
+            RichText::new("GPU")
+                .monospace()
+                .size(10.5)
+                .color(o(style::LANG_BLUE)),
+        );
+        ui.label(
+            RichText::new("N/A")
+                .monospace()
+                .size(10.5)
+                .color(o(STATS_VAL)),
+        );
+        ui.label(RichText::new("|").monospace().size(10.5).color(o(SEP)));
+        ui.label(
+            RichText::new("ASR")
+                .monospace()
+                .size(10.5)
+                .color(o(style::ASR_MS)),
+        );
+        ui.label(
+            RichText::new(format!("{}", stats.asr_n))
+                .monospace()
+                .size(10.5)
+                .color(o(STATS_VAL)),
+        );
+        ui.label(
+            RichText::new("TL")
+                .monospace()
+                .size(10.5)
+                .color(o(style::TL_MS)),
+        );
+        ui.label(
+            RichText::new(format!("{}", stats.tl_n))
+                .monospace()
+                .size(10.5)
+                .color(o(STATS_VAL)),
+        );
+        ui.label(
+            RichText::new("Tok")
+                .monospace()
+                .size(10.5)
+                .color(Color32::from_rgb(0xcc, 0x99, 0xcc)),
+        );
+        ui.label(
+            RichText::new(tokens_str)
+                .monospace()
+                .size(10.5)
+                .color(o(STATS_VAL)),
+        );
+        ui.label(
+            RichText::new(format!(
+                "({}\u{2191}{}\u{2193})",
+                stats.prompt_tokens, stats.completion_tokens
+            ))
+            .monospace()
+            .size(10.5)
+            .color(o(Color32::from_rgb(0x66, 0x66, 0x66))),
         );
         // cost 在统计行末尾（原版 _refresh_stats 的 cost_str）
         if stats.cost > 0.0 {
-            let symbol = if lt_i18n::get_lang() == "zh" { "¥" } else { "$" };
+            let symbol = if lt_i18n::get_lang() == "zh" {
+                "¥"
+            } else {
+                "$"
+            };
             ui.label(
                 RichText::new(format!("{symbol}{:.4}", stats.cost))
                     .monospace()
@@ -505,21 +675,36 @@ fn message_block(
 ) {
     let s = &state.settings.style;
     let o = |c: Color32| opa(c, opa_pct);
-    let orig_c = o(parse_color(&s.original_color, Color32::from_rgb(0xcc, 0xcc, 0xcc)));
-    let ts_c = o(parse_color(&s.timestamp_color, Color32::from_rgb(0x88, 0x88, 0x99)));
-    let trans_c = o(parse_color(&s.translation_color, Color32::from_rgb(0xff, 0xff, 0xff)));
+    let orig_c = o(parse_color(
+        &s.original_color,
+        Color32::from_rgb(0xcc, 0xcc, 0xcc),
+    ));
+    let ts_c = o(parse_color(
+        &s.timestamp_color,
+        Color32::from_rgb(0x88, 0x88, 0x99),
+    ));
+    let trans_c = o(parse_color(
+        &s.translation_color,
+        Color32::from_rgb(0xff, 0xff, 0xff),
+    ));
     // D-17 级联：样式键空串=跟随字幕主字体；未注册族名回落全局链
     let head_font = FontId::new(
         pt(s.original_font_size),
         crate::fonts::font_family_for(
-            crate::fonts::resolve_family(&s.original_font_family, &state.settings.subtitle_font_family),
+            crate::fonts::resolve_family(
+                &s.original_font_family,
+                &state.settings.subtitle_font_family,
+            ),
             &state.fonts,
         ),
     );
     let trans_font = FontId::new(
         pt(s.translation_font_size),
         crate::fonts::font_family_for(
-            crate::fonts::resolve_family(&s.translation_font_family, &state.settings.subtitle_font_family),
+            crate::fonts::resolve_family(
+                &s.translation_font_family,
+                &state.settings.subtitle_font_family,
+            ),
             &state.fonts,
         ),
     );
@@ -531,10 +716,22 @@ fn message_block(
             // ── 头部行：[ts] [lang] 原文 ASR x ms（紧凑模式隐藏 ts 与 ASR 耗时） ──
             ui.horizontal_wrapped(|ui| {
                 if !compact {
-                    ui.label(RichText::new(format!("[{}]", msg.timestamp)).font(head_font.clone()).color(ts_c));
+                    ui.label(
+                        RichText::new(format!("[{}]", msg.timestamp))
+                            .font(head_font.clone())
+                            .color(ts_c),
+                    );
                 }
-                ui.label(RichText::new(format!("[{}]", msg.lang)).font(head_font.clone()).color(o(style::LANG_BLUE)));
-                ui.label(RichText::new(&msg.original).font(head_font.clone()).color(orig_c));
+                ui.label(
+                    RichText::new(format!("[{}]", msg.lang))
+                        .font(head_font.clone())
+                        .color(o(style::LANG_BLUE)),
+                );
+                ui.label(
+                    RichText::new(&msg.original)
+                        .font(head_font.clone())
+                        .color(orig_c),
+                );
                 if !compact {
                     ui.label(
                         RichText::new(format!("ASR {:.0}ms", msg.asr_ms))
@@ -544,33 +741,35 @@ fn message_block(
                 }
             });
             // ── 译文行（独立换行：`> 译文` + TL 耗时 / 占位） ──
-            ui.horizontal_wrapped(|ui| {
-                match &msg.translation {
-                    None => {
+            ui.horizontal_wrapped(|ui| match &msg.translation {
+                None => {
+                    ui.label(
+                        RichText::new(format!("> {}", lt_i18n::t("translating")))
+                            .font(trans_font.clone())
+                            .italics()
+                            .color(o(style::PLACEHOLDER)),
+                    );
+                }
+                Some(text) if text.is_empty() => {
+                    ui.label(
+                        RichText::new(format!("> {}", lt_i18n::t("same_language")))
+                            .font(trans_font.clone())
+                            .italics()
+                            .color(o(style::SAME_LANG)),
+                    );
+                }
+                Some(text) => {
+                    ui.label(
+                        RichText::new(format!("> {text}"))
+                            .font(trans_font.clone())
+                            .color(trans_c),
+                    );
+                    if !compact && !msg.streaming {
                         ui.label(
-                            RichText::new(format!("> {}", lt_i18n::t("translating")))
-                                .font(trans_font.clone())
-                                .italics()
-                                .color(o(style::PLACEHOLDER)),
+                            RichText::new(format!("TL {:.0}ms", msg.tl_ms))
+                                .font(ms_font.clone())
+                                .color(o(style::TL_MS)),
                         );
-                    }
-                    Some(text) if text.is_empty() => {
-                        ui.label(
-                            RichText::new(format!("> {}", lt_i18n::t("same_language")))
-                                .font(trans_font.clone())
-                                .italics()
-                                .color(o(style::SAME_LANG)),
-                        );
-                    }
-                    Some(text) => {
-                        ui.label(RichText::new(format!("> {text}")).font(trans_font.clone()).color(trans_c));
-                        if !compact && !msg.streaming {
-                            ui.label(
-                                RichText::new(format!("TL {:.0}ms", msg.tl_ms))
-                                    .font(ms_font.clone())
-                                    .color(o(style::TL_MS)),
-                            );
-                        }
                     }
                 }
             })
@@ -585,7 +784,8 @@ fn message_block(
             ui.close();
         }
         if ui.button(lt_i18n::t("copy_translation")).clicked() {
-            ui.ctx().copy_text(msg.translation.clone().unwrap_or_default());
+            ui.ctx()
+                .copy_text(msg.translation.clone().unwrap_or_default());
             ui.close();
         }
         if ui.button(lt_i18n::t("copy_all")).clicked() {
@@ -626,17 +826,25 @@ fn small_btn(
     text_col: Color32,
     opa_pct: u32,
 ) -> Button<'static> {
-    Button::new(RichText::new(label).size(11.0).color(opa(text_col, opa_pct)))
-        .fill(opa(fill, opa_pct))
-        .stroke(Stroke::new(1.0, opa(stroke_col, opa_pct)))
-        .corner_radius(CornerRadius::same(3))
-        .min_size(Vec2::new(0.0, 20.0))
+    Button::new(
+        RichText::new(label)
+            .size(11.0)
+            .color(opa(text_col, opa_pct)),
+    )
+    .fill(opa(fill, opa_pct))
+    .stroke(Stroke::new(1.0, opa(stroke_col, opa_pct)))
+    .corner_radius(CornerRadius::same(3))
+    .min_size(Vec2::new(0.0, 20.0))
 }
 
 /// 行1 按钮组预留宽度（拖动区让位；完整=7 按钮含隐藏、紧凑=5 按钮
 /// （隐藏/启停/完整/设置/退出；字幕与清空隐藏），每按钮≈46 逻辑 px + 余量）
 fn button_reserved(compact: bool) -> f32 {
-    if compact { 240.0 } else { 380.0 }
+    if compact {
+        240.0
+    } else {
+        380.0
+    }
 }
 
 /// 右下角尺寸手柄（原版 QSizeGrip 16×16 的小点串斜纹；拖动生效）
@@ -676,7 +884,10 @@ mod tests {
     #[test]
     fn mic_bar_follows_enable_intent() {
         let base = lt_proto::Settings::default();
-        assert!(!mic_bar_active(&AppState::new(base.clone())), "默认 mic_device=None = 禁用");
+        assert!(
+            !mic_bar_active(&AppState::new(base.clone())),
+            "默认 mic_device=None = 禁用"
+        );
 
         let mut s = base.clone();
         s.mic_device = Some("__default__".into());

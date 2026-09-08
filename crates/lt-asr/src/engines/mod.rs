@@ -98,7 +98,10 @@ mod tests {
     fn strip_special_tags_semantics() {
         // 正常标签：清除
         assert_eq!(strip_special_tags("<|zh|>你好世界"), "你好世界");
-        assert_eq!(strip_special_tags("hello <|HAPPY|>world<|BGM|>"), "hello world");
+        assert_eq!(
+            strip_special_tags("hello <|HAPPY|>world<|BGM|>"),
+            "hello world"
+        );
         // 未闭合标签：保留原样
         assert_eq!(strip_special_tags("abc<|def"), "abc<|def");
         // 纯标签 → 空

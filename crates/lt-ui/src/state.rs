@@ -234,7 +234,13 @@ pub struct LogLineEntry {
 impl LogLineEntry {
     /// 显示/复制共用单行文本（日志窗与面板日志 tab 统一格式）
     pub fn display(&self) -> String {
-        format!("{} [{}] {}: {}", self.time, level_name(self.level), self.target, self.msg)
+        format!(
+            "{} [{}] {}: {}",
+            self.time,
+            level_name(self.level),
+            self.target,
+            self.msg
+        )
     }
 }
 
@@ -323,7 +329,8 @@ impl LogWindowState {
     pub fn formatted(&mut self) -> &[(String, u8)] {
         if self.fmt_dirty {
             self.formatted.clear();
-            self.formatted.extend(self.lines.iter().map(|e| (e.display(), e.level)));
+            self.formatted
+                .extend(self.lines.iter().map(|e| (e.display(), e.level)));
             self.fmt_dirty = false;
         }
         &self.formatted
@@ -348,7 +355,9 @@ impl LogWindowState {
 
     /// 距上次贴底的新行数（贴底=0；用户上翻浏览时 >0，驱动「回到最新」浮钮）
     pub fn new_since_bottom(&self) -> usize {
-        self.lines.len().saturating_sub(self.bottom_marker.unwrap_or(0))
+        self.lines
+            .len()
+            .saturating_sub(self.bottom_marker.unwrap_or(0))
     }
 
     /// 当前可见行数（渲染期过滤；「已复制 N 行」反馈用）
@@ -451,7 +460,8 @@ impl EaseAnim {
         if self.duration.is_zero() {
             return None;
         }
-        let t = now.saturating_duration_since(self.start).as_secs_f32() / self.duration.as_secs_f32();
+        let t =
+            now.saturating_duration_since(self.start).as_secs_f32() / self.duration.as_secs_f32();
         if !(0.0..1.0).contains(&t) {
             return None;
         }
@@ -542,7 +552,10 @@ impl SubtitleUiState {
     ) -> Option<Instant> {
         // _cancel_pending_segments：新更新永远取代旧的待插入
         self.pending = None;
-        let sentence = SubtitleSentence { original, translations };
+        let sentence = SubtitleSentence {
+            original,
+            translations,
+        };
         // base_delay = max(0, 1500 - elapsed)（原版 _on_update_text；首句 last_insert=0 → 0）
         let base_delay = match self.last_insert {
             None => 0,
@@ -598,7 +611,12 @@ impl SubtitleUiState {
     }
 
     /// 原版 _on_auto_hide_timeout：置隐藏 + 启动淡出；重复触发无害。返回是否状态变化。
-    pub fn on_auto_hide_timeout(&mut self, hide_animation: &str, hide_duration_ms: u32, now: Instant) -> bool {
+    pub fn on_auto_hide_timeout(
+        &mut self,
+        hide_animation: &str,
+        hide_duration_ms: u32,
+        now: Instant,
+    ) -> bool {
         if self.hidden_by_timeout {
             return false;
         }
@@ -606,15 +624,34 @@ impl SubtitleUiState {
         let from = self.current_opacity(now);
         self.hidden_by_timeout = true;
         // animate_out：none=瞬时归零；fade=InCubic 淡出（slide_down 以 fade 近似，见模块注释）
-        self.fade = fade_anim(hide_animation, hide_duration_ms, from, 0.0, Easing::InCubic, now);
+        self.fade = fade_anim(
+            hide_animation,
+            hide_duration_ms,
+            from,
+            0.0,
+            Easing::InCubic,
+            now,
+        );
         true
     }
 
     /// 原版 _restore_from_auto_hide：清隐藏标记 + 从 0 淡入（OutCubic）
-    pub fn restore_from_auto_hide(&mut self, hide_animation: &str, hide_duration_ms: u32, now: Instant) {
+    pub fn restore_from_auto_hide(
+        &mut self,
+        hide_animation: &str,
+        hide_duration_ms: u32,
+        now: Instant,
+    ) {
         self.hidden_by_timeout = false;
         // 原版：先置 _content_opacity_val=0 再 animate_in（0→1）
-        self.fade = fade_anim(hide_animation, hide_duration_ms, 0.0, 1.0, Easing::OutCubic, now);
+        self.fade = fade_anim(
+            hide_animation,
+            hide_duration_ms,
+            0.0,
+            1.0,
+            Easing::OutCubic,
+            now,
+        );
     }
 
     /// 当前内容不透明度（原版 _content_opacity_val；动画中取缓动值，否则按隐藏标记）
@@ -622,7 +659,11 @@ impl SubtitleUiState {
         match &self.fade {
             Some(a) => a.current(now).unwrap_or(a.to),
             None => {
-                if self.hidden_by_timeout { 0.0 } else { 1.0 }
+                if self.hidden_by_timeout {
+                    0.0
+                } else {
+                    1.0
+                }
             }
         }
     }
@@ -642,7 +683,11 @@ impl SubtitleUiState {
                 to: if hover { 1.0 } else { 0.0 },
                 start: now,
                 duration: Duration::from_millis(SUBTITLE_STRIP_FADE_MS),
-                easing: if hover { Easing::OutCubic } else { Easing::InCubic },
+                easing: if hover {
+                    Easing::OutCubic
+                } else {
+                    Easing::InCubic
+                },
             })
         };
         true
@@ -653,7 +698,11 @@ impl SubtitleUiState {
         match &self.toolbar_anim {
             Some(a) => a.current(now).unwrap_or(a.to),
             None => {
-                if self.toolbar_hover { 1.0 } else { 0.0 }
+                if self.toolbar_hover {
+                    1.0
+                } else {
+                    0.0
+                }
             }
         }
     }
@@ -675,7 +724,14 @@ impl SubtitleUiState {
 }
 
 /// 依动画名构造淡入淡出动画；none/时长 0 = 瞬时（None，不透明度由隐藏标记兜底）
-fn fade_anim(animation: &str, duration_ms: u32, from: f32, to: f32, easing: Easing, now: Instant) -> Option<EaseAnim> {
+fn fade_anim(
+    animation: &str,
+    duration_ms: u32,
+    from: f32,
+    to: f32,
+    easing: Easing,
+    now: Instant,
+) -> Option<EaseAnim> {
     if animation == "none" || duration_ms == 0 {
         return None;
     }
@@ -721,8 +777,14 @@ pub const PROMPT_APPLY_DEBOUNCE_MS: u64 = 600;
 
 /// ModelEditDialog 高级参数覆写行的键序（原版 _adv_rows 的插入序；
 /// 与 lt_proto::ModelConfig.overrides BTreeMap 的键集合一致）
-pub const OVERRIDE_KEYS: [&str; 6] =
-    ["temperature", "top_p", "max_tokens", "frequency_penalty", "presence_penalty", "seed"];
+pub const OVERRIDE_KEYS: [&str; 6] = [
+    "temperature",
+    "top_p",
+    "max_tokens",
+    "frequency_penalty",
+    "presence_penalty",
+    "seed",
+];
 
 /// thinking_style 下拉项（lt_translate::thinking::THINKING_STYLES 的 UI 镜像；
 /// 显示名走 i18n thinking_style_* 键）
@@ -730,7 +792,8 @@ pub const THINKING_STYLE_VALUES: [&str; 6] = ["auto", "deepseek", "qwen", "vllm"
 
 /// thinking_style 存储值 → 下拉索引（未知值回退 auto=0）
 pub fn thinking_style_index(v: Option<&str>) -> usize {
-    v.and_then(|s| THINKING_STYLE_VALUES.iter().position(|k| *k == s)).unwrap_or(0)
+    v.and_then(|s| THINKING_STYLE_VALUES.iter().position(|k| *k == s))
+        .unwrap_or(0)
 }
 
 /// 高级参数覆写行（原版 _make_override_row：checkbox 勾选才写 overrides）
@@ -744,7 +807,10 @@ pub struct OverrideRow {
 
 impl Default for OverrideRow {
     fn default() -> Self {
-        Self { enabled: false, value: 0.0 }
+        Self {
+            enabled: false,
+            value: 0.0,
+        }
     }
 }
 
@@ -828,7 +894,10 @@ impl ModelEditState {
             context_turns: cfg.context_turns as i32,
             input_price: cfg.input_price,
             output_price: cfg.output_price,
-            overrides: std::array::from_fn(|i| OverrideRow { enabled: false, value: ADV_DEFAULTS[i] }),
+            overrides: std::array::from_fn(|i| OverrideRow {
+                enabled: false,
+                value: ADV_DEFAULTS[i],
+            }),
             extra_body_text: String::new(),
         };
         // 原版 populate：非 none/system 且非空 → custom + URL
@@ -839,7 +908,10 @@ impl ModelEditState {
             for (i, key) in OVERRIDE_KEYS.iter().enumerate() {
                 if let Some(v) = map.get(*key).filter(|v| !v.is_null()) {
                     let num = v.as_f64().unwrap_or(0.0);
-                    st.overrides[i] = OverrideRow { enabled: true, value: num };
+                    st.overrides[i] = OverrideRow {
+                        enabled: true,
+                        value: num,
+                    };
                 }
             }
         }
@@ -899,7 +971,11 @@ impl ModelEditState {
             context_turns: self.context_turns.clamp(0, 20) as u32,
             input_price: self.input_price.clamp(0.0, 999.0),
             output_price: self.output_price.clamp(0.0, 999.0),
-            overrides: if overrides.is_empty() { None } else { Some(overrides) },
+            overrides: if overrides.is_empty() {
+                None
+            } else {
+                Some(overrides)
+            },
             extra_body,
         })
     }
@@ -910,7 +986,11 @@ impl ModelEditState {
             1 => "system".into(),
             2 => {
                 let t = self.proxy_url.trim();
-                if t.is_empty() { "none".into() } else { t.to_string() }
+                if t.is_empty() {
+                    "none".into()
+                } else {
+                    t.to_string()
+                }
             }
             _ => "none".into(),
         }
@@ -963,8 +1043,14 @@ pub struct LineEditState {
 }
 
 /// 行动画下拉项（原版 anim_items 顺序）
-pub const ANIM_VALUES: [&str; 6] =
-    ["none", "fade", "slide_left", "slide_right", "slide_up", "slide_down"];
+pub const ANIM_VALUES: [&str; 6] = [
+    "none",
+    "fade",
+    "slide_left",
+    "slide_right",
+    "slide_up",
+    "slide_down",
+];
 
 /// 动画存储值 → 下拉索引（未知值回退 none=0）
 pub fn anim_index(v: &str) -> usize {
@@ -1015,7 +1101,10 @@ impl LineEditState {
 
     /// 新增行草稿（原版 _add_line 的 new_line 字典；lang=en、其余默认）
     pub fn new_add(index: usize) -> Self {
-        let line = lt_proto::SubtitleLine { lang: Some("en".into()), ..Default::default() };
+        let line = lt_proto::SubtitleLine {
+            lang: Some("en".into()),
+            ..Default::default()
+        };
         let mut st = Self::new_edit(index, &line);
         st.is_new = true;
         st
@@ -1024,11 +1113,19 @@ impl LineEditState {
     /// 组装 SubtitleLine（原版 get_config：opacity % ↔ 0-255 换算；
     /// 仅翻译行携带 lang）
     pub fn build(&self) -> lt_proto::SubtitleLine {
-        let line_type =
-            if self.line_type_index == 0 { "original" } else { "translation" }.to_string();
+        let line_type = if self.line_type_index == 0 {
+            "original"
+        } else {
+            "translation"
+        }
+        .to_string();
         lt_proto::SubtitleLine {
             line_type,
-            lang: if self.line_type_index == 1 { Some(self.lang.clone()) } else { None },
+            lang: if self.line_type_index == 1 {
+                Some(self.lang.clone())
+            } else {
+                None
+            },
             enabled: self.enabled,
             font_family: self.font_family.clone(),
             font_size: self.font_size.clamp(8, 120) as u32,
@@ -1199,12 +1296,23 @@ pub enum DownloadUiState {
     /// 下载进行中：按**当前文件**显示进度（DL-3——file/k/n 来自 backend 机器段，
     /// done_bytes/total_bytes 为精确字节；total_bytes=0 表示未知，走日志模式）；
     /// log 为进度/日志行环形缓冲（上限 200）
-    Downloading { file: String, k: u32, n: u32, done_bytes: u64, total_bytes: u64, log: Vec<String> },
+    Downloading {
+        file: String,
+        k: u32,
+        n: u32,
+        done_bytes: u64,
+        total_bytes: u64,
+        log: Vec<String>,
+    },
     /// 下载被用户取消（DL-4/D-23）：.incomplete 续传现场保留，卡片给
     /// 「继续下载」按钮；log 为取消前日志
     Cancelled { log: Vec<String> },
     /// 下载失败：kind 供分类提示，detail 为原始错误串，log 为失败前日志
-    Failed { kind: DownloadErrKind, detail: String, log: Vec<String> },
+    Failed {
+        kind: DownloadErrKind,
+        detail: String,
+        log: Vec<String>,
+    },
 }
 
 impl DownloadUiState {
@@ -1215,7 +1323,9 @@ impl DownloadUiState {
 
     /// 追加日志行（环形 200 条，删最旧）
     pub fn push_log(&mut self, line: String) {
-        if let Self::Downloading { log, .. } | Self::Cancelled { log } | Self::Failed { log, .. } = self {
+        if let Self::Downloading { log, .. } | Self::Cancelled { log } | Self::Failed { log, .. } =
+            self
+        {
             if log.len() >= 200 {
                 log.remove(0);
             }
@@ -1226,7 +1336,15 @@ impl DownloadUiState {
     /// 机器段进度写入（DL-3）：精确字节整体覆盖，文件切换时进度自然归零；
     /// 非 Downloading 态（成功竞态晚到事件等）忽略
     pub fn apply_progress(&mut self, file: String, k: u32, n: u32, done: u64, total: u64) {
-        if let Self::Downloading { file: cur, k: ck, n: cn, done_bytes, total_bytes, .. } = self {
+        if let Self::Downloading {
+            file: cur,
+            k: ck,
+            n: cn,
+            done_bytes,
+            total_bytes,
+            ..
+        } = self
+        {
             *cur = file;
             *ck = k;
             *cn = n;
@@ -1242,12 +1360,17 @@ pub enum TestTranslatorState {
     #[default]
     Idle,
     Running,
-    Done { ok: bool, error: Option<String>, ms: u64 },
+    Done {
+        ok: bool,
+        error: Option<String>,
+        ms: u64,
+    },
 }
 
 /// 控制面板 UI 伴生状态（全部仅 UI 线程触达；对照 ControlPanel 的面板局部字段）
 #[derive(Default)]
-pub struct PanelUiState {    /// 当前页（原版 _nav.currentRow + _stack.setCurrentIndex）
+pub struct PanelUiState {
+    /// 当前页（原版 _nav.currentRow + _stack.setCurrentIndex）
     pub page: PanelPage,
     /// 明暗主题（内存态；settings 契约缺 theme 键，见 [`ThemeMode`]）
     pub theme: ThemeMode,
@@ -1261,7 +1384,11 @@ pub struct PanelUiState {    /// 当前页（原版 _nav.currentRow + _stack.set
     pub devices: Option<DeviceCache>,
     /// 模型缓存探测缓存（DL-6/F12：识别页每帧渲染不再扫盘——2s TTL，
     /// 探测键（engine|model）变化或下载事件到达时失效）
-    pub cache_probe: Option<(std::time::Instant, String, crate::windows::panel::vad::CacheStatus)>,
+    pub cache_probe: Option<(
+        std::time::Instant,
+        String,
+        crate::windows::panel::vad::CacheStatus,
+    )>,
     /// 设置防抖到期时刻（原版 _save_timer singleShot：每次变更重置到 now+300ms
     /// → 300ms 内连发合并为最后一次的 deadline；到期由 PanelApply 节拍消费）
     pub apply_due_at: Option<Instant>,
@@ -1363,7 +1490,11 @@ impl WizardState {
 
     /// hub 下拉索引 → 命令契约字符串（原版 `"ms" if index == 0 else "hf"`）
     pub fn hub_arg(&self) -> String {
-        if self.hub_index == 0 { "ms".into() } else { "hf".into() }
+        if self.hub_index == 0 {
+            "ms".into()
+        } else {
+            "hf".into()
+        }
     }
 
     /// 代理选择 → 命令契约字符串（原版 _download_proxy：custom 且空白回退 "system"）
@@ -1372,7 +1503,11 @@ impl WizardState {
             1 => "system".into(),
             2 => {
                 let trimmed = self.proxy_url.trim();
-                if trimmed.is_empty() { "system".into() } else { trimmed.to_string() }
+                if trimmed.is_empty() {
+                    "system".into()
+                } else {
+                    trimmed.to_string()
+                }
             }
             _ => "none".into(),
         }
@@ -1508,7 +1643,10 @@ impl AppState {
         let startup_pending = !matches!(flow, StartupFlow::Ready);
         let mut visible = std::collections::HashMap::new();
         visible.insert(WinId::Overlay, !startup_pending);
-        visible.insert(WinId::Subtitle, !startup_pending && settings.subtitle_mode.enabled);
+        visible.insert(
+            WinId::Subtitle,
+            !startup_pending && settings.subtitle_mode.enabled,
+        );
         // 原版启动只开悬浮窗；控制面板由悬浮窗"设置"/托盘打开（on_toggle_panel）。
         // LIVETRANSLATE_SHOW_PANEL=1：开发/排障便利（实机截图走查用），默认关闭
         let show_panel = std::env::var("LIVETRANSLATE_SHOW_PANEL")
@@ -1516,7 +1654,7 @@ impl AppState {
             .unwrap_or(false);
         visible.insert(WinId::Panel, !startup_pending && show_panel);
         visible.insert(WinId::Log, false); // 原版：启动即建但隐藏
-        // Setup 对话框窗口：仅启动流进行中初始可见（运行期 load_dialog 单独控制）
+                                           // Setup 对话框窗口：仅启动流进行中初始可见（运行期 load_dialog 单独控制）
         visible.insert(WinId::Setup, startup_pending);
         // Benchmark 工具窗：启动即建但隐藏（原版仅点识别页"性能基准…"时 exec）
         visible.insert(WinId::Benchmark, false);
@@ -1587,10 +1725,16 @@ impl AppState {
     fn schedule_overlay_flush(&mut self) {
         let at = Instant::now() + Duration::from_millis(50);
         let already = self.ticks.iter().any(|t| {
-            t.win == WinId::Overlay && t.kind == TickKind::StreamFlush && t.at <= at + Duration::from_millis(50)
+            t.win == WinId::Overlay
+                && t.kind == TickKind::StreamFlush
+                && t.at <= at + Duration::from_millis(50)
         });
         if !already {
-            self.ticks.push(Tick { at, win: WinId::Overlay, kind: TickKind::StreamFlush });
+            self.ticks.push(Tick {
+                at,
+                win: WinId::Overlay,
+                kind: TickKind::StreamFlush,
+            });
         }
     }
 
@@ -1648,9 +1792,13 @@ impl AppState {
         if self.confirm.is_some() {
             return false;
         }
-        let host = if overlay_ok { WinId::Overlay } else { WinId::Panel };
-        let panel_shown_for_confirm = host == WinId::Panel
-            && !self.visible.get(&WinId::Panel).copied().unwrap_or(true);
+        let host = if overlay_ok {
+            WinId::Overlay
+        } else {
+            WinId::Panel
+        };
+        let panel_shown_for_confirm =
+            host == WinId::Panel && !self.visible.get(&WinId::Panel).copied().unwrap_or(true);
         self.confirm = Some(ConfirmUi {
             host,
             kind,
@@ -1689,25 +1837,48 @@ impl AppState {
         }
         self.overlay.pos_dirty_since = Some(Instant::now());
         let at = Instant::now() + Duration::from_millis(500);
-        if !self.ticks.iter().any(|t| t.win == WinId::Overlay && t.kind == TickKind::PosSave) {
-            self.ticks.push(Tick { at, win: WinId::Overlay, kind: TickKind::PosSave });
+        if !self
+            .ticks
+            .iter()
+            .any(|t| t.win == WinId::Overlay && t.kind == TickKind::PosSave)
+        {
+            self.ticks.push(Tick {
+                at,
+                win: WinId::Overlay,
+                kind: TickKind::PosSave,
+            });
         }
     }
 
     /// 悬浮窗穿透轮询节拍（原版 _ct_timer 50ms；仅穿透开启时由宿主续拍）
     pub fn schedule_click_through_tick(&mut self) {
         let at = Instant::now() + Duration::from_millis(50);
-        if !self.ticks.iter().any(|t| t.win == WinId::Overlay && t.kind == TickKind::ClickThrough) {
-            self.ticks.push(Tick { at, win: WinId::Overlay, kind: TickKind::ClickThrough });
+        if !self
+            .ticks
+            .iter()
+            .any(|t| t.win == WinId::Overlay && t.kind == TickKind::ClickThrough)
+        {
+            self.ticks.push(Tick {
+                at,
+                win: WinId::Overlay,
+                kind: TickKind::ClickThrough,
+            });
         }
     }
 
     /// 字幕窗文本更新入口（原版 SubtitleWindow.update_text → _on_update_text；
     /// 宿主由 UpdateTranslation 事件换算 original + {lang: translation}）。
     /// pending 进队时安排 SubtitlePending 节拍；立即插入路径同步自动隐藏节拍。
-    pub fn subtitle_update_text(&mut self, original: String, translations: std::collections::BTreeMap<String, String>) {
+    pub fn subtitle_update_text(
+        &mut self,
+        original: String,
+        translations: std::collections::BTreeMap<String, String>,
+    ) {
         let now = Instant::now();
-        if let Some(at) = self.subtitle.update_text(original, translations, &self.settings.subtitle_mode, now) {
+        if let Some(at) =
+            self.subtitle
+                .update_text(original, translations, &self.settings.subtitle_mode, now)
+        {
             self.schedule_subtitle_tick(TickKind::SubtitlePending, at);
         } else {
             self.sync_subtitle_auto_hide_tick();
@@ -1716,10 +1887,18 @@ impl AppState {
 
     /// 字幕窗节拍安排（同窗同种去重：覆盖既有时刻）
     pub fn schedule_subtitle_tick(&mut self, kind: TickKind, at: Instant) {
-        if let Some(t) = self.ticks.iter_mut().find(|t| t.win == WinId::Subtitle && t.kind == kind) {
+        if let Some(t) = self
+            .ticks
+            .iter_mut()
+            .find(|t| t.win == WinId::Subtitle && t.kind == kind)
+        {
             t.at = at;
         } else {
-            self.ticks.push(Tick { at, win: WinId::Subtitle, kind });
+            self.ticks.push(Tick {
+                at,
+                win: WinId::Subtitle,
+                kind,
+            });
         }
     }
 
@@ -1737,7 +1916,10 @@ impl AppState {
     /// 返回是否实际插入（宿主据此重绘）。
     pub fn subtitle_flush_pending(&mut self) -> bool {
         let now = Instant::now();
-        if self.subtitle.flush_pending(&self.settings.subtitle_mode, now) {
+        if self
+            .subtitle
+            .flush_pending(&self.settings.subtitle_mode, now)
+        {
             self.sync_subtitle_auto_hide_tick();
             true
         } else {
@@ -1766,10 +1948,9 @@ impl AppState {
     /// 在监视节拍触发时调用。CPU 占用需两次采样才有意义，首次为 0 属预期。
     pub fn sample_system(&mut self) {
         let now = Instant::now();
-        if !self
-            .sys_last
-            .map_or(true, |t| now.duration_since(t) >= std::time::Duration::from_secs(1))
-        {
+        if !self.sys_last.map_or(true, |t| {
+            now.duration_since(t) >= std::time::Duration::from_secs(1)
+        }) {
             return;
         }
         self.sys_last = Some(now);
@@ -1786,10 +1967,18 @@ impl AppState {
     /// 设置 1s 监视节拍（悬浮窗 MonitorBar）
     pub fn schedule_monitor_tick(&mut self, win: WinId) {
         let at = Instant::now() + Duration::from_secs(1);
-        if let Some(t) = self.ticks.iter_mut().find(|t| t.win == win && t.kind == TickKind::Monitor) {
+        if let Some(t) = self
+            .ticks
+            .iter_mut()
+            .find(|t| t.win == win && t.kind == TickKind::Monitor)
+        {
             t.at = at;
         } else {
-            self.ticks.push(Tick { at, win, kind: TickKind::Monitor });
+            self.ticks.push(Tick {
+                at,
+                win,
+                kind: TickKind::Monitor,
+            });
         }
     }
 
@@ -1800,7 +1989,11 @@ impl AppState {
         if let Some(t) = self.ticks.iter_mut().find(|t| t.win == WinId::Setup) {
             t.at = at;
         } else {
-            self.ticks.push(Tick { at, win: WinId::Setup, kind: TickKind::Setup });
+            self.ticks.push(Tick {
+                at,
+                win: WinId::Setup,
+                kind: TickKind::Setup,
+            });
         }
     }
 
@@ -1827,7 +2020,11 @@ impl AppState {
         {
             t.at = at;
         } else {
-            self.ticks.push(Tick { at, win: WinId::Panel, kind: TickKind::PanelApply });
+            self.ticks.push(Tick {
+                at,
+                win: WinId::Panel,
+                kind: TickKind::PanelApply,
+            });
         }
     }
 
@@ -1859,7 +2056,11 @@ impl AppState {
         {
             t.at = at;
         } else {
-            self.ticks.push(Tick { at, win: WinId::Panel, kind: TickKind::PromptApply });
+            self.ticks.push(Tick {
+                at,
+                win: WinId::Panel,
+                kind: TickKind::PromptApply,
+            });
         }
     }
 
@@ -1987,7 +2188,10 @@ mod tests {
         let fade_end = end + Duration::from_millis(SUBTITLE_STRIP_FADE_MS + 1);
         assert_eq!(sub.toolbar_opacity(fade_end), 0.0);
         // reduce_motion：瞬时落位（无动画）
-        let mut sub2 = SubtitleUiState { reduce_motion: true, ..Default::default() };
+        let mut sub2 = SubtitleUiState {
+            reduce_motion: true,
+            ..Default::default()
+        };
         assert!(sub2.set_toolbar_hover(true, t0));
         assert_eq!(sub2.toolbar_opacity(t0), 1.0);
         assert_eq!(sub2.toolbar_anim, None);
@@ -2085,9 +2289,17 @@ mod tests {
             log: vec![],
         };
         // 第二个文件开始：进度随新文件归零（机器段为权威值）
-        st.download.apply_progress("tokens.txt".into(), 2, 2, 1_048_576, 2_097_152);
+        st.download
+            .apply_progress("tokens.txt".into(), 2, 2, 1_048_576, 2_097_152);
         match &st.download {
-            DownloadUiState::Downloading { file, k, n, done_bytes, total_bytes, .. } => {
+            DownloadUiState::Downloading {
+                file,
+                k,
+                n,
+                done_bytes,
+                total_bytes,
+                ..
+            } => {
                 assert_eq!(file, "tokens.txt");
                 assert_eq!((*k, *n), (2, 2));
                 assert_eq!((*done_bytes, *total_bytes), (1_048_576, 2_097_152));
@@ -2136,7 +2348,10 @@ mod tests {
         st.update_streaming(2, "partial".into());
         assert_eq!(st.messages.last().unwrap().translation, None);
         st.flush_streams();
-        assert_eq!(st.messages.last().unwrap().translation.as_deref(), Some("partial"));
+        assert_eq!(
+            st.messages.last().unwrap().translation.as_deref(),
+            Some("partial")
+        );
         assert!(st.messages.last().unwrap().streaming);
         assert_eq!(st.messages.last().unwrap().tl_ms, 0.0);
 
@@ -2188,7 +2403,12 @@ mod tests {
 
         // 环形 2000：满后丢最旧
         for i in 0..2100u32 {
-            lw.push(LogLineEntry { time: "x".into(), level: 20, target: "t".into(), msg: format!("{i}") });
+            lw.push(LogLineEntry {
+                time: "x".into(),
+                level: 20,
+                target: "t".into(),
+                msg: format!("{i}"),
+            });
         }
         assert_eq!(lw.lines.len(), 2000);
         assert_ne!(lw.lines[0].msg, "0");
@@ -2209,8 +2429,18 @@ mod tests {
     #[test]
     fn logwin_formatted_cache_tracks_lines() {
         let mut lw = LogWindowState::default();
-        lw.push(LogLineEntry { time: "10:00:00".into(), level: 20, target: "t".into(), msg: "m1".into() });
-        lw.push(LogLineEntry { time: "10:00:01".into(), level: 10, target: "t".into(), msg: "m2".into() });
+        lw.push(LogLineEntry {
+            time: "10:00:00".into(),
+            level: 20,
+            target: "t".into(),
+            msg: "m1".into(),
+        });
+        lw.push(LogLineEntry {
+            time: "10:00:01".into(),
+            level: 10,
+            target: "t".into(),
+            msg: "m2".into(),
+        });
         let fmt = lw.formatted();
         assert_eq!(fmt.len(), 2);
         assert_eq!(fmt[0].0, "10:00:00 [INFO] t: m1");
@@ -2219,10 +2449,14 @@ mod tests {
 
         // 溢出后整体重建，缓存与 lines 仍同步
         for i in 0..3000u32 {
-            lw.push(LogLineEntry { time: "x".into(), level: 20, target: "t".into(), msg: format!("{i}") });
+            lw.push(LogLineEntry {
+                time: "x".into(),
+                level: 20,
+                target: "t".into(),
+                msg: format!("{i}"),
+            });
         }
-        let (line_count, first_msg) =
-            (lw.lines.len(), lw.lines.front().unwrap().msg.clone());
+        let (line_count, first_msg) = (lw.lines.len(), lw.lines.front().unwrap().msg.clone());
         let fmt = lw.formatted();
         assert_eq!(fmt.len(), line_count);
         assert_eq!(fmt.len(), 2000);
@@ -2238,12 +2472,27 @@ mod tests {
     fn logwin_new_since_bottom_tracks_unread() {
         let mut lw = LogWindowState::default();
         assert_eq!(lw.new_since_bottom(), 0);
-        lw.push(LogLineEntry { time: "x".into(), level: 20, target: "t".into(), msg: "a".into() });
+        lw.push(LogLineEntry {
+            time: "x".into(),
+            level: 20,
+            target: "t".into(),
+            msg: "a".into(),
+        });
         assert_eq!(lw.new_since_bottom(), 1, "无贴底基准：现有行全部视作未读");
         lw.mark_at_bottom();
         assert_eq!(lw.new_since_bottom(), 0);
-        lw.push(LogLineEntry { time: "x".into(), level: 20, target: "t".into(), msg: "b".into() });
-        lw.push(LogLineEntry { time: "x".into(), level: 20, target: "t".into(), msg: "c".into() });
+        lw.push(LogLineEntry {
+            time: "x".into(),
+            level: 20,
+            target: "t".into(),
+            msg: "b".into(),
+        });
+        lw.push(LogLineEntry {
+            time: "x".into(),
+            level: 20,
+            target: "t".into(),
+            msg: "c".into(),
+        });
         assert_eq!(lw.new_since_bottom(), 2, "上翻期间新增 2 行计入未读");
         lw.mark_at_bottom();
         assert_eq!(lw.new_since_bottom(), 0, "回底后清零");
@@ -2270,8 +2519,18 @@ mod tests {
         // 帧 1（首帧，无前值）：offset 900 近底 → 解锁并设基准
         assert!(!lw.advance_follow(900.0, 100.0, 1000.0, LogView::Panel));
         // 贴底后新增 2 行 → 未读 2（浮钮 +N 计数源）
-        lw.push(LogLineEntry { time: "x".into(), level: 20, target: "t".into(), msg: "a".into() });
-        lw.push(LogLineEntry { time: "x".into(), level: 20, target: "t".into(), msg: "b".into() });
+        lw.push(LogLineEntry {
+            time: "x".into(),
+            level: 20,
+            target: "t".into(),
+            msg: "a".into(),
+        });
+        lw.push(LogLineEntry {
+            time: "x".into(),
+            level: 20,
+            target: "t".into(),
+            msg: "b".into(),
+        });
         // 帧 2：用户滚动（offset 变化）且不近底 → 锁定，浮钮出现
         assert!(lw.advance_follow(600.0, 100.0, 1000.0, LogView::Panel));
         // 帧 3：offset 不变（无输入）→ 维持锁定
@@ -2287,7 +2546,10 @@ mod tests {
         // 贴底基线：offset 900 = 内容高 1000 - 视口高 100
         assert!(!lw.advance_follow(900.0, 100.0, 1000.0, LogView::Panel));
         // 内容增长（1020）但偏移不变：stick 尚未追平的一帧不算用户滚动
-        assert!(!lw.advance_follow(900.0, 100.0, 1020.0, LogView::Panel), "贴底+内容增长不得弹浮钮");
+        assert!(
+            !lw.advance_follow(900.0, 100.0, 1020.0, LogView::Panel),
+            "贴底+内容增长不得弹浮钮"
+        );
         // 追平后贴住新底（offset 920）
         assert!(!lw.advance_follow(920.0, 100.0, 1020.0, LogView::Panel));
         // 用户上翻 50px → 锁定；无未读行时不返回 true（浮钮需 unread > 0）
@@ -2301,10 +2563,23 @@ mod tests {
     fn advance_follow_unread_flips_jump() {
         let mut lw = LogWindowState::default();
         lw.mark_at_bottom();
-        lw.push(LogLineEntry { time: "x".into(), level: 20, target: "t".into(), msg: "a".into() });
-        lw.push(LogLineEntry { time: "x".into(), level: 20, target: "t".into(), msg: "b".into() });
+        lw.push(LogLineEntry {
+            time: "x".into(),
+            level: 20,
+            target: "t".into(),
+            msg: "a".into(),
+        });
+        lw.push(LogLineEntry {
+            time: "x".into(),
+            level: 20,
+            target: "t".into(),
+            msg: "b".into(),
+        });
         // 首帧 offset 未变（无前值）→ 未锁定，即使有未读也不弹（用户未滚动）
-        assert!(!lw.advance_follow(0.0, 100.0, 1000.0, LogView::Panel), "未滚动不弹浮钮");
+        assert!(
+            !lw.advance_follow(0.0, 100.0, 1000.0, LogView::Panel),
+            "未滚动不弹浮钮"
+        );
         // 用户滚动一帧 → 锁定 → 浮钮出现（有 2 条未读）
         assert!(lw.advance_follow(400.0, 100.0, 1000.0, LogView::Panel));
         // 回到贴底 → 解锁 + 基准重置 → 无未读
@@ -2450,7 +2725,12 @@ mod tests {
         );
         // Tab 标题键与 yaml 真实键对齐（t() 缺键回退 key 本身 → 不等即键缺失）
         for page in PanelPage::ALL {
-            assert_ne!(lt_i18n::t(page.tab_key()), page.tab_key(), "tab 键缺失: {}", page.tab_key());
+            assert_ne!(
+                lt_i18n::t(page.tab_key()),
+                page.tab_key(),
+                "tab 键缺失: {}",
+                page.tab_key()
+            );
         }
     }
 
@@ -2473,10 +2753,14 @@ mod tests {
         // 到期前：无快照
         assert!(!st.panel.take_apply_due(t0 + Duration::from_millis(299)));
         // 到期：返回当前设置快照
-        let snap = st.take_due_panel_apply(t0 + Duration::from_millis(300)).expect("300ms 应触发");
+        let snap = st
+            .take_due_panel_apply(t0 + Duration::from_millis(300))
+            .expect("300ms 应触发");
         assert_eq!(snap.vad_threshold, 0.35);
         // 消费后不再触发（单发语义，原版 setSingleShot(True)）
-        assert!(st.take_due_panel_apply(t0 + Duration::from_millis(600)).is_none());
+        assert!(st
+            .take_due_panel_apply(t0 + Duration::from_millis(600))
+            .is_none());
         // 节拍已无未到期项（消费时 tick 已被 drain；此处防御：deadline 标记已清）
         assert_eq!(st.panel.apply_due_at, None);
     }
@@ -2499,8 +2783,12 @@ mod tests {
         assert_eq!(ticks[0].at, t0 + Duration::from_millis(500));
         // 合并后仍只发一次（draft 最终值即快照）
         assert!(!st.panel.take_apply_due(t0 + Duration::from_millis(400)));
-        assert!(st.take_due_panel_apply(t0 + Duration::from_millis(500)).is_some());
-        assert!(st.take_due_panel_apply(t0 + Duration::from_millis(500)).is_none());
+        assert!(st
+            .take_due_panel_apply(t0 + Duration::from_millis(500))
+            .is_some());
+        assert!(st
+            .take_due_panel_apply(t0 + Duration::from_millis(500))
+            .is_none());
     }
 
     // ── M4.4 第二批：ModelEditState / LineEditState / prompt 防抖 / bench 行 ──
@@ -2563,12 +2851,22 @@ mod tests {
     #[test]
     fn model_edit_overrides_checkbox_roundtrip() {
         let mut st = ModelEditState::new_add();
-        st.overrides[0] = super::OverrideRow { enabled: true, value: 0.256 }; // temperature
-        st.overrides[2] = super::OverrideRow { enabled: true, value: 512.4 }; // max_tokens
+        st.overrides[0] = super::OverrideRow {
+            enabled: true,
+            value: 0.256,
+        }; // temperature
+        st.overrides[2] = super::OverrideRow {
+            enabled: true,
+            value: 512.4,
+        }; // max_tokens
         let cfg = st.build().expect("ok");
         let map = cfg.overrides.as_ref().expect("勾选后应存在");
         assert_eq!(map.len(), 2);
-        assert_eq!(map["temperature"], serde_json::json!(0.26), "原版 round(val,2)");
+        assert_eq!(
+            map["temperature"],
+            serde_json::json!(0.26),
+            "原版 round(val,2)"
+        );
         assert_eq!(map["max_tokens"], serde_json::json!(512), "整数行取整");
         // 未勾选 = None（缺省不落盘）
         let st2 = ModelEditState::new_add();
@@ -2587,7 +2885,10 @@ mod tests {
         assert_eq!(st.build().unwrap().extra_body, None, "空文本不设置");
         st.extra_body_text = r#"{"thinking": {"type": "disabled"}}"#.into();
         let cfg = st.build().unwrap();
-        assert_eq!(cfg.extra_body, Some(serde_json::json!({"thinking": {"type": "disabled"}})));
+        assert_eq!(
+            cfg.extra_body,
+            Some(serde_json::json!({"thinking": {"type": "disabled"}}))
+        );
         st.extra_body_text = "not json".into();
         assert!(st.build().is_err());
         st.extra_body_text = "[1,2]".into();
@@ -2650,14 +2951,23 @@ mod tests {
     /// 字幕行上移/下移边界（原版 _move_line_up/_move_line_down）
     #[test]
     fn move_line_boundaries() {
-        let mk = |n: u32| lt_proto::SubtitleLine { font_size: n, ..Default::default() };
+        let mk = |n: u32| lt_proto::SubtitleLine {
+            font_size: n,
+            ..Default::default()
+        };
         let mut lines = vec![mk(1), mk(2), mk(3)];
         assert!(!move_line_up(&mut lines, 0), "首行上移无效");
         assert!(!move_line_down(&mut lines, 2), "末行下移无效");
         assert!(move_line_down(&mut lines, 0));
-        assert_eq!(lines.iter().map(|l| l.font_size).collect::<Vec<_>>(), [2, 1, 3]);
+        assert_eq!(
+            lines.iter().map(|l| l.font_size).collect::<Vec<_>>(),
+            [2, 1, 3]
+        );
         assert!(move_line_up(&mut lines, 2));
-        assert_eq!(lines.iter().map(|l| l.font_size).collect::<Vec<_>>(), [2, 3, 1]);
+        assert_eq!(
+            lines.iter().map(|l| l.font_size).collect::<Vec<_>>(),
+            [2, 3, 1]
+        );
         // 越界行号防御
         assert!(!move_line_up(&mut lines, 9));
         assert!(!move_line_down(&mut lines, 9));
@@ -2682,14 +2992,28 @@ mod tests {
         let t0 = Instant::now();
         st.schedule_prompt_apply_at(t0);
         st.schedule_prompt_apply_at(t0 + Duration::from_millis(200));
-        let ticks: Vec<_> = st.ticks.iter().filter(|t| t.kind == TickKind::PromptApply).collect();
+        let ticks: Vec<_> = st
+            .ticks
+            .iter()
+            .filter(|t| t.kind == TickKind::PromptApply)
+            .collect();
         assert_eq!(ticks.len(), 1, "连发合并为单节拍");
-        assert_eq!(ticks[0].at, t0 + Duration::from_millis(800), "deadline = 末次登记 + 600ms");
+        assert_eq!(
+            ticks[0].at,
+            t0 + Duration::from_millis(800),
+            "deadline = 末次登记 + 600ms"
+        );
         assert!(!st.take_due_prompt_apply(t0 + Duration::from_millis(799)));
         assert!(st.take_due_prompt_apply(t0 + Duration::from_millis(800)));
-        assert!(!st.take_due_prompt_apply(t0 + Duration::from_millis(800)), "单发语义");
+        assert!(
+            !st.take_due_prompt_apply(t0 + Duration::from_millis(800)),
+            "单发语义"
+        );
         // 面板 300ms 防抖独立存在
-        assert!(st.panel.apply_due_at.is_none(), "prompt 登记不应触发 ApplySettings");
+        assert!(
+            st.panel.apply_due_at.is_none(),
+            "prompt 登记不应触发 ApplySettings"
+        );
     }
 
     /// bench 行上限 500 删最旧（对齐 push_log_line 语义）

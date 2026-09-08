@@ -16,7 +16,11 @@ use std::path::PathBuf;
 /// 合法引擎值（r8 双引擎 + WP-B qwen3；anime/remote 已裁剪，导入时回退）
 pub const ASR_ENGINES: [&str; 3] = ["funasr", "whisper", "qwen3"];
 /// 合法 funasr 模型（mlt 置灰但仍是合法存量值）
-pub const FUNASR_MODELS: [&str; 3] = ["sensevoice-small", "funasr-nano-2512", "funasr-mlt-nano-2512"];
+pub const FUNASR_MODELS: [&str; 3] = [
+    "sensevoice-small",
+    "funasr-nano-2512",
+    "funasr-mlt-nano-2512",
+];
 /// 合法 whisper 档位（r8：+turbo）
 pub const WHISPER_SIZES: [&str; 6] = ["tiny", "base", "small", "medium", "large-v3", "turbo"];
 /// 旧版独立引擎名 → funasr 模型（对照原版 FUNASR_LEGACY_ENGINE_ALIASES；
@@ -41,24 +45,24 @@ fn normalize_funasr_model(v: &str) -> String {
 #[serde(default, rename_all = "snake_case")]
 pub struct Settings {
     // ── VAD ──
-    pub vad_mode: String,           // silero | energy | disabled
-    pub vad_threshold: f32,         // 0.0-1.0
+    pub vad_mode: String,   // silero | energy | disabled
+    pub vad_threshold: f32, // 0.0-1.0
     pub energy_threshold: f32,
-    pub min_speech_duration: f32,   // 秒
-    pub max_speech_duration: f32,   // 秒
-    pub silence_mode: String,       // auto | fixed
-    pub silence_duration: f32,      // 秒
+    pub min_speech_duration: f32, // 秒
+    pub max_speech_duration: f32, // 秒
+    pub silence_mode: String,     // auto | fixed
+    pub silence_duration: f32,    // 秒
     // ── ASR ──
-    pub asr_engine: String,         // funasr | whisper
+    pub asr_engine: String, // funasr | whisper
     pub funasr_model: String,
     pub asr_language: String,       // "auto" | ISO 码
     pub whisper_model_size: String, // 6 档 | 本地 GGML 路径
     pub sensevoice_pad_seconds: f32,
     pub whisper_pad_seconds: f32,
-    pub hub: String,                // ms | hf
-    pub download_proxy: String,     // none | system | URL
+    pub hub: String,            // ms | hf
+    pub download_proxy: String, // none | system | URL
     pub incremental_asr: bool,
-    pub interim_interval: f32,      // 秒
+    pub interim_interval: f32, // 秒
     // ── 音频设备 ──
     pub audio_device: Option<String>, // None=默认 | 名 | "__disabled__"
     pub mic_device: Option<String>,   // None=禁用 | "__default__" | 名
@@ -67,11 +71,11 @@ pub struct Settings {
     pub active_model: usize,
     pub target_language: String,
     pub system_prompt: String,
-    pub timeout: u32,               // 秒
-    pub ui_lang: String,            // en | zh
+    pub timeout: u32,    // 秒
+    pub ui_lang: String, // en | zh
     // ── 字体（D-17，Rust 版新增：默认内嵌思源，行级键空串=跟随主设置）──
-    pub ui_font_family: String,          // 界面字体族名（内嵌思源名或系统字体名）
-    pub subtitle_font_family: String,    // 字幕/悬浮窗显示文本主字体族名
+    pub ui_font_family: String, // 界面字体族名（内嵌思源名或系统字体名）
+    pub subtitle_font_family: String, // 字幕/悬浮窗显示文本主字体族名
     // ── UI ──
     pub style: Style,
     pub subtitle_mode: SubtitleMode,
@@ -142,7 +146,8 @@ impl Settings {
                     .unwrap_or(false);
                 if !has_style {
                     if let Some(no_think) = m.get("no_think").and_then(|b| b.as_bool()) {
-                        m["thinking_style"] = Value::String(if no_think { "auto" } else { "off" }.into());
+                        m["thinking_style"] =
+                            Value::String(if no_think { "auto" } else { "off" }.into());
                     }
                 }
                 m.as_object_mut().map(|o| o.remove("no_think"));
@@ -255,7 +260,7 @@ pub struct ModelConfig {
     #[serde(skip_serializing_if = "is_zero_u32")]
     pub context_turns: u32,
     #[serde(skip_serializing_if = "is_zero_f64")]
-    pub input_price: f64,          // 美元 / 1M tokens
+    pub input_price: f64, // 美元 / 1M tokens
     #[serde(skip_serializing_if = "is_zero_f64")]
     pub output_price: f64,
     /// 仅勾选的键（原版 Advanced "checkbox+value" 行）
@@ -294,9 +299,15 @@ fn skip_thinking_auto(v: &Option<String>) -> bool {
         Some(s) => s == "auto",
     }
 }
-fn is_true(b: &bool) -> bool { *b }
-fn is_zero_u32(v: &u32) -> bool { *v == 0 }
-fn is_zero_f64(v: &f64) -> bool { *v == 0.0 }
+fn is_true(b: &bool) -> bool {
+    *b
+}
+fn is_zero_u32(v: &u32) -> bool {
+    *v == 0
+}
+fn is_zero_f64(v: &f64) -> bool {
+    *v == 0.0
+}
 fn skip_empty_extra_body(v: &Option<Value>) -> bool {
     match v {
         None | Some(Value::Null) => true,
@@ -311,21 +322,21 @@ fn skip_empty_extra_body(v: &Option<Value>) -> bool {
 pub struct Style {
     pub preset: String,
     pub bg_color: String,
-    pub bg_opacity: u32,       // 0-255
+    pub bg_opacity: u32, // 0-255
     pub header_color: String,
-    pub header_opacity: u32,   // 0-255
-    pub border_radius: u32,    // px
+    pub header_opacity: u32, // 0-255
+    pub border_radius: u32,  // px
     /// D-17（2026-09-07 用户裁决）：空串 = 跟随 settings.subtitle_font_family；
     /// 原版默认 "Microsoft YaHei"（此处保留原值为空语义 1:1 于旧文件导入）
     pub original_font_family: String,
     /// D-17：空串 = 跟随 subtitle_font_family（原版默认 "Microsoft YaHei"）
     pub translation_font_family: String,
-    pub original_font_size: u32,     // pt
-    pub translation_font_size: u32,  // pt
+    pub original_font_size: u32,    // pt
+    pub translation_font_size: u32, // pt
     pub original_color: String,
     pub translation_color: String,
     pub timestamp_color: String,
-    pub window_opacity: u32,   // 百分比 30-100
+    pub window_opacity: u32, // 百分比 30-100
 }
 
 impl Default for Style {
@@ -360,13 +371,13 @@ pub struct SubtitleLine {
     pub lang: Option<String>,
     pub enabled: bool,
     pub font_family: String,
-    pub font_size: u32,        // pt
+    pub font_size: u32, // pt
     pub color: String,
-    pub opacity: u32,          // 0-255
-    pub align: String,         // left | center | right
+    pub opacity: u32,  // 0-255
+    pub align: String, // left | center | right
     pub outline_enabled: bool,
     pub outline_color: String,
-    pub outline_width: u32,    // px
+    pub outline_width: u32, // px
     pub bg_image: String,
     pub entry_animation: String, // none|fade|slide_left|slide_right|slide_up|slide_down
     pub exit_animation: String,
@@ -422,10 +433,10 @@ impl SubtitleLine {
 pub struct SubtitleMode {
     pub enabled: bool,
     pub sentences: u32,
-    pub window_width: u32,      // px
-    pub line_spacing: u32,      // px
+    pub window_width: u32, // px
+    pub line_spacing: u32, // px
     pub bg_color: String,
-    pub bg_opacity: u32,        // 0-255
+    pub bg_opacity: u32, // 0-255
     pub bg_image: String,
     pub border_radius: u32,
     pub auto_hide_timeout: u32, // 秒，0=禁用
@@ -502,10 +513,10 @@ mod tests {
             "active_model": 5
         }"#;
         let s = Settings::from_value_compatible(serde_json::from_str(js).unwrap());
-        assert_eq!(s.asr_engine, "funasr");          // 裁剪引擎回退
+        assert_eq!(s.asr_engine, "funasr"); // 裁剪引擎回退
         assert_eq!(s.funasr_model, "sensevoice-small"); // legacy 别名
-        assert_eq!(s.active_model, 0);               // 越界回退
-        // no_think=false → thinking_style=off
+        assert_eq!(s.active_model, 0); // 越界回退
+                                       // no_think=false → thinking_style=off
         assert_eq!(s.models[0].thinking_style.as_deref(), Some("off"));
         // 序列化后不再出现 no_think
         let out = serde_json::to_value(&s).unwrap();
@@ -569,7 +580,8 @@ mod tests {
         // qwen3 不消费 funasr_model，但也不动它（切回 funasr 时语义仍在）
         assert_eq!(s.funasr_model, "funasr-nano-2512");
 
-        let mut s: Settings = serde_json::from_value(serde_json::json!({ "asr_engine": "qwen4" })).unwrap();
+        let mut s: Settings =
+            serde_json::from_value(serde_json::json!({ "asr_engine": "qwen4" })).unwrap();
         let fixed = s.sanitize();
         assert_eq!(s.asr_engine, "funasr");
         assert!(fixed.iter().any(|f| f.starts_with("asr_engine")));
@@ -579,18 +591,39 @@ mod tests {
     fn conditional_serialization_shape() {
         // 默认模型：可选键全部不出现（对齐原版"省略默认值"）
         let v = serde_json::to_value(ModelConfig::default()).unwrap();
-        for key in ["no_system_role", "thinking_style", "streaming", "json_response",
-                    "context_turns", "input_price", "output_price", "overrides", "extra_body"] {
+        for key in [
+            "no_system_role",
+            "thinking_style",
+            "streaming",
+            "json_response",
+            "context_turns",
+            "input_price",
+            "output_price",
+            "overrides",
+            "extra_body",
+        ] {
             assert!(v.get(key).is_none(), "默认模型不应写出 {key}");
         }
         // streaming=false 必须写出（原版仅 false 落盘）
-        let m = ModelConfig { streaming: false, ..Default::default() };
+        let m = ModelConfig {
+            streaming: false,
+            ..Default::default()
+        };
         let v = serde_json::to_value(m).unwrap();
         assert_eq!(v["streaming"], serde_json::json!(false));
         // thinking_style="auto" 不写；"deepseek" 要写
-        let m = ModelConfig { thinking_style: Some("auto".into()), ..Default::default() };
-        assert!(serde_json::to_value(m).unwrap().get("thinking_style").is_none());
-        let m = ModelConfig { thinking_style: Some("deepseek".into()), ..Default::default() };
+        let m = ModelConfig {
+            thinking_style: Some("auto".into()),
+            ..Default::default()
+        };
+        assert!(serde_json::to_value(m)
+            .unwrap()
+            .get("thinking_style")
+            .is_none());
+        let m = ModelConfig {
+            thinking_style: Some("deepseek".into()),
+            ..Default::default()
+        };
         assert_eq!(
             serde_json::to_value(m).unwrap()["thinking_style"],
             serde_json::json!("deepseek")
@@ -625,7 +658,9 @@ mod tests {
         assert_eq!(Style::default().translation_font_family, "");
         assert_eq!(SubtitleLine::default().font_family, "");
         // 默认两行（原文/译文）同样为跟随
-        assert!(SubtitleLine::default_pair().iter().all(|l| l.font_family.is_empty()));
+        assert!(SubtitleLine::default_pair()
+            .iter()
+            .all(|l| l.font_family.is_empty()));
         // 序列化携带两把新键
         let v = serde_json::to_value(&s).unwrap();
         assert_eq!(v["ui_font_family"], "Noto Sans CJK SC");

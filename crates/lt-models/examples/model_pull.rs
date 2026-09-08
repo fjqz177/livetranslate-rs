@@ -8,7 +8,9 @@ use lt_models::registry;
 use std::sync::atomic::AtomicBool;
 
 fn main() -> anyhow::Result<()> {
-    let key = std::env::args().nth(1).unwrap_or_else(|| "sensevoice-small".into());
+    let key = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "sensevoice-small".into());
     let entry = registry::funasr_entry(&key).ok_or_else(|| anyhow::anyhow!("未知模型键: {key}"))?;
     let models_dir = lt_models::paths::models_dir(None)?;
     std::fs::create_dir_all(&models_dir)?;
@@ -17,7 +19,11 @@ fn main() -> anyhow::Result<()> {
     let (tx, rx) = std::sync::mpsc::channel();
     let repo = entry.ms.or(entry.hf).expect("至少一个源");
     let hub = if entry.ms.is_some() { Hub::Ms } else { Hub::Hf };
-    println!("下载 {key}（{repo}，{:?}，{} 个文件）…", hub, entry.files.len());
+    println!(
+        "下载 {key}（{repo}，{:?}，{} 个文件）…",
+        hub,
+        entry.files.len()
+    );
 
     let specs: Vec<(&str, u64, &str)> = entry
         .files
@@ -31,7 +37,9 @@ fn main() -> anyhow::Result<()> {
     drop(tx);
     for ev in rx.try_iter() {
         match ev {
-            lt_models::download::DownloadEvent::Progress { file, done, total, .. } => {
+            lt_models::download::DownloadEvent::Progress {
+                file, done, total, ..
+            } => {
                 let t = total.map(|x| x.to_string()).unwrap_or_else(|| "?".into());
                 println!("  {file}: {done}/{t}");
             }

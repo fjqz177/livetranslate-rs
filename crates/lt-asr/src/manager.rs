@@ -147,12 +147,10 @@ impl AsrManager {
     fn spawn_ready(&mut self, config: &WorkerConfig) -> Result<(), AsrManagerError> {
         let mut client = (self.spawn)(config)
             .map_err(|e| AsrManagerError::Failed(format!("worker 启动失败: {e}")))?;
-        client
-            .wait_ready()
-            .map_err(|e| {
-                let _ = client.shutdown();
-                AsrManagerError::Failed(format!("worker 未就绪: {e}"))
-            })?;
+        client.wait_ready().map_err(|e| {
+            let _ = client.shutdown();
+            AsrManagerError::Failed(format!("worker 未就绪: {e}"))
+        })?;
         self.client = Some(client);
         self.config = Some(config.clone());
         self.baseline_mb = None; // 新 worker 重取基线
@@ -175,13 +173,22 @@ impl AsrManager {
             self.restart_count = 0;
             self.error_count = 0;
         }
-        if self.client.is_some() && self.config.as_ref().map_or(false, |c| sig(c) == sig(config)) {
+        if self.client.is_some()
+            && self
+                .config
+                .as_ref()
+                .map_or(false, |c| sig(c) == sig(config))
+        {
             return Ok(()); // 已就绪且配置一致
         }
         // 配置变更：关旧起新（generation 推进）；新配置加载失败回滚旧 worker
         // （原版 _switch_asr_engine._load：先停旧再载新，载入失败恢复旧配置）。
         // 回滚前提：此前确有可用 worker——复活路径 client 已为 None，谈不上回滚。
-        let old_config = if self.client.is_some() { self.config.clone() } else { None };
+        let old_config = if self.client.is_some() {
+            self.config.clone()
+        } else {
+            None
+        };
         if let Some(old) = self.client.as_mut() {
             tracing::info!("ASR 配置变更，替换 worker");
             old.shutdown();
@@ -250,14 +257,21 @@ impl AsrManager {
         if let Err(e) = self.apply_pending() {
             return Err(e);
         }
-        let result = self.client.as_mut().unwrap().transcribe(audio, word_timestamps);
+        let result = self
+            .client
+            .as_mut()
+            .unwrap()
+            .transcribe(audio, word_timestamps);
         match result {
             Ok(res) => {
                 self.error_count = 0;
                 self.restart_count = 0;
                 Ok(res)
             }
-            Err(AsrClientError::Worker { message, recoverable }) => {
+            Err(AsrClientError::Worker {
+                message,
+                recoverable,
+            }) => {
                 self.error_count += 1;
                 let fatal = !recoverable || self.error_count >= 3;
                 if fatal {
@@ -359,9 +373,7 @@ impl AsrManager {
             Ok(()) => Ok(()),
             // worker 回错误（含 qwen3 set_language 非 auto 的诚实 Unsupported）：
             // 按失败上抛、带原始消息，不占恢复配额
-            Err(AsrClientError::Worker { message, .. }) => {
-                Err(AsrManagerError::Failed(message))
-            }
+            Err(AsrClientError::Worker { message, .. }) => Err(AsrManagerError::Failed(message)),
             // AH-2/D-26：与 transcribe 同语义——其余错误一律恢复重建
             // （原版语义只对 Exited/Timeout 走 _recover_asr_worker）
             Err(e) => Err(self.recover(&format!("{e}"))),
@@ -385,7 +397,11 @@ impl AsrManager {
             self.mark_unavailable(&msg);
             return AsrManagerError::Unavailable(msg);
         }
-        tracing::warn!("ASR worker 死亡（{reason}）；自动重启 {}/{}", self.restart_count, RESTART_MAX);
+        tracing::warn!(
+            "ASR worker 死亡（{reason}）；自动重启 {}/{}",
+            self.restart_count,
+            RESTART_MAX
+        );
         match self.spawn_ready(&config) {
             Ok(()) => AsrManagerError::Restarted(format!("{reason}；已自动重启，本段丢弃")),
             Err(e) => {
@@ -412,9 +428,13 @@ impl AsrManager {
     /// 仅在段队列空闲时调用（原版 _asr_loop queue.Empty 分支；段间回收避免
     /// 打断待处理音频的识别，reload gap 不耗音频）。
     pub fn maybe_recycle_if_idle(&mut self) {
-        let Some(client) = self.client.as_ref() else { return };
+        let Some(client) = self.client.as_ref() else {
+            return;
+        };
         let pid = client.pid();
-        let Some(rss_mb) = sample_rss_mb(pid) else { return };
+        let Some(rss_mb) = sample_rss_mb(pid) else {
+            return;
+        };
         match self.baseline_mb {
             None => {
                 self.baseline_mb = Some(rss_mb);
@@ -455,7 +475,10 @@ fn should_recycle(baseline_mb: u64, current_mb: u64, delta_mb: u64) -> bool {
 /// 子进程 RSS 采样（MB）
 fn sample_rss_mb(pid: u32) -> Option<u64> {
     let mut sys = sysinfo::System::new();
-    sys.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[sysinfo::Pid::from_u32(pid)]), true);
+    sys.refresh_processes(
+        sysinfo::ProcessesToUpdate::Some(&[sysinfo::Pid::from_u32(pid)]),
+        true,
+    );
     sys.process(sysinfo::Pid::from_u32(pid))
         .map(|p| p.memory() / (1024 * 1024))
 }

@@ -68,7 +68,10 @@ fn wizard_ui(ui: &mut Ui, state: &mut AppState) {
                 .show_ui(ui, |ui| {
                     // 任一控件变更重置倒计时（原版 currentIndexChanged → _reset_countdown）
                     for (i, item) in hub_items.iter().enumerate() {
-                        if ui.selectable_value(&mut w.hub_index, i, item.clone()).changed() {
+                        if ui
+                            .selectable_value(&mut w.hub_index, i, item.clone())
+                            .changed()
+                        {
                             w.countdown = 15;
                         }
                     }
@@ -155,7 +158,10 @@ fn wizard_ui(ui: &mut Ui, state: &mut AppState) {
 fn download_missing_ui(ui: &mut Ui, state: &mut AppState) {
     let mut close_clicked = false;
     {
-        let StartupFlow::DownloadMissing { names, log, failed, .. } = &mut state.startup else {
+        let StartupFlow::DownloadMissing {
+            names, log, failed, ..
+        } = &mut state.startup
+        else {
             return;
         };
         ui.heading(lt_i18n::t("window_download"));
@@ -195,7 +201,7 @@ fn load_dialog_ui(ui: &mut Ui, state: &mut AppState) {
     ui.label(lt_i18n::t("loading_model").replace("{name}", &label));
     ui.add_space(6.0);
     log_view(ui, &[]); // M2.5 占位；M4 接 LogLine 日志流
-    // 无关闭按钮：加载结束由 ModelLoadDone / AsrDevice / AsrUnavailable 事件关窗
+                       // 无关闭按钮：加载结束由 ModelLoadDone / AsrDevice / AsrUnavailable 事件关窗
 }
 
 /// 日志区：暗底圆角 + 等宽小字 + ScrollArea 自动滚底。

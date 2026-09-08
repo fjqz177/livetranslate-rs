@@ -17,7 +17,9 @@
 
 use crate::logging;
 use lt_models::cache::MissingModel;
-use lt_models::download::{DownloadEvent, Downloader, DlError, FailKind, Hub, ProxyMode, hf_endpoint_for, hub_chain};
+use lt_models::download::{
+    hf_endpoint_for, hub_chain, DlError, DownloadEvent, Downloader, FailKind, Hub, ProxyMode,
+};
 use lt_proto::{Cmd, Settings, UiEvent, UiMsg};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError};
@@ -32,7 +34,12 @@ struct DownloadSession {
 }
 
 /// 启动后台命令线程（进程生命期常驻；通道关闭即退出）
-pub fn spawn(cmd_rx: Receiver<Cmd>, proxy: EventLoopProxy<UiMsg>, first_launch: bool, settings: Settings) {
+pub fn spawn(
+    cmd_rx: Receiver<Cmd>,
+    proxy: EventLoopProxy<UiMsg>,
+    first_launch: bool,
+    settings: Settings,
+) {
     std::thread::Builder::new()
         .name("lt-backend".into())
         .spawn(move || {
@@ -40,7 +47,10 @@ pub fn spawn(cmd_rx: Receiver<Cmd>, proxy: EventLoopProxy<UiMsg>, first_launch: 
             let mut session: Option<DownloadSession> = None;
             while let Ok(cmd) = cmd_rx.recv() {
                 match cmd {
-                    Cmd::StartDownload { hub, proxy: proxy_mode } => {
+                    Cmd::StartDownload {
+                        hub,
+                        proxy: proxy_mode,
+                    } => {
                         // 回收已结束会话；在途则忽略重复请求（UI 侧亦有按钮守卫）
                         if session.as_ref().is_some_and(|s| s.handle.is_finished()) {
                             session = None;
@@ -52,7 +62,12 @@ pub fn spawn(cmd_rx: Receiver<Cmd>, proxy: EventLoopProxy<UiMsg>, first_launch: 
                         }
                         let missing = current_missing(&settings);
                         session = Some(start_session(
-                            &proxy, first_launch, &settings, missing, &hub, &proxy_mode,
+                            &proxy,
+                            first_launch,
+                            &settings,
+                            missing,
+                            &hub,
+                            &proxy_mode,
                         ));
                     }
                     Cmd::CancelDownload => match &session {
@@ -66,15 +81,22 @@ pub fn spawn(cmd_rx: Receiver<Cmd>, proxy: EventLoopProxy<UiMsg>, first_launch: 
                     // 镜像更新后照旧转发（设置真值在 UI 循环/AppState）
                     Cmd::PersistSettings(s) => {
                         settings = *s;
-                        let _ =
-                            proxy.send_event(UiMsg::Cmd(Cmd::PersistSettings(Box::new(settings.clone()))));
+                        let _ = proxy.send_event(UiMsg::Cmd(Cmd::PersistSettings(Box::new(
+                            settings.clone(),
+                        ))));
                     }
                     Cmd::ApplySettings(s) => {
                         settings = *s;
-                        let _ =
-                            proxy.send_event(UiMsg::Cmd(Cmd::ApplySettings(Box::new(settings.clone()))));
+                        let _ = proxy
+                            .send_event(UiMsg::Cmd(Cmd::ApplySettings(Box::new(settings.clone()))));
                     }
-                    Cmd::SwitchEngine { engine, funasr_model, whisper_model_size, hub, language } => {
+                    Cmd::SwitchEngine {
+                        engine,
+                        funasr_model,
+                        whisper_model_size,
+                        hub,
+                        language,
+                    } => {
                         settings.asr_engine = engine.clone();
                         settings.funasr_model = funasr_model.clone();
                         settings.whisper_model_size = whisper_model_size.clone();
@@ -280,14 +302,7 @@ fn free_disk_bytes(dir: &std::path::Path) -> Option<u64> {
     let mut wide: Vec<u16> = root.encode_utf16().collect();
     wide.push(0);
     let mut free: u64 = 0;
-    let ok = unsafe {
-        GetDiskFreeSpaceExW(
-            PCWSTR(wide.as_ptr()),
-            None,
-            None,
-            Some(&mut free),
-        )
-    };
+    let ok = unsafe { GetDiskFreeSpaceExW(PCWSTR(wide.as_ptr()), None, None, Some(&mut free)) };
     ok.is_ok().then_some(free)
 }
 
@@ -316,7 +331,13 @@ fn current_missing(settings: &Settings) -> Vec<MissingModel> {
 /// （shell.persist_settings）落盘：运行期成功链 = shell 收 DownloadSucceeded
 /// → 重发 SwitchEngine → persist；启动流 = app.rs 收成功事件后发
 /// Cmd::PersistSettings。旧实现在这里用可能过期的镜像写盘并回踩 UI 状态（F6）。
-fn succeed(proxy: &EventLoopProxy<UiMsg>, first_launch: bool, settings: &Settings, hub_s: &str, proxy_s: &str) {
+fn succeed(
+    proxy: &EventLoopProxy<UiMsg>,
+    first_launch: bool,
+    settings: &Settings,
+    hub_s: &str,
+    proxy_s: &str,
+) {
     let final_settings = if first_launch {
         let mut s = Settings::default();
         s.hub = hub_s.into();
@@ -357,9 +378,20 @@ fn line(proxy: &EventLoopProxy<UiMsg>, s: &str) {
 /// 精确字节驱动进度条；人读段保持原样进日志，旧格式行（无 `\t`）被 UI 忽略。
 fn format_event(ev: &DownloadEvent) -> String {
     match ev {
-        DownloadEvent::Progress { repo, file, k, n, done, total } => {
+        DownloadEvent::Progress {
+            repo,
+            file,
+            k,
+            n,
+            done,
+            total,
+        } => {
             let human = match total {
-                Some(t) => format!("[{repo}] {file} {} / {}", format_size(*done), format_size(*t)),
+                Some(t) => format!(
+                    "[{repo}] {file} {} / {}",
+                    format_size(*done),
+                    format_size(*t)
+                ),
                 None => format!("[{repo}] {file} {}", format_size(*done)),
             };
             format!("{human}\t{file}\t{k} {n} {done} {}", total.unwrap_or(0))
@@ -400,7 +432,10 @@ mod tests {
         assert!(matches!(proxy_mode_from("none"), ProxyMode::None));
         assert!(matches!(proxy_mode_from("system"), ProxyMode::System));
         assert!(matches!(proxy_mode_from(""), ProxyMode::System));
-        assert!(matches!(proxy_mode_from("http://127.0.0.1:7890"), ProxyMode::Url(_)));
+        assert!(matches!(
+            proxy_mode_from("http://127.0.0.1:7890"),
+            ProxyMode::Url(_)
+        ));
     }
 
     #[test]
@@ -428,10 +463,7 @@ mod tests {
             }),
             "[a/b] m.onnx 4.0 KB\tm.onnx\t2 2 4096 0"
         );
-        assert_eq!(
-            format_event(&DownloadEvent::Log("x".into())),
-            "x"
-        );
+        assert_eq!(format_event(&DownloadEvent::Log("x".into())), "x");
     }
 
     /// 下载目标现场重算：跟随 settings 镜像的引擎/档位（M5.1 快照 bug 回归测试）。
@@ -472,8 +504,14 @@ mod tests {
             .unwrap()
             .join("huggingface/hub/models--ggerganov--whisper.cpp/snapshots/main");
         std::fs::create_dir_all(&snap).unwrap();
-        let est = lt_models::registry::whisper_entry_for("tiny").unwrap().estimated_bytes;
-        std::fs::write(snap.join("ggml-tiny-q5_1.bin"), vec![0u8; (est / 2 + 1) as usize]).unwrap();
+        let est = lt_models::registry::whisper_entry_for("tiny")
+            .unwrap()
+            .estimated_bytes;
+        std::fs::write(
+            snap.join("ggml-tiny-q5_1.bin"),
+            vec![0u8; (est / 2 + 1) as usize],
+        )
+        .unwrap();
         assert!(current_missing(&s).is_empty(), "tiny 已缓存应无目标");
 
         let _ = std::fs::remove_dir_all(&dir);

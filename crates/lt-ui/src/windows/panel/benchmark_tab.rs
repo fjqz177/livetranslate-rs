@@ -20,13 +20,28 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
     group_card(ui, pal, &lt_i18n::t("group_benchmark"), |ui| {
         ui.horizontal(|ui| {
             ui.label(RichText::new(format!("{} ", lt_i18n::t("label_source"))).color(pal.text));
-            lang_combo(ui, "bench_tab_src", &mut state.bench_src, &BENCH_SRC_LANGS, pal);
+            lang_combo(
+                ui,
+                "bench_tab_src",
+                &mut state.bench_src,
+                &BENCH_SRC_LANGS,
+                pal,
+            );
             ui.add_space(8.0);
             ui.label(RichText::new(format!("{} ", lt_i18n::t("target_label"))).color(pal.text));
-            lang_combo(ui, "bench_tab_tgt", &mut state.bench_tgt, &BENCH_TGT_LANGS, pal);
+            lang_combo(
+                ui,
+                "bench_tab_tgt",
+                &mut state.bench_tgt,
+                &BENCH_TGT_LANGS,
+                pal,
+            );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let btn_text =
-                    if state.bench_running { lt_i18n::t("testing") } else { lt_i18n::t("btn_test_all") };
+                let btn_text = if state.bench_running {
+                    lt_i18n::t("testing")
+                } else {
+                    lt_i18n::t("btn_test_all")
+                };
                 if ui
                     .add_enabled(
                         !state.bench_running,
@@ -106,6 +121,9 @@ mod tests {
     #[test]
     fn bench_lang_tables_match_original() {
         assert_eq!(BENCH_SRC_LANGS, ["ja", "en", "zh", "ko", "fr", "de"]);
-        assert_eq!(BENCH_TGT_LANGS, ["zh", "en", "ja", "ko", "fr", "de", "es", "ru"]);
+        assert_eq!(
+            BENCH_TGT_LANGS,
+            ["zh", "en", "ja", "ko", "fr", "de", "es", "ru"]
+        );
     }
 }

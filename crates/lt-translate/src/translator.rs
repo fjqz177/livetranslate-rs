@@ -11,11 +11,11 @@
 //!   已知实现级偏差）。
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, LazyLock, mpsc};
+use std::sync::{mpsc, Arc, LazyLock};
 use std::time::{Duration, Instant};
 
 use async_openai::config::OpenAIConfig;
-use async_openai::types::chat::{CreateChatCompletionStreamResponse, CreateChatCompletionResponse};
+use async_openai::types::chat::{CreateChatCompletionResponse, CreateChatCompletionStreamResponse};
 use parking_lot::Mutex;
 use serde_json::{json, Map, Value};
 
@@ -75,7 +75,8 @@ pub(crate) fn lang_display(code: &str) -> &str {
         .map_or(code, |(_, v)| v)
 }
 
-pub const DEFAULT_PROMPT: &str = "You are a real-time subtitle translator. Translate {source_lang} into {target_lang}.\n\
+pub const DEFAULT_PROMPT: &str =
+    "You are a real-time subtitle translator. Translate {source_lang} into {target_lang}.\n\
 Rules:\n\
 - Output ONLY one single best translation, nothing else.\n\
 - Never include alternatives, parenthetical options, annotations, or explanations.\n\
@@ -153,12 +154,12 @@ pub struct TranslatorParams {
     pub api_base: String,
     pub api_key: String,
     pub model: String,
-    pub target_language: String,     // "zh"
-    pub max_tokens: u32,             // 256
-    pub temperature: f64,            // 0.3
-    pub streaming: bool,             // true
+    pub target_language: String, // "zh"
+    pub max_tokens: u32,         // 256
+    pub temperature: f64,        // 0.3
+    pub streaming: bool,         // true
     pub system_prompt: Option<String>,
-    pub proxy: String,               // "none" | "system" | URL
+    pub proxy: String, // "none" | "system" | URL
     pub no_system_role: bool,
     /// legacy 布尔：仅在 thinking_style=None 时参与迁移（true→auto，false→off）
     pub no_think: bool,
@@ -367,7 +368,8 @@ impl Translator {
         let src = lang_display(source_lang);
         let tgt = lang_display(&st.target_language);
         let context = self.format_context(st.context_turns, &st.history);
-        let prompt = match format_prompt_template(&self.system_prompt_template, src, tgt, &context) {
+        let prompt = match format_prompt_template(&self.system_prompt_template, src, tgt, &context)
+        {
             Some(p) => p,
             None => {
                 tracing::warn!("Bad prompt template, falling back to default");
@@ -483,9 +485,8 @@ impl Translator {
 
     fn translate_sync(&self, system_prompt: &str, text: &str) -> Result<String, TranslateError> {
         let body = self.build_request_body(system_prompt, text, false, false);
-        let resp: CreateChatCompletionResponse = self.timeout_block(
-            self.client.chat().create_byot(body),
-        )?;
+        let resp: CreateChatCompletionResponse =
+            self.timeout_block(self.client.chat().create_byot(body))?;
         {
             let mut st = self.state.lock();
             st.prompt_tokens = 0;
@@ -516,7 +517,8 @@ impl Translator {
     {
         let t = self.state.lock().timeout_secs;
         // timeout(...) 必须在 runtime 上下文内求值（Sleep 需要 timer 句柄）
-        match runtime().block_on(async { tokio::time::timeout(Duration::from_secs(t), fut).await }) {
+        match runtime().block_on(async { tokio::time::timeout(Duration::from_secs(t), fut).await })
+        {
             Ok(inner) => inner.map_err(TranslateError::from),
             Err(_) => Err(TranslateError::Timeout(format!(
                 "Translation exceeded {t}s total timeout"
@@ -542,12 +544,10 @@ impl Translator {
     pub fn translate_iter(&self, text: &str, source_language: &str) -> TranslateStream {
         let system_prompt = self.build_system_prompt(source_language);
         if !self.streaming {
-            let result =
-                self.translate_sync(&system_prompt, text)
-                    .map(|r| {
-                        self.append_history(text, &r);
-                        r
-                    });
+            let result = self.translate_sync(&system_prompt, text).map(|r| {
+                self.append_history(text, &r);
+                r
+            });
             return TranslateStream::sync(result);
         }
 
@@ -644,12 +644,18 @@ async fn pump_stream(
             }
         }
     }
-    let _ = tx.send(StreamMsg::End { prompt_tokens: pt, completion_tokens: ct });
+    let _ = tx.send(StreamMsg::End {
+        prompt_tokens: pt,
+        completion_tokens: ct,
+    });
 }
 
 enum StreamMsg {
     Delta(String),
-    End { prompt_tokens: u64, completion_tokens: u64 },
+    End {
+        prompt_tokens: u64,
+        completion_tokens: u64,
+    },
     Err(TranslateError),
 }
 
@@ -704,7 +710,13 @@ impl Iterator for TranslateStream {
                 self.finished = true;
                 item.take()
             }
-            StreamInner::Streaming { rx, deadline, acc, text, timeout_secs } => loop {
+            StreamInner::Streaming {
+                rx,
+                deadline,
+                acc,
+                text,
+                timeout_secs,
+            } => loop {
                 let now = Instant::now();
                 let timeout_msg = format!("Translation exceeded {timeout_secs}s total timeout");
                 let Some(remaining) = deadline.checked_duration_since(now) else {
@@ -720,7 +732,10 @@ impl Iterator for TranslateStream {
                         }
                         return Some(Ok(acc.clone()));
                     }
-                    Ok(StreamMsg::End { prompt_tokens, completion_tokens }) => {
+                    Ok(StreamMsg::End {
+                        prompt_tokens,
+                        completion_tokens,
+                    }) => {
                         {
                             let mut st = self.state.lock();
                             st.prompt_tokens = prompt_tokens;
@@ -821,7 +836,12 @@ pub fn make_openai_client(
     match proxy {
         "system" => {}
         "none" | "" => builder = builder.no_proxy(),
-        url => builder = builder.proxy(reqwest::Proxy::all(url).map_err(|e| TranslateError::Other(format!("invalid proxy: {e}")))?),
+        url => {
+            builder = builder.proxy(
+                reqwest::Proxy::all(url)
+                    .map_err(|e| TranslateError::Other(format!("invalid proxy: {e}")))?,
+            )
+        }
     }
     let http = builder
         .build()

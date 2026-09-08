@@ -139,7 +139,12 @@ pub fn build(proxy: std::sync::Arc<dyn Fn(UiMsg) + Send + Sync>) -> anyhow::Resu
         .context("托盘线程启动失败")?;
     // 线程先建消息队列再报到（见 tray_thread 注释），此处无唤醒竞态
     let tid = tid_rx.recv().context("托盘线程未报到")?;
-    Ok(Tray { tx: cmd_tx, tid, thread: Some(handle), quit_ack: quit_rx })
+    Ok(Tray {
+        tx: cmd_tx,
+        tid,
+        thread: Some(handle),
+        quit_ack: quit_rx,
+    })
 }
 
 /// 当前线程 Win32 id（托盘线程注册后供 PostThreadMessageW 唤醒）
@@ -271,7 +276,12 @@ fn build_inner(proxy: &std::sync::Arc<dyn Fn(UiMsg) + Send + Sync>) -> anyhow::R
     menu.append(&PredefinedMenuItem::separator())?;
 
     // ── 暂停/恢复（文字随状态切换）──
-    let pause = MenuItem::with_id(MenuId::new(ids::PAUSE), lt_i18n::t("tray_pause"), true, None::<Accelerator>);
+    let pause = MenuItem::with_id(
+        MenuId::new(ids::PAUSE),
+        lt_i18n::t("tray_pause"),
+        true,
+        None::<Accelerator>,
+    );
     menu.append(&pause)?;
     menu.append(&PredefinedMenuItem::separator())?;
 
@@ -279,18 +289,29 @@ fn build_inner(proxy: &std::sync::Arc<dyn Fn(UiMsg) + Send + Sync>) -> anyhow::R
     let overlay_toggle = MenuItem::with_id(
         MenuId::new(ids::OVERLAY_TOGGLE),
         lt_i18n::t("tray_hide_overlay"),
-        true, None::<Accelerator>,
+        true,
+        None::<Accelerator>,
     );
     menu.append(&overlay_toggle)?;
     menu.append(&PredefinedMenuItem::separator())?;
 
     // ── 控制面板 ──
-    let panel = MenuItem::with_id(MenuId::new(ids::SHOW_PANEL), lt_i18n::t("tray_show_panel"), true, None::<Accelerator>);
+    let panel = MenuItem::with_id(
+        MenuId::new(ids::SHOW_PANEL),
+        lt_i18n::t("tray_show_panel"),
+        true,
+        None::<Accelerator>,
+    );
     menu.append(&panel)?;
 
     // ── 退出（宿主侧带确认框，原版 on_quit(confirm=True)）──
     menu.append(&PredefinedMenuItem::separator())?;
-    let quit = MenuItem::with_id(MenuId::new(ids::QUIT), lt_i18n::t("quit"), true, None::<Accelerator>);
+    let quit = MenuItem::with_id(
+        MenuId::new(ids::QUIT),
+        lt_i18n::t("quit"),
+        true,
+        None::<Accelerator>,
+    );
     menu.append(&quit)?;
 
     // 事件转发（Windows：托盘与菜单事件在托盘线程触发，经 EventLoopProxy 桥接
@@ -311,7 +332,12 @@ fn build_inner(proxy: &std::sync::Arc<dyn Fn(UiMsg) + Send + Sync>) -> anyhow::R
         .with_icon(icon_for(IconStatus::App))
         .build()?;
 
-    Ok(TrayInner { icon, status, pause, overlay_toggle })
+    Ok(TrayInner {
+        icon,
+        status,
+        pause,
+        overlay_toggle,
+    })
 }
 
 /// 解码内嵌图标 PNG → tray_icon::Icon（素材缺失时回退运行时绘制）
@@ -410,10 +436,9 @@ mod tests {
     fn tray_thread_lifecycle() {
         let msgs = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let cnt = msgs.clone();
-        let proxy: std::sync::Arc<dyn Fn(UiMsg) + Send + Sync> =
-            std::sync::Arc::new(move |_| {
-                cnt.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            });
+        let proxy: std::sync::Arc<dyn Fn(UiMsg) + Send + Sync> = std::sync::Arc::new(move |_| {
+            cnt.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        });
         let tray = build(proxy).expect("托盘应能构建（专用线程）");
         // 命令投递 + 唤醒必须立即返回；若主线程被模态阻塞会先暴露为超时
         let t0 = std::time::Instant::now();

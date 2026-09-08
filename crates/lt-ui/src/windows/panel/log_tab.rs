@@ -59,7 +59,10 @@ fn toolbar(ui: &mut Ui, state: &mut AppState) {
                 open_log_dir();
             }
             // 复制全部（当前可见行）；成功后短时切换为「已复制 N 行」
-            let flashing = state.logwin.copy_at.is_some_and(|t| t.elapsed() < COPY_FLASH);
+            let flashing = state
+                .logwin
+                .copy_at
+                .is_some_and(|t| t.elapsed() < COPY_FLASH);
             let n_visible = state.logwin.visible_count();
             let copy_label = if flashing {
                 lt_i18n::t("log_copied").replace("{n}", &n_visible.to_string())
@@ -86,45 +89,48 @@ fn toolbar(ui: &mut Ui, state: &mut AppState) {
 fn log_region(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
     let show_debug = state.logwin.show_debug;
     let auto_scroll = state.logwin.auto_scroll;
-    egui::Frame::NONE
-        .inner_margin(4.0)
-        .show(ui, |ui| {
-            let out = ScrollArea::vertical()
-                .auto_shrink([false, false])
-                // D-31 贴底跟随：贴底时新行自动跟到底；用户滚轮/拖动离开即挂起，
-                // 拖回底部重新跟随（egui stick_to_bottom 语义）
-                .stick_to_bottom(auto_scroll)
-                .show(ui, |ui| {
-                    let lines = state.logwin.formatted();
-                    let mut any_visible = false;
-                    for (text, level) in lines {
-                        if !LogWindowState::level_visible(*level, show_debug) {
-                            continue;
-                        }
-                        any_visible = true;
-                        ui.label(RichText::new(text).monospace().size(11.5).color(level_color(*level, pal)));
+    egui::Frame::NONE.inner_margin(4.0).show(ui, |ui| {
+        let out = ScrollArea::vertical()
+            .auto_shrink([false, false])
+            // D-31 贴底跟随：贴底时新行自动跟到底；用户滚轮/拖动离开即挂起，
+            // 拖回底部重新跟随（egui stick_to_bottom 语义）
+            .stick_to_bottom(auto_scroll)
+            .show(ui, |ui| {
+                let lines = state.logwin.formatted();
+                let mut any_visible = false;
+                for (text, level) in lines {
+                    if !LogWindowState::level_visible(*level, show_debug) {
+                        continue;
                     }
-                    if !any_visible {
-                        ui.label(
-                            RichText::new(lt_i18n::t("log_empty"))
-                                .monospace()
-                                .size(11.5)
-                                .color(pal.weak),
-                        );
-                    }
-                });
-            // 用户主动翻离底部且出现未读行：右下角「回到最新（+N）」浮钮
-            if state.logwin.advance_follow(
-                out.state.offset.y,
-                out.inner_rect.height(),
-                out.content_size.y,
-                LogView::Panel,
-            ) && log_jump_button(ui, state.logwin.new_since_bottom())
-            {
-                ui.scroll_to_cursor(Some(egui::Align::BOTTOM));
-                state.logwin.mark_at_bottom();
-            }
-        });
+                    any_visible = true;
+                    ui.label(
+                        RichText::new(text)
+                            .monospace()
+                            .size(11.5)
+                            .color(level_color(*level, pal)),
+                    );
+                }
+                if !any_visible {
+                    ui.label(
+                        RichText::new(lt_i18n::t("log_empty"))
+                            .monospace()
+                            .size(11.5)
+                            .color(pal.weak),
+                    );
+                }
+            });
+        // 用户主动翻离底部且出现未读行：右下角「回到最新（+N）」浮钮
+        if state.logwin.advance_follow(
+            out.state.offset.y,
+            out.inner_rect.height(),
+            out.content_size.y,
+            LogView::Panel,
+        ) && log_jump_button(ui, state.logwin.new_since_bottom())
+        {
+            ui.scroll_to_cursor(Some(egui::Align::BOTTOM));
+            state.logwin.mark_at_bottom();
+        }
+    });
 }
 
 /// 打开日志目录（explorer；与面板 open_in_explorer 同语义）
@@ -176,7 +182,10 @@ mod tests {
         std::fs::write(dir.join("other.log"), b"").unwrap();
 
         let got = latest_log_file_in(&dir).unwrap();
-        assert_eq!(got.file_name().unwrap().to_string_lossy(), "livetrans_20260907_110000.log");
+        assert_eq!(
+            got.file_name().unwrap().to_string_lossy(),
+            "livetrans_20260907_110000.log"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
