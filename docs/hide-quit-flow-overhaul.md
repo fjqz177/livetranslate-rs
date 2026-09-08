@@ -71,9 +71,9 @@ app.rs:1386-1390    about_to_wait：quit_requested → event_loop.exit()
   `app.rs:505-510` vs `app.rs:513`）——弹窗时悬浮窗仍是 **AlwaysOnTop 可见窗**。
 - MessageBoxW 无 owner、无 MB_TOPMOST → Z 序**永远低于置顶窗**；默认居中主屏。
 - 几何实证（用户机 200% DPI，2560×1600 物理 → 1280×800 逻辑；D-32 已实锤该机 200%）：
-  悬浮窗默认位置主屏右下（620×500 逻辑，x≈640..1260、y≈172..672），居中框
-  （≈465..815 × 325..475）与悬浮窗**几何交叠**，且置顶永远盖住框 → 框实际弹出但
-  **被悬浮窗压住不可见** = 用户看到"没有任何弹出"。
+  悬浮窗默认位置主屏右下（app.rs:233-234：x = 宽-640、y = 高-608 → 逻辑 x≈640..1260、
+  y≈192..692），居中框（≈465..815 × 325..475）与悬浮窗**几何交叠**，且置顶永远盖住框
+  → 框实际弹出但**被悬浮窗压住不可见** = 用户看到"没有任何弹出"。
 - 与此同时主线程**卡死在 MessageBoxW 的模态泵里**：winit 事件（对悬浮窗的点击等）被
   泵派发进 winit 内部队列却无人消费（winit 外层 pump_events 被阻塞）→ 界面
   **完全没有响应** = 用户看到"主界面直接没法响应"。
@@ -84,9 +84,10 @@ app.rs:1386-1390    about_to_wait：quit_requested → event_loop.exit()
   `EventLoopProxy::send_event` —— **Post，不处理**。
 - 此刻循环正卡在 3.1 的模态泵里，`UiMsg::Menu(QUIT)` 静默排队 → 用户点「退出」
   **毫无反应**（"不然就卡住了"）。
-- 用户最终遇到/点掉那个被重新暴露的「已隐藏」框（任务栏条目点击、激活回退等重新拉高
-  Z 序）→ 模态泵退出 → 外循环恢复 → 排队的 QUIT 才被处理 → `confirm_quit()` 弹出
-  第二个 rfd 框（退出确认）→ "点确定后弹出退出的窗口"。
+- 用户最终遇到/点掉那个被重新暴露的「已隐藏」框（Alt-Tab/任务栏/与前台窗口交互后
+  焦点与激活回落到该框——它是本线程最后激活的窗口）→ 模态泵退出 → 外循环恢复 →
+  排队的 QUIT 才被处理 → `confirm_quit()` 弹出第二个 rfd 框（退出确认）→
+  "点确定后弹出退出的窗口"。
 - **三个症状一个根因**：同步模态 + 无 owner/非置顶 + 事件仅投递 = 串行双弹窗、假死、
   提示不可见，全部由 3.1 阻塞派生。
 
@@ -96,9 +97,9 @@ app.rs:1386-1390    about_to_wait：quit_requested → event_loop.exit()
   `app.rs:422-428` 均走 `tray::confirm_quit()`）：任意一段处于模态时，另一入口不可达。
 - rfd 框无宿主窗口：前台若是其他应用/另一块屏幕，框可能弹出在用户视线之外（与 3.1
   同源）。
-- 其余 rfd 同步弹窗同病：清空确认（`overlay.rs:194-201`）、空导出提示
-  （`app.rs:1224-1232`）、基准完成提示（`app.rs:851-857`）——都会在事件循环线程内
-  阻塞。
+- 其余 rfd 同步弹窗同病：清空确认（`overlay.rs:197-203`）、空导出提示
+  （`app.rs:1225-1231`）、基准完成提示（`app.rs:852-857`）——都会在事件循环线程内
+  阻塞（全面清点见 H-5 表）。
 
 ### 3.4 对照原版（工作区 `LiveTranslate/` 副本，main.py）
 
@@ -120,7 +121,7 @@ app.rs:1386-1390    about_to_wait：quit_requested → event_loop.exit()
 
 | 场景 | 现状 | 目标 |
 | --- | --- | --- |
-| 悬浮窗「隐藏」按钮 | 先阻塞弹框（可能被遮）再隐藏 → 假死 | **立即隐藏** + 首次隐藏弹独立置顶通知（非阻塞） |
+| 悬浮窗「隐藏」按钮 | 先阻塞弹框（可能被遮）再隐藏 → 假死 | **立即隐藏** + 首次隐藏发系统原生通知（非阻塞） |
 | 首次隐藏提示 | rfd 同步 MessageBoxW（可能被遮、阻塞） | **Windows 原生通知（Toast）**：非阻塞、必然可见（系统通知中心）、短时驻留 |
 | 托盘「退出」 | rfd 阻塞确认框，可被其他模态串行/不可达 | egui 内嵌模态确认：不阻塞事件循环、任意时刻可达、单模态源 |
 | 悬浮窗「退出」按钮 | 同 rfd | 同收敛（同一套模态） |
@@ -153,14 +154,20 @@ app.rs:1386-1390    about_to_wait：quit_requested → event_loop.exit()
    203-238 InstallShortcut / 397 GetTemplateContent / 461-482 SetTextValues /
    516 CreateToastNotifierWithId / 521-538 ToastNotification + Show）。我们是纯 Rust，
    同一序列映射到 `windows` 0.62.2（符号与 feature 已在本地 crate 逐个验证，见附录 B）：
-   - `RoInitialize(RO_INIT_MULTITHREADED)`（一次）；
+   - **RoInitialize 模式修正（审查发现，与示例不同）**：winit 0.30.13 在窗口创建线程
+     已用 `CoInitializeEx(COINIT_APARTMENTTHREADED)` 初始化 COM（
+     winit-0.30.13/src/platform_impl/windows/window.rs:1432-1440 `thread_local`），
+     本线程即 STA。示例是无 winit 的裸 WinMain 才用 RO_INIT_MULTITHREADED；
+     **本项目必须用 `RoInitialize(RO_INIT_SINGLETHREADED)`**——在 STA 线程调
+     MULTITHREADED 会返回 `RPC_E_CHANGED_MODE`，通知静默失败；
    - `EnsureAumidShortcut()`：`CoCreateInstance(ShellLink GUID)` → `IShellLinkW::SetPath(exe)`
      → `IPropertyStore::SetValue(PKEY_AppUserModel_ID, VT_LPWSTR)` + `Commit()`
      → `IPersistFile::Save(lnk, TRUE)`；仅当 .lnk 缺失时创建（幂等，`GetFileAttributes` 探测）；
-   - `SetCurrentProcessExplicitAppUserModelID(AUMID)`（一次；对齐任务栏/通知归属）；
+   - `SetCurrentProcessExplicitAppUserModelID(AUMID)`（一次；对齐任务栏/通知归属；
+     官方示例未调用、非显示必要条件，属增强项）；
    - `ToastNotificationManager::CreateToastNotifierWithId(AUMID)`；
    - `GetTemplateContent(ToastText02)` → `XmlDocument`：第 1 个 `text` 节点 = 标题、
-     第 2 个 = 正文（`GetElementsByTagName` + `inner_text` 覆写）；
+     第 2 个 = 正文（`GetElementsByTagName` + `XmlNode::SetInnerText`）；
    - `ToastNotification::CreateToastNotification(xml)` → `ToastNotifier::Show()`.
 3. **AUMID**：新约定 `com.livetranslate.app`（`Vendor.AppName` 形态，语义稳定不可轻改；
    桌面示例为 "Microsoft.Samples.DesktopToasts"）。**不注册 ToastActivatorCLSID**（点击
@@ -174,13 +181,16 @@ app.rs:1386-1390    about_to_wait：quit_requested → event_loop.exit()
      后的通知自动跟随；通知归属显示名 = 快捷方式名（专有名词 "LiveTranslate"，不本地化）；
    - 追加新文案（如分段/副标题）须同时改 assets/i18n/zh.yaml 与 en.yaml（项目 i18n 铁律）。
 5. **图标**：`assets/icons/app.ico` 已存在；.lnk 的 `SetIconLocation` 需要一个**磁盘路径**
-   ——沿用「内嵌资产运行时解压到配置目录」的既有模式（onnxruntime.dll/silero_vad.onnx
-   同款），首次通知时把 app.ico 解出到配置目录再 SetIconLocation（可选步骤；不设则
-   通知用系统默认图标，不阻断）。
+   ——沿用「内嵌资产运行时解压到配置目录」的既有模式（lt-pipeline/src/vad.rs:14-36 的
+   尺寸比对幂等解压），把 app.ico 解出到 `lt_models::paths::config_dir()`（
+   lt-models/src/paths.rs:9；lt-ui 只读依赖 lt-models 为分层允许）再 SetIconLocation；
+   不设则通知用系统默认图标，不阻断。
 6. **失败兜底**：快捷方式创建失败/API 出错（如系统通知被禁用、权限异常）→
    `tracing::warn` + 静默返回；托盘菜单「显示悬浮窗」文字翻转（既有反馈面）仍在。
    旧 rfd 阻塞弹窗**彻底移除**（不再有 H-2 自绘窗方案，WinId::Notice 取消）。
-7. 附带收益：通知进入 Windows 操作中心可回溯（用户错过可见）；H-5 的「空导出提示」
+7. **版本边界**：`CreateToastNotifierWithId` 要求 Windows 10 1903+（目标机 19045 ✓；旧系统
+   失败走兜底静默，不阻断）。
+8. 附带收益：通知进入 Windows 操作中心可回溯（用户错过可见）；H-5 的「空导出提示」
    「基准完成提示」复用同一 `notify(title, body)` 通道。
 
 ### H-3 退出确认改 egui 内嵌模态（核心）
@@ -189,19 +199,21 @@ app.rs:1386-1390    about_to_wait：quit_requested → event_loop.exit()
   见下）；
 - **触发改造**：
   - `on_menu(QUIT)`（app.rs:422-428）：删除 `tray::confirm_quit()`，改
-    `request_quit_confirm()`（已开则幂等忽略）；不接受取消退出。
+    `request_quit_confirm()`（已开则幂等忽略，不叠加）。
   - 悬浮窗退出按钮（overlay.rs:220-222）：改为置 `quit_confirm`，不再直接
     `confirm_quit()`；
   - `tray::confirm_quit()` 随之删除（两调用点均收敛；rfd 对退出路径闭环）。
-- **宿主选择**（`request_quit_confirm` 时定稿）：悬浮窗可见 → 宿主=Overlay（弹出即时
-  所见，置顶窗口内绘制无需切换）；否则 → `set_visible(Panel,true)` + focus_window，
-  宿主=Panel（保证**任意状态**（含全 UI 隐藏）下确认框必有宿主且在前台）；
+- **宿主选择**（`request_quit_confirm` 时定稿）：悬浮窗可见**且非紧凑模式**（逻辑高
+  ≥ 280px）→ 宿主=Overlay（弹出即时所见；若悬浮窗正在紧凑态（高 200px，模态会装不下）
+  或不可见 → `set_visible(Panel,true)` + focus_window，宿主=Panel——保证**任意状态**
+  （含全 UI 隐藏/紧凑）下确认框必有宿主且在前台；
 - **渲染**：共享 `render_quit_confirm(ui, state, pal)`（overlay_ui 与 panel_ui 帧内
   各自调用，仅宿主窗口渲染）——仿 `render_model_editor`
   （translation.rs:376-426）：`egui::Window::new(...).anchor(CENTER_CENTER)
   .open(&mut open)`，文案用既有 `quit_confirm_title`/`quit_confirm_msg`，按钮
   确定=置 `quit_requested=true`（既有 about_to_wait 退出路径，app.rs:1386-1390）、
-  取消=清 `quit_confirm`；
+  取消=清 `quit_confirm` + **恢复面板原可见性**（面板是因确认而临时显示的则回隐藏，
+  避免"取消退出却多出一个面板"）；
 - 效果：托盘退出在任意时刻**立即**响应；确认框在**自己窗口内**绘制（悬浮窗宿主 =
   置顶，恒可见）；无嵌套、无串行、无不可达。
 
@@ -211,15 +223,29 @@ app.rs:1386-1390    about_to_wait：quit_requested → event_loop.exit()
   （app.rs:1180-1186）：`quit_confirm` 打开且宿主=Overlay（悬浮窗穿透开启时）→
   强制 `set_window_transparent(false)` 并跳过轮询设置（否则点击穿透，模态按钮点不到）；
   模态关闭恢复原逻辑。
-- 同类处理顺带覆盖 H-5 的 egui 模态（清空确认）。
+- 同类处理覆盖**所有宿主为 Overlay 的 egui 模态**（清空确认等，H-5）；宿主为 Panel
+  的模态（页面恢复默认/删模型）本就在普通窗口内，无穿透问题。
 
 ### H-5（建议，可另行排期）其余 rfd 同步弹窗收敛
 
-- 清空确认（overlay.rs:194-201）→ 同一 egui 模态基础设施（`confirm` 状态泛化：
-  类型 + 文案 + 回调）；
-- 空导出提示（app.rs:1224-1232）、基准完成提示（app.rs:851-857）→ 同一
-  `notify(title, body)` 原生通知通道；
-- 纪律入册：**事件循环线程禁止任何同步 MessageBox/模态**（AGENTS 大坑追加条目）。
+全面清点（审查后修正——初版只列了 4 处，实际 **8 处调用**，其中 2 处已由 H-1/H-3
+收敛，剩余 6 处由本卡过渡）：
+
+| 位置 | 语义 | 目标载体 |
+| --- | --- | --- |
+| `tray.rs:48-54` | 退出确认 | H-3 已收敛（删 confirm_quit） |
+| `app.rs:505-510` | 首次隐藏提示 | H-1/H-2 已收敛（删弹窗） |
+| `app.rs:852-857` | 基准完成提示 | 原生通知 `notify` |
+| `app.rs:1225-1231` | 空导出提示 | 原生通知 `notify` |
+| `overlay.rs:197-203` | 清空确认 | egui 模态（H-3 同一基础设施） |
+| `subtitle_page.rs:112-118` | 字幕页「恢复默认」确认 | egui 模态（同设施） |
+| `translation.rs:138-144` | 翻译页「恢复默认」确认 | egui 模态（同设施） |
+| `data.rs:257-261` | 删除模型确认（YesNo） | egui 模态（同设施） |
+
+- 纪律入册：**事件循环线程禁止任何同步 MessageBox/模态**（AGENTS 大坑追加条目）；
+  `reset_toolbar` 等确认回调经 `reset_confirm` 状态桥接（页内闭包回调改为 `state` 置
+  模态 + 完成后消费），确认结果的执行放在**宿主帧后动作**（与现有
+  D-32/清空路径同款：入队 → 结果回写），避免在 UI 闭包内直接改 settings 落盘。
 
 ### H-6 回归测试
 
@@ -229,13 +255,15 @@ app.rs:1386-1390    about_to_wait：quit_requested → event_loop.exit()
 - **headless 渲染**（仿 `panel_ui_smoke_renders_all_pages_headless`、
   `model_editor_modal_smoke_renders_headless`：translation.rs:812）：
   - 面板/悬浮窗 smoke 增加 `quit_confirm=Some` 帧：不 panic、产出图元；
-- **通知组装单元测试**（纯函数、无 OS 依赖）：
-  - `toast_xml(title, body)` 产出 ToastText02 XML 且两个 text 节点分别等于入参
-    （含中文）；i18n 键在两个语言下都能取到标题/正文（zh/en 对齐断言）；
+- **通知组装单元测试**（纯函数、无 OS 依赖——WinRT 调用不可在无窗口测试线程
+  执行（RoInitialize 为线程级、且 STA 与测试线程不匹配），XML 文本装配留给实机冒烟）：
+  - `notify_texts()`（i18n 映射纯函数）：两个语言下都能取到标题/正文
+    （zh/en 对齐断言：zh 标题含 "已隐藏" / en 标题含 "hidden" 等）；
 - **实机冒烟脚本**（运行册新增三场景）：
   - A：悬浮窗隐藏 → 立即无假死 + 首次隐藏弹出系统通知（标题/正文随系统语言），
-    通知点击无副作用；再次隐藏不再弹；
-  - B：悬浮窗隐藏状态下托盘退出 → 立即弹面板 + 确认框，确定退出/取消恢复正常；
+    通知点击无副作用；再次隐藏不再弹；首次运行时开始菜单出现 LiveTranslate 快捷方式；
+  - B：悬浮窗隐藏状态下托盘退出 → 立即弹面板 + 确认框，确定退出/取消恢复正常
+    （取消后临时显示的面板回隐藏）；
   - C：悬浮窗穿透开启时退出 → 确认框按钮可点击（H-4 生效）。
 
 ## 5. D-33 偏差登记
@@ -260,19 +288,22 @@ app.rs:1386-1390    about_to_wait：quit_requested → event_loop.exit()
 | --- | --- |
 | `crates/lt-ui/src/windows/overlay.rs:151-154` | 悬浮窗行1「隐藏」按钮 → enqueue(Hide) |
 | `crates/lt-ui/src/windows/overlay.rs:220-222` | 悬浮窗「退出」按钮 → confirm_quit() |
-| `crates/lt-ui/src/windows/overlay.rs:194-201` | 清空确认 rfd |
+| `crates/lt-ui/src/windows/overlay.rs:197-203` | 清空确认 rfd |
 | `crates/lt-ui/src/app.rs:491-514` | set_overlay_visible_with_hint（先弹后藏的病灶） |
 | `crates/lt-ui/src/app.rs:916-919` | WinAction::Hide 处理 |
 | `crates/lt-ui/src/app.rs:422-428` | 托盘 QUIT → confirm_quit |
 | `crates/lt-ui/src/app.rs:851-857` | 基准完成 rfd 提示 |
 | `crates/lt-ui/src/app.rs:1148-1186` | 穿透轮询（H-4 挂起点） |
-| `crates/lt-ui/src/app.rs:1224-1232` | 空导出 rfd 提示 |
+| `crates/lt-ui/src/app.rs:1225-1231` | 空导出 rfd 提示 |
 | `crates/lt-ui/src/app.rs:1386-1390` | quit_requested → event_loop.exit() |
 | `crates/lt-ui/src/tray.rs:47-55` | confirm_quit()（将删除） |
 | `crates/lt-ui/src/tray.rs:99-101` | muda 回调 → EventLoopProxy（仅投递） |
-| `crates/lt-ui/src/state.rs:8-18` | WinId 枚举（新增 Notice 不涉 lt-proto） |
+| `crates/lt-ui/src/state.rs:8-18` | WinId 枚举（lt-ui 内部，不涉 lt-proto；本方案不加新窗） |
 | `crates/lt-ui/src/windows/panel/translation.rs:376-426` | egui 模态先例（model_editor） |
 | `Windows-classic-samples/.../DesktopToasts.cpp:130,157-158,177-238,397-482,516-538` | 官方 Win32 Toast 三件套序列（RoInitialize/快捷方式/模板/Show） |
+| `rfd-0.15.4/.../win_cid/message_dialog.rs:206-237` | MessageBoxW(owner=NULL) 同步模态 |
+| `tray-icon-0.24.2/.../platform_impl/windows/mod.rs:56,75` | uID=私有 internal_id（气泡直调不可行） |
+| `LiveTranslate/main.py:1933-1946 / 2288-2292` | 原版：先藏后气泡；退出无确认 |
 
 ## 附录 B：Win32 Toast 实现要点（windows crate 0.62.2 逐符号验证）
 
@@ -283,21 +314,40 @@ app.rs:1386-1390    about_to_wait：quit_requested → event_loop.exit()
 | 用途 | 符号 | 路径 | 需增 feature |
 | --- | --- | --- | --- |
 | 通知管理/发送 | `ToastNotificationManager::CreateToastNotifierWithId(&HSTRING)` / `GetTemplateContent(ToastTemplateType)` | `windows::UI::Notifications` | `UI_Notifications` |
-| 通知构造 | `ToastNotification::CreateToastNotification(xml)`、`ToastNotifier::Show(toast)` | 同上 | 同上 |
+| 通知构造 | `ToastNotification::CreateToastNotification(xml)`（`impl ToastNotification` 内，mod.rs:3044，经由 IToastNotificationFactory 激活）、`ToastNotifier::Show(toast)`（mod.rs:3383） | 同上 | 同上 |
 | 模板枚举 | `ToastTemplateType::ToastText02`（5 = 标题+正文两行） | 同上 | 同上 |
-| XML 组装 | `XmlDocument::new()` + `LoadXml(&HSTRING)` + `GetElementsByTagName(&HSTRING)` | `windows::Data::Xml::Dom` | `Data_Xml_Dom` |
+| XML 组装 | `XmlDocument::new()` + `LoadXml(&HSTRING)` + `GetElementsByTagName(&HSTRING)`；文本写 = **`XmlNode::SetInnerText(&HSTRING)`**（已验证存在，Dom/mod.rs:248/505/835） | `windows::Data::Xml::Dom` | `Data_Xml_Dom` |
 | 快捷方式 | `IShellLinkW`（`SetPath`）、`ShellLink`（CLSID 常量，注意 0.62 里不叫 CLSID_ShellLink） | `windows::Win32::UI::Shell` | `Win32_UI_Shell` |
 | AUMID 属性 | `PKEY_AppUserModel_ID`（fmtid 0x9f4c2855-… pid 5，注意位于 **EnhancedStorage**） | `windows::Win32::Storage::EnhancedStorage` | `Win32_Storage_EnhancedStorage` |
 | 属性写 | `IPropertyStore::SetValue(*const PROPERTYKEY, *const PROPVARIANT)` / `Commit()` | `windows::Win32::UI::Shell::PropertiesSystem` | `Win32_UI_Shell_PropertiesSystem` |
 | 快捷方式落盘 | `IPersistFile::Save(&PCWSTR, true)` | `windows::Win32::System::Com` | `Win32_System_Com` |
 | 属性值 | `PROPVARIANT`（`VT_LPWSTR` 置 `pwszVal`） | `windows::Win32::System::Com::StructuredStorage` | `Win32_System_Com_StructuredStorage` |
-| COM/WinRT 初始化 | `CoCreateInstance` / `RoInitialize(RO_INIT_TYPE)`（示例用 `RO_INIT_MULTITHREADED`） | `windows::Win32::System::Com` / `…::WinRT` | `Win32_System_Com` + `Win32_System_WinRT` |
+| COM/WinRT 初始化 | `CoCreateInstance` / `RoInitialize(RO_INIT_TYPE)` | `windows::Win32::System::Com` / `…::WinRT` | `Win32_System_Com` + `Win32_System_WinRT` |
 | 进程 AUMID | `SetCurrentProcessExplicitAppUserModelID(&HSTRING)` | `windows::Win32::UI::Shell` | `Win32_UI_Shell` |
+
+**RoInitialize 模式（审查修正）**：桌面示例用 `RO_INIT_MULTITHREADED`（裸 WinMain 无其他
+COM 初始化）；本项目由 winit 0.30.13 先行：`winit-0.30.13/src/platform_impl/windows/
+window.rs:1432-1440` 的 `thread_local COM_INITIALIZED` 在窗口创建线程以
+`CoInitializeEx(COINIT_APARTMENTTHREADED)`（**STA**）初始化过 COM → 本线程必须调用
+`RoInitialize(RO_INIT_SINGLETHREADED)`；若误用 MULTITHREADED 得 `RPC_E_CHANGED_MODE`，
+通知静默失败。RoInitialize 为**线程级**调用：仅 winit 主线程（所有 Show 调用侧）初始化
+一次即可，H-6 的单元测试不触碰 WinRT。
+
+备选（**不取**）：在 winit 之前于 main() 最先 `RoInitialize(RO_INIT_MULTITHREADED)`——
+winit 文档（src/platform/windows.rs:492-497）明示此路径可行，但会改变 winit 自身
+ITaskbarList 等的 COM 上下文，且得在企业级线程里协调，风险≥收益；保持与 winit 一致
+的 STA 是零副作用选择。
+
+**feature 落点**：新增 feature 加到 `crates/lt-ui/Cargo.toml` 的
+`[target."cfg(windows)".dependencies] windows = { workspace = true, features=[...] }`
+（feature 在工作区级 union 生效，lt-app 无需改动）。
 
 实现形态建议：
 
-- 新模块 `crates/lt-ui/src/notifications.rs`（沿用项目「unsafe Win32 胶水+独立小模块」
-  风格，如 `app.rs` 里 apply_layered/apply_window_region）；对外仅两个入口：
+- 新模块 `crates/lt-ui/src/notifications.rs`（**整体 `#[cfg(windows)]` 门控**；非 Windows
+  目标编译时对应函数为日志空实现，避免跨平台编译破裂——本项目当前仅 Windows 实现，
+  该门控纯粹为编译健壮性）；沿用项目「unsafe Win32 胶水+独立小模块」风格，如
+  `app.rs` 里 apply_layered/apply_window_region；对外仅两个入口：
   `pub fn show(title: &str, body: &str) -> anyhow::Result<()>`（内部 `Once` 幂等完成
   RoInitialize + SetCurrentProcessExplicitAppUserModelID + EnsureAumidShortcut；
   每次发送后不缓存失败）、`pub fn show_hidden_hint()`（i18n 取词的薄封装）；
@@ -315,6 +365,3 @@ app.rs:1386-1390    about_to_wait：quit_requested → event_loop.exit()
   在日志中记录已发送）；② 首次运行会在用户开始菜单新增一个快捷方式条目（产品行为
   变化，随 D-33 落档）；③ 通知点击默认无动作（不注册 ToastActivatorCLSID）——与原版
   气泡一致；若后续要「点击通知恢复悬浮窗」再引入 COM 激活器（另立项）。
-| `rfd-0.15.4/.../win_cid/message_dialog.rs:206-237` | MessageBoxW(owner=NULL) 同步模态 |
-| `tray-icon-0.24.2/.../platform_impl/windows/mod.rs:56,75` | uID=私有 internal_id（气泡直调不可行） |
-| `LiveTranslate/main.py:1933-1946 / 2288-2292` | 原版：先藏后气泡；退出无确认 |
