@@ -191,37 +191,179 @@ pub struct LogLineEntry {
     pub msg: String,
 }
 
-/// 日志窗 UI 状态：环形 2000 行 + 显示开关（原版 _show_debug / _auto_scroll）
+impl LogLineEntry {
+    /// 显示/复制共用单行文本（日志窗与面板日志 tab 统一格式）
+    pub fn display(&self) -> String {
+        format!("{} [{}] {}: {}", self.time, level_name(self.level), self.target, self.msg)
+    }
+}
+
+/// 级别名（Python logging 语义：TRACE/DEBUG/INFO/WARNING/ERROR）
+pub fn level_name(level: u8) -> &'static str {
+    match level {
+        0 => "TRACE",
+        10 => "DEBUG",
+        20 => "INFO",
+        30 => "WARNING",
+        40.. => "ERROR",
+        _ => "INFO",
+    }
+}
+
+/// 日志视图标识（贴底跟随状态分视图维护：面板 tab 与日志窗各一个独立滚动区）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogView {
+    /// 设置面板「日志」tab（log_tab.rs）
+    Panel,
+    /// 独立日志窗（logwin.rs）
+    LogWin,
+}
+
+/// 滚动偏移变化阈值（px）：超过即视作"用户主动滚动"
+const SCROLL_EPS: f32 = 0.5;
+/// 贴底跟随容差（px）：视口底与内容底距离在此内仍视作贴底
+const FOLLOW_TOL: f32 = 4.0;
+
+/// 滚动视口是否贴底（容差 tol px）。`viewport_max_y` 为内容坐标系下视口底
+/// （= 滚动偏移 + 视口高）；内容不满视口时不产偏移，恒判为贴底（未上翻）。
+pub fn is_near_bottom(viewport_max_y: f32, content_h: f32, tol: f32) -> bool {
+    content_h - viewport_max_y <= tol
+}
+
+/// D-31 日志视图状态（docs/log-tab-redesign.md）：缓冲全级别保留 + 渲染期过滤，
+/// 另附显示行缓存与贴底跟随状态（日志窗与面板日志 tab 共享同一实例）。
 #[derive(Default)]
 pub struct LogWindowState {
     pub lines: std::collections::VecDeque<LogLineEntry>,
-    /// 默认只显示 INFO+；开启后后续 DEBUG 行也进入（原版语义：不回溯历史）
+    /// 默认只显示 INFO+；开启后渲染期回溯显示全部保留行（D-31：不再是原版
+    /// "追加期过滤、勾选不回溯"语义）
     pub show_debug: bool,
     pub auto_scroll: bool,
+    /// 上次贴底渲染时的行数（[`Self::new_since_bottom`] 推导基准；None = 尚未贴底）
+    bottom_marker: Option<usize>,
+    /// 显示行缓存（text + level）：push 增量追加，环形溢出后整体重建，
+    /// 避免每帧对 2000 行重复 `format!`
+    formatted: Vec<(String, u8)>,
+    fmt_dirty: bool,
+    /// 上次「复制全部」时刻（约 800ms 按钮短时反馈；纯 UI 状态）
+    pub copy_at: Option<Instant>,
+    /// 面板 tab：用户是否主动翻离底部（「回到最新」浮钮显示条件）
+    pub panel_pinned: bool,
+    /// 日志窗：同上
+    pub logwin_pinned: bool,
+    /// 各视图上一帧滚动偏移（"用户主动滚动"检测：offset 变化才视作用户操作，
+    /// 内容增长导致的 offset 落后不算）
+    pub panel_prev_offset: Option<f32>,
+    pub logwin_prev_offset: Option<f32>,
 }
 
 impl LogWindowState {
     pub const MAX_LINES: usize = 2000;
 
-    /// 追加一行（级别过滤在此做：`level < INFO 且未开 debug` → 丢弃，
-    /// 与原版 _append_log 的早退一致；返回是否实际追加）
+    /// 追加一行（缓冲全级别保留；行数环形上限 2000）。恒返回 true（调用方据此
+    /// 触发重绘，见 lt-app 事件环）。
     pub fn push(&mut self, mut entry: LogLineEntry) -> bool {
-        const INFO: u8 = 20;
-        if entry.level < INFO && !self.show_debug {
-            return false;
-        }
         if entry.time.is_empty() {
             entry.time = chrono::Local::now().format("%H:%M:%S").to_string();
         }
         self.lines.push_back(entry);
         if self.lines.len() > Self::MAX_LINES {
             self.lines.pop_front();
+            self.formatted.clear();
+            self.fmt_dirty = true;
+        } else if !self.fmt_dirty {
+            let e = self.lines.back().expect("刚 push 必有 back");
+            let (text, level) = (e.display(), e.level);
+            self.formatted.push((text, level));
         }
         true
     }
 
+    /// 渲染显示行缓存（脏时按 lines 整体重建；与 lines 保持同步）
+    pub fn formatted(&mut self) -> &[(String, u8)] {
+        if self.fmt_dirty {
+            self.formatted.clear();
+            self.formatted.extend(self.lines.iter().map(|e| (e.display(), e.level)));
+            self.fmt_dirty = false;
+        }
+        &self.formatted
+    }
+
+    /// 渲染期级别过滤：开 show_debug 全显示，否则仅 INFO+（D-31 回溯语义）
+    pub fn level_visible(level: u8, show_debug: bool) -> bool {
+        show_debug || level >= 20
+    }
+
     pub fn clear(&mut self) {
         self.lines.clear();
+        self.formatted.clear();
+        self.fmt_dirty = false;
+        self.bottom_marker = None;
+    }
+
+    /// 贴底渲染时调用：重置新行计数基准（幂等）
+    pub fn mark_at_bottom(&mut self) {
+        self.bottom_marker = Some(self.lines.len());
+    }
+
+    /// 距上次贴底的新行数（贴底=0；用户上翻浏览时 >0，驱动「回到最新」浮钮）
+    pub fn new_since_bottom(&self) -> usize {
+        self.lines.len().saturating_sub(self.bottom_marker.unwrap_or(0))
+    }
+
+    /// 当前可见行数（渲染期过滤；「已复制 N 行」反馈用）
+    pub fn visible_count(&self) -> usize {
+        self.lines
+            .iter()
+            .filter(|e| Self::level_visible(e.level, self.show_debug))
+            .count()
+    }
+
+    /// 当前可见行文本（渲染期过滤；「复制全部」内容）
+    pub fn visible_texts(&mut self) -> Vec<String> {
+        let sd = self.show_debug;
+        self.formatted()
+            .iter()
+            .filter(|(_, l)| Self::level_visible(*l, sd))
+            .map(|(t, _)| t.clone())
+            .collect()
+    }
+
+    /// 贴底跟随状态推进（D-31；每帧日志滚动区渲染完成后调用，[`LogView`] 区分
+    /// 面板 tab 与日志窗两个独立滚动区）：近底→解锁并重置未读基准；用户主动
+    /// 滚动（偏移变化）且不近底→锁定。返回本帧是否应显示「回到最新」浮钮。
+    /// 注意：由内容增长导致的偏移"落后"（egui stick_to_bottom 尚未追平的一帧）
+    /// 不算用户主动滚动——不会误弹浮钮。
+    pub fn advance_follow(
+        &mut self,
+        offset_y: f32,
+        viewport_h: f32,
+        content_h: f32,
+        view: LogView,
+    ) -> bool {
+        let near = is_near_bottom(offset_y + viewport_h, content_h, FOLLOW_TOL);
+        let (prev, mut pinned) = match view {
+            LogView::Panel => (self.panel_prev_offset, self.panel_pinned),
+            LogView::LogWin => (self.logwin_prev_offset, self.logwin_pinned),
+        };
+        let user_rolled = prev.is_some_and(|p| (offset_y - p).abs() > SCROLL_EPS);
+        if near {
+            pinned = false;
+        } else if user_rolled {
+            pinned = true;
+        }
+        match view {
+            LogView::Panel => self.panel_pinned = pinned,
+            LogView::LogWin => self.logwin_pinned = pinned,
+        }
+        match view {
+            LogView::Panel => self.panel_prev_offset = Some(offset_y),
+            LogView::LogWin => self.logwin_prev_offset = Some(offset_y),
+        }
+        if near {
+            self.mark_at_bottom();
+        }
+        pinned && self.new_since_bottom() > 0
     }
 }
 
@@ -1769,15 +1911,16 @@ mod tests {
     }
 
     #[test]
-    fn logwin_filters_debug_by_default_and_caps_at_2000() {
+    fn logwin_buffers_all_levels_and_caps_at_2000() {
         let mut lw = LogWindowState::default();
-        assert!(!lw.push(LogLineEntry {
+        // D-31：缓冲全级别保留（过滤移到渲染期 level_visible）
+        assert!(lw.push(LogLineEntry {
             time: String::new(),
             level: 10,
             target: "t".into(),
             msg: "debug line".into(),
         }));
-        assert!(lw.lines.is_empty(), "DEBUG 默认被过滤");
+        assert_eq!(lw.lines.len(), 1, "DEBUG 进入缓冲");
 
         assert!(lw.push(LogLineEntry {
             time: String::new(),
@@ -1785,17 +1928,8 @@ mod tests {
             target: "t".into(),
             msg: "info line".into(),
         }));
-        assert_eq!(lw.lines.len(), 1);
-        assert_eq!(lw.lines[0].time.len(), 8, "空时戳自动盖 HH:MM:SS");
-
-        lw.show_debug = true;
-        assert!(lw.push(LogLineEntry {
-            time: "x".into(),
-            level: 10,
-            target: "t".into(),
-            msg: "debug2".into(),
-        }));
         assert_eq!(lw.lines.len(), 2);
+        assert_eq!(lw.lines[0].time.len(), 8, "空时戳自动盖 HH:MM:SS");
 
         // 环形 2000：满后丢最旧
         for i in 0..2100u32 {
@@ -1803,6 +1937,124 @@ mod tests {
         }
         assert_eq!(lw.lines.len(), 2000);
         assert_ne!(lw.lines[0].msg, "0");
+    }
+
+    #[test]
+    fn logwin_level_visible_matrix() {
+        // 关 show_debug：仅 INFO+ 可见；开：全级别可见（回溯语义）
+        assert!(!LogWindowState::level_visible(0, false));
+        assert!(!LogWindowState::level_visible(10, false));
+        assert!(LogWindowState::level_visible(20, false));
+        assert!(LogWindowState::level_visible(30, false));
+        assert!(LogWindowState::level_visible(40, false));
+        assert!(LogWindowState::level_visible(10, true));
+        assert!(LogWindowState::level_visible(0, true));
+    }
+
+    #[test]
+    fn logwin_formatted_cache_tracks_lines() {
+        let mut lw = LogWindowState::default();
+        lw.push(LogLineEntry { time: "10:00:00".into(), level: 20, target: "t".into(), msg: "m1".into() });
+        lw.push(LogLineEntry { time: "10:00:01".into(), level: 10, target: "t".into(), msg: "m2".into() });
+        let fmt = lw.formatted();
+        assert_eq!(fmt.len(), 2);
+        assert_eq!(fmt[0].0, "10:00:00 [INFO] t: m1");
+        assert_eq!(fmt[0].1, 20);
+        assert_eq!(fmt[1].0, "10:00:01 [DEBUG] t: m2");
+
+        // 溢出后整体重建，缓存与 lines 仍同步
+        for i in 0..3000u32 {
+            lw.push(LogLineEntry { time: "x".into(), level: 20, target: "t".into(), msg: format!("{i}") });
+        }
+        let (line_count, first_msg) =
+            (lw.lines.len(), lw.lines.front().unwrap().msg.clone());
+        let fmt = lw.formatted();
+        assert_eq!(fmt.len(), line_count);
+        assert_eq!(fmt.len(), 2000);
+        assert_eq!(first_msg, "1000");
+        assert_eq!(fmt[0].0, "x [INFO] t: 1000");
+        // clear 后缓存与缓冲同清
+        lw.clear();
+        assert_eq!(lw.lines.len(), 0);
+        assert_eq!(lw.formatted().len(), 0);
+    }
+
+    #[test]
+    fn logwin_new_since_bottom_tracks_unread() {
+        let mut lw = LogWindowState::default();
+        assert_eq!(lw.new_since_bottom(), 0);
+        lw.push(LogLineEntry { time: "x".into(), level: 20, target: "t".into(), msg: "a".into() });
+        assert_eq!(lw.new_since_bottom(), 1, "无贴底基准：现有行全部视作未读");
+        lw.mark_at_bottom();
+        assert_eq!(lw.new_since_bottom(), 0);
+        lw.push(LogLineEntry { time: "x".into(), level: 20, target: "t".into(), msg: "b".into() });
+        lw.push(LogLineEntry { time: "x".into(), level: 20, target: "t".into(), msg: "c".into() });
+        assert_eq!(lw.new_since_bottom(), 2, "上翻期间新增 2 行计入未读");
+        lw.mark_at_bottom();
+        assert_eq!(lw.new_since_bottom(), 0, "回底后清零");
+        lw.clear();
+        assert_eq!(lw.new_since_bottom(), 0, "清空后归零");
+    }
+
+    #[test]
+    fn is_near_bottom_boundaries() {
+        // 内容不满视口：无偏移，恒贴底
+        assert!(is_near_bottom(100.0, 80.0, 4.0));
+        // 滚到末尾：差 0
+        assert!(is_near_bottom(100.0, 100.0, 4.0));
+        // 容差内
+        assert!(is_near_bottom(97.0, 100.0, 4.0));
+        // 上翻 20px：不贴底
+        assert!(!is_near_bottom(80.0, 100.0, 4.0));
+    }
+
+    #[test]
+    fn advance_follow_pins_only_on_user_scroll() {
+        let mut lw = LogWindowState::default();
+        // 视口高 100、内容高 1000：贴底 offset = 900
+        // 帧 1（首帧，无前值）：offset 900 近底 → 解锁并设基准
+        assert!(!lw.advance_follow(900.0, 100.0, 1000.0, LogView::Panel));
+        // 贴底后新增 2 行 → 未读 2（浮钮 +N 计数源）
+        lw.push(LogLineEntry { time: "x".into(), level: 20, target: "t".into(), msg: "a".into() });
+        lw.push(LogLineEntry { time: "x".into(), level: 20, target: "t".into(), msg: "b".into() });
+        // 帧 2：用户滚动（offset 变化）且不近底 → 锁定，浮钮出现
+        assert!(lw.advance_follow(600.0, 100.0, 1000.0, LogView::Panel));
+        // 帧 3：offset 不变（无输入）→ 维持锁定
+        assert!(lw.advance_follow(600.0, 100.0, 1000.0, LogView::Panel));
+        // 帧 4：回贴底 → 解锁 + 基准重置
+        assert!(!lw.advance_follow(900.0, 100.0, 1000.0, LogView::Panel));
+        assert_eq!(lw.new_since_bottom(), 0);
+    }
+
+    #[test]
+    fn advance_follow_ignores_content_growth_when_stuck() {
+        let mut lw = LogWindowState::default();
+        // 贴底基线：offset 900 = 内容高 1000 - 视口高 100
+        assert!(!lw.advance_follow(900.0, 100.0, 1000.0, LogView::Panel));
+        // 内容增长（1020）但偏移不变：stick 尚未追平的一帧不算用户滚动
+        assert!(!lw.advance_follow(900.0, 100.0, 1020.0, LogView::Panel), "贴底+内容增长不得弹浮钮");
+        // 追平后贴住新底（offset 920）
+        assert!(!lw.advance_follow(920.0, 100.0, 1020.0, LogView::Panel));
+        // 用户上翻 50px → 锁定；无未读行时不返回 true（浮钮需 unread > 0）
+        assert!(!lw.advance_follow(870.0, 100.0, 1020.0, LogView::Panel));
+        assert!(lw.panel_pinned, "用户上翻后 pinned 置位");
+        // 视图隔离：日志窗视图不受 Panel 锁定影响
+        assert!(!lw.advance_follow(900.0, 100.0, 1000.0, LogView::LogWin));
+    }
+
+    #[test]
+    fn advance_follow_unread_flips_jump() {
+        let mut lw = LogWindowState::default();
+        lw.mark_at_bottom();
+        lw.push(LogLineEntry { time: "x".into(), level: 20, target: "t".into(), msg: "a".into() });
+        lw.push(LogLineEntry { time: "x".into(), level: 20, target: "t".into(), msg: "b".into() });
+        // 首帧 offset 未变（无前值）→ 未锁定，即使有未读也不弹（用户未滚动）
+        assert!(!lw.advance_follow(0.0, 100.0, 1000.0, LogView::Panel), "未滚动不弹浮钮");
+        // 用户滚动一帧 → 锁定 → 浮钮出现（有 2 条未读）
+        assert!(lw.advance_follow(400.0, 100.0, 1000.0, LogView::Panel));
+        // 回到贴底 → 解锁 + 基准重置 → 无未读
+        assert!(!lw.advance_follow(900.0, 100.0, 1000.0, LogView::Panel));
+        assert_eq!(lw.new_since_bottom(), 0);
     }
 
     #[test]

@@ -152,6 +152,15 @@ pub fn panel_ui(ui: &mut Ui, state: &mut AppState) {
         .rect_stroke(pane, 0.0, Stroke::new(1.0, pal.card_stroke), egui::StrokeKind::Inside);
 
     let page = state.panel.page;
+    if page == PanelPage::Log {
+        // 日志页自带滚动区（工具行置顶 + 单滚动条），不套页面级 ScrollArea：
+        // 一旦内容（底部提示行等）超出 pane 高度会出现第二根滚动条（LT-1，
+        // 见 docs/log-tab-redesign.md）。
+        Frame::NONE
+            .inner_margin(egui::Margin::same(12))
+            .show(ui, |ui| log_tab::page(ui, state, &pal));
+        return;
+    }
     ScrollArea::vertical()
         .auto_shrink([false, false])
         .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded)
@@ -166,7 +175,7 @@ pub fn panel_ui(ui: &mut Ui, state: &mut AppState) {
                     PanelPage::Benchmark => benchmark_tab::page(ui, state, &pal),
                     PanelPage::Cache => data::page(ui, state, &pal),
                     PanelPage::Changelog => changelog_tab::page(ui, state, &pal),
-                    PanelPage::Log => log_tab::page(ui, state, &pal),
+                    PanelPage::Log => unreachable!("日志页已在上方特判，不进入页面级滚动区"),
                 });
             ui.add_space(12.0);
         });

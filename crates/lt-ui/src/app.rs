@@ -10,8 +10,8 @@
 //! - 点击穿透由窗口层按 50ms 轮询处理（M4 接入），本宿主只负责窗口创建与 flags。
 
 use crate::state::{
-    AppState, DownloadUiState, OverlayMessage, StartupFlow, TickKind, WinAction, WinId,
-    push_log_line,
+    AppState, DownloadUiState, OverlayMessage, PanelPage, StartupFlow, TickKind, WinAction,
+    WinId, push_log_line,
 };
 use crate::tray::{self, Tray};
 use crate::windows;
@@ -863,6 +863,19 @@ impl MultiWindowApp {
                         msg,
                     }) {
                         self.redraw(WinId::Log);
+                        // LT-5：面板「日志」tab 与日志窗共用同一缓冲——该 tab
+                        // 正在展示时一并重绘，否则面板无输入事件不刷新，新日志
+                        // 落不到画面（观感为"日志卡住"）
+                        if self.app_state.panel.page == PanelPage::Log
+                            && self
+                                .app_state
+                                .visible
+                                .get(&WinId::Panel)
+                                .copied()
+                                .unwrap_or(false)
+                        {
+                            self.redraw(WinId::Panel);
+                        }
                     }
                 }
                 // ── 模型加载对话框打开（标题固定 "LiveTranslate"）──

@@ -1,13 +1,22 @@
 //! 设置页「日志」tab（Rust 版新增：用户自查/报障入口）。
 //!
 //! 与日志窗（logwin.rs）共享同一环形缓冲（AppState.logwin），本界面是第二视图：
-//! - 级别色 + 时间 + target + 消息，最新在底部（auto_scroll 跟随）；
-//! - 工具行：显示 DEBUG / 清空 / 复制全部 / 打开日志文件；
+//! - 级别色 + 时间 + target + 消息，最新在底部；
+//! - 布局：工具行恒置顶 + 日志滚动区占满剩余——本页不经过 panel 的页面级
+//!   ScrollArea（panel_ui 特判），否则内容溢出时会出现第二根滚动条（LT-1，
+//!   见 docs/log-tab-redesign.md）；
+//! - 交互（D-31）：显示 DEBUG 渲染期过滤（勾选即回溯显示历史）；自动滚动 =
+//!   贴底跟随（上翻挂起 +「回到最新」浮钮）；
 //! - 数据零新增：LogLine 事件流（logging.rs BroadcastLayer）本来就全量到达 UI。
 
 use super::Palette;
-use crate::state::AppState;
+use crate::state::{AppState, LogView, LogWindowState};
+use crate::windows::log_jump_button;
 use egui::{Color32, RichText, ScrollArea, Ui};
+use std::time::{Duration, Instant};
+
+/// 「已复制 N 行」按钮反馈留存时长
+const COPY_FLASH: Duration = Duration::from_millis(800);
 
 /// 级别色（浅色面板用：INFO 主文字色、DEBUG 弱灰、WARN 琥珀、ERROR 红）
 fn level_color(level: u8, pal: &Palette) -> Color32 {
@@ -19,19 +28,14 @@ fn level_color(level: u8, pal: &Palette) -> Color32 {
     }
 }
 
-fn level_name(level: u8) -> &'static str {
-    match level {
-        0 => "TRACE",
-        10 => "DEBUG",
-        20 => "INFO",
-        30 => "WARNING",
-        40.. => "ERROR",
-        _ => "INFO",
-    }
+pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
+    toolbar(ui, state);
+    ui.add_space(4.0);
+    log_region(ui, state, pal);
 }
 
-pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
-    // ── 工具行 ──
+/// ── 工具行：本页不经过 panel 外层滚动区，故天然置顶 ──
+fn toolbar(ui: &mut Ui, state: &mut AppState) {
     ui.horizontal(|ui| {
         ui.add(egui::Checkbox::new(
             &mut state.logwin.show_debug,
@@ -42,58 +46,65 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
             RichText::new(lt_i18n::t("auto_scroll")).size(12.0),
         ));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.button(lt_i18n::t("log_open_file")).clicked() {
+            // 打开日志目录（按钮名与行为一致；hover 显示当前会话文件）
+            let open = ui.button(RichText::new(lt_i18n::t("log_open_dir")).size(12.0));
+            let open = if let Some(path) = latest_log_file() {
+                open.on_hover_text(
+                    lt_i18n::t("log_current_file").replace("{path}", &path.display().to_string()),
+                )
+            } else {
+                open
+            };
+            if open.clicked() {
                 open_log_dir();
             }
-            if ui.button(lt_i18n::t("log_copy_all")).clicked() {
-                let text = state
-                    .logwin
-                    .lines
-                    .iter()
-                    .map(|e| {
-                        format!(
-                            "{} [{}] {}: {}",
-                            e.time,
-                            level_name(e.level),
-                            e.target,
-                            e.msg
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                let text = text.trim_end().to_string() + "\n";
+            // 复制全部（当前可见行）；成功后短时切换为「已复制 N 行」
+            let flashing = state.logwin.copy_at.is_some_and(|t| t.elapsed() < COPY_FLASH);
+            let n_visible = state.logwin.visible_count();
+            let copy_label = if flashing {
+                lt_i18n::t("log_copied").replace("{n}", &n_visible.to_string())
+            } else {
+                lt_i18n::t("log_copy_all").to_string()
+            };
+            if ui.button(RichText::new(copy_label).size(12.0)).clicked() {
+                let mut text = state.logwin.visible_texts().join("\n");
+                text.push('\n');
                 ui.ctx().copy_text(text);
+                state.logwin.copy_at = Some(Instant::now());
             }
-            if ui.button(lt_i18n::t("clear")).clicked() {
+            // 清空（仅清空列表，磁盘日志文件不受影响）
+            let clear = ui.button(RichText::new(lt_i18n::t("clear")).size(12.0));
+            let clear = clear.on_hover_text(lt_i18n::t("clear_list_only"));
+            if clear.clicked() {
                 state.logwin.clear();
             }
         });
     });
-    ui.add_space(4.0);
+}
 
-    // ── 日志区（环形 2000 行；仅在 level ≥ INFO 或 show_debug 时行已由
-    //    LogWindowState::push 过滤，此处直接渲染）──
-    let lines: Vec<(String, Color32)> = state
-        .logwin
-        .lines
-        .iter()
-        .map(|e| {
-            (
-                format!("{} [{}] {}: {}", e.time, level_name(e.level), e.target, e.msg),
-                level_color(e.level, pal),
-            )
-        })
-        .collect();
+/// ── 日志区：占满剩余高度，全局唯一滚动条 ──
+fn log_region(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
+    let show_debug = state.logwin.show_debug;
+    let auto_scroll = state.logwin.auto_scroll;
     egui::Frame::NONE
         .inner_margin(4.0)
         .show(ui, |ui| {
-            ScrollArea::vertical()
+            let out = ScrollArea::vertical()
                 .auto_shrink([false, false])
+                // D-31 贴底跟随：贴底时新行自动跟到底；用户滚轮/拖动离开即挂起，
+                // 拖回底部重新跟随（egui stick_to_bottom 语义）
+                .stick_to_bottom(auto_scroll)
                 .show(ui, |ui| {
-                    for (text, color) in &lines {
-                        ui.label(RichText::new(text).monospace().size(11.5).color(*color));
+                    let lines = state.logwin.formatted();
+                    let mut any_visible = false;
+                    for (text, level) in lines {
+                        if !LogWindowState::level_visible(*level, show_debug) {
+                            continue;
+                        }
+                        any_visible = true;
+                        ui.label(RichText::new(text).monospace().size(11.5).color(level_color(*level, pal)));
                     }
-                    if lines.is_empty() {
+                    if !any_visible {
                         ui.label(
                             RichText::new(lt_i18n::t("log_empty"))
                                 .monospace()
@@ -101,21 +112,19 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
                                 .color(pal.weak),
                         );
                     }
-                    if state.logwin.auto_scroll && !lines.is_empty() {
-                        ui.scroll_to_cursor(Some(egui::Align::BOTTOM));
-                    }
                 });
+            // 用户主动翻离底部且出现未读行：右下角「回到最新（+N）」浮钮
+            if state.logwin.advance_follow(
+                out.state.offset.y,
+                out.inner_rect.height(),
+                out.content_size.y,
+                LogView::Panel,
+            ) && log_jump_button(ui, state.logwin.new_since_bottom())
+            {
+                ui.scroll_to_cursor(Some(egui::Align::BOTTOM));
+                state.logwin.mark_at_bottom();
+            }
         });
-
-    // ── 当前会话日志文件提示 ──
-    if let Some(path) = latest_log_file() {
-        ui.add_space(4.0);
-        ui.label(
-            RichText::new(format!("{} {}", lt_i18n::t("log_current_file"), path.display()))
-                .size(10.5)
-                .color(pal.weak),
-        );
-    }
 }
 
 /// 打开日志目录（explorer；与面板 open_in_explorer 同语义）
@@ -155,6 +164,7 @@ fn latest_log_file_in(dir: &std::path::Path) -> Option<std::path::PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::LogLineEntry;
 
     #[test]
     fn latest_log_file_picks_lexicographic_max() {
@@ -168,5 +178,71 @@ mod tests {
         let got = latest_log_file_in(&dir).unwrap();
         assert_eq!(got.file_name().unwrap().to_string_lossy(), "livetrans_20260907_110000.log");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 防回归（LT-1）：固定高度下渲染本页后不得有尾随内容——有尾随内容即
+    /// 重新引入 panel 页面级滚动条（双滚动条根因，见 docs/log-tab-redesign.md §2.2）。
+    #[test]
+    fn log_tab_leaves_no_tailing_content() {
+        let ctx = egui::Context::default();
+        let mut st = AppState::new(lt_proto::Settings::default());
+        let render_once = |ctx: &egui::Context, st: &mut AppState| {
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                ui.set_max_size(egui::vec2(500.0, 600.0));
+                page(ui, st, &Palette::NATIVE);
+                let remaining = ui.available_height();
+                assert!(
+                    remaining > -1.0,
+                    "日志页出现尾随内容（可用高 {remaining} < 0，会重新引入外层滚动条）"
+                );
+            });
+            // epaint debug 断言要求消费纹理增量（无渲染器 → 显式丢弃，同 panel smoke）
+            out.textures_delta.clear();
+        };
+        // 满载（其中混有 DEBUG 行，覆盖渲染期过滤路径）
+        for i in 0..80 {
+            st.logwin.push(LogLineEntry {
+                time: "10:00:00".into(),
+                level: if i % 5 == 0 { 10 } else { 20 },
+                target: "t".into(),
+                msg: format!("line {i}"),
+            });
+        }
+        render_once(&ctx, &mut st);
+        render_once(&ctx, &mut st);
+        // 空态
+        st.logwin.clear();
+        render_once(&ctx, &mut st);
+    }
+
+    /// 状态冒烟：show_debug 回溯显示 + auto_scroll 开关 + 复制反馈计时——两帧渲染不 panic。
+    #[test]
+    fn log_tab_state_switches_render_stable() {
+        let ctx = egui::Context::default();
+        let mut st = AppState::new(lt_proto::Settings::default());
+        for i in 0..60 {
+            st.logwin.push(LogLineEntry {
+                time: "10:00:00".into(),
+                level: 10,
+                target: "t".into(),
+                msg: format!("debug {i}"),
+            });
+        }
+        for frame in 0..4 {
+            st.logwin.show_debug = frame % 2 == 0;
+            st.logwin.auto_scroll = frame % 2 == 0;
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                ui.set_max_size(egui::vec2(500.0, 600.0));
+                page(ui, &mut st, &Palette::NATIVE);
+            });
+            out.textures_delta.clear();
+        }
+        // 复制反馈：copy_at 失效期外仍渲染稳定
+        st.logwin.copy_at = Some(std::time::Instant::now());
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            ui.set_max_size(egui::vec2(500.0, 600.0));
+            page(ui, &mut st, &Palette::NATIVE);
+        });
+        out.textures_delta.clear();
     }
 }

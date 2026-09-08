@@ -8,7 +8,7 @@
 //! - bench：性能基准独立工具窗（M4.4）
 
 use crate::state::{AppState, WinId};
-use egui::Ui;
+use egui::{Color32, RichText, Ui};
 
 pub mod bench;
 pub mod logwin;
@@ -16,6 +16,26 @@ pub mod overlay;
 pub mod panel;
 pub mod setup;
 pub mod subtitle;
+
+/// 日志区右下角浮动「回到最新（+N）」按钮（`ui.put` 叠加，不占布局；
+/// log_tab 与 logwin 两视图共用，D-31 贴底跟随）
+pub(crate) fn log_jump_button(ui: &mut Ui, unread: usize) -> bool {
+    let text = format!("{} (+{unread})", lt_i18n::t("log_back_to_latest"));
+    let font = egui::FontId::proportional(11.5);
+    let galley = ui.painter().layout_no_wrap(text.clone(), font, Color32::WHITE);
+    let pad = egui::vec2(10.0, 6.0);
+    let size = galley.size() + pad + pad;
+    let frame = ui.max_rect();
+    let rect = egui::Rect::from_min_size(
+        egui::pos2(frame.right() - size.x - 10.0, frame.bottom() - size.y - 10.0),
+        size,
+    );
+    ui.put(
+        rect,
+        egui::Button::new(RichText::new(text).size(11.5)).corner_radius(6.0),
+    )
+    .clicked()
+}
 
 /// 按窗口分发（根 Ui 由宿主经 ctx.run_ui 提供）
 pub fn dispatch(win: WinId, ui: &mut Ui, state: &mut AppState) {
