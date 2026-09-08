@@ -67,4 +67,5 @@ cargo run -p lt-app               # GUI 冒烟
 - **麦克风监控幽灵条修复（docs/mic-monitor-fix.md，已完工 ✗）**：✗ MC-1~MC-4 全部落地（2026-09-08，f1f5464，368 测全绿）——MIC 条显隐以 UI 启用意图驱动（**D-29**，显式开关/挂起恢复）+ mic_buf 有界化；换引擎/挥动开关不再出幽灵条。
 - **SenseVoice 语言恒 auto 修复（docs/sensevoice-language-fix.md，已完工 ✗，D-30）**：✗ SV-1~SV-3 全部落地（2026-09-08，66871a0，369 测全绿净增 1）——引擎层「显式设置 > 模型标签 > 启发式」三优先语言决策 `resolve_language`（sherpa-onnx SenseVoice 输出无语言标签实机取证；auto 时语言恒 "auto"→「同语言免翻译」失灵为主诉，显式语言被过滤整段丢弃为隐性缺陷）；实机探针 6 组全绿 + GUI 冒烟实测 `Same language (zh), no translation`（修复前为白翻译）。新偏差自 **D-31** 起。
 - **复刻期遗留按新定位处置（docs/archive/parity-closure.md）**：WP-2 由上面 WP-A 取代；**WP-5/6/7/8 不再默认按复刻执行**——WP-5 托盘菜单与气泡、WP-8 ErrorBanner/全局热键（原版不存在）届时按产品价值裁决；**WP-9 M6 调优与实机实测保留**（启动<2s / 空闲 CPU<1% / 8h 长跑 / 内存回收 / 端到端语音复验，需实机非静音时段）。
+- **面板「日志」tab 界面改造（docs/log-tab-redesign.md，计划中）**：2026-09-08 用户反馈（双滚动条/工具行置顶）——根因=panel_ui 外层 ScrollArea 对日志页溢出（底部"当前会话日志"提示行 19px 为触发增量）+ 内层日志滚动区叠加；施工卡 LT-1 布局脱离外层滚动 / LT-2 贴底跟随（上翻挂起+回到最新）/ LT-3 显示 DEBUG 渲染期过滤可回溯 / LT-4 按钮文案对齐（打开日志目录+复制反馈）/ LT-5 LogLine 附加面板重绘（待实机确认）/ **D-31 登记**；零 lt-proto 契约变更。
 - **UX 三期可选项（docs/archive/ux-feedback.md）**：前缀码改结构化枚举、设置保存失败 UI 流、P2-4 错误译文样式。
