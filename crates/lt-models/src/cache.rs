@@ -534,7 +534,9 @@ mod tests {
         let miss = missing_models(&dir, "whisper", "", "tiny");
         assert_eq!(miss.len(), 1);
         assert_eq!(miss[0].display, "Whisper tiny");
-        assert!(missing_models(&dir, "whisper", "", "D:/my/model.bin").is_empty());
+        // 本地路径样例 temp 派生（合成绝对路径不写字面量，path-hygiene PH-2）
+        let local = std::env::temp_dir().join("lt_local_model.bin");
+        assert!(missing_models(&dir, "whisper", "", local.to_str().unwrap()).is_empty());
         // MS 侧 manifest 齐全（≥50MB + tokens）→ funasr 不再缺失
         let ms_dir = ms_cache_root(&dir)
             .join("pengzhendong")
@@ -594,9 +596,10 @@ mod tests {
             .to_string_lossy()
             .replace('\\', "/")
             .ends_with("aaa/ggml-tiny-q5_1.bin"));
-        // 完全缺失 → None；本地路径直通
+        // 完全缺失 → None；本地路径直通（样例 temp 派生，PH-2）
         assert!(whisper_model_path(&tmpdir("whpath3"), "small").is_none());
-        let local = whisper_model_path(&dir, "D:/models/ggml-tiny.bin");
+        let local = std::env::temp_dir().join("lt_local").join("ggml-tiny.bin");
+        let local = whisper_model_path(&dir, local.to_str().unwrap());
         assert!(local.is_none(), "不存在的本地路径不应命中");
         let _ = fs::remove_dir_all(&dir);
         let _ = fs::remove_dir_all(&dir2);

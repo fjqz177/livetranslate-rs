@@ -2129,14 +2129,16 @@ mod tests {
     /// 不再走"取 token 拿到单位词"的必败解析
     #[test]
     fn split_progress_line_ignores_legacy_and_foreign_lines() {
+        // 任意路径样例 temp 派生（合成绝对路径不写字面量，path-hygiene PH-2）
+        let snapshot_line = format!("[a/b] 快照就绪: {}/x", std::env::temp_dir().display());
         for s in [
-            "[a/b] m.onnx 1.0 KB / 2.0 KB",
-            "[a/b] m.onnx 下载完成",
-            "[a/b] 快照就绪: C:/x",
-            "已存在，跳过 x",
-            "",
+            "[a/b] m.onnx 1.0 KB / 2.0 KB".to_string(),
+            "[a/b] m.onnx 下载完成".to_string(),
+            snapshot_line,
+            "已存在，跳过 x".to_string(),
+            String::new(),
         ] {
-            let (human, prog) = split_progress_line(s);
+            let (human, prog) = split_progress_line(&s);
             assert_eq!(human, s);
             assert!(prog.is_none(), "{s}");
         }

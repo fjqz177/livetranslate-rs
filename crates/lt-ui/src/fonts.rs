@@ -516,6 +516,8 @@ mod tests {
 
     #[test]
     fn normalize_keeps_valid_and_filters_rest() {
+        // "注册表外绝对路径"样例 temp 派生（合成绝对路径不写字面量，path-hygiene PH-2）
+        let abs = std::env::temp_dir().join("lt_userfonts").join("abs.ttf");
         let raw = vec![
             ("微软雅黑 (TrueType)".into(), "msyh.ttc".into()),
             ("Consolas (TrueType)".into(), "consola.ttf".into()),
@@ -533,7 +535,7 @@ mod tests {
                 "%SystemRoot%\\Fonts\\native.otf".into(),
             ),
             // 绝对路径原样
-            ("Abs (TrueType)".into(), r"D:\userfonts\abs.ttf".into()),
+            ("Abs (TrueType)".into(), abs.to_string_lossy().into_owned()),
         ];
         let out = normalize_registry_entries(&raw, Path::new(r"C:\Windows"));
         let names: Vec<&str> = out.iter().map(|f| f.display.as_str()).collect();
@@ -551,7 +553,7 @@ mod tests {
         assert_eq!(out[0].path, PathBuf::from(r"C:\Windows\msyh.ttc"));
         assert_eq!(out[3].path, PathBuf::from(r"C:\Windows\fonts\custom.ttf"));
         assert_eq!(out[4].path, PathBuf::from(r"C:\Windows\Fonts\native.otf"));
-        assert_eq!(out[5].path, PathBuf::from(r"D:\userfonts\abs.ttf"));
+        assert_eq!(out[5].path, abs);
     }
 
     #[test]

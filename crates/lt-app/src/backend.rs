@@ -494,8 +494,12 @@ mod tests {
         assert_eq!(miss[0].hub_ms, None);
         assert_eq!(miss[0].files, &["ggml-tiny-q5_1.bin"]);
 
-        // whisper 档位切到本地 GGML 路径 → 不触发下载
-        s.whisper_model_size = "D:/models/ggml-tiny.bin".into();
+        // whisper 档位切到本地 GGML 路径 → 不触发下载（合成路径 temp 派生，PH-2）
+        s.whisper_model_size = std::env::temp_dir()
+            .join("lt_local")
+            .join("ggml-tiny.bin")
+            .to_string_lossy()
+            .into_owned();
         assert!(current_missing(&s).is_empty(), "本地路径不触发下载");
 
         // 已缓存 → 空（伪造半体积以上文件命中阈值）

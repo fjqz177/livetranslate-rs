@@ -2912,7 +2912,10 @@ mod tests {
             outline_enabled: false,
             outline_color: "#123456".into(),
             outline_width: 5,
-            bg_image: "D:/bg.png".into(),
+            bg_image: std::env::temp_dir()
+                .join("lt_bg.png")
+                .to_string_lossy()
+                .into_owned(),
             entry_animation: "slide_up".into(),
             exit_animation: "fade".into(),
             animation_duration: 250,

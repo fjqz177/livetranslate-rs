@@ -195,7 +195,8 @@ mod tests {
 
     #[test]
     fn load_error_when_files_missing() {
-        let err = Qwen3AsrEngine::load(Path::new("Z:/no/such/dir"));
+        let missing = std::env::temp_dir().join("lt_no_such_dir");
+        let err = Qwen3AsrEngine::load(&missing);
         assert!(matches!(err, Err(EngineError::Load(_))));
         // 有 onnx 缺 tokenizer 目录同样报错
         let dir = std::env::temp_dir().join(format!("lt_qwen3_load_{}", std::process::id()));

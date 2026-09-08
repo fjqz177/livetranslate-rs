@@ -1341,10 +1341,12 @@ mod tests {
     /// 档位索引/显示名：builtin 命中、本地路径 → None + "本地: 文件名"、垃圾值兜底
     #[test]
     fn whisper_tier_selection_semantics() {
+        // 本地路径样例走 temp 派生（合成绝对路径不写字面量，path-hygiene PH-2）
+        let local = std::env::temp_dir().join("lt_local").join("ggml-tiny.bin");
         assert_eq!(whisper_tier_index_for("tiny"), Some(0));
         assert_eq!(whisper_tier_index_for("turbo"), Some(5));
         assert_eq!(
-            whisper_tier_index_for("D:/models/ggml-tiny.bin"),
+            whisper_tier_index_for(local.to_str().unwrap()),
             None,
             "本地路径不在下拉"
         );
@@ -1353,7 +1355,8 @@ mod tests {
         assert_eq!(whisper_tier_display_for("base"), "base");
         assert_eq!(whisper_tier_display_for("turbo"), "turbo");
         // 本地路径：本地前缀 + 文件 stem（不含目录与扩展名）
-        let d = whisper_tier_display_for("C:/x/my-model.bin");
+        let named = std::env::temp_dir().join("lt_local").join("my-model.bin");
+        let d = whisper_tier_display_for(named.to_str().unwrap());
         assert!(
             d.starts_with("本地: ") || d.starts_with("Local: "),
             "应带本地前缀: {d}"

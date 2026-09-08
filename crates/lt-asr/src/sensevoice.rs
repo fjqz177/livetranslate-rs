@@ -297,7 +297,8 @@ mod tests {
 
     #[test]
     fn load_error_when_dir_missing() {
-        let err = SenseVoiceEngine::load(Path::new("Z:/no/such/dir"), None, "auto");
+        let missing = std::env::temp_dir().join("lt_no_such_dir");
+        let err = SenseVoiceEngine::load(&missing, None, "auto");
         assert!(matches!(err, Err(EngineError::Load(_))));
     }
 }

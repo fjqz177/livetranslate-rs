@@ -254,9 +254,13 @@ mod tests {
         };
         let err = WhisperEngine::from_config(&cfg);
         assert!(matches!(err, Err(EngineError::Load(_))));
-        // model_path 指向不存在文件 → Load 错误（不 panic）
+        // model_path 指向不存在文件 → Load 错误（不 panic；合成路径 temp 派生，PH-2）
         let cfg = WorkerConfig {
-            options: serde_json::json!({ "model_path": "Z:/no/such/ggml-tiny-q5_1.bin" }),
+            options: serde_json::json!({
+                "model_path": std::env::temp_dir()
+                    .join("lt_no_such_ggml-tiny-q5_1.bin")
+                    .to_string_lossy()
+            }),
             ..cfg
         };
         let err = WhisperEngine::from_config(&cfg);

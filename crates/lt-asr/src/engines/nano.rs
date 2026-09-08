@@ -206,7 +206,8 @@ mod tests {
 
     #[test]
     fn load_error_when_files_missing() {
-        let err = NanoEngine::load(Path::new("Z:/no/such/dir"), "auto");
+        let missing = std::env::temp_dir().join("lt_no_such_dir");
+        let err = NanoEngine::load(&missing, "auto");
         assert!(matches!(err, Err(EngineError::Load(_))));
     }
 }
