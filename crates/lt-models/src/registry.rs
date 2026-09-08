@@ -326,6 +326,24 @@ mod tests {
         assert!(funasr_entry("bogus").is_none());
     }
 
+    /// R25 防线：合法值域 ↔ 注册表一致性。FUNASR_MODELS 每个合法值要么有
+    /// 注册表条目，要么是唯一在案的幽灵值（D-14 mlt：无上游转换，运行时统一
+    /// 回退 sensevoice-small）。今后给值域加键而忘登记表（幽灵值复发）在此爆掉；
+    /// FUNASR_KEYS 镜像与 lt_proto::FUNASR_MODELS 漂移同样在此爆掉。
+    #[test]
+    fn every_funasr_key_has_entry_or_is_the_documented_ghost() {
+        const GHOST: &str = "funasr-mlt-nano-2512"; // D-14 唯一在案幽灵值
+        for key in lt_proto::settings::FUNASR_MODELS {
+            let entry = funasr_entry(key);
+            if key == GHOST {
+                assert!(entry.is_none(), "D-14：mlt 仍无上游转换，不得偷偷登记表项");
+            } else {
+                assert!(entry.is_some(), "合法值 '{key}' 缺注册表条目（幽灵值复发）");
+            }
+        }
+        assert_eq!(FUNASR_KEYS, lt_proto::settings::FUNASR_MODELS, "键表镜像漂移");
+    }
+
     #[test]
     fn funasr_nano_entry_hf_only() {
         // WP-A/D-24：真实仓（HF API 实测存在）；无 MS 源 → ms=None 诚实留空

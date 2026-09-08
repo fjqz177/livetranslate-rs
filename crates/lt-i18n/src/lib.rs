@@ -133,6 +133,24 @@ mod tests {
         assert_eq!(t("__no_such_key__"), "__no_such_key__");
     }
 
+    /// zh/en 两表键集必须完全一致（R14 防线）：任何一侧增删键而不同步另一侧，
+    /// 此测试即刻爆掉——杜绝"一侧显示原文键名"的漂移
+    #[test]
+    fn zh_en_key_sets_identical() {
+        let zh_map = parse_yaml(ZH_YAML);
+        let en_map = parse_yaml(EN_YAML);
+        assert!(!zh_map.is_empty(), "zh.yaml 不应为空");
+        let mut missing_in_en: Vec<&String> =
+            zh_map.keys().filter(|k| !en_map.contains_key(*k)).collect();
+        let mut missing_in_zh: Vec<&String> =
+            en_map.keys().filter(|k| !zh_map.contains_key(*k)).collect();
+        missing_in_en.sort();
+        missing_in_zh.sort();
+        assert!(missing_in_en.is_empty(), "en.yaml 缺键: {missing_in_en:?}");
+        assert!(missing_in_zh.is_empty(), "zh.yaml 缺键: {missing_in_zh:?}");
+        assert_eq!(zh_map.len(), en_map.len(), "键数应一致");
+    }
+
     /// 切换语言后 t() 应查到对应语言的译文
     #[test]
     fn set_lang_switches_table() {

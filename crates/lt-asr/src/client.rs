@@ -33,7 +33,6 @@ pub enum AsrClientError {
 /// worker 状态（原版 _status 字符串集合）
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
-    Created,
     Starting,
     Loading,
     Ready,

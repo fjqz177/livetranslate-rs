@@ -35,7 +35,7 @@ cargo run -p lt-app               # GUI 冒烟
 `crates/` 八库，依赖链单向：**lt-proto**（事件/命令/数据契约，已冻结：值域扩展如 ASR_ENGINES 增项允许，结构字段/Cmd/Event 增删需评审）→ **lt-i18n**（zh/en 各 579 键）→ **lt-models**（Settings/ModelConfig/模型注册表）→ **lt-pipeline**（wasapi 采集、silero VAD、ORT 内嵌）→ **lt-asr**（ASR worker 子进程 + IPC）→ **lt-translate**（async-openai LLM）→ **lt-ui**（egui 多窗口：悬浮窗/字幕窗/控制面板/日志窗/托盘）→ **lt-app**（装配入口 backend/pipeline/shell；ASR worker 以同 exe `--asr-worker` 自拉起，Job Object 孤儿兜底）。
 
 - `assets/`：i18n yaml、`fonts/`（三 brotli 字体 + OFL 许可）、图标、`reference/` 原版参照截图、`silero_vad.onnx`、`SOURCES.md`（资产来源/sha256）。
-- 分层规则：lt-ui **允许**只读依赖 lt-models（注册表/缓存探测）与 lt-translate（bench 直调）——2026-09-06 f266a8b 批次的有意决策（见 lt-ui/Cargo.toml 注释），不得依赖 lt-app；新增 UI 能力**不得扩 lt-proto 契约**（日志经 `LogLine{target}` 回流）；Settings 运行时落盘走 `Cmd::PersistSettings` 由 backend 写（300ms debounce 对齐原版）。
+- 分层规则：lt-ui **允许**只读依赖 lt-models（注册表/缓存探测）、lt-translate（bench 直调）与 lt-pipeline（**仅设备枚举** enumerate_devices，vad.rs 单函数）——均为有意决策（见 lt-ui/Cargo.toml 注释），不得依赖 lt-app；新增 UI 能力**不得扩 lt-proto 契约**（日志经 `LogLine{target}` 回流；该冻结规则将随架构 2.0 W2 修订为「纯新增类型化变体豁免评审」，见 docs/architecture-v2.md §3.3）；Settings 运行时落盘走 `Cmd::PersistSettings` 由 backend 写（300ms debounce 对齐原版）。**拓扑终局以 docs/architecture-v2.md §3.1 十 crate 白名单为准（W0~W7 施工中逐步生效）。**
 
 ## 已知大坑（改码前必读）
 

@@ -87,7 +87,6 @@ pub enum UiEvent {
 /// UI → 管道的命令
 #[derive(Debug, Clone)]
 pub enum Cmd {
-    Start,
     Pause,
     Resume,
     Stop,
