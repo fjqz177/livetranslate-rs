@@ -420,7 +420,7 @@ impl MultiWindowApp {
                     } else {
                         lt_i18n::t("tray_resume")
                     };
-                    let _ = t.handles.pause.set_text(text);
+                    t.set_pause_label(text);
                     let status = if self.app_state.running {
                         tray::IconStatus::Run
                     } else {
@@ -485,7 +485,7 @@ impl MultiWindowApp {
             .replace("{src}", &s.settings.asr_language)
             .replace("{tgt}", &s.settings.target_language);
         if let Some(t) = &self.tray {
-            let _ = t.handles.status.set_text(text);
+            t.set_status_line(text);
         }
     }
 
@@ -531,7 +531,7 @@ impl MultiWindowApp {
             } else {
                 lt_i18n::t("tray_show_overlay")
             };
-            let _ = t.handles.overlay_toggle.set_text(text);
+            t.set_overlay_toggle_label(text);
         }
         self.set_visible(WinId::Overlay, vis);
         if !vis && !self.overlay_hide_notified {
