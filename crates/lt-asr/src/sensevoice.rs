@@ -309,43 +309,63 @@ mod tests {
 #[cfg(test)]
 mod probe_real_sensevoice_tmp {
     use super::*;
+    use crate::engines::probe_models_root;
+    use std::path::PathBuf;
     use std::time::Instant;
 
-    const SNAPSHOT: &str = "C:/Users/fjqz177/.config/livetranslate/models/modelscope/models/pengzhendong--sherpa-onnx-sense-voice-zh-en-ja-ko-yue/snapshots/master";
-    const NANO_WAVS: &str = "C:/Users/fjqz177/.config/livetranslate/models/huggingface/hub/models--csukuangfj--sherpa-onnx-funasr-nano-int8-2025-12-30/snapshots/main/test_wavs";
+    /// D-30 探针用 SenseVoice 快照（ModelScope 布局）
+    fn snapshot() -> PathBuf {
+        probe_models_root().join(
+            "modelscope/models/pengzhendong--sherpa-onnx-sense-voice-zh-en-ja-ko-yue/snapshots/master",
+        )
+    }
 
-    fn probe_one(eng: &mut SenseVoiceEngine, full: &str, expect: &str) {
-        let p = Path::new(full);
+    /// 跨引擎借用 nano 仓的 test_wavs（验收时预置于 nano 快照旁）
+    fn nano_test_wavs() -> PathBuf {
+        probe_models_root().join(
+            "huggingface/hub/models--csukuangfj--sherpa-onnx-funasr-nano-int8-2025-12-30/snapshots/main/test_wavs",
+        )
+    }
+
+    fn probe_one(eng: &mut SenseVoiceEngine, p: &Path, expect: &str) {
         if !p.is_file() {
-            println!("跳过（未下载）: {full}");
+            println!("跳过（未下载）: {}", p.display());
             return;
         }
-        let Some(wave) = sherpa_onnx::Wave::read(full) else {
-            panic!("wav 读取失败: {full}");
+        let Some(wave) = sherpa_onnx::Wave::read(&p.to_string_lossy()) else {
+            panic!("wav 读取失败: {}", p.display());
         };
-        assert_eq!(wave.sample_rate(), SAMPLE_RATE as i32, "{full} 采样率");
+        assert_eq!(wave.sample_rate(), SAMPLE_RATE as i32, "{p:?} 采样率");
         let t1 = Instant::now();
         let r = eng.transcribe(wave.samples(), false).expect("transcribe");
         println!(
-            "{full}: {:?} text={:?} lang={}（期望 {expect}）",
+            "{}: {:?} text={:?} lang={}（期望 {expect}）",
+            p.display(),
             t1.elapsed(),
             r.text,
             r.language
         );
-        assert!(!r.text.is_empty(), "{full} 转写为空");
-        assert_eq!(r.language, expect, "{full} 语言判定");
+        assert!(!r.text.is_empty(), "{p:?} 转写为空");
+        assert_eq!(r.language, expect, "{p:?} 语言判定");
     }
 
     #[test]
     #[ignore = "真实 SenseVoice 模型 + test_wavs；D-30 验收探针（一次性）"]
     fn probe_real_sensevoice_lang_decision() {
-        let md = Path::new(SNAPSHOT);
-        let mut eng = SenseVoiceEngine::load(md, Some(0.5), "auto").expect("sensevoice 加载失败");
+        let md = snapshot();
+        if !md.is_dir() {
+            println!(
+                "跳过（模型未缓存；设 LIVETRANSLATE_CONFIG_DIR 指向含 models 的配置目录）: {}",
+                md.display()
+            );
+            return;
+        }
+        let mut eng = SenseVoiceEngine::load(&md, Some(0.5), "auto").expect("sensevoice 加载失败");
         // auto：启发式兜底——修复前恒 "auto"（sherpa 无标签），修复后按文本判 ISO 码
-        probe_one(&mut eng, &format!("{NANO_WAVS}/noise_en.wav"), "en");
-        probe_one(&mut eng, &format!("{NANO_WAVS}/rag_physics.wav"), "zh");
+        probe_one(&mut eng, &nano_test_wavs().join("noise_en.wav"), "en");
+        probe_one(&mut eng, &nano_test_wavs().join("rag_physics.wav"), "zh");
         // 粤语启发式归 zh（D-30 已知取舍：启发式无 yue 档，与 nano 探针预期一致）
-        probe_one(&mut eng, &format!("{NANO_WAVS}/dia_yue.wav"), "zh");
+        probe_one(&mut eng, &nano_test_wavs().join("dia_yue.wav"), "zh");
         // 显式设置优先：与语言过滤自洽（修复前显式 yue 时转写被整段过滤丢弃）
         for (lang, rel) in [
             ("zh", "rag_physics.wav"),
@@ -353,7 +373,7 @@ mod probe_real_sensevoice_tmp {
             ("yue", "dia_yue.wav"),
         ] {
             eng.set_language(lang).expect("set_language");
-            probe_one(&mut eng, &format!("{NANO_WAVS}/{rel}"), lang);
+            probe_one(&mut eng, &nano_test_wavs().join(rel), lang);
         }
     }
 }

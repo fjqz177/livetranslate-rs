@@ -219,9 +219,8 @@ mod tests {
 #[cfg(test)]
 mod probe_real_qwen3_tmp {
     use super::*;
+    use crate::engines::probe_models_root;
     use std::time::Instant;
-
-    const SNAPSHOT: &str = "C:/Users/fjqz177/.config/livetranslate/models/huggingface/hub/models--csukuangfj2--sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25/snapshots/main";
 
     /// 线性插值重采样（验收探针专用；test_wavs 混有 44.1kHz，
     /// 生产管线采集侧恒 16k 不经此路径）
@@ -245,14 +244,23 @@ mod probe_real_qwen3_tmp {
     #[test]
     #[ignore = "真实模型加载（941MB 包）+ test_wavs 转写；WP-B S0/引擎级验收用"]
     fn probe_real_qwen3_transcribe() {
-        let md = Path::new(SNAPSHOT);
+        let md = probe_models_root().join(
+            "huggingface/hub/models--csukuangfj2--sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25/snapshots/main",
+        );
+        if !md.is_dir() {
+            println!(
+                "跳过（模型未缓存；设 LIVETRANSLATE_CONFIG_DIR 指向含 models 的配置目录）: {}",
+                md.display()
+            );
+            return;
+        }
         let t0 = Instant::now();
-        let mut eng = Qwen3AsrEngine::load(md).expect("qwen3 加载失败");
+        let mut eng = Qwen3AsrEngine::load(&md).expect("qwen3 加载失败");
         println!("加载耗时 {:?}", t0.elapsed());
 
         // S0-④：线程数择优（1/2/3 各跑 cantonese 一条）
         for threads in [1, 2, 3] {
-            let rec = build_recognizer(md, threads).expect("build");
+            let rec = build_recognizer(&md, threads).expect("build");
             let mut e = Qwen3AsrEngine { recognizer: rec };
             let p = md.join("test_wavs/cantonese.wav");
             let wave = sherpa_onnx::Wave::read(&p.to_string_lossy()).expect("wav");

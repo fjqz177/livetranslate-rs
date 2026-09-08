@@ -124,3 +124,23 @@ mod tests {
         assert_eq!(guess_language(""), "auto");
     }
 }
+
+/// 验收探针共享（docs/path-hygiene.md PH-1）：模型缓存根——
+/// `LIVETRANSLATE_CONFIG_DIR` 优先，回落 `~/.config/livetranslate`
+/// （与 lt-models::paths::config_dir 同语义；lt-asr 不依赖 lt-models 故本地实现）。
+/// 仅 `--ignored` 探针测试使用。
+#[cfg(test)]
+pub(crate) fn probe_models_root() -> std::path::PathBuf {
+    if let Ok(d) = std::env::var("LIVETRANSLATE_CONFIG_DIR") {
+        if !d.is_empty() {
+            return std::path::PathBuf::from(d).join("models");
+        }
+    }
+    let home = std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .expect("探针需要 LIVETRANSLATE_CONFIG_DIR 或 USERPROFILE/HOME");
+    std::path::PathBuf::from(home)
+        .join(".config")
+        .join("livetranslate")
+        .join("models")
+}

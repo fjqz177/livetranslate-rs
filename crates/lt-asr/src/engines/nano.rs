@@ -216,16 +216,24 @@ mod tests {
 #[cfg(test)]
 mod probe_real_nano_tmp {
     use super::*;
+    use crate::engines::probe_models_root;
     use std::time::Instant;
-
-    const SNAPSHOT: &str = "C:/Users/fjqz177/.config/livetranslate/models/huggingface/hub/models--csukuangfj--sherpa-onnx-funasr-nano-int8-2025-12-30/snapshots/main";
 
     #[test]
     #[ignore = "真实模型加载（963MB 包）+ test_wavs 转写；WP-A 引擎级验收用"]
     fn probe_real_nano_transcribe() {
-        let md = Path::new(SNAPSHOT);
+        let md = probe_models_root().join(
+            "huggingface/hub/models--csukuangfj--sherpa-onnx-funasr-nano-int8-2025-12-30/snapshots/main",
+        );
+        if !md.is_dir() {
+            println!(
+                "跳过（模型未缓存；设 LIVETRANSLATE_CONFIG_DIR 指向含 models 的配置目录）: {}",
+                md.display()
+            );
+            return;
+        }
         let t0 = Instant::now();
-        let mut eng = NanoEngine::load(md, "auto").expect("nano 加载失败");
+        let mut eng = NanoEngine::load(&md, "auto").expect("nano 加载失败");
         println!("加载耗时 {:?}", t0.elapsed());
 
         // test_wavs 由验收脚本预先 curl 到快照旁（不进 manifest 清单）
