@@ -156,6 +156,18 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
             state.settings.subtitle_mode.border_radius = v as u32;
             mark_settings_dirty(state);
         }
+        // 位置复位（D-36：仅复位字幕窗回 (100,100)；样式页"重置窗口位置"仍复位两窗）
+        ui.horizontal(|ui| {
+            if ui
+                .add(
+                    egui::Button::new(RichText::new(lt_i18n::t("subwin_reset_pos")).size(12.5))
+                        .corner_radius(6.0),
+                )
+                .clicked()
+            {
+                state.enqueue_action(crate::state::WinId::Subtitle, crate::state::WinAction::ResetSubtitlePos);
+            }
+        });
     });
 
     // ── 背景（原版背景三要素：颜色/不透明度/背景图片；有图片时颜色仍可调，
