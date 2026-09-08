@@ -92,9 +92,9 @@ LIBCLANG_PATH = { value = ".venv/Lib/site-packages/clang/native", relative = tru
 **② 为什么要预取 sherpa 库**：sherpa-onnx-sys 构建期默认从 GitHub Releases 下载 120MB 预编译静态库（缓存落在 `target/`，`cargo clean` 即丢、每次重下）。本仓库改为**预取到仓库内 `.cache/sherpa-onnx/`**，构建时从本地复制：全程零联网、`cargo clean` 不再重下。GitHub 慢/失败时脚本支持任意 Release 镜像：
 
 ```powershell
-scripts\fetch_sherpa_libs.ps1 -Mirror https://ghproxy.com/      # 镜像前缀以实际可用为准（ghproxy.com / ghfast.top 等）
-$env:SHERPA_ONNX_MIRROR = "https://ghproxy.com/"; scripts\fetch_sherpa_libs.ps1
-# 或用代理：设置 HTTP_PROXY / HTTPS_PROXY 后重跑脚本（curl.exe 自动读取）
+scripts\fetch_sherpa_libs.ps1 -Mirror https://gh-proxy.com/           # 已实测：完整回源 + 支持断点续传
+$env:SHERPA_ONNX_MIRROR = "https://gh-proxy.com/"; scripts\fetch_sherpa_libs.ps1
+# 其他镜像同理（ghfast.top 等，以实际可用为准）；或用代理：设置 HTTP_PROXY / HTTPS_PROXY 后重跑脚本（curl.exe 自动读取）
 ```
 
 对应 cargo 配置：
@@ -206,7 +206,7 @@ lt-proto → lt-i18n → lt-models → lt-pipeline → lt-asr → lt-translate �
 |---|---|
 | 构建报 `couldn't find any valid shared libraries ... set the LIBCLANG_PATH` | 没跑 `uv sync`，或 `.venv` 被删 → 执行 `uv sync` |
 | 构建报 `SHERPA_ONNX_ARCHIVE_DIR does not contain expected archive` | 没跑预取脚本（这条**不回落联网**）→ 执行 `scripts\fetch_sherpa_libs.ps1` |
-| 拿到的只会是 GitHub 直连，构建器 120MB 下载慢/失败 | 仓库已改为本地预取：脚本支持 `-Mirror <前缀>` / `SHERPA_ONNX_MIRROR` 或设置 `HTTPS_PROXY` 走代理 |
+| 构建器 120MB 下载慢/失败（GitHub 直连） | 换镜像：`-Mirror https://gh-proxy.com/`（已实测可用、支持断点续传），或设 `HTTPS_PROXY` 走代理 |
 | `cmake` 命令找不到 / CMake 报错 | 未装 CMake → `winget install Kitware.CMake` |
 | 链接报 LNK2005 / LNK1169（CRT 冲突） | `.cargo/config.toml` 里两行 `CMAKE_*` 被改动（双栈 CRT 对齐，**勿动**） |
 | 测试报 StorageFull / GDI+ Save 失败（假死） | C 盘满，默认 TEMP 在 C 盘 → 临时把 `TMPDIR` 指到 D 盘 |
