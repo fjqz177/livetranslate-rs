@@ -47,4 +47,4 @@
 ## 不入库副产物
 
 - `architecture/`（archify 交互式架构图）、`ui-audit/` 均为 gitignore 副产物目录，禁止入库。
-- `assets/reference/` 原版参照截图已入库（zh/en 各 4 张）。
+- `assets/reference/` 原版参照截图已入库（zh/en 各 10 张：控制面板 7 个标签页 + 悬浮窗/字幕窗/日志窗；2026-09-09 重拍自工作区 `LiveTranslate/` 参考副本，脚本 `scripts/grab_reference_ui.py`）。

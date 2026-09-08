@@ -26,8 +26,8 @@ cargo build --release -p lt-app   # 单 exe（现有 ~75.6MB；onnxruntime.dll +
 cargo run -p lt-app               # GUI 冒烟
 ```
 
-- **冒烟**：设临时 `LIVETRANSLATE_CONFIG_DIR`，其中 settings.json 必须显式 `models_dir` 指真实模型缓存（如 `C:\Users\fjqz177\.config\livetranslate\models`），否则引擎探测全部失败。
-- **原版参照截图**：已入库 `assets/reference/`（zh/en 各 4 张）；生成脚本 `scripts/grab_reference_ui.py` 已不在工作区（scripts/ 现仅 silero_reference.py），需要重拍时从外部原版仓获取。
+- **冒烟**：设临时 `LIVETRANSLATE_CONFIG_DIR`，其中 settings.json 必须显式 `models_dir` 指真实模型缓存（如 `~/.config/livetranslate/models`），否则引擎探测全部失败。
+- **原版参照截图（2026-09-09 全量重拍）**：`assets/reference/` zh/en 各 10 张——控制面板 7 个标签页（`panel_<lang>.png` = 识别落地页 + `panel_{translation,style,subtitle,benchmark,cache,changelog}_<lang>.png`）+ 悬浮窗/字幕窗/日志窗。**旧一套（2026-09-06）误拍自外部爆改版**（其 panel 侧边栏布局与副本 7 标签页结构完全不符），已作废。截图对象 = 工作区 `LiveTranslate/` 参考副本，出厂缺省状态 + 脚本注入示例内容（api_key 占位，不读 user_settings.json，不写副本）。生成脚本已重建：`scripts/grab_reference_ui.py`（QWidget.grab 程序化截图，无 computer use；解释器用外部原版仓 venv——仅当带 PyQt6 的 Python 解释器用，跑的代码严格限于工作区副本，本机具体路径不入库、见项目记忆）。已知怪癖：Qt 6.11 `grab()` 不渲染 QTextEdit 自身样式表背景（真实显示正常），脚本对 viewport 补同色解决。
 - 无 CI（`.github/workflows` 尚未创建）。
 
 ## 工作区结构（依赖方向 = 分层规则）
