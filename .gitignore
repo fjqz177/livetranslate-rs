@@ -2,6 +2,8 @@
 LiveTranslate/
 # uv 管理的 libclang 虚拟环境（.cargo/config.toml [env] LIBCLANG_PATH relative 指向），勿入库
 .venv/
+# sherpa-onnx 预编译库预取缓存（scripts/fetch_sherpa_libs.ps1 写入；.cargo/config.toml [env] SHERPA_ONNX_ARCHIVE_DIR 指向），勿入库
+.cache/
 # 实机走查截图涉个人隐私，禁止入库（docs/ui-audit 已从 git 历史清除）
 docs/ui-audit/
 # archify 交互式架构图产物（HTML/PNG 校验图），禁止入库（docs/architecture 已从 git 历史移除）

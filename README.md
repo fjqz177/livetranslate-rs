@@ -73,24 +73,39 @@ Rust 原生实时音频翻译应用：实时捕获系统声音（可选叠加麦
 
 > 备选路线：机器上已装有默认位置（如 `C:\Program Files\LLVM`）的 LLVM 时，删掉 `.cargo/config.toml` 里的 `LIBCLANG_PATH` 行也能编（clang-sys 会按内置目录自动发现）。uv 路线与 LLVM 路线**二选一，不混用**。
 
-### 2. 克隆 + 首次依赖（一条命令）
+### 2. 克隆 + 首次依赖（两条命令）
 
 ```bash
 git clone <你的仓库地址> livetranslate-rs
 cd livetranslate-rs
-uv sync        # 创建仓库内 .venv 并安装钉版 libclang（首次约 25MB；之后幂等，秒级）
+uv sync                                                             # ① libclang（bindgen 用，约 25MB）
+powershell -ExecutionPolicy Bypass -File scripts/fetch_sherpa_libs.ps1   # ② sherpa-onnx 预编译库（约 120MB）
 ```
 
-**为什么必须跑这一步**：whisper-rs-sys 构建时用 bindgen 生成绑定，bindgen 需要一个 `libclang.dll`。仓库用 uv 把 libclang 钉死（`pyproject.toml` dev 组 `libclang==18.1.1`，`uv.lock` 锁 wheel 哈希），装进仓库内 `.venv`，再由 cargo 配置指过去：
+**① 为什么要 uv sync**：whisper-rs-sys 构建时用 bindgen 生成绑定，bindgen 需要一个 `libclang.dll`。仓库用 uv 把 libclang 钉死（`pyproject.toml` dev 组 `libclang==18.1.1`，`uv.lock` 锁 wheel 哈希），装进仓库内 `.venv`，再由 cargo 配置指过去：
 
 ```toml
 [env]
 LIBCLANG_PATH = { value = ".venv/Lib/site-packages/clang/native", relative = true, force = true }
 ```
 
-- `relative = true`：路径相对配置文件所在目录解析 → **零机器相关绝对路径**，换机器/重 clone 都不用改；
-- `force = true`：覆盖系统残留的 `LIBCLANG_PATH`（clang-sys 对已设变量只搜那一个目录，残留会导致莫名找不到 DLL）；
-- `.venv/` 已入 `.gitignore`；删除 `.venv` 或换机器后重跑 `uv sync` 即可（需要网络）。
+**② 为什么要预取 sherpa 库**：sherpa-onnx-sys 构建期默认从 GitHub Releases 下载 120MB 预编译静态库（缓存落在 `target/`，`cargo clean` 即丢、每次重下）。本仓库改为**预取到仓库内 `.cache/sherpa-onnx/`**，构建时从本地复制：全程零联网、`cargo clean` 不再重下。GitHub 慢/失败时脚本支持任意 Release 镜像：
+
+```powershell
+scripts\fetch_sherpa_libs.ps1 -Mirror https://ghproxy.com/      # 镜像前缀以实际可用为准（ghproxy.com / ghfast.top 等）
+$env:SHERPA_ONNX_MIRROR = "https://ghproxy.com/"; scripts\fetch_sherpa_libs.ps1
+# 或用代理：设置 HTTP_PROXY / HTTPS_PROXY 后重跑脚本（curl.exe 自动读取）
+```
+
+对应 cargo 配置：
+
+```toml
+SHERPA_ONNX_ARCHIVE_DIR = { value = ".cache/sherpa-onnx", relative = true, force = true }
+```
+
+两条 `[env]` 的公共语义：`relative = true` = 路径相对配置文件目录解析 → **零机器相关绝对路径**，换机器/重 clone 不用改；`force = true` = 覆盖系统残留的同名环境变量。`.venv/` 与 `.cache/` 均已 gitignore；换机器后重跑这两条命令即可（仅首次各需网络）。
+
+> ⚠️ ② 必须在首次构建前跑：sherpa-onnx-sys 的 build.rs 对 `SHERPA_ONNX_ARCHIVE_DIR` 缺失**不回落联网**（硬报错 "does not contain expected archive"）；忘了跑见第 8 节排错表。
 
 ### 3. 构建与测试（质量门）
 
@@ -190,6 +205,8 @@ lt-proto → lt-i18n → lt-models → lt-pipeline → lt-asr → lt-translate �
 | 症状 | 原因 → 解法 |
 |---|---|
 | 构建报 `couldn't find any valid shared libraries ... set the LIBCLANG_PATH` | 没跑 `uv sync`，或 `.venv` 被删 → 执行 `uv sync` |
+| 构建报 `SHERPA_ONNX_ARCHIVE_DIR does not contain expected archive` | 没跑预取脚本（这条**不回落联网**）→ 执行 `scripts\fetch_sherpa_libs.ps1` |
+| 拿到的只会是 GitHub 直连，构建器 120MB 下载慢/失败 | 仓库已改为本地预取：脚本支持 `-Mirror <前缀>` / `SHERPA_ONNX_MIRROR` 或设置 `HTTPS_PROXY` 走代理 |
 | `cmake` 命令找不到 / CMake 报错 | 未装 CMake → `winget install Kitware.CMake` |
 | 链接报 LNK2005 / LNK1169（CRT 冲突） | `.cargo/config.toml` 里两行 `CMAKE_*` 被改动（双栈 CRT 对齐，**勿动**） |
 | 测试报 StorageFull / GDI+ Save 失败（假死） | C 盘满，默认 TEMP 在 C 盘 → 临时把 `TMPDIR` 指到 D 盘 |
@@ -201,6 +218,7 @@ lt-proto → lt-i18n → lt-models → lt-pipeline → lt-asr → lt-translate �
 
 ```bash
 uv sync                                     # 重建 .venv（删除/换机器后）
+powershell -ExecutionPolicy Bypass -File scripts/fetch_sherpa_libs.ps1   # 重取 sherpa 预编译库（.cache 被删/换机器后）
 cargo test --workspace                      # 全量测试
 cargo test -p lt-ui                         # 单 crate 测试
 cargo test --workspace -- --ignored         # 手动跑 ignored 探针（需真模型/真网络）

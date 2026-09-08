@@ -19,6 +19,7 @@ Rust 原生实时音频翻译应用 **LiveTranslate-rs**（Python(PyQt6) 原版 
 
 ```bash
 uv sync                           # 首次/换机器后：构建期 libclang 由 uv 钉版管理（pyproject.toml dev 组 libclang==18.1.1；.cargo/config.toml [env] LIBCLANG_PATH relative=.venv + force 覆盖残留），clone 后零本机路径配置
+powershell -File scripts/fetch_sherpa_libs.ps1   # 首次：预取 sherpa-onnx 预编译库（120MB GitHub Release，默认联网下载）到 .cache/sherpa-onnx；构建期零联网、cargo clean 不丢；GitHub 慢用 -Mirror <前缀>/SHERPA_ONNX_MIRROR 走 Release 镜像；build.rs 对 ARCHIVE_DIR 缺失不回落联网（硬报错），首次构建前必须跑
 cargo test --workspace            # 全量测试（滚动基线：当前 399 测全绿 + 6 个 ignored = 真模型/真网络探针离线纪律），收工前提
 cargo build --release -p lt-app   # 单 exe（现有 ~62MB；onnxruntime.dll + silero_vad.onnx 内嵌，启动解压到配置目录）
 cargo run -p lt-app               # GUI 冒烟
