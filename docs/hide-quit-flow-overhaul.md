@@ -111,8 +111,8 @@ app.rs:1386-1390    about_to_wait：quit_requested → event_loop.exit()
   `TrayIcon::window_handle()`（lib.rs:523）能拿到 hwnd，但 Shell_NotifyIcon 关联的
   **uID = 私有 `internal_id`**（platform_impl/windows/mod.rs:56,75），公开 API 拿不到 →
   NIF_INFO 无法挂到现有托盘图标（乱传 uID 会 NIM_MODIFY 失败或再生一个图标）。故气泡
-  等价物改用**自绘置顶轻量通知窗**（见 H-2），语义同原版气泡：非阻塞、贴任务栏侧、
-  自动消退。
+  等价物改用 **Windows 原生通知（ToastNotificationManager）**（见 H-2），语义同
+  原版气泡：非阻塞、贴任务栏侧、短时驻留、进操作中心可回溯。
 
 ## 4. 改造方案（H-1~H-6）
 
@@ -121,7 +121,7 @@ app.rs:1386-1390    about_to_wait：quit_requested → event_loop.exit()
 | 场景 | 现状 | 目标 |
 | --- | --- | --- |
 | 悬浮窗「隐藏」按钮 | 先阻塞弹框（可能被遮）再隐藏 → 假死 | **立即隐藏** + 首次隐藏弹独立置顶通知（非阻塞） |
-| 首次隐藏提示 | rfd 同步 MessageBoxW（可能被遮、阻塞） | WinId::Notice 轻量通知窗：非阻塞、必然可见（置顶）、4s 自动消退/点击关闭 |
+| 首次隐藏提示 | rfd 同步 MessageBoxW（可能被遮、阻塞） | **Windows 原生通知（Toast）**：非阻塞、必然可见（系统通知中心）、短时驻留 |
 | 托盘「退出」 | rfd 阻塞确认框，可被其他模态串行/不可达 | egui 内嵌模态确认：不阻塞事件循环、任意时刻可达、单模态源 |
 | 悬浮窗「退出」按钮 | 同 rfd | 同收敛（同一套模态） |
 | 其他 rfd 弹窗（清空/空导出/基准完成） | rfd 阻塞 | 收敛到同一 egui 模态 / 通知窗（H-5，可另行排期） |
@@ -130,27 +130,58 @@ app.rs:1386-1390    about_to_wait：quit_requested → event_loop.exit()
 
 - `set_overlay_visible_with_hint(false)` 改为**先** `set_visible(WinId::Overlay, false)`
   （`app.rs:513` 提前），**删除 501-511 的 rfd::MessageDialog::show()**；
-- 首次隐藏（`overlay_hide_notified` 语义保留）改为：置
-  `state.notice = Some(NoticeState{ text: t("hide_tray_hint"), until: now+4s })`，
-  确保 Notice 窗可见并重绘；后续隐藏静默（现状保持）；
+- 首次隐藏（`overlay_hide_notified` 语义保留）改为：调用 `notifications::notify_hidden()`
+  ——`SetCurrentProcessExplicitAppUserModelID` + 装配 Toast（标题/正文 = i18n 键 × 当前
+  语言，见 H-2）并 `Show()`，**非阻塞**；后续隐藏静默（现状保持）；
 - 文本沿用 `hide_tray_hint`/`hide_tray_hint_title`（zh/en 两 yaml 已同步，不改键）；
 - 效果：隐藏立即生效，事件循环零阻塞。
 
-### H-2 新增 WinId::Notice 轻量通知窗（替换气泡语义）
+### H-2 首次隐藏提示改 Windows 原生通知（Toast，替换气泡语义）
 
-- **WinId 是 lt-ui 内部枚举**（`state.rs:8-18`），不涉 lt-proto 契约；
-- 窗口属性仿 overlay：无边框、`WindowLevel::AlwaysOnTop`、skip_taskbar、
-  `with_active(false)`；尺寸 ≈400×52 逻辑 px；位置 = 主屏工作区右下、任务栏上方
-  ~24px、右缘 ~12px（对齐原版气泡"托盘角落"语义）；圆角复用
-  `apply_window_region`（app.rs:1556-1569）；
-- UI：深色半透明圆角卡片（dark visuals + `stabilize_widget_strokes`），单行
-  `hide_tray_hint` 文本；egui 帧内点击 → 立即关闭；
-- 消退：新增 `TickKind::Notice`（4s 到点 → `set_visible(false)` + 清状态），接入
-  `about_to_wait` 节拍分派（app.rs:1393-1458）；
-- 初始化注意：`with_startup`（state.rs:1412-1428）的 `visible` HashMap 需插
-  `WinId::Notice → false`；`create_window` 列表（app.rs:109-133）追加；CloseRequested
-  → 隐藏不退出（既有语义）。
-- 该窗同时是 H-5（空导出/基准完成提示）的公共载体。
+> 用户裁决（2026-09-08）：通知载体用 **Windows 原生通知**（`ToastNotificationManager`），
+> 不用自绘窗口，体验更贴近系统。零新依赖——复用已在用的 `windows` crate 0.62.2
+> （增 feature 即可），不引第三方 crate。
+
+**微软官方成因与要求（`Windows-classic-samples/Samples/DesktopToasts/CPP`，源码逐行验证）：**
+
+1. 注释原话（DesktopToastsSample.cpp:157-158）："In order to display toasts, a desktop
+   application **must have a shortcut on the Start menu**. Also, an AppUserModelID must be
+   set on that shortcut." —— 未打包 Win32 桌面程序发 Toast 的**硬前提**：开始菜单
+   （每用户 `%APPDATA%\Microsoft\Windows\Start Menu\Programs`）里存在一个**带
+   `System.AppUserModel.ID` 属性**的 .lnk，目标指向本程序 exe。
+2. 示例序列（同文件：130 RoInitialize / 177-190 检查并安装快捷方式 /
+   203-238 InstallShortcut / 397 GetTemplateContent / 461-482 SetTextValues /
+   516 CreateToastNotifierWithId / 521-538 ToastNotification + Show）。我们是纯 Rust，
+   同一序列映射到 `windows` 0.62.2（符号与 feature 已在本地 crate 逐个验证，见附录 B）：
+   - `RoInitialize(RO_INIT_MULTITHREADED)`（一次）；
+   - `EnsureAumidShortcut()`：`CoCreateInstance(ShellLink GUID)` → `IShellLinkW::SetPath(exe)`
+     → `IPropertyStore::SetValue(PKEY_AppUserModel_ID, VT_LPWSTR)` + `Commit()`
+     → `IPersistFile::Save(lnk, TRUE)`；仅当 .lnk 缺失时创建（幂等，`GetFileAttributes` 探测）；
+   - `SetCurrentProcessExplicitAppUserModelID(AUMID)`（一次；对齐任务栏/通知归属）；
+   - `ToastNotificationManager::CreateToastNotifierWithId(AUMID)`；
+   - `GetTemplateContent(ToastText02)` → `XmlDocument`：第 1 个 `text` 节点 = 标题、
+     第 2 个 = 正文（`GetElementsByTagName` + `inner_text` 覆写）；
+   - `ToastNotification::CreateToastNotification(xml)` → `ToastNotifier::Show()`.
+3. **AUMID**：新约定 `com.livetranslate.app`（`Vendor.AppName` 形态，语义稳定不可轻改；
+   桌面示例为 "Microsoft.Samples.DesktopToasts"）。**不注册 ToastActivatorCLSID**（点击
+   激活/回呼需 COM 激活器，本期不做——点通知无动作，与原版气泡一致即可）。
+4. **i18n 处理（用户点题）**：
+   - 文案复用既有键：标题 = `hide_tray_hint_title`（zh "LiveTranslate 已隐藏" /
+     en "LiveTranslate is hidden"，en.yaml:611）、正文 = `hide_tray_hint`
+     （zh "悬浮窗已隐藏，右键托盘图标可重新显示" / en "Overlay hidden. Right-click
+     the tray icon to show it again."，en.yaml:290）——**zh/en 两 yaml 已同步**，无需新键；
+   - 标题/正文在 `Show()` 前经 `lt_i18n::t()` 取**当前语言**拼入 XML → 运行期切语言
+     后的通知自动跟随；通知归属显示名 = 快捷方式名（专有名词 "LiveTranslate"，不本地化）；
+   - 追加新文案（如分段/副标题）须同时改 assets/i18n/zh.yaml 与 en.yaml（项目 i18n 铁律）。
+5. **图标**：`assets/icons/app.ico` 已存在；.lnk 的 `SetIconLocation` 需要一个**磁盘路径**
+   ——沿用「内嵌资产运行时解压到配置目录」的既有模式（onnxruntime.dll/silero_vad.onnx
+   同款），首次通知时把 app.ico 解出到配置目录再 SetIconLocation（可选步骤；不设则
+   通知用系统默认图标，不阻断）。
+6. **失败兜底**：快捷方式创建失败/API 出错（如系统通知被禁用、权限异常）→
+   `tracing::warn` + 静默返回；托盘菜单「显示悬浮窗」文字翻转（既有反馈面）仍在。
+   旧 rfd 阻塞弹窗**彻底移除**（不再有 H-2 自绘窗方案，WinId::Notice 取消）。
+7. 附带收益：通知进入 Windows 操作中心可回溯（用户错过可见）；H-5 的「空导出提示」
+   「基准完成提示」复用同一 `notify(title, body)` 通道。
 
 ### H-3 退出确认改 egui 内嵌模态（核心）
 
@@ -186,7 +217,8 @@ app.rs:1386-1390    about_to_wait：quit_requested → event_loop.exit()
 
 - 清空确认（overlay.rs:194-201）→ 同一 egui 模态基础设施（`confirm` 状态泛化：
   类型 + 文案 + 回调）；
-- 空导出提示（app.rs:1224-1232）、基准完成提示（app.rs:851-857）→ Notice 通知窗；
+- 空导出提示（app.rs:1224-1232）、基准完成提示（app.rs:851-857）→ 同一
+  `notify(title, body)` 原生通知通道；
 - 纪律入册：**事件循环线程禁止任何同步 MessageBox/模态**（AGENTS 大坑追加条目）。
 
 ### H-6 回归测试
@@ -194,21 +226,25 @@ app.rs:1386-1390    about_to_wait：quit_requested → event_loop.exit()
 - **state 级**（既有测试风格）：
   - `quit_confirm`：request → Some；重复 request 幂等；confirm → quit_requested=true
     + None；cancel → None；
-  - `notice`：show → Some + 到期时刻正确；tick 到点 → None + 通知窗可隐藏；
 - **headless 渲染**（仿 `panel_ui_smoke_renders_all_pages_headless`、
   `model_editor_modal_smoke_renders_headless`：translation.rs:812）：
   - 面板/悬浮窗 smoke 增加 `quit_confirm=Some` 帧：不 panic、产出图元；
-  - 新增 notice 窗 smoke：`ctx.run_ui` 渲染通知卡片、产出图元；
+- **通知组装单元测试**（纯函数、无 OS 依赖）：
+  - `toast_xml(title, body)` 产出 ToastText02 XML 且两个 text 节点分别等于入参
+    （含中文）；i18n 键在两个语言下都能取到标题/正文（zh/en 对齐断言）；
 - **实机冒烟脚本**（运行册新增三场景）：
-  - A：悬浮窗隐藏 → 立即无假死 + 通知窗 4s 内出现并可点击关闭；
+  - A：悬浮窗隐藏 → 立即无假死 + 首次隐藏弹出系统通知（标题/正文随系统语言），
+    通知点击无副作用；再次隐藏不再弹；
   - B：悬浮窗隐藏状态下托盘退出 → 立即弹面板 + 确认框，确定退出/取消恢复正常；
   - C：悬浮窗穿透开启时退出 → 确认框按钮可点击（H-4 生效）。
 
 ## 5. D-33 偏差登记
 
-- **D-33**：隐藏提示由「原生模态 MessageBoxW 兜底」（1206d82 引入）改为置顶轻量通知窗；
-  退出确认由 rfd 模态改为 egui 内嵌模态；隐藏/退出全链路从「阻塞事件循环」转为
-  「全非阻塞」——与原版（气泡 + 退出无确认）分道，更稳更可见。后续新偏差自 D-34 起。
+- **D-33**：隐藏提示由「原生模态 MessageBoxW 兜底」（1206d82 引入）改为 **Windows
+  原生通知（Toast）**——首次隐藏自动注册 AUMID 开始菜单快捷方式（含 app.ico 图标），
+  通知走操作中心（成功/失败均不阻塞）；退出确认由 rfd 模态改为 egui 内嵌模态；
+  隐藏/退出全链路从「阻塞事件循环」转为「全非阻塞」——与原版（气泡 + 退出无确认）
+  分道，更稳更可见。后续新偏差自 D-34 起。
 
 ## 6. 验收清单
 
@@ -236,6 +272,49 @@ app.rs:1386-1390    about_to_wait：quit_requested → event_loop.exit()
 | `crates/lt-ui/src/tray.rs:99-101` | muda 回调 → EventLoopProxy（仅投递） |
 | `crates/lt-ui/src/state.rs:8-18` | WinId 枚举（新增 Notice 不涉 lt-proto） |
 | `crates/lt-ui/src/windows/panel/translation.rs:376-426` | egui 模态先例（model_editor） |
+| `Windows-classic-samples/.../DesktopToasts.cpp:130,157-158,177-238,397-482,516-538` | 官方 Win32 Toast 三件套序列（RoInitialize/快捷方式/模板/Show） |
+
+## 附录 B：Win32 Toast 实现要点（windows crate 0.62.2 逐符号验证）
+
+版本核对：`Cargo.lock` 中 `windows = 0.62.2`（lt-ui 的 `[target."cfg(windows)"]` 依赖，
+加 feature 即可，**零新 crate**）。以下符号路径/名均已在本地
+`~/.cargo/registry/src/.../windows-0.62.2` 源码逐个 grep 验证（含意外位置）：
+
+| 用途 | 符号 | 路径 | 需增 feature |
+| --- | --- | --- | --- |
+| 通知管理/发送 | `ToastNotificationManager::CreateToastNotifierWithId(&HSTRING)` / `GetTemplateContent(ToastTemplateType)` | `windows::UI::Notifications` | `UI_Notifications` |
+| 通知构造 | `ToastNotification::CreateToastNotification(xml)`、`ToastNotifier::Show(toast)` | 同上 | 同上 |
+| 模板枚举 | `ToastTemplateType::ToastText02`（5 = 标题+正文两行） | 同上 | 同上 |
+| XML 组装 | `XmlDocument::new()` + `LoadXml(&HSTRING)` + `GetElementsByTagName(&HSTRING)` | `windows::Data::Xml::Dom` | `Data_Xml_Dom` |
+| 快捷方式 | `IShellLinkW`（`SetPath`）、`ShellLink`（CLSID 常量，注意 0.62 里不叫 CLSID_ShellLink） | `windows::Win32::UI::Shell` | `Win32_UI_Shell` |
+| AUMID 属性 | `PKEY_AppUserModel_ID`（fmtid 0x9f4c2855-… pid 5，注意位于 **EnhancedStorage**） | `windows::Win32::Storage::EnhancedStorage` | `Win32_Storage_EnhancedStorage` |
+| 属性写 | `IPropertyStore::SetValue(*const PROPERTYKEY, *const PROPVARIANT)` / `Commit()` | `windows::Win32::UI::Shell::PropertiesSystem` | `Win32_UI_Shell_PropertiesSystem` |
+| 快捷方式落盘 | `IPersistFile::Save(&PCWSTR, true)` | `windows::Win32::System::Com` | `Win32_System_Com` |
+| 属性值 | `PROPVARIANT`（`VT_LPWSTR` 置 `pwszVal`） | `windows::Win32::System::Com::StructuredStorage` | `Win32_System_Com_StructuredStorage` |
+| COM/WinRT 初始化 | `CoCreateInstance` / `RoInitialize(RO_INIT_TYPE)`（示例用 `RO_INIT_MULTITHREADED`） | `windows::Win32::System::Com` / `…::WinRT` | `Win32_System_Com` + `Win32_System_WinRT` |
+| 进程 AUMID | `SetCurrentProcessExplicitAppUserModelID(&HSTRING)` | `windows::Win32::UI::Shell` | `Win32_UI_Shell` |
+
+实现形态建议：
+
+- 新模块 `crates/lt-ui/src/notifications.rs`（沿用项目「unsafe Win32 胶水+独立小模块」
+  风格，如 `app.rs` 里 apply_layered/apply_window_region）；对外仅两个入口：
+  `pub fn show(title: &str, body: &str) -> anyhow::Result<()>`（内部 `Once` 幂等完成
+  RoInitialize + SetCurrentProcessExplicitAppUserModelID + EnsureAumidShortcut；
+  每次发送后不缓存失败）、`pub fn show_hidden_hint()`（i18n 取词的薄封装）；
+- `EnsureAumidShortcut()`：`.lnk` 路径 = `%APPDATA%\Microsoft\Windows\Start
+  Menu\Programs\LiveTranslate.lnk`（env `APPDATA` 拼装）；`GetFileAttributes` 存在即
+  跳过（便携 exe 迁移导致目标失效仅影响点击，不阻断通知——见下）；不存在则
+  CoCreateInstance(ShellLink) + SetPath(exe) + SetValue(PKEY_AppUserModel_ID,
+  "com.livetranslate.app") + Commit + IPersistFile::Save；
+- 图标（可选增强）：`assets/icons/app.ico` 已入库；沿用「内嵌资产解压到配置目录」
+  既有模式（onnxruntime/silero 同款）解出后 `IShellLinkW::SetIconLocation`；不做也
+  可用系统默认图标；
+- 失败兜底：任一步 Err → `tracing::warn!("原生通知失败: {e}")` + 返回；托盘菜单文字
+  翻转/日志（既有反馈面）兜底，**绝不回退到阻塞弹窗**。
+- 已知边界：① 系统通知被用户关闭/专注助手开启 → Show 成功但不显示（产品外行为，
+  在日志中记录已发送）；② 首次运行会在用户开始菜单新增一个快捷方式条目（产品行为
+  变化，随 D-33 落档）；③ 通知点击默认无动作（不注册 ToastActivatorCLSID）——与原版
+  气泡一致；若后续要「点击通知恢复悬浮窗」再引入 COM 激活器（另立项）。
 | `rfd-0.15.4/.../win_cid/message_dialog.rs:206-237` | MessageBoxW(owner=NULL) 同步模态 |
 | `tray-icon-0.24.2/.../platform_impl/windows/mod.rs:56,75` | uID=私有 internal_id（气泡直调不可行） |
 | `LiveTranslate/main.py:1933-1946 / 2288-2292` | 原版：先藏后气泡；退出无确认 |
