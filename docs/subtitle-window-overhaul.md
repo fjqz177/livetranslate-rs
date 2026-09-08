@@ -338,3 +338,11 @@ TRANSPARENT 位 := (click_through && zone == Body) || (click_through && zone == 
 | ~/.cargo/registry/src/rsproxy.cn-*/wgpu-hal-30.0.1/src/dx12/adapter.rs:1364-1365 | WndHandle → 仅 Opaque 合成模式 |
 | ~/.cargo/registry/src/rsproxy.cn-*/wgpu-hal-30.0.1/src/dx12/adapter.rs:1367-1375 | SwapChainPanel/VisualFromWndHandle → 全套 alpha 模式 |
 | ~/.cargo/registry/src/rsproxy.cn-*/windows-0.62.2/src/Windows/Win32/Graphics/Gdi/mod.rs | GetMonitorInfoW/MONITORINFOEXW 所在模块 |
+
+## 修订注记（D-37，2026-09-08）
+
+**WP-2「拖动=顶条任意键+正文中键」落地后实机仍无法移动**：egui 判定链路正常（headless 指针探针实证产出起止），卡在宿主 `window.drag_window()`（winit 0.30.13）——①Windows 实现 = `PostMessageW(WM_NCLBUTTONDOWN, HTCAPTION)` 走系统标题栏模态循环，而 winit WndProc 收到该消息后**先投递哑 `WM_MOUSEMOVE(0,0)`**（platform_impl/windows/event_loop.rs:1219-1232，注释自陈「cancels the modal loop early」）；LAYERED+TRANSPARENT 轮询窗上探针实测 0 位移、偶发事件循环挂死（Loop 挂起收不到释放）；②文档明确「Moves the window with the left mouse button」——**中键路径下循环不启动**。
+
+修复（D-37）：弃 drag_window。egui 只报拖动起止（`WinAction::SubtitleDragStart/End`），宿主 `SetCapture` + `GetCursorPos` 绝对跟踪 `set_outer_position`（`update_subtitle_drag` 每帧推进，= 原版 Qt `mouseMoveEvent move(globalPos - _drag_pos)` 语义，任意按键可用）；拖动期间 `sub.dragging` 令分区穿透轮询豁免恒非穿透；落点沿既有 `ClampSubtitlePos`（钳屏+防抖保存+重叠避让）；拖动中隐藏窗口补 `ReleaseCapture` 收尾；锁定语义顺带收紧（正文中键一并禁用）。新增回归 3（顶条左键/正文中键起止序列、锁定双通道禁用）。
+
+已知遗留：悬浮窗 `WinAction::Drag` 的 drag_window 路径同病（改期按同法修）；拖动实机确认待用户。

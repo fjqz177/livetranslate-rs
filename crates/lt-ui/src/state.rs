@@ -139,8 +139,12 @@ pub enum WinAction {
     ToggleMode,
     /// 动画/模式推导出的窗口高度调整（逻辑 px，保持宽度）
     SetHeight(f32),
-    /// 字幕窗中键拖动（原版 mousePressEvent MiddleButton；宿主 drag_window）
-    DragSubtitle,
+    /// 字幕窗拖动开始（正文中键 / 顶条任意键；D-37 弃 winit drag_window——
+    /// 其标题栏模态循环在 LAYERED+TRANSPARENT 轮询窗上实测 0 位移/挂死、
+    /// 且中键不可用。宿主 = SetCapture + 记录抓握偏移 + 恒非穿透）
+    SubtitleDragStart,
+    /// 字幕窗拖动结束（宿主 = ReleaseCapture + 落点钳制/防抖保存）
+    SubtitleDragEnd,
     /// 字幕窗高度调整（原版 _fit_height_animated：随高度上移 y 保持视觉中心）
     SetSubtitleHeight(f32),
     /// 字幕窗高度落定后的多屏钳制（原版 on_finished → _clamp_to_screen + position_changed）
@@ -516,6 +520,12 @@ pub struct SubtitleUiState {
     pub toolbar_anim: Option<EaseAnim>,
     /// 锁定（冻结拖动；顶条锁按钮翻转，内存态）
     pub locked: bool,
+    /// 拖动进行中（D-37：宿主维护；分区穿透轮询据此豁免——拖动期间窗恒
+    /// 非穿透，SetCapture 持续供给鼠标输入）
+    pub dragging: bool,
+    /// 抓握偏移（物理 px：拖起时刻 = 光标 − 窗左上；宿主 SetCursorPos 绝对
+    /// 跟踪基准，原版 mousePressEvent 记录的 _drag_pos 对位）
+    pub drag_grab: Option<(i32, i32)>,
 }
 
 impl SubtitleUiState {

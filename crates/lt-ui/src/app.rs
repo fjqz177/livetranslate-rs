@@ -525,6 +525,14 @@ impl MultiWindowApp {
                 hw.window.request_redraw();
             } else {
                 hw.window.set_visible(false);
+                // 拖动中隐藏：立即收尾手工捕获（否则鼠标输入被吞在隐藏窗，
+                // 主界面/其他窗失灵；D-37 拖动与显隐并发兜底）
+                if id == WinId::Subtitle && self.app_state.subtitle.dragging {
+                    #[cfg(windows)]
+                    unsafe { let _ = ::windows::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture(); };
+                    self.app_state.subtitle.dragging = false;
+                    self.app_state.subtitle.drag_grab = None;
+                }
             }
         }
         self.app_state.visible.insert(id, vis);
@@ -1102,9 +1110,44 @@ impl MultiWindowApp {
                 WinAction::SetHeight(h) => {
                     self.enqueue_height(h);
                 }
-                WinAction::DragSubtitle => {
-                    // 原版 mousePressEvent MiddleButton → move；winit 走系统移动循环
-                    let _ = window.drag_window();
+                WinAction::SubtitleDragStart => {
+                    // D-37：弃 winit drag_window（标题栏模态循环 + 哑 WM_MOUSEMOVE
+                    // 取消；LAYERED/TRANSPARENT 轮询窗实测 0 位移/挂死，见 AGENTS
+                    // 大坑 17；且中键下模态循环根本不会启动）。改原版 Qt 语义：
+                    // SetCapture + 光标绝对跟踪 set_outer_position（process_actions
+                    // 尾部 update_subtitle_drag 每帧推进，任意按键可用）。
+                    #[cfg(windows)]
+                    {
+                        let grab = Self::hwnd_of(&window).and_then(|hwnd| {
+                            let mut pt = ::windows::Win32::Foundation::POINT::default();
+                            if unsafe { ::windows::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut pt) }.is_err() {
+                                return None;
+                            }
+                            let pos = window.outer_position().ok()?;
+                            // SetCapture：光标出窗后鼠标输入仍投递本窗（同原版 Qt
+                            // 按压隐式抓取）；释放路径见 SubtitleDragEnd
+                            unsafe { let _ = ::windows::Win32::UI::Input::KeyboardAndMouse::SetCapture(hwnd); };
+                            Some((pt.x - pos.x, pt.y - pos.y))
+                        });
+                        self.app_state.subtitle.drag_grab = grab;
+                    }
+                    self.app_state.subtitle.dragging = true;
+                    // 拖动期间恒非穿透（穿透轮询见 poll_subtitle_window 的 dragging 豁免）
+                    Self::set_window_transparent(&window, false);
+                    if self.app_state.subtitle.drag_grab.is_none() {
+                        // 抓握记录失败（GetCursorPos/窗位异常）：立即收尾，不悬空拖动态
+                        self.app_state.subtitle.dragging = false;
+                    }
+                }
+                WinAction::SubtitleDragEnd => {
+                    #[cfg(windows)]
+                    {
+                        unsafe { let _ = ::windows::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture(); };
+                    }
+                    self.app_state.subtitle.dragging = false;
+                    self.app_state.subtitle.drag_grab = None;
+                    // 落点钳制（多屏钳回 + 防抖保存；经既有路径触发重叠避让）
+                    self.app_state.enqueue_action(WinId::Subtitle, WinAction::ClampSubtitlePos);
                 }
                 WinAction::SetSubtitleHeight(h) => {
                     // 原版 _fit_height_animated：高度变化同时上移 y/2 保持视觉中心
@@ -1198,6 +1241,11 @@ impl MultiWindowApp {
                 self.app_state.overlay.anim = None;
                 self.enqueue_height(target);
             }
+        }
+        // D-37：字幕窗拖动进行中每帧推进（光标绝对跟踪；帧由捕获的鼠标移动
+        // 事件持续供给——request_redraw → run_frame 回环）
+        if self.app_state.subtitle.dragging {
+            self.update_subtitle_drag();
         }
     }
 
@@ -1417,6 +1465,13 @@ impl MultiWindowApp {
         if !visible {
             return;
         }
+        // D-37：拖动进行中恒非穿透（光标会随时进入正文区甚至窗外——分区判定
+        // 会把 TRANSPARENT 重新挂上，打断 SetCapture 供给的输入链；豁免直到
+        // SubtitleDragEnd 收尾）
+        if self.app_state.subtitle.dragging {
+            Self::set_window_transparent(&window, false);
+            return;
+        }
         let enabled = self.app_state.settings.subtitle_mode.click_through;
         let mut zone = SubtitleZone::Outside;
         let mut ctrl = false;
@@ -1480,6 +1535,29 @@ impl MultiWindowApp {
             }
         }
     }
+
+    /// 字幕窗拖动每帧推进（D-37）：光标绝对跟踪 set_outer_position——
+    /// 原版 mouseMoveEvent `move(globalPos - _drag_pos)` 语义；SetCapture 下
+    /// 光标出窗后输入仍达，拖动不中断。
+    #[cfg(windows)]
+    fn update_subtitle_drag(&mut self) {
+        use ::windows::Win32::Foundation::POINT;
+        use ::windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+        let Some(hw) = self.find(WinId::Subtitle) else { return };
+        let Some((gx, gy)) = self.app_state.subtitle.drag_grab else { return };
+        let mut pt = POINT::default();
+        if unsafe { GetCursorPos(&mut pt) }.is_err() {
+            return;
+        }
+        hw.window.set_outer_position(winit::dpi::PhysicalPosition::new(
+            (pt.x - gx) as f64,
+            (pt.y - gy) as f64,
+        ));
+    }
+
+    /// 非 Windows 兜底（无 Win32 捕获；拖动不移动，保持既有无拖动行为）
+    #[cfg(not(windows))]
+    fn update_subtitle_drag(&mut self) {}
 
     /// 执行导出（原版 export_messages；rfd 保存对话框 + 三种模式行格式）
     fn run_export(&mut self, mode: &str) {

@@ -11,7 +11,8 @@
 //!   （_restore_from_auto_hide，透明度 0→1 淡入）；
 //! - 高度自适应：目标高度计算 + 150ms OutCubic 动画（_calc_target_height /
 //!   _fit_height_animated），经 [`WinAction::SetSubtitleHeight`] 由宿主改窗；
-//! - 中键拖动（原版 mousePressEvent MiddleButton）→ [`WinAction::DragSubtitle`]；
+//! - 中键拖动（原版 mousePressEvent MiddleButton → [`WinAction::SubtitleDragStart`]；
+//!   D-37 弃 winit drag_window，宿主 SetCapture + 光标绝对跟踪，见 app.rs）；
 //! - 背景三态：bg_opacity=0 全透明 / >0 半透明实底 + 圆角（_apply_background）。
 //!
 //! 已知偏差（详见最终报告）：
@@ -341,7 +342,7 @@ pub fn subtitle_ui(ui: &mut Ui, state: &mut AppState) {
     let full = ui.available_rect_before_wrap();
 
     // 帧内借用拆分（字幕配置只读 / 字幕状态可变），帧后统一投递动作
-    let (drag, height_cmd, height_settled, through_toggle, lock_toggle, hide, open_settings, reset_pos) = {
+    let (drag_started, drag_stopped, height_cmd, height_settled, through_toggle, lock_toggle, hide, open_settings, reset_pos) = {
         // 借用拆分：不相交字段
         let sm = &state.settings.subtitle_mode;
         let sub = &mut state.subtitle;
@@ -503,26 +504,30 @@ pub fn subtitle_ui(ui: &mut Ui, state: &mut AppState) {
         }
         let strip_alpha = sub.toolbar_opacity(now);
 
-        // 9) 交互区（D-36）：正文区中键拖动（原版全窗中键语义保留给正文）；
-        //    顶条 = 任意键拖动 + 右键菜单 + 三按钮（按钮在此后注册 = 同层命中优先）
+        // 9) 交互区（D-36/D-37）：正文区中键拖动（原版全窗中键语义保留给正文）；
+        //    顶条 = 任意键拖动 + 右键菜单 + 三按钮（按钮在此后注册 = 同层命中优先）。
+        //    D-37 修复：egui 只报拖动起止，宿主经 SetCapture + 光标绝对跟踪
+        //    set_outer_position 移动窗口（原版 mouseMoveEvent 语义）——替代
+        //    drag_window 标题栏模态循环（中键不可用 + LAYERED/TRANSPARENT 窗
+        //    实测 0 位移或挂死，见 AGENTS 大坑 17）
         let strip_rect = egui::Rect::from_min_size(full.min, egui::vec2(full.width(), STRIP_H));
         let body_rect = egui::Rect::from_min_max(
             egui::pos2(full.left(), full.top() + STRIP_H),
             full.right_bottom(),
         );
-        let mut drag = ui
-            .interact(body_rect, ui.id().with("sub_body_drag"), Sense::click_and_drag())
-            .drag_started_by(egui::PointerButton::Middle);
-
+        let body_resp = ui.interact(body_rect, ui.id().with("sub_body_drag"), Sense::click_and_drag());
         let mut through_toggle = false;
         let mut lock_toggle = false;
         let mut hide = false;
         let mut open_settings = false;
         let mut reset_pos = false;
         let strip_resp = ui.interact(strip_rect, ui.id().with("sub_strip"), Sense::click_and_drag());
-        if strip_resp.drag_started() && !sub.locked {
-            drag = true;
-        }
+        // 锁定=禁拖动（中键+顶条，原 WP-2 只禁顶条漏了正文中键，D-37 一并收紧；
+        // 按钮点击不受影响）
+        let drag_started = !sub.locked
+            && (body_resp.drag_started_by(egui::PointerButton::Middle) || strip_resp.drag_started());
+        let drag_stopped = !sub.locked
+            && (body_resp.drag_stopped_by(egui::PointerButton::Middle) || strip_resp.drag_stopped());
         // 顶条右键菜单（全部走既有 action 通路禁模态；D-33 纪律）
         strip_resp.context_menu(|ui| {
             if ui.button(lt_i18n::t("subwin_menu_open_settings")).clicked() {
@@ -592,7 +597,7 @@ pub fn subtitle_ui(ui: &mut Ui, state: &mut AppState) {
 
         // 撑满布局（窗口即内容尺寸）
         ui.allocate_space(full.size());
-        (drag, height_cmd, height_settled, through_toggle, lock_toggle, hide, open_settings, reset_pos)
+        (drag_started, drag_stopped, height_cmd, height_settled, through_toggle, lock_toggle, hide, open_settings, reset_pos)
     };
 
     // 帧后动作
@@ -602,8 +607,13 @@ pub fn subtitle_ui(ui: &mut Ui, state: &mut AppState) {
     if height_settled {
         state.enqueue_action(WinId::Subtitle, WinAction::ClampSubtitlePos);
     }
-    if drag {
-        state.enqueue_action(WinId::Subtitle, WinAction::DragSubtitle);
+    if drag_started {
+        // 宿主处理动作即 SetCapture + 记录抓握偏移 + 恒非穿透，
+        // 随后每帧 process_actions 尾光标绝对跟踪（见 app.rs update_subtitle_drag）
+        state.enqueue_action(WinId::Subtitle, WinAction::SubtitleDragStart);
+    }
+    if drag_stopped && state.subtitle.dragging {
+        state.enqueue_action(WinId::Subtitle, WinAction::SubtitleDragEnd);
     }
     if through_toggle {
         let ct = !state.settings.subtitle_mode.click_through;
@@ -1039,5 +1049,114 @@ mod tests {
             crate::windows::subtitle::subtitle_ui(ui, &mut st)
         });
         assert!(!out.shapes.is_empty());
+    }
+
+    // ── D-37 手工拖动（egui 起止判定链路）──
+
+    /// 窗口矩形（headless 屏幕 = 窗内坐标）
+    fn sub_screen_rect() -> egui::Rect {
+        egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 160.0))
+    }
+
+    /// 拖动帧序列：注册帧 → 光标到位 → 按住 → 移动（拖拽判定）→ 释放
+    fn drag_frames(button: egui::PointerButton, start: egui::Pos2) -> Vec<Vec<egui::Event>> {
+        vec![
+            vec![egui::Event::PointerMoved(start)],
+            vec![egui::Event::PointerButton {
+                pos: start,
+                button,
+                pressed: true,
+                modifiers: egui::Modifiers::default(),
+            }],
+            vec![egui::Event::PointerMoved(start + egui::vec2(12.0, 4.0))],
+            vec![egui::Event::PointerMoved(start + egui::vec2(24.0, 8.0))],
+            vec![egui::Event::PointerButton {
+                pos: start + egui::vec2(24.0, 8.0),
+                button,
+                pressed: false,
+                modifiers: egui::Modifiers::default(),
+            }],
+        ]
+    }
+
+    /// 逐帧跑字幕 UI，收集动作；宿主语义：收到 SubtitleDragStart 后 state.dragging=true
+    /// （模拟 process_actions 处理动作的置位时机）
+    fn run_drag_frames(
+        ctx: &egui::Context,
+        st: &mut crate::state::AppState,
+        frames: Vec<Vec<egui::Event>>,
+    ) -> Vec<(crate::state::WinId, crate::state::WinAction)> {
+        let mut collected = Vec::new();
+        for events in frames {
+            let mut ri = egui::RawInput::default();
+            ri.screen_rect = Some(sub_screen_rect());
+            ri.events = events;
+            let mut out = ctx.run_ui(ri, |ui| crate::windows::subtitle::subtitle_ui(ui, st));
+            out.textures_delta.clear();
+            let acts = st.drain_actions();
+            if acts
+                .iter()
+                .any(|(w, a)| w == &crate::state::WinId::Subtitle && a == &crate::state::WinAction::SubtitleDragStart)
+            {
+                st.subtitle.dragging = true; // 宿主处理 SubtitleDragStart
+            }
+            collected.extend(acts);
+        }
+        collected
+    }
+
+    /// 顶条左键拖动 → SubtitleDragStart/End 序列（任意按键均支持）
+    #[test]
+    fn subtitle_drag_strip_left_start_stop() {
+        let ctx = egui::Context::default();
+        let mut st = crate::state::AppState::new(lt_proto::Settings::default());
+        st.settings.subtitle_mode.enabled = true;
+        st.visible.insert(crate::state::WinId::Subtitle, true);
+        let acts = run_drag_frames(&ctx, &mut st, drag_frames(egui::PointerButton::Primary, egui::pos2(500.0, 5.0)));
+        let has = |a: crate::state::WinAction| {
+            acts.contains(&(crate::state::WinId::Subtitle, a))
+        };
+        assert!(has(crate::state::WinAction::SubtitleDragStart), "顶条左键拖动应发 SubtitleDragStart");
+        assert!(has(crate::state::WinAction::SubtitleDragEnd), "松开应发 SubtitleDragEnd");
+    }
+
+    /// 正文中键拖动 → 同上（原版全窗中键语义）
+    #[test]
+    fn subtitle_drag_body_middle_start_stop() {
+        let ctx = egui::Context::default();
+        let mut st = crate::state::AppState::new(lt_proto::Settings::default());
+        st.settings.subtitle_mode.enabled = true;
+        st.visible.insert(crate::state::WinId::Subtitle, true);
+        let acts = run_drag_frames(&ctx, &mut st, drag_frames(egui::PointerButton::Middle, egui::pos2(500.0, 80.0)));
+        let has = |a: crate::state::WinAction| {
+            acts.contains(&(crate::state::WinId::Subtitle, a))
+        };
+        assert!(has(crate::state::WinAction::SubtitleDragStart), "正文中键拖动应发 SubtitleDragStart");
+        assert!(has(crate::state::WinAction::SubtitleDragEnd), "松开应发 SubtitleDragEnd");
+    }
+
+    /// 锁定 = 禁拖动：顶条任意键 + 正文中键均被禁止（D-37 收紧：原 WP-2
+    /// 只禁顶条，正文中键漏网）
+    #[test]
+    fn subtitle_drag_locked_disables_both() {
+        let ctx = egui::Context::default();
+        let mut st = crate::state::AppState::new(lt_proto::Settings::default());
+        st.settings.subtitle_mode.enabled = true;
+        st.visible.insert(crate::state::WinId::Subtitle, true);
+        st.subtitle.locked = true;
+        let acts = run_drag_frames(&ctx, &mut st, drag_frames(egui::PointerButton::Primary, egui::pos2(500.0, 5.0)));
+        let has = |a: crate::state::WinAction| {
+            acts.contains(&(crate::state::WinId::Subtitle, a))
+        };
+        assert!(!has(crate::state::WinAction::SubtitleDragStart), "锁定后顶条拖动应被禁止");
+        let mut st2 = crate::state::AppState::new(lt_proto::Settings::default());
+        st2.settings.subtitle_mode.enabled = true;
+        st2.visible.insert(crate::state::WinId::Subtitle, true);
+        st2.subtitle.locked = true;
+        let acts2 = run_drag_frames(&ctx, &mut st2, drag_frames(egui::PointerButton::Middle, egui::pos2(500.0, 80.0)));
+        assert!(
+            !acts2.contains(&(crate::state::WinId::Subtitle, crate::state::WinAction::SubtitleDragStart)),
+            "锁定后正文中键拖动应被禁止"
+        );
     }
 }
