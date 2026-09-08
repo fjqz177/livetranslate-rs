@@ -1846,10 +1846,18 @@ mod tests {
         );
         assert_eq!(display, "my-whisper");
         assert_eq!(cfg.pad_seconds, Some(0.6));
-        // 不存在的本地路径 → None
-        assert!(
-            build_worker_config(&dir, "whisper", "", 0.5, "zh", "Z:/no/model.bin", 0.5).is_none()
-        );
+        // 不存在的本地路径 → None（合成路径 temp 派生，path-hygiene PH-2 补漏）
+        let missing = std::env::temp_dir().join("lt_local").join("no-model.bin");
+        assert!(build_worker_config(
+            &dir,
+            "whisper",
+            "",
+            0.5,
+            "zh",
+            missing.to_str().unwrap(),
+            0.5
+        )
+        .is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

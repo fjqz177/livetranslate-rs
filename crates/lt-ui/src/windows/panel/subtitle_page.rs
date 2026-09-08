@@ -444,7 +444,7 @@ fn bg_image_row(ui: &mut Ui, state: &mut AppState) {
         if ui
             .add(
                 egui::TextEdit::singleline(&mut img)
-                    .hint_text("C:/bg.png")
+                    .hint_text("…/bg.png")
                     .desired_width(260.0),
             )
             .changed()
