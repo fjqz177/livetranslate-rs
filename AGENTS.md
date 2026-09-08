@@ -4,7 +4,7 @@
 
 Rust 原生实时音频翻译应用 **LiveTranslate-rs**（Python(PyQt6) 原版 LiveTranslate 仅作行为参考，**不再追求 1:1 复刻**）。阶段一（1:1 复刻期，2026-09-05～09-07）已收尾：M0–M6 主体 + 视觉五工作包 + 字体系统 W-1~W-7 + 分发裁决 D-18~D-21 全部落地，313 测全绿，release 单 exe 分发演练通过；当前进入**阶段二（Rust 自有产品化）**：新增能力以产品体验为准，原版有/没有不再是取舍依据，行为差异落档为**新偏差 D-22 起**编号的决策史（`docs/archive/rewrite-research.md` §1.5 顺延）。
 
-- **参考副本 = 工作区内 `LiveTranslate/` 原版代码副本**（gitignored，扁平结构；2026-09-06 用户明确：与 `D:\biancheng\LiveTranslate`、`LiveTranslate-NG` 等外部仓库无关）。**参考而非规范**：改 GUI 前仍可回读副本对应 Python 模块（`main.py`、`subtitle_overlay.py`、`subtitle_window.py`、`control_panel.py`、`vad_processor.py` 等，均在副本根目录），但新功能不必拘泥其行为。
+- **参考副本 = 工作区内 `LiveTranslate/` 原版代码副本**（gitignored，扁平结构；2026-09-06 用户明确：与工作区外的外部仓 LiveTranslate、LiveTranslate-NG（本机具体位置不入库）无关）。**参考而非规范**：改 GUI 前仍可回读副本对应 Python 模块（`main.py`、`subtitle_overlay.py`、`subtitle_window.py`、`control_panel.py`、`vad_processor.py` 等，均在副本根目录），但新功能不必拘泥其行为。
 - **文档体系（2026-09-07 重组，2026-09-09 二次归档）**：当前依据 = `docs/`（`README.md` 索引、`distribution.md` 分发路线图、`data-lifecycle.md` 数据生命周期盘点·12 项整改候选待裁决、`path-hygiene.md` 硬编码路径排查与清理计划）与本文档待办；阶段一决策史与阶段二已完工工作包文档全部归档 `docs/archive/`（阶段一：`rewrite-research.md` 选型/偏差 D-1~D-21/风险 R-1~R-14、`rewrite-plan.md` 施工图、`parity-closure.md` 复刻收口九 WP、`ui-realign.md` 等 GUI 对齐方案；阶段二已完工：`asr-engine-expansion.md`、`asr-hardening.md`、`download-overhaul.md`、`mic-monitor-fix.md`、`sensevoice-language-fix.md`、`log-tab-redesign.md`、`button-press-feedback.md`、`hide-quit-flow-overhaul.md`、`hide-transparency-fix.md`、`tray-menu-blocking-fix.md`、`subtitle-window-overhaul.md`），**只读**，修改仅允许加"修订"注记，不作为施工依据。
 - **codegraph 代码索引可用（2026-09-09 起）**：仓库根 `.codegraph/`（本机生成、不入库）。改码前摸清符号/调用链优先用 MCP `codegraph_explore`（一次返回相关符号源码+调用路径），其次 Grep/Read。
 

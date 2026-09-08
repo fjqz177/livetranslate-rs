@@ -24,7 +24,7 @@
 
 - **范围**：`git ls-files` 全部已跟踪文件，排除二进制后缀后共 **153 个文本文件**（rs/md/toml/yaml/ps1/py/gitignore 等）。gitignored 内容（`LiveTranslate/` 参考副本、`target/`、`.cache/`、`.codegraph/`）不属于仓库范围。
 - **模式组**：
-  - A 用户名：`fjqz177`
+  - A 用户名：以本机 `$env:USERNAME` 动态匹配（守护脚本 PH-5 内置；字面量不入库）
   - B 盘符：`\b[A-Za-z]:[\\/]`（剔除 `https?://`、`ftp:` 协议误报）
   - C home 风格：`/home/<x>`、`/Users/`、`$HOME`、`%USERPROFILE%`
   - D 其他：`file://`、UNC `\\\\`、字符串值中的 `"~/`
@@ -33,7 +33,7 @@
 
 ```bash
 git ls-files | grep -vE '\.(png|jpg|ico|icns|onnx|dll|br|ttf|otf|woff2?|zip|gz)$' > /tmp/tf.txt
-xargs grep -nE "fjqz177" < /tmp/tf.txt                                # A
+xargs grep -nE 'C:/Users/[a-zA-Z]|C:\\Users\\[a-zA-Z]' < /tmp/tf.txt   # A（实名 Users 路径，占位 < 豁免；裸用户名由守护脚本动态查）
 xargs grep -nE "\b[A-Za-z]:[\\/]" < /tmp/tf.txt | grep -vE "https?:|ftp:"   # B
 xargs grep -nE "/home/[a-z]|/Users/|\\$\{?HOME\}?|%USERPROFILE%" < /tmp/tf.txt  # C
 xargs grep -nE "file://" < /tmp/tf.txt; xargs grep -nE '"~/' < /tmp/tf.txt     # D
@@ -55,30 +55,32 @@ git grep -nE "/d/tmp" -- README.md                                    # E
 
 ### 4.1 P0：个人路径（8 处）
 
+> 本节证据引文已同步脱敏（用户名 → `<原开发者>`、本机盘符布局 → `<本机位置>`）；带字面原文见施工前 git 历史（a9a5cc0 及更早）。
+
 **Rust 测试/探针常量（7 行，两个消费类别）**
 
 | # | 位置 | 证据（原文截取） | 消费方式 |
 |---|---|---|---|
-| 1 | `crates/lt-asr/src/engines/nano.rs:221` | `const SNAPSHOT: &str = "C:/Users/fjqz177/.config/livetranslate/models/huggingface/hub/models--csukuangfj--…-int8-2025-12-30/snapshots/main"` | `mod probe_real_nano_tmp`（`#[ignore]`，WP-A 验收探针）；wav 级已有"未下载即跳过"守卫 |
+| 1 | `crates/lt-asr/src/engines/nano.rs:221` | `const SNAPSHOT: &str = "C:/Users/<原开发者>/.config/livetranslate/models/huggingface/hub/models--csukuangfj--…-int8-2025-12-30/snapshots/main"` | `mod probe_real_nano_tmp`（`#[ignore]`，WP-A 验收探针）；wav 级已有"未下载即跳过"守卫 |
 | 2 | `crates/lt-asr/src/engines/qwen3.rs:224` | 同构，`models--csukuangfj2--…qwen3-0.6B…` | `mod probe_real_qwen3_tmp`（`#[ignore]`，WP-B S0 探针） |
 | 3 | `crates/lt-asr/src/sensevoice.rs:314` | `…modelscope/models/pengzhendong--sherpa-onnx-sense-voice…` | `mod probe_real_sensevoice_tmp`（`#[ignore]`，D-30 探针） |
 | 4 | `crates/lt-asr/src/sensevoice.rs:315` | `const NANO_WAVS = …/test_wavs`（跨引擎借用 nano 仓音频） | 同上 |
-| 5 | `crates/lt-models/src/cache.rs:610` | `probe_tmp::probe_real_cache` 内 `Path::new("C:/Users/fjqz177/.config/livetranslate/models")` | **无 `#[ignore]`**，随常规 `cargo test` 运行；仅 println 无断言故恒绿 |
-| 6 | `crates/lt-models/src/cache.rs:629` | `probe_settings_tmp::probe_load_from_smoke_dir` 内 `set_var("LIVETRANSLATE_CONFIG_DIR", "C:/Users/fjqz177/.zcode/tmp/lt_smoke")` | **无 `#[ignore]`**；且**测试内改进程环境变量且未持 `crate::ENV_LOCK`**——与持锁的 `paths.rs::config_dir_respects_env_override` 并行运行时存在真实竞态（mutator 不拿锁，锁形同虚设） |
-| 7 | `crates/lt-models/src/download/mod.rs:881` | `probe_nano_download_via_hf_mirror` 内 `Path::new("C:/Users/fjqz177/.config/livetranslate/models")` | `#[ignore]`（真实网络 ~1GB 写真实缓存） |
+| 5 | `crates/lt-models/src/cache.rs:610` | `probe_tmp::probe_real_cache` 内 `Path::new("C:/Users/<原开发者>/.config/livetranslate/models")` | **无 `#[ignore]`**，随常规 `cargo test` 运行；仅 println 无断言故恒绿 |
+| 6 | `crates/lt-models/src/cache.rs:629` | `probe_settings_tmp::probe_load_from_smoke_dir` 内 `set_var("LIVETRANSLATE_CONFIG_DIR", "C:/Users/<原开发者>/.zcode/tmp/lt_smoke")` | **无 `#[ignore]`**；且**测试内改进程环境变量且未持 `crate::ENV_LOCK`**——与持锁的 `paths.rs::config_dir_respects_env_override` 并行运行时存在真实竞态（mutator 不拿锁，锁形同虚设） |
+| 7 | `crates/lt-models/src/download/mod.rs:881` | `probe_nano_download_via_hf_mirror` 内 `Path::new("C:/Users/<原开发者>/.config/livetranslate/models")` | `#[ignore]`（真实网络 ~1GB 写真实缓存） |
 
 **docs 引证（1 处）**
 
 | # | 位置 | 证据 | 说明 |
 |---|---|---|---|
-| 8 | `docs/data-lifecycle.md:49` | LIBCLANG 行引用 `C:/Users/fjqz177/AppData/Local/Programs/Python/Python313/Lib/site-packages/clang/native` | 病灶历史证据（该行自述"本机绝对路径，指向原开发者的…"）；保留证据价值、脱敏用户名 |
+| 8 | `docs/data-lifecycle.md:49` | LIBCLANG 行引用 `C:/Users/<原开发者>/AppData/Local/Programs/Python/Python313/Lib/site-packages/clang/native` | 病灶历史证据（该行自述"本机绝对路径，指向原开发者的…"）；保留证据价值、脱敏用户名 |
 
 ### 4.2 P1：本机外部布局（2 处）
 
 | # | 位置 | 证据 | 说明 |
 |---|---|---|---|
-| 9 | `AGENTS.md:7` | "与 `D:\biancheng\LiveTranslate`、`LiveTranslate-NG` 等外部仓库无关" | 语义 = 声明副本与外部仓无关；可去掉盘符保留语义 |
-| 10 | `docs/archive/overlay-realign.md:8` | "与外部 `D:\biancheng\LiveTranslate` 等仓库无关" | 归档只读文档，需脱敏例外处理（§5 PH-3） |
+| 9 | `AGENTS.md:7` | "与 `<本机位置>\LiveTranslate`、`LiveTranslate-NG` 等外部仓库无关" | 语义 = 声明副本与外部仓无关；可去掉盘符保留语义 |
+| 10 | `docs/archive/overlay-realign.md:8` | "与外部 `<本机位置>\LiveTranslate` 等仓库无关" | 归档只读文档，需脱敏例外处理（§5 PH-3） |
 
 ### 4.3 P2：合成/示例绝对路径（15 处）
 
@@ -227,7 +229,7 @@ cat > /tmp/lt-smoke/settings.json <<'EOF'
 `scripts/check_personal_paths.ps1`（新文件，~50 行，风格对齐 `fetch_sherpa_libs.ps1` 的 UTF-8 BOM 头）：
 
 - 输入：`git ls-files` 文本文件集（同 §2 排除后缀）。
-- **Tier1 硬失败**（退出码 1）：`fjqz177`；`C:[/]Users[/]<实名字母>`（负向断言排除 `<`、`<u>`、`<你的用户名>`、`<原开发者>` 占位）。
+- **Tier1 硬失败**（退出码 1）：本机 `$env:USERNAME` 动态匹配；`C:[/]Users[/]<实名字母>`（负向断言排除 `<`、`<u>`、`<你的用户名>`、`<原开发者>` 占位）。
 - **Tier2 硬失败**：任意盘符路径 `\b[A-Za-z]:[\\/]`，白名单 `C:[/]Windows`、`C:[/]Program Files`（大小写不敏感）、`https?://`、`ftp://`。
 - 命中输出 `文件:行: 内容`；零命中退出码 0。
 - AGENTS.md「约定」段加一行：**提交前自查跑 `powershell -File scripts/check_personal_paths.ps1`（路径卫生守护，见 docs/path-hygiene.md）**。
@@ -243,7 +245,7 @@ cat > /tmp/lt-smoke/settings.json <<'EOF'
 ```bash
 # 1. P0 归零（期望无输出）
 git ls-files | grep -vE '\.(png|jpg|ico|icns|onnx|dll|br|ttf|otf|woff2?|zip|gz)$' \
-  | xargs grep -nE 'fjqz177|C:/Users/[a-zA-Z]|C:\\Users\\[a-zA-Z]'
+  | xargs grep -nE 'C:/Users/[a-zA-Z]|C:\\Users\\[a-zA-Z]'
 # 2. P1+P2 归零（期望仅剩 P3 白名单命中：C:\Windows 系 / Program Files）
 git ls-files | grep -vE '\.(png|jpg|ico|icns|onnx|dll|br|ttf|otf|woff2?|zip|gz)$' \
   | xargs grep -nE "\b[A-Za-z]:[\\/]" | grep -vE 'https?:|ftp:' \

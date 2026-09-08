@@ -46,7 +46,7 @@
 
 | 键 | 值 | 评注 |
 |---|---|---|
-| `LIBCLANG_PATH`（:4） | `C:/Users/fjqz177/AppData/Local/Programs/Python/Python313/Lib/site-packages/clang/native` | **本机绝对路径，指向原开发者的 Python site-packages**。干净机上不存在 → bindgen 报 "unable to find libclang"。对策：改本文件，或 shell `export LIBCLANG_PATH=...`（cargo `[env]` 非 force，已有环境变量优先） |
+| `LIBCLANG_PATH`（:4） | `C:/Users/<原开发者>/AppData/Local/Programs/Python/Python313/Lib/site-packages/clang/native` | **本机绝对路径，指向原开发者的 Python site-packages**。干净机上不存在 → bindgen 报 "unable to find libclang"。对策：改本文件，或 shell `export LIBCLANG_PATH=...`（cargo `[env]` 非 force，已有环境变量优先） |
 | `CMAKE_POLICY_DEFAULT_CMP0091`（:9） | `NEW` | 双栈 CRT 纪律组成部分，所有机器通用，勿动 |
 | `CMAKE_MSVC_RUNTIME_LIBRARY`（:10） | `MultiThreaded` | 同上（AGENTS 大坑 5） |
 

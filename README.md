@@ -130,7 +130,7 @@ cargo run -p lt-app                 # GUI 冒烟
 PowerShell：
 
 ```powershell
-$env:LIVETRANSLATE_CONFIG_DIR = "D:\tmp\lt-smoke"
+$env:LIVETRANSLATE_CONFIG_DIR = "$env:TEMP\lt-smoke"
 New-Item -ItemType Directory -Force $env:LIVETRANSLATE_CONFIG_DIR | Out-Null
 '{ "models_dir": "C:/Users/<你的用户名>/.config/livetranslate/models" }' |
   Set-Content -Encoding Ascii "$env:LIVETRANSLATE_CONFIG_DIR\settings.json"
@@ -142,9 +142,9 @@ cargo run -p lt-app
 Git Bash：
 
 ```bash
-export LIVETRANSLATE_CONFIG_DIR=/d/tmp/lt-smoke
-mkdir -p /d/tmp/lt-smoke
-cat > /d/tmp/lt-smoke/settings.json <<'EOF'
+export LIVETRANSLATE_CONFIG_DIR=/tmp/lt-smoke
+mkdir -p /tmp/lt-smoke
+cat > /tmp/lt-smoke/settings.json <<'EOF'
 { "models_dir": "C:/Users/<你的用户名>/.config/livetranslate/models" }
 EOF
 cargo run -p lt-app
