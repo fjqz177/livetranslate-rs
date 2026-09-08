@@ -29,13 +29,13 @@ Rust 原生实时音频翻译应用：实时捕获系统声音（可选叠加麦
    - 「ASR 引擎」选引擎（funasr / whisper / qwen3）与模型档位；
    - 「音频」默认抓系统声音，勾选「麦克风」叠加麦的声音；
    - 「下载源」国内选 **ModelScope**，国外选 **HuggingFace**（没有 MS 源的模型会自动改走 hf-mirror.com 镜像下载）；
-   - 点「开始下载」拉取模型（SenseVoice ~250MB、Whisper tiny 32MB ~ large-v3 1.1GB、FunASR-Nano / Qwen3-ASR 各约 1GB；支持断点续传、可取消、失败自动重试）；下载完成引擎自动就绪。
+   - 模型未缓存时识别页会显示「下载」按钮，点它走下载管线拉取模型（SenseVoice ~250MB、Whisper tiny 32MB ~ large-v3 1.1GB、FunASR-Nano / Qwen3-ASR 各约 1GB；支持断点续传、可取消、失败自动重试）；下载完成引擎自动就绪。
 3. **配翻译**：「设置 → 翻译」页填入 OpenAI 兼容接口的 **API 地址**（如 `http://127.0.0.1:1234/v1`，即默认值，对应本地 LM Studio 风格端点）、**密钥**、**模型名**，选目标语言，点「**测试连接**」验证后即可说话出字。
 
 ### 界面速览
 
-- **悬浮窗**：实时显示原文/译文/时间戳；行 1 按钮 = 暂停/清除/复制/导出/穿透/置顶/设置/字幕/退出（悬停有文案）；顶部拖条拖动窗口；右键菜单含设置、隐藏。
-- **控制面板** 8 个标签页：`VAD/ASR`、`翻译`、`样式`、`字幕`、`基准测试`、`缓存`、`更新日志`、`日志`（均可在悬浮窗点「设置」打开）。样式页有 12 套预设、字体选择（内嵌思源兜底，系统字体锦上添花）、窗口位置复位（含字幕窗）。
+- **悬浮窗**：实时显示原文/译文/时间戳；行 1 = 隐藏 / 字幕 / 启停（运行↔暂停）/ 清除 / 紧凑切换 / 设置 / 退出（字幕、清除仅非紧凑模式显示），顶部拖条拖动窗口；行 2 = 穿透/置顶/自动滚动/任务栏 复选框 + 模型/源语言/目标语言下拉；**正文右键菜单** = 复制原文/译文/全部、导出（原文/译文/全部）、清除列表。
+- **控制面板** 8 个标签页：`VAD/ASR`、`翻译`、`样式`、`字幕`、`基准测试`、`缓存`、`更新日志`、`日志`（均可在悬浮窗点「设置」打开）。样式页有 14 套预设（+自定义）、字体选择（内嵌思源兜底，系统字体锦上添花）、窗口位置复位（含字幕窗）。
 - **字幕窗**（OBS 外挂字幕场景，默认关闭，在「字幕」页启用）：顶条悬停出现 ☰ / 穿透 / 锁定 / 关闭按钮；顶条任意键拖动、正文中键拖动（D-37 手工拖动，不再依赖 winit `drag_window`）；穿透时正文鼠标点击直达应用、顶条可交互，按 Ctrl 临时恢复；拖动自动避让悬浮窗并钳制到工作区。
 - **托盘**：暂停/继续、显示隐藏悬浮窗、显示隐藏字幕窗、打开设置、退出。托盘菜单运行在专用线程，打开菜单不冻结主界面；隐藏到托盘会弹 Windows 通知提示仍在运行。
 - 界面语言在「VAD / ASR」页底部切换，重启生效。
@@ -69,7 +69,7 @@ Rust 原生实时音频翻译应用：实时捕获系统声音（可选叠加麦
 | **CMake** | whisper-rs-sys 构建 whisper.cpp | `winget install Kitware.CMake` 或 [cmake.org/download](https://cmake.org/download/) |
 | **uv** | 构建期 libclang：钉版 18.1.1 装进仓库内 `.venv`，供 whisper-rs-sys 的 bindgen 用（约 25MB，免装整套 LLVM） | `winget install astral-sh.uv` 或 [uv 官网](https://docs.astral.sh/uv/) |
 
-装完自检：`rustc -V`、`cmake --version`、`uv --version` 都能出版本号即可开工。首次构建约十几分钟（要编译 whisper.cpp 与 onnxruntime 绑定）；之后日常构建是增量。**clone 后不需要任何本机路径配置**——libclang 怎么来的见第 2 节。
+装完自检：`rustc -V`、`cmake --version`、`uv --version` 都能出版本号即可开工。首次构建约十几分钟（要编译 whisper.cpp、跑 bindgen、链接 sherpa-onnx 预编译库）；之后日常构建是增量。**clone 后不需要任何本机路径配置**——libclang 怎么来的见第 2 节。
 
 > 备选路线：机器上已装有默认位置（如 `C:\Program Files\LLVM`）的 LLVM 时，删掉 `.cargo/config.toml` 里的 `LIBCLANG_PATH` 行也能编（clang-sys 会按内置目录自动发现）。uv 路线与 LLVM 路线**二选一，不混用**。
 
@@ -111,14 +111,14 @@ SHERPA_ONNX_ARCHIVE_DIR = { value = ".cache/sherpa-onnx", relative = true, force
 
 ```bash
 cargo test --workspace              # 全量：399 测全绿 + 6 个 ignored（真模型/真网络探针的离线纪律，平时不联网不跑）
-cargo build --release -p lt-app     # 单 exe：target/release/livetranslate.exe（约 62MB；分发请一并附 VC 运行库说明）
+cargo build --release -p lt-app     # 单 exe：target/release/livetranslate.exe（约 75.6MB；分发请一并附 VC 运行库说明）
 cargo run -p lt-app                 # GUI 冒烟
 ```
 
 **收工前提（两条都满足才算完成）**：
 
 1. `cargo test --workspace` 全绿；
-2. `cargo clippy --workspace` 零告警（lt-ui 基线 20 条、零净增）。
+2. `cargo clippy --workspace` **不新增告警**（存量基线：lt-ui 20 条，零净增）。
 
 - 只跑某个 crate：`cargo test -p lt-ui`（其余类似 lt-proto / lt-models / lt-asr …）；
 - 手动跑 ignored 探针：`cargo test --workspace -- --ignored`（需真模型/真网络，**平时不要跑**）。
@@ -133,9 +133,11 @@ PowerShell：
 $env:LIVETRANSLATE_CONFIG_DIR = "D:\tmp\lt-smoke"
 New-Item -ItemType Directory -Force $env:LIVETRANSLATE_CONFIG_DIR | Out-Null
 '{ "models_dir": "C:/Users/<你的用户名>/.config/livetranslate/models" }' |
-  Set-Content -Encoding UTF8 "$env:LIVETRANSLATE_CONFIG_DIR\settings.json"
+  Set-Content -Encoding Ascii "$env:LIVETRANSLATE_CONFIG_DIR\settings.json"
 cargo run -p lt-app
 ```
+
+> ⚠️ 编码**必须** `Ascii`：本示例内容为纯 ASCII；`Set-Content -Encoding UTF8` 在 Windows PowerShell 5.1 会写入 BOM，而 `settings_io::load` 直接 `serde_json::from_str` 解析——BOM 会让解析失败并按"无配置"处理（`models_dir` 丢失，全探测失败）。
 
 Git Bash：
 
@@ -148,7 +150,7 @@ EOF
 cargo run -p lt-app
 ```
 
-**方式 B（开发期灵活）**：直接 `cargo run -p lt-app`，模型未缓存时在「设置 → VAD / ASR」页点「开始下载」现场下载。
+**方式 B（开发期灵活）**：直接 `cargo run -p lt-app`，模型未缓存时在「设置 → VAD / ASR」页点「下载」现场下载。
 
 > debug 构建带控制台窗口（tracing 输出）；release 构建无控制台（`windows_subsystem=windows`）。
 
@@ -163,7 +165,7 @@ lt-proto → lt-i18n → lt-models → lt-pipeline → lt-asr → lt-translate �
 | crate | 职责 |
 |---|---|
 | `lt-proto` | 事件/命令/数据契约。**已冻结**：值域扩展（如 ASR 引擎增项）允许，结构字段/Cmd/Event 增删需评审 |
-| `lt-i18n` | UI 字符串。zh/en 两份 yaml **必须同步修改**（`assets/i18n/zh.yaml` + `en.yaml`，各 521 键） |
+| `lt-i18n` | UI 字符串。zh/en 两份 yaml **必须同步修改**（`assets/i18n/zh.yaml` + `en.yaml`，各 579 键） |
 | `lt-models` | Settings 读写、模型注册表（仓库映射/文件清单/体积/sha256）、下载器 |
 | `lt-pipeline` | wasapi 采集、silero VAD、onnxruntime 内嵌与解压 |
 | `lt-asr` | ASR worker 子进程 + IPC（worker 由主进程用**同 exe `--asr-worker`** 自拉起，Job Object 孤儿兜底） |

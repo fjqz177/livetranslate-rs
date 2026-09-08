@@ -21,7 +21,7 @@ Rust 原生实时音频翻译应用 **LiveTranslate-rs**（Python(PyQt6) 原版 
 uv sync                           # 首次/换机器后：构建期 libclang 由 uv 钉版管理（pyproject.toml dev 组 libclang==18.1.1；.cargo/config.toml [env] LIBCLANG_PATH relative=.venv + force 覆盖残留），clone 后零本机路径配置
 powershell -File scripts/fetch_sherpa_libs.ps1   # 首次：预取 sherpa-onnx 预编译库（120MB GitHub Release，默认联网下载）到 .cache/sherpa-onnx；构建期零联网、cargo clean 不丢；GitHub 慢用 -Mirror <前缀>/SHERPA_ONNX_MIRROR 走 Release 镜像（例 https://gh-proxy.com/，已实测）；build.rs 对 ARCHIVE_DIR 缺失不回落联网（硬报错），首次构建前必须跑
 cargo test --workspace            # 全量测试（滚动基线：当前 399 测全绿 + 6 个 ignored = 真模型/真网络探针离线纪律），收工前提
-cargo build --release -p lt-app   # 单 exe（现有 ~62MB；onnxruntime.dll + silero_vad.onnx 内嵌，启动解压到配置目录）
+cargo build --release -p lt-app   # 单 exe（现有 ~75.6MB；onnxruntime.dll + silero_vad.onnx 内嵌，启动解压到配置目录）
 cargo run -p lt-app               # GUI 冒烟
 ```
 
@@ -31,7 +31,7 @@ cargo run -p lt-app               # GUI 冒烟
 
 ## 工作区结构（依赖方向 = 分层规则）
 
-`crates/` 八库，依赖链单向：**lt-proto**（事件/命令/数据契约，已冻结：值域扩展如 ASR_ENGINES 增项允许，结构字段/Cmd/Event 增删需评审）→ **lt-i18n**（zh/en 各 521 键）→ **lt-models**（Settings/ModelConfig/模型注册表）→ **lt-pipeline**（wasapi 采集、silero VAD、ORT 内嵌）→ **lt-asr**（ASR worker 子进程 + IPC）→ **lt-translate**（async-openai LLM）→ **lt-ui**（egui 多窗口：悬浮窗/字幕窗/控制面板/日志窗/托盘）→ **lt-app**（装配入口 backend/pipeline/shell；ASR worker 以同 exe `--asr-worker` 自拉起，Job Object 孤儿兜底）。
+`crates/` 八库，依赖链单向：**lt-proto**（事件/命令/数据契约，已冻结：值域扩展如 ASR_ENGINES 增项允许，结构字段/Cmd/Event 增删需评审）→ **lt-i18n**（zh/en 各 579 键）→ **lt-models**（Settings/ModelConfig/模型注册表）→ **lt-pipeline**（wasapi 采集、silero VAD、ORT 内嵌）→ **lt-asr**（ASR worker 子进程 + IPC）→ **lt-translate**（async-openai LLM）→ **lt-ui**（egui 多窗口：悬浮窗/字幕窗/控制面板/日志窗/托盘）→ **lt-app**（装配入口 backend/pipeline/shell；ASR worker 以同 exe `--asr-worker` 自拉起，Job Object 孤儿兜底）。
 
 - `assets/`：i18n yaml、`fonts/`（三 brotli 字体 + OFL 许可）、图标、`reference/` 原版参照截图、`silero_vad.onnx`、`SOURCES.md`（资产来源/sha256）。
 - 分层规则：lt-ui **允许**只读依赖 lt-models（注册表/缓存探测）与 lt-translate（bench 直调）——2026-09-06 f266a8b 批次的有意决策（见 lt-ui/Cargo.toml 注释），不得依赖 lt-app；新增 UI 能力**不得扩 lt-proto 契约**（日志经 `LogLine{target}` 回流）；Settings 运行时落盘走 `Cmd::PersistSettings` 由 backend 写（300ms debounce 对齐原版）。
