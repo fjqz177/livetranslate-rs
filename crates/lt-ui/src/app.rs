@@ -16,7 +16,8 @@ use crate::state::{
 use crate::tray::{self, Tray};
 use crate::windows;
 use crate::windows::subtitle::{
-    clamp_to_screen, is_pos_visible, transparent_desired, zone_for_cursor, MonoRect, SubtitleZone,
+    clamp_to_screen, is_pos_visible, rects_intersect, resolve_overlap, transparent_desired,
+    zone_for_cursor, MonoRect, SubtitleZone,
 };
 use egui::{Context, ViewportId};
 use egui_wgpu::winit::Painter;
@@ -149,6 +150,13 @@ impl MultiWindowApp {
         self.tray = Some(tray::build(Arc::new(sender))?);
         self.sync_tray_checks();
         self.apply_overlay_flags();
+        // D-36：窗口创建后的 Z 序定型（创建序 = 悬浮窗先 → 字幕窗后，后建偏上——
+        // 此处把字幕窗压回悬浮窗之下；运行期显示路径由 set_visible 再维护）
+        #[cfg(windows)]
+        {
+            self.restack_subtitle_below_overlay();
+            self.raise_overlay();
+        }
         Ok(())
     }
 
@@ -520,6 +528,102 @@ impl MultiWindowApp {
             }
         }
         self.app_state.visible.insert(id, vis);
+        // D-36 Z 序维护：字幕窗恒压悬浮窗之下、悬浮窗恒置顶（topmost 带内相对序），
+        // 主界面永远可点可读；仅显示路径触发（隐藏无需维护）
+        if vis {
+            match id {
+                WinId::Subtitle => self.restack_subtitle_below_overlay(),
+                WinId::Overlay => self.raise_overlay(),
+                _ => {}
+            }
+        }
+    }
+
+    /// Win32 HWND 提取（raw-window-handle 桥；失败 = 窗口句柄不可得）
+    #[cfg(windows)]
+    fn hwnd_of(window: &Window) -> Option<::windows::Win32::Foundation::HWND> {
+        use raw_window_handle::{HasWindowHandle as _, RawWindowHandle};
+        let Ok(handle) = window.window_handle() else { return None };
+        let RawWindowHandle::Win32(win32) = handle.as_raw() else { return None };
+        Some(::windows::Win32::Foundation::HWND(win32.hwnd.get() as *mut core::ffi::c_void))
+    }
+
+    /// Z 序维护：字幕窗压到悬浮窗正下方（同 topmost 带内下沉；NOACTIVATE 不抢焦点；
+    /// D-36，原版两窗均置顶但相对序随意）
+    #[cfg(windows)]
+    fn restack_subtitle_below_overlay(&mut self) {
+        use ::windows::Win32::UI::WindowsAndMessaging::{
+            SetWindowPos, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE,
+        };
+        let (Some(ov), Some(sub)) = (self.find(WinId::Overlay), self.find(WinId::Subtitle)) else {
+            return;
+        };
+        let (Some(ov_h), Some(sub_h)) = (Self::hwnd_of(&ov.window), Self::hwnd_of(&sub.window)) else {
+            return;
+        };
+        let _ = unsafe {
+            SetWindowPos(
+                sub_h,
+                Some(ov_h),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER,
+            )
+        };
+    }
+
+    /// Z 序维护：悬浮窗抬顶（topmost 带顶；主界面按钮/下拉恒可读可点 — D-36）
+    #[cfg(windows)]
+    fn raise_overlay(&mut self) {
+        use ::windows::Win32::UI::WindowsAndMessaging::{
+            SetWindowPos, HWND_TOP, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE,
+        };
+        let Some(ov) = self.find(WinId::Overlay) else { return };
+        let Some(h) = Self::hwnd_of(&ov.window) else { return };
+        let _ = unsafe {
+            SetWindowPos(
+                h,
+                Some(HWND_TOP),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER,
+            )
+        };
+    }
+
+    /// 当前窗所在显示器的工作区矩形（rcWork；物理 px → 逻辑 px）。
+    /// winit 无 work-area API（既有已知偏差"任务栏按 48 逻辑 px 估"），D-36 起
+    /// 钳屏改用 rcWork：字幕窗钳到屏底不再压任务栏（默认场景 = 视频底部）。
+    /// 多显示器混合 DPI 为近似（统一用当前窗 scale 换算），已知近似。
+    #[cfg(windows)]
+    fn work_area_rect(window: &Window) -> Option<MonoRect> {
+        use ::windows::Win32::Graphics::Gdi::{
+            GetMonitorInfoW, MonitorFromWindow, MONITOR_DEFAULTTONEAREST, MONITORINFOEXW,
+        };
+        let h = Self::hwnd_of(window)?;
+        unsafe {
+            let mon = MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST);
+            if mon.is_invalid() {
+                return None;
+            }
+            let mut info: MONITORINFOEXW = std::mem::zeroed();
+            info.monitorInfo.cbSize = std::mem::size_of::<MONITORINFOEXW>() as u32;
+            if !GetMonitorInfoW(mon, &mut info.monitorInfo).as_bool() {
+                return None;
+            }
+            let s = window.scale_factor() as f32;
+            let r = info.monitorInfo.rcWork;
+            Some(MonoRect {
+                x: (r.left as f32 / s).round() as i32,
+                y: (r.top as f32 / s).round() as i32,
+                w: ((r.right - r.left) as f32 / s).round() as i32,
+                h: ((r.bottom - r.top) as f32 / s).round() as i32,
+            })
+        }
     }
 
     /// 悬浮窗显隐统一入口（托盘 OVERLAY_TOGGLE 与主面板"隐藏"按钮共用；
@@ -1026,7 +1130,14 @@ impl MultiWindowApp {
                     let size = window.inner_size().to_logical::<f32>(scale);
                     let cur = ((pos.x as f32 / scale as f32) as i32, (pos.y as f32 / scale as f32) as i32);
                     // current_monitor 优先作兜底屏（对齐原版"未命中 → 主屏"的就近语义）
-                    let monitors = Self::monitor_rects(window.available_monitors(), window.current_monitor());
+                    let mut monitors = Self::monitor_rects(window.available_monitors(), window.current_monitor());
+                    // D-36：首选（窗口当前所在）屏矩形替换为工作区 rcWork（钳屏不压任务栏）
+                    #[cfg(windows)]
+                    if let Some(wa) = Self::work_area_rect(&window) {
+                        if let Some(first) = monitors.first_mut() {
+                            *first = wa;
+                        }
+                    }
                     let (x, y) = clamp_to_screen(cur.0, cur.1, size.width as i32, size.height as i32, &monitors);
                     if (x, y) != cur {
                         window.set_outer_position(winit::dpi::LogicalPosition::new(f64::from(x), f64::from(y)));
@@ -1116,6 +1227,54 @@ impl MultiWindowApp {
         ((pos.x as f32 / scale) as i32, (pos.y as f32 / scale) as i32)
     }
 
+    /// 当前字幕窗逻辑几何 (x, y, w, h)（避让判定用）
+    fn subtitle_geo(&self) -> (i32, i32, i32, i32) {
+        let Some(hw) = self.find(WinId::Subtitle) else {
+            return (0, 0, 0, 0);
+        };
+        let scale = hw.window.scale_factor() as f32;
+        let pos = hw.window.outer_position().unwrap_or_default();
+        let size = hw.window.inner_size().to_logical::<f32>(hw.window.scale_factor());
+        (
+            (pos.x as f32 / scale) as i32,
+            (pos.y as f32 / scale) as i32,
+            size.width as i32,
+            size.height as i32,
+        )
+    }
+
+    /// 重叠避让（D-36）：拖动落点（字幕窗/悬浮窗 Moved 防抖回调）后执行——
+    /// 相交则把字幕窗沿最短方向推出悬浮窗并钳屏；无处可退保持现状
+    /// （Z 序兜底：字幕窗恒压悬浮窗之下，主界面始终可操作）。
+    fn try_resolve_overlap(&mut self) {
+        let Some(sub) = self.find(WinId::Subtitle) else { return };
+        if self.find(WinId::Overlay).is_none() {
+            return;
+        }
+        let visible = |id: WinId| self.app_state.visible.get(&id).copied().unwrap_or(false);
+        if !visible(WinId::Subtitle) || !visible(WinId::Overlay) {
+            return;
+        }
+        let sub_geo = self.subtitle_geo();
+        let ov_geo = self.overlay_geo();
+        let ov = (
+            ov_geo.0,
+            ov_geo.1,
+            ov_geo.2 as i32,
+            ov_geo.3 as i32,
+        );
+        if !rects_intersect(sub_geo, ov, crate::windows::subtitle::OVERLAP_SAFETY) {
+            return;
+        }
+        let monitors =
+            Self::monitor_rects(sub.window.available_monitors(), sub.window.current_monitor());
+        if let Some((nx, ny)) = resolve_overlap(sub_geo, ov, &monitors, crate::windows::subtitle::OVERLAP_SAFETY) {
+            // 让位位置直写（防抖保存由 Moved 事件承继）
+            sub.window.set_outer_position(winit::dpi::LogicalPosition::new(f64::from(nx), f64::from(ny)));
+            self.app_state.schedule_subtitle_pos_save((nx, ny));
+        }
+    }
+
     /// 显示器矩形表（逻辑 px，主屏/当前屏排首作钳制兜底；winit 无工作区概念 →
     /// 全显示器尺寸，原版 availableGeometry 剔除任务栏为已知偏差）
     fn monitor_rects(
@@ -1173,6 +1332,8 @@ impl MultiWindowApp {
         self.app_state.send_cmd(lt_proto::Cmd::PersistSettings(Box::new(
             self.app_state.settings.clone(),
         )));
+        // D-36：悬浮窗落点避让（与字幕窗相交则推出字幕窗；让位经 Moved 防抖再保存）
+        self.try_resolve_overlap();
     }
 
     /// 字幕窗位置防抖到期：读位置（逻辑 px）写 window_x/y 并持久化（原版 position_changed）
@@ -1192,6 +1353,8 @@ impl MultiWindowApp {
         self.app_state.send_cmd(lt_proto::Cmd::PersistSettings(Box::new(
             self.app_state.settings.clone(),
         )));
+        // D-36：字幕窗落点避让（与悬浮窗相交则推出；让位位置直写后 Moved 防抖兜底）
+        self.try_resolve_overlap();
     }
 
     /// 穿透轮询（原版 _check_click_through 50ms）：光标在头部区（消息区之上）

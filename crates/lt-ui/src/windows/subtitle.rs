@@ -226,6 +226,51 @@ pub fn clamp_to_screen(x: i32, y: i32, w: i32, h: i32, monitors: &[MonoRect]) ->
     (nx, ny)
 }
 
+/// 避让安全边距（逻辑 px；D-36：字幕窗让位时与悬浮窗保持的距离）
+pub const OVERLAP_SAFETY: i32 = 24;
+
+/// 矩形相交（x,y,w,h 表示）；边缘相切不算相交（< 而非 <=）
+pub fn rects_intersect(a: (i32, i32, i32, i32), b: (i32, i32, i32, i32), safety: i32) -> bool {
+    let (ax, ay, aw, ah) = a;
+    let (bx, by, bw, bh) = b;
+    ax < bx + bw + safety
+        && bx < ax + aw + safety
+        && ay < by + bh + safety
+        && by < ay + ah + safety
+}
+
+/// 重叠避让（D-36）：把 sub 沿四个方向推出 ov（加安全边距）再钳屏，选移动成本
+/// （曼哈顿距离）最小的合法方位；四向都被屏壁夹死（钳制后仍相交）→ None（保持
+/// 现状，Z 序兜底——字幕窗恒压悬浮窗之下，主界面始终可操作）。
+pub fn resolve_overlap(
+    sub: (i32, i32, i32, i32),
+    ov: (i32, i32, i32, i32),
+    monitors: &[MonoRect],
+    safety: i32,
+) -> Option<(i32, i32)> {
+    let (sx, sy, sw, sh) = sub;
+    let (ox, oy, ow, oh) = ov;
+    let candidates = [
+        (sx, oy - sh - safety),          // 推出到上方
+        (sx, oy + oh + safety),          // 推出到下方
+        (ox - sw - safety, sy),          // 推出到左侧
+        (ox + ow + safety, sy),          // 推出到右侧
+    ];
+    let mut best: Option<((i32, i32), i32)> = None;
+    for (cx, cy) in candidates {
+        let (nx, ny) = clamp_to_screen(cx, cy, sw, sh, monitors);
+        if rects_intersect((nx, ny, sw, sh), ov, 0) {
+            continue; // 钳制后仍相交（屏壁夹死）→ 该方向不可用
+        }
+        let cost = (nx - sx).abs() + (ny - sy).abs();
+        match &best {
+            Some((_, c)) if *c <= cost => {}
+            _ => best = Some(((nx, ny), cost)),
+        }
+    }
+    best.map(|(p, _)| p)
+}
+
 /// 每句取译文（原版 _refresh_display 的 translation 分支逐字等价）：
 /// 命中 lang → 其值（可为空串）；否则空键 "" 且非空；再否则首个非空值；全无 → None
 pub fn pick_translation(lang: &str, tl: &BTreeMap<String, String>) -> Option<String> {
@@ -921,6 +966,53 @@ mod tests {
         // Ctrl 临时恢复：全部区域解穿透（拖动可达）
         assert!(!transparent_desired(true, SubtitleZone::Body, true));
         assert!(!transparent_desired(true, SubtitleZone::Strip, true));
+    }
+
+    // ── D-36 重叠避让（矩形相交 + 四向推出选优 + 屏壁夹死兜底）──
+
+    #[test]
+    fn rects_intersect_boundaries() {
+        // 相离
+        assert!(!rects_intersect((0, 0, 100, 100), (200, 0, 100, 100), 0));
+        // 边缘相切不算相交
+        assert!(!rects_intersect((0, 0, 100, 100), (100, 100, 100, 100), 0));
+        // 两轴间距均 < 安全边距 → 视为相交（避让触发带）
+        assert!(rects_intersect((0, 0, 100, 100), (115, 118, 100, 100), OVERLAP_SAFETY));
+        // y 轴间距 30 > 24 安全距 → 不触发
+        assert!(!rects_intersect((0, 0, 100, 100), (115, 130, 100, 100), OVERLAP_SAFETY));
+        // 部分重叠 / 包含
+        assert!(rects_intersect((0, 0, 100, 100), (50, 50, 100, 100), 0));
+        assert!(rects_intersect((0, 0, 300, 300), (50, 50, 100, 100), 0));
+    }
+
+    #[test]
+    fn resolve_overlap_moves_shortest_direction() {
+        let monitors = vec![MonoRect { x: 0, y: 0, w: 1920, h: 1080 }];
+        // 悬浮窗在中央偏上，字幕窗在其右下：上方/下方/左/右四候选，
+        // 右候选被钳屏拆回窗内而失效，成本最小 = 下移 → 推出到悬浮窗下方
+        let sub = (900, 700, 800, 120);
+        let ov = (760, 600, 500, 240);
+        assert!(rects_intersect(sub, ov, 0));
+        let (nx, ny) = resolve_overlap(sub, ov, &monitors, OVERLAP_SAFETY).unwrap();
+        let nsub = (nx, ny, sub.2, sub.3);
+        assert!(!rects_intersect(nsub, ov, 0), "推出后不得相交: {nsub:?}");
+        assert_eq!(nx, sub.0, "x 不动");
+        assert_eq!(ny, ov.1 + ov.3 + OVERLAP_SAFETY, "应推出到悬浮窗下方");
+    }
+
+    #[test]
+    fn resolve_overlap_clamped_fallback() {
+        let monitors = vec![MonoRect { x: 0, y: 0, w: 1920, h: 1080 }];
+        // 字幕窗与悬浮窗都贴着主屏四周、窗高接近屏高 → 上下方向被屏壁夹死、左右亦然 → None
+        let ov = (0, 0, 1920, 1080);
+        let sub = (200, 100, 1600, 1000);
+        assert_eq!(resolve_overlap(sub, ov, &monitors, 0), None);
+        // 两侧有余量时：推出到上方（clamp 后与悬浮窗不交）
+        let ov2 = (0, 300, 1920, 600);
+        let sub2 = (100, 500, 800, 160);
+        let (nx, ny) = resolve_overlap(sub2, ov2, &monitors, OVERLAP_SAFETY).unwrap();
+        let nsub = (nx, ny, sub2.2, sub2.3);
+        assert!(!rects_intersect(nsub, ov2, 0));
     }
 
     /// D-36 顶条 headless 冒烟：悬停态（含按钮/菜单路径）与隐藏+锁定态各跑两帧不 panic
