@@ -33,7 +33,7 @@
 
 ```bash
 git ls-files | grep -vE '\.(png|jpg|ico|icns|onnx|dll|br|ttf|otf|woff2?|zip|gz)$' > /tmp/tf.txt
-xargs grep -nE 'C:/Users/[a-zA-Z]|C:\\Users\\[a-zA-Z]' < /tmp/tf.txt   # A（实名 Users 路径，占位 < 豁免；裸用户名由守护脚本动态查）
+# A 用户名：以本机 $env:USERNAME grep（此处不写字面，避免本文件自命中；守护脚本已内置）
 xargs grep -nE "\b[A-Za-z]:[\\/]" < /tmp/tf.txt | grep -vE "https?:|ftp:"   # B
 xargs grep -nE "/home/[a-z]|/Users/|\\$\{?HOME\}?|%USERPROFILE%" < /tmp/tf.txt  # C
 xargs grep -nE "file://" < /tmp/tf.txt; xargs grep -nE '"~/' < /tmp/tf.txt     # D
@@ -84,35 +84,38 @@ git grep -nE "/d/tmp" -- README.md                                    # E
 
 ### 4.3 P2：合成/示例绝对路径（15 处）
 
+> 本节"原值"列已脱敏为文字描述（合成值本身非个人信息，但为使本文件通过 PH-5 守护脚本、保持"入库零盘符字面量"自洽，不以字面复现）；精确原文见施工前 git 历史（1f0ebbb 及其父提交）。
+
 **Rust 测试合成值（12）**——共同点：不暴露个人信息，但属绝对路径字面量；语义全部可由 `std::env::temp_dir()` 派生等价替换：
 
 | # | 位置 | 原值 | 被测语义 |
 |---|---|---|---|
-| 11 | `crates/lt-asr/src/engines/nano.rs:209` | `Z:/no/such/dir` | 目录不存在 → `EngineError::Load` |
+| 11 | `crates/lt-asr/src/engines/nano.rs:209` | Z 盘合成缺失目录 | 目录不存在 → `EngineError::Load` |
 | 12 | `crates/lt-asr/src/engines/qwen3.rs:198` | 同上 | 同上 |
-| 13 | `crates/lt-asr/src/engines/whisper.rs:259` | `Z:/no/such/ggml-tiny-q5_1.bin` | 模型文件缺失报错 |
-| 14 | `crates/lt-asr/src/sensevoice.rs:300` | `Z:/no/such/dir` | 同 #11 |
-| 15 | `crates/lt-app/src/backend.rs:498` | `D:/models/ggml-tiny.bin` | whisper 本地路径 → 不触发下载 |
-| 16 | `crates/lt-models/src/cache.rs:537` | `D:/my/model.bin` | 本地路径不进 missing 清单 |
-| 17 | `crates/lt-models/src/cache.rs:599` | `D:/models/ggml-tiny.bin` | 本地路径直通不命中缓存 |
-| 18 | `crates/lt-ui/src/windows/panel/vad.rs:1347` | `D:/models/ggml-tiny.bin` | 本地路径不在档位下拉 |
-| 19 | `crates/lt-ui/src/windows/panel/vad.rs:1356` | `C:/x/my-model.bin` | 本地路径显示"本地: <stem>" |
-| 20 | `crates/lt-ui/src/app.rs:2135` | `[a/b] 快照就绪: C:/x` | 任意日志行透传（字符串任意性） |
-| 21 | `crates/lt-ui/src/state.rs:2915` | `D:/bg.png` | 字幕行 bg_image 字段往返 |
-| 22 | `crates/lt-ui/src/fonts.rs:536`（554 为其断言镜像） | `D:\userfonts\abs.ttf` | 注册表字体条目绝对路径不被系统根拼接 |
+| 13 | `crates/lt-asr/src/engines/whisper.rs:259` | Z 盘合成缺失模型 | 模型文件缺失报错 |
+| 14 | `crates/lt-asr/src/sensevoice.rs:300` | Z 盘合成缺失目录 | 同 #11 |
+| 15 | `crates/lt-app/src/backend.rs:498` | D 盘合成模型路径 | whisper 本地路径 → 不触发下载 |
+| 16 | `crates/lt-models/src/cache.rs:537` | D 盘合成命名路径 | 本地路径不进 missing 清单 |
+| 17 | `crates/lt-models/src/cache.rs:599` | D 盘合成模型路径 | 本地路径直通不命中缓存 |
+| 18 | `crates/lt-ui/src/windows/panel/vad.rs:1347` | D 盘合成模型路径 | 本地路径不在档位下拉 |
+| 19 | `crates/lt-ui/src/windows/panel/vad.rs:1356` | C 盘合成命名路径 | 本地路径显示"本地: <stem>" |
+| 20 | `crates/lt-ui/src/app.rs:2135` | 快照就绪: C 盘根样例 | 任意日志行透传（字符串任意性） |
+| 21 | `crates/lt-ui/src/state.rs:2915` | D 盘背景图样例 | 字幕行 bg_image 字段往返 |
+| 22 | `crates/lt-ui/src/fonts.rs:536`（554 为其断言镜像） | D 盘字体路径样例 | 注册表字体条目绝对路径不被系统根拼接 |
+| 26 | `crates/lt-app/src/pipeline.rs:1851` | Z 盘合成缺失模型 | 不存在的本地 whisper 路径 → None（**PH-2 施工中由守护脚本试运行抓出的建表遗漏，419adb8 补漏**） |
 
 **UI 文案（1）**
 
 | # | 位置 | 原值 | 说明 |
 |---|---|---|---|
-| 23 | `crates/lt-ui/src/windows/panel/subtitle_page.rs:447` | `hint_text("D:/bg.png")` | 用户可见的输入框幽灵提示；换中性示例 |
+| 23 | `crates/lt-ui/src/windows/panel/subtitle_page.rs:447` | hint_text（D 盘背景图样例） | 用户可见的输入框幽灵提示；改为 `…/bg.png` 占位（无盘符字面量） |
 
 **docs 示例（2）**
 
 | # | 位置 | 原值 | 说明 |
 |---|---|---|---|
-| 24 | `README.md:133`（PS 块）+ `:145-147`（Git Bash 块 3 行） | `D:\tmp\lt-smoke`、`/d/tmp/lt-smoke` | 冒烟临时目录示例；改 `$env:TEMP` / `/tmp` |
-| 25 | `docs/archive/font-system.md:473` | `LIVETRANSLATE_CONFIG_DIR=D:/tmp/lt_smoke` | 归档文档；无个人信息，**保留不改**（记录当时命令原貌） |
+| 24 | `README.md:133`（PS 块）+ `:145-147`（Git Bash 块 3 行） | D 盘临时目录样例（PS/Bash 两风格） | 冒烟临时目录示例；改 `$env:TEMP` / `/tmp` |
+| 25 | `docs/archive/font-system.md:473` | LIVETRANSLATE_CONFIG_DIR= D 盘临时目录样例 | 归档文档；无个人信息，**保留不改**（记录当时命令原貌；守护脚本对 archive 仅 WARN） |
 
 ### 4.4 P3：豁免保留（附依据）
 
@@ -184,14 +187,14 @@ if !md.is_dir() {
 
 **基线影响**：不增删 `#[test]` 函数（#6 只加 `#[ignore]`）→ 总数 405 不变；常规面 399 → 398 绿（#6 转入 ignored 面），ignored 6 → 7。AGENTS 基线表述随 PH-1 提交同步更新为"398 测全绿 + 7 ignored"。
 
-### PH-2 合成路径 temp 派生（P2 #11-#22）
+### PH-2 合成路径 temp 派生（P2 #11-#22、#26）
 
 统一模式（零绝对字面量、语义等价、机器无关）：
 
 ```rust
 let base = std::env::temp_dir();
-// "不存在目录"类（原 Z:/no/such/dir）：base.join("lt_no_such_dir")
-// "本地模型路径"类（原 D:/models/ggml-tiny.bin）：base.join("lt_local").join("ggml-tiny.bin")
+// "不存在目录"类（原 Z 盘合成样例）：base.join("lt_no_such_dir")
+// "本地模型路径"类（原 D 盘合成样例）：base.join("lt_local").join("ggml-tiny.bin")
 //   —— stem 语义保留（vad.rs:1356 断言"本地: my-model"不受影响）
 // "注册表绝对路径条目"（fonts.rs:536）：base.join("lt_userfonts").join("abs.ttf")
 // "任意字符串透传"（app.rs:2135）：format!("快照就绪: {}/x", base.display())
@@ -200,9 +203,9 @@ let base = std::env::temp_dir();
 注意事项：
 
 1. 断言涉及字符串形式且含分隔符时，沿用仓库既有 `.replace('\\', "/")` 归一先例（`cache.rs:583/595`、`download/mod.rs:822`）。逐条核对表：#15/16/17/18 断言为 `is_empty()`/`None`（无字符串比较，安全）；#19 断言 `starts_with("本地: ")` + stem（stem 从 `file_name()` 取，不受分隔符影响，安全）；#11-14 断言 `matches!(Err(Load))`（安全）；#20 透传断言用原串比较（安全）；#21 字段往返（安全）；#22 断言 `PathBuf` 相等（`base.join()` 两侧同源，安全）。
-2. `Z:` 系（#11-14）另有一层动机：某些机器可能真有 Z: 映射盘，`Z:/no/such/dir` 虽仍几乎必然不存在，但 temp 派生消除该假设。
-3. **`subtitle_page.rs:447`（#23）**：用户可见文案，`hint_text("D:/bg.png")` → `hint_text("C:/bg.png")`（C: 全 Windows 必有、非个人；不 temp 化——UI 提示不宜展示运行期临时目录）。
-4. `docs/archive/font-system.md:473`（#25）保留不动（归档只读 + 无个人信息）。
+2. Z 盘系（#11-14）另有一层动机：某些机器可能真有 Z 盘映射，Z 盘合成样例虽仍几乎必然不存在，但 temp 派生消除该假设。
+3. **`subtitle_page.rs:447`（#23）**：用户可见文案，hint 由 D 盘背景图样例改为 `…/bg.png` 占位（不 temp 化——UI 提示不宜展示运行期临时目录；也不用 C 盘字面量——守护脚本 Tier2 零盘符字面量，见 419adb8）。
+4. `docs/archive/font-system.md:473`（#25）保留不动（归档只读 + 无个人信息；守护脚本对 archive 仅 WARN）。
 
 ### PH-3 docs 脱敏（P0 #8 + P1 #9/#10）
 
@@ -213,7 +216,7 @@ let base = std::env::temp_dir();
 ### PH-4 README 冒烟示例 %TEMP% 化（P2 #24）
 
 ```powershell
-$env:LIVETRANSLATE_CONFIG_DIR = "$env:TEMP\lt-smoke"     # 原 "D:\tmp\lt-smoke"
+$env:LIVETRANSLATE_CONFIG_DIR = "$env:TEMP\lt-smoke"     # 原 D 盘临时目录样例
 ```
 
 ```bash
@@ -243,13 +246,12 @@ cat > /tmp/lt-smoke/settings.json <<'EOF'
 ## 6. 验收标准（可执行）
 
 ```bash
-# 1. P0 归零（期望无输出）
-git ls-files | grep -vE '\.(png|jpg|ico|icns|onnx|dll|br|ttf|otf|woff2?|zip|gz)$' \
-  | xargs grep -nE 'C:/Users/[a-zA-Z]|C:\\Users\\[a-zA-Z]'
-# 2. P1+P2 归零（期望仅剩 P3 白名单命中：C:\Windows 系 / Program Files）
+# 1. P0+P1+P2 归零：守护脚本一把手（内置实名 Users/本机用户名动态匹配 + 白名单外盘符检查）
+powershell -File scripts/check_personal_paths.ps1   # 期望 OK、退出码 0（archive 仅 WARN 不阻断）
+# 2. 兜底人工通查（盘符通查；命中应仅剩 P3 白名单：C 盘系统级路径）
 git ls-files | grep -vE '\.(png|jpg|ico|icns|onnx|dll|br|ttf|otf|woff2?|zip|gz)$' \
   | xargs grep -nE "\b[A-Za-z]:[\\/]" | grep -vE 'https?:|ftp:' \
-  | grep -viE 'C.[/\\]Windows|C.[/\\]Program Files'
+  | grep -viE 'C.[/\\]+Windows|C.[/\\]+Program Files'
 # 3. 基线不回退（PH-1 后：常规面 398 绿 + 7 ignored，总数 405 不变）
 cargo test --workspace
 # 4. 探针可用性（本机验证）
