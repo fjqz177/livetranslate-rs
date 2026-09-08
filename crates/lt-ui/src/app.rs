@@ -336,7 +336,12 @@ impl MultiWindowApp {
         if want_repaint {
             window.request_redraw();
         }
-        // 整窗半透明（LWA_ALPHA）：样式页改背景不透明度/窗口不透明度后即时刷新
+        // 整窗半透明（LWA_ALPHA）：样式页改背景不透明度/窗口不透明度后即时刷新。
+        // D-34 修复：winit `apply_diff`（window_state.rs:395-410）在 VISIBLE/层
+        // flags 变化时用自身 flags 表**整体重写 GWL_EXSTYLE**——我们手工挂的
+        // WS_EX_LAYERED 不在其状态里，隐藏→托盘重显示后被清（悬浮窗"纯黑"，
+        // win_layer_spike 实锤：hide 后 LAYERED=true→false）。缓存比对盲于外部
+        // 清位 → 每帧实测 EXSTYLE，缺位即重挂（幂等自愈，覆盖一切清位路径）。
         #[cfg(windows)]
         let target_alpha = match id {
             WinId::Overlay => Some(overlay_layered_alpha(&self.app_state)),
@@ -346,7 +351,7 @@ impl MultiWindowApp {
         #[cfg(not(windows))]
         let target_alpha = None;
         if let Some(ta) = target_alpha {
-            if self.windows[pos].layer_alpha != Some(ta) {
+            if self.windows[pos].layer_alpha != Some(ta) || !window_has_layered(&window) {
                 #[cfg(windows)]
                 apply_layered(&window, ta);
                 self.windows[pos].layer_alpha = Some(ta);
@@ -1564,6 +1569,19 @@ fn overlay_layered_alpha(s: &AppState) -> u8 {
 fn subtitle_layered_alpha(s: &AppState) -> u8 {
     let sm = &s.settings.subtitle_mode;
     if sm.bg_opacity == 0 { 255 } else { sm.bg_opacity.min(255) as u8 }
+}
+
+/// WS_EX_LAYERED 实测（D-34：winit apply_diff 可能整体重写 EXSTYLE 清掉该位；
+/// 读回实测而非信任缓存，缺位即由 run_frame 重挂）
+#[cfg(windows)]
+fn window_has_layered(window: &Window) -> bool {
+    use raw_window_handle::{HasWindowHandle as _, RawWindowHandle};
+    use ::windows::Win32::Foundation::HWND;
+    use ::windows::Win32::UI::WindowsAndMessaging::{GetWindowLongW, GWL_EXSTYLE, WS_EX_LAYERED};
+    let Ok(handle) = window.window_handle() else { return false };
+    let RawWindowHandle::Win32(win32) = handle.as_raw() else { return false };
+    let hwnd = HWND(win32.hwnd.get() as *mut core::ffi::c_void);
+    unsafe { (GetWindowLongW(hwnd, GWL_EXSTYLE) as u32) & WS_EX_LAYERED.0 != 0 }
 }
 
 /// WS_EX_LAYERED + SetLayeredWindowAttributes：整窗半透明（等价 Qt 整窗不透明度，
