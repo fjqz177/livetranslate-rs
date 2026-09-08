@@ -4,7 +4,7 @@
 - **证据基线**：commit `314644b`（评审基线）+ `4d7d84f`（评审报告 `docs/architecture-review.md`）；405 测 = 398 常规 + 7 ignored
 - **取证方法**：评审报告（6 只读子代理七维度 + 主线程交叉验证）之上，本方案另派 4 路专项取证——①lt-app 装配层全测绘 ②lt-ui 窗口巨石全测绘 ③契约/设置镜像/字符串旁路精确定性 ④外部选型调研（arc-swap / winit 事件模型 / panic 监督 / 单实例激活 / 依赖治理 / channel 生态 / CI runner 现状，来源见 §8.3）。主线程另通读 `crates/lt-app/src/main.rs` 全文与根 `Cargo.toml` 复核。
 - **效力**：阶段二活跃施工依据（本目录，非归档）。各波次（§5）为独立工作包，可按裁决调整顺序与取舍；契约变更本身仍随波次落地。**本文档先行独立 `docs(arch)` 提交，先于一切实现提交**（docs 提交时机纪律）。
-- **状态**：方案定稿，待裁决开工。
+- **状态**：方案定稿 v1.1（2026-09-09 二次严审修订：补硬约束 INV1~INV12、线程清单 v2、停机协议〔封堵停机-respawn 竞态设计洞〕、TlSwitch 七臂收敛三臂、lt-backend 线程退役决策、行为偏差登记表 D-60+、ADR 备选记录、波次依赖与回滚语义），待裁决开工。
 
 ---
 
@@ -62,6 +62,25 @@
 - **P6 迁移不改行为**：每波全测绿；波次内纯粹的结构移动与行为修正分开提交，行为差异登记 D-xx（建议架构波次占用 **D-60 起**，避开 data-lifecycle 候选的 D-38~ 段，以届时裁决为准）。
 - **P7 架构可验证**：依赖方向、spawn 禁令、字符串旁路禁令全部脚本化进 CI（§6）——架构不是愿景，是每次提交都被机器检查的约束。
 
+### 2.1 硬约束（架构不变量 INV1~INV12）
+
+以下不变量是目标架构的**可执行约束**：每条挂钩一个检查手段（测试/守护脚本/评审检查项），随所在波次落地激活，此后任何提交违例即回退。§6 守护体系按编号引用。
+
+| # | 不变量 | 违例即错的真实场景（来源） | 检查手段 |
+|---|---|---|---|
+| INV1 | **回流通路唯一**：后台→UI 仅"动脉 → `UiMsg::Events` → shell"一条路；proxy 生产者仅动脉桥 | proxy 泛洪 1350fps 自旋（大坑 1）；D-33 事件仅投递串行 | §6.2 grep：`send_event` 白名单=动脉桥 |
+| INV2 | **控制通路唯一**：UI→管道仅 cmd mpsc → shell 单向；W4 起 `UiMsg::Cmd` 变体删除、lt-backend 线程退役 | backend.rs:84-117 四处 reflow 是镜像时代的双通路残余（grep 实证为唯一生产者） | W4 后 grep `UiMsg::Cmd` = 0 |
+| INV3 | **线程出生唯一**：仅 `Supervisor::spawn`（唯一白名单特例 lt-ui/tray.rs，理由见线程表）；出生必命名 + ThreadRole；死亡必 ThreadDied | lt-tl worker panic 永死无感知（取证实锤） | §6.2 grep `thread::spawn` |
+| INV4 | **停机序固定**：`stopping` 置位 → 线程信号 → join 全部 → 动脉排空 join → persist → 托盘退出 → Job Object；**stopping 置位后禁止 respawn** | 否则停机时 supervisor 与 stop 竞速、把正在关闭的线程重新拉起（二次严审封堵的竞态洞） | 单测：停机中注入 panic 不 respawn；stop 全 join |
+| INV5 | **重启即会话复位**：capture/ASR 线程任何重启一律清段队列 + VAD reset + interim 代际 bump，禁止半态续跑；ASR 重生固定进待命态入口 | 半态续跑 = 新旧设备/会话段拼接错位（R31 同源） | 重启路径集成测试 |
+| INV6 | **叶级锁**：锁内禁止发事件/阻塞/取第二把锁 | if-let MutexGuard 死锁史（大坑 11） | 评审检查项 + capture.rs:139-143 制度注释延续 |
+| INV7 | **设置单写者**：Settings 内存变更仅发生在 winit 主线程（UI 帧编辑 + shell 命令）；`bus.publish` 仅经 orchestrator 公有方法且在 winit 线程调用；publish 幂等、派生视图纯函数 | 多写者 = 镜像网复发（AH-3 实锤） | publish 调用点 grep（仅 orchestrator）+ R18 回归测试 |
+| INV8 | **事件序**：同生产者 FIFO；同实体事件固定单生产者线程；动脉单次 wake 批量 ≤256 条 | 排序破坏 = 译文配对错乱（AH-4 同类病灶） | 序保持集成测试 |
+| INV9 | **字符串协议禁令**：跨 crate 边界禁止分隔符/前缀/哨兵编码 | 四旁路史（R5） | §6.2 四模式 grep |
+| INV10 | **窗口位自愈 + 可见性单真源**：手工窗口位每帧实测缺位即重挂（大坑 15 延续）；可见性仅 WindowManager 变更 | D-34 半透明丢失复现 | 既有每帧实测纪律 + `is_visible()` 读点收敛检查 |
+| INV11 | **事件循环线程禁同步模态（D-33）；panic hook 亦受此限** | rfd MessageBoxW 假死史；alacritty hook 弹窗反例（§8.3-3） | 评审检查项 |
+| INV12 | **行为偏差登记**：任何用户可见行为变化必须先在 §3.7 表占 D 号再合入 | 防止"顺手改行为"混入结构波次 | 提交前核对（AGENTS 主题 vs 文件清单纪律延续） |
+
 ---
 
 ## 3. 目标架构
@@ -103,7 +122,7 @@ graph TD
 
 | crate | 允许的内部依赖 | 职责重定义 | 相对现状的变化 |
 |---|---|---|---|
-| lt-proto | — | 契约唯一权威：`UiMsg`/`UiEvent`/`Cmd`/`TrayCommand`/`Settings`/`DownloadFailKind`/`ThreadRole` + `PROTO_VERSION` | 增类型化事件（§3.3） |
+| lt-proto | — | 契约唯一权威：`UiMsg`/`UiEvent`/`Cmd`/`AppCommand`/`Settings`/`DownloadFailKind`/`ThreadRole` + `PROTO_VERSION` | 增类型化事件（§3.3） |
 | lt-i18n | — | 不变 + 键集全量校验 + 解析失败硬错（R14） | 加测试 |
 | lt-models | proto | Settings/注册表/paths/cache 探测，**无网络依赖** | 迁出 download/ 982 行 |
 | lt-download | proto | 下载器（reqwest/sha2/退避/完整性） | 新，自 lt-models 迁入 |
@@ -134,16 +153,27 @@ impl Supervisor {
 // Backoff 超限 → 放弃重启 + 告警事件（不再静默）。
 ```
 
-| 线程 | policy | 死亡语义变化 |
-|---|---|---|
-| lt-capture | Always | 死亡可见 + 自动重生（现在：静默死，chunk 无限丢弃） |
-| lt-asr-main | Always | 死亡可见 + 重生进待命态（现在：`tl_switch` send 全部静默失败，R3 根除面） |
-| lt-tl-0..7 | Always | 现在：panic 永死不重生（agent A 实锤：handle 丢弃） |
-| lt-bench | Never | 完成/死亡都发 `BenchEvent::Finished`（现在：panic 后 `bench_running` 永卡 true） |
-| lt-download | Never | 会话级，死亡 = `DownloadFailed{kind:Disk,…}` |
-| lt-backend / lt-logbridge / lt-singleton | Always（app 侧另建一个 Supervisor 实例） | 命令线程死亡可见（现在：UI send 静默失败） |
+**线程清单 v2（全量，含停机与死亡语义——对照评审 §2.3 的 18 线程全景）**：
 
-**panic hook**（main 最早安装，W1）：`std::panic::set_hook` → 格式化（`PanicHookInfo::location` + `thread::current().name()`）→ tracing 已初始化则 `error!` + 追写 `logs/crash-<ts>.log`，未初始化则直写 crash 文件。**hook 内禁止 MessageBoxW**（可能运行在 winit 线程上，D-33 禁令适用；外部证据：alacritty 的 hook 弹 MessageBoxW 的做法本项目不可效仿，§8.3-3）。
+| 线程 | 出生点 | policy | 停机 join | 死亡后果（v2） | 对照现状 |
+|---|---|---|---|---|---|
+| winit 主线程 | 进程主线程 | — | — | panic = 进程退出（hook 落 crash 文件） | 同现状但 crash 可见 |
+| lt-artery-bridge（新，W2） | Supervisor（app 侧实例） | Always | stop 排空后限时 join | ThreadDied + 重生 | 现状无此线程（逐条 proxy 直发） |
+| lt-capture | Supervisor | Always | stop+join | ThreadDied + 重生（会话复位，INV5） | 静默死、chunk 无限丢弃 |
+| lt-asr-main | Supervisor | Always（重生进待命态） | stop+join | ThreadDied + 重生待命 | 死后 tl_switch send 全部静默失败 |
+| lt-tl-0..7 | Supervisor | Always | **stop 全 join（修复现状不 join）** | ThreadDied + 重生 | panic 永死、句柄丢弃 |
+| lt-bench | Supervisor | Never | join | Finished{ok:false} / ThreadDied | panic 后 bench_running 永卡 true |
+| lt-download-session / lt-download | Supervisor | Never | 限时 join | DownloadFailed{kind} | 现状 `join().expect("下载线程不 panic")` panic 会连锁毒死会话线程 |
+| lt-device-probe（新，W5） | Supervisor | Never | join | 一次性 | 现状在 UI 帧内 COM 枚举（R13） |
+| lt-backend | **W4 退役**（cmd 改 shell 直排 + 镜像拆除，§3.2.3/ADR-4） | — | — | — | 现状 `.ok()` 丢句柄、死亡静默 |
+| lt-logbridge | 保留（W2 起并入动脉生产侧） | Always | stop+join | ThreadDied + 重生 | `.ok()` 丢句柄 |
+| lt-singleton（新，W6） | Supervisor（app 侧实例） | Never | 进程退出即终 | ThreadDied 可见；激活失效可接受（日志可见） | 现状无 |
+| lt-tray | **lt-ui 裸 spawn 白名单特例**（tray.rs:136；拓扑所限 lt-ui 不得依赖 orchestrator） | **Never，禁止 respawn** | 既有 stop join（tray.rs:121）保留 | ThreadDied 可见、托盘失效可接受 | **respawn 须重跑 muda `set_event_handler` 进程级单例注册（tray.rs:319-327），二次注册触发 R32 断言——这是 Never 的硬理由** |
+| worker 子进程 ×N | Manager 同 exe 自拉起（A4 保留） | 进程级隔离 | 三层孤儿防护 | EngineError 穿透 | 不变 |
+
+**Supervisor 自身边界与停机协议**：①monitor 线程死亡不自动重生（监督者自举无解，接受）——hook crash 文件兜底可见性，monitor 循环零 unwrap 零阻塞调用把死亡概率压到最低；②**停机竞态封堵（INV4）**：`Supervisor::stopping`（AtomicBool）先于一切线程停止信号置位，monitor 判定 respawn 前必须复查 stopping——panic 恰好发生在置位瞬间时，宁可漏一次 respawn 不可多一次；③**重启语义（INV5）**：factory 必须构造干净初态，capture/asr 重生一律会话复位，ASR 重生固定走待命态入口（等价 AH-1 路径），不得从主循环中段恢复。
+
+**panic hook 实现约束**（W1）：①hook 内零 unwrap、分配最小化（allocator 中毒时仍须存活）；②线程安全（多线程同时 panic：tracing 层自身线程安全 + crash 文件经 `OnceLock<Mutex<File>>`）；③知晓**双 panic = 直接 abort** 语义（hook 自身 panic 即进程终止，故 ① 是硬规则）；④**禁止 MessageBoxW/任何模态**——hook 可能运行在 winit 线程上（INV11；alacritty hook 弹窗做法不可效仿，§8.3-3）；⑤crash 文件固定 `~/.config/livetranslate/logs/crash-<ts>.log`，tracing 未初始化时也必须可写。
 
 **半初始化守卫**（R12）：`Pipeline::start` 三处 `?` 提前返回点（pipeline.rs:368-372 / 411-431 / 458-476）收敛为 `StartGuard`，Drop 时 `backend.stop()` + 已 spawn 线程 stop+join；disarm 后移交 Pipeline。
 
@@ -166,6 +196,8 @@ graph LR
 - 生产侧无锁丢最旧：**复用资产 A2 `lt-audio::BoundedDropQueue<T>`**（audio/mod.rs:155-199，泛型、`push` 即满丢最旧、`pop_timeout` 阻塞读）——动脉 cap 4096 与 JobPool keep-latest 64（W1）用同一原语，**零新增外部依赖**（§3.6）；唤醒侧 bounded(1) 信号位（满 = 桥已待醒，丢弃）——alacritty Wakeup 同款模式。
 - **UpdateMonitor 退出事件面**：capture 每 chunk 写 `Arc<ArcSwap<MonitorSample>>` 快照格；悬浮窗可见时以 ~33ms Monitor tick 读格重绘（有界重绘率，语义等价现 31/s 事件驱动）；`UpdateMonitor` 变体随 W2 删除。sysinfo 1s 采样 tick 不变。
 - `UiMsg::Events(Vec<UiEvent>)` 批量变体 + 保留单条 `Event(UiEvent)` 便利变体。
+- **事件序保证（INV8）**：BoundedDropQueue 为 MPMC FIFO——跨生产者无全序，但**同生产者严格 FIFO**；同实体事件固定由单线程生产（AddMessage/ModelLoad*/AsrDevice ← ASR 线程；UpdateTranslation/UpdateStreaming ← 该提交所属的 tl worker；Download* ← 下载会话线程）。实体粘住线程，序即安全——破坏此粘住的改动（如把 UpdateTranslation 挪去线程池任意 worker）按 INV12 立案。
+- **批量上限**：桥线程单次 wake 最多取 **256 条**入一个 `Vec`，取不尽留待下次 wake——日志风暴下单帧不产生巨型 Vec。两道闸层级：tracing broadcast 1024 环 + Lagged 限频（第一道，AH-7 既有）→ 动脉 4096 丢最旧 + 丢弃计数（第二道）→ 批量上限（第三道，只影响延迟不影响丢失）。
 
 #### 3.2.3 设置总线（SettingsBus）
 
@@ -202,6 +234,18 @@ impl SettingsBus {
 
 同步语义：`publish` 幂等重算全部派生视图——ApplySettings 重放、专用快捷命令（SetAsrLanguage/SetPadding）殊途同归，正确性不再依赖"记得补同步边"（R10 根除）。
 
+**写者/读者不变量（INV7）**：`publish` 唯一入口在 orchestrator 公有方法，且全部由 shell 在 **winit 主线程**调用（现状 `handle_cmd` 即在此线程，无新锁）；读者（capture 逐轮、ASR transcribe 前、翻译池提交前、下载 targets、backend）任意线程 `load()` 无锁。
+
+**TlSwitch 七臂 → v2 三臂**（W4 收敛，本方案即评审记录）：
+
+| 臂 | 现状（pipeline.rs:300-331） | v2 去向 |
+|---|---|---|
+| AsrLanguage / Pad | 通道命令 → ASR 线程写 AsrRuntime 镜像 | **删除**——bus 派生视图，transcribe 前 `load()` |
+| TargetLanguage / Timeout | 通道命令 → Translator MutableState | **删除**——`load().tl` |
+| ReplaceRig / ReplaceEngine / TestTranslator | 重建 Translator / 切换 worker / 测试连接 | **保留**——真实重建动作必须走线程命令 |
+
+**lt-backend 线程退役（W4，ADR-4）**：镜像拆除后该线程职责清零——下载域 W3 已迁 orchestrator、镜像 W4 已删。`UiMsg::Cmd` 全仓生产者仅 backend.rs:84-117 四处 reflow（grep 实证），线程退役即变体零生产 → `UiMsg::Cmd` 同波删除，cmd mpsc 由 shell 在 `about_to_wait` 直排。**控制面从"UI→mpsc→backend→拦截→proxy reflow→shell"五跳收敛为"UI→mpsc→shell"两跳**，INV2 随之生效。附带消除：SwitchEngine 的 hub 字段被 shell 显式丢弃（shell.rs:169）、backend 却更新镜像（backend.rs:103）的不对称，随 publish 归一自然消失。
+
 ### 3.3 契约 v2（lt-proto 增删清单 + 冻结规则修订案）
 
 **新增**（加法豁免，随所在波次常规提交）：
@@ -227,7 +271,7 @@ UiEvent::Devices(DeviceList)            // 设备枚举下沉后的回流（R13�
 pub struct DeviceList { pub outputs: Vec<DeviceEntry>, pub inputs: Vec<DeviceEntry>, pub default_output: Option<String> }
 UiEvent::SecondInstance                 // WD-5 二次启动激活
 UiMsg::Events(Vec<UiEvent>)             // 事件动脉批量变体
-UiMsg::TrayCommand(TrayCommand)         // 替代 Menu(String)/Tray(String)（变体清单按 tray.rs:34-40 + overlay.rs:268 实际项枚举化）
+UiMsg::AppCommand(AppCommand)           // 替代 Menu(String)/Tray(String)（W2；原拟名 TrayCommand——overlay.rs:268 悬浮窗右键菜单与托盘菜单同源生产，更名以正名；变体清单按 tray.rs:34-40 + overlay.rs:268 全集枚举化）
 Cmd::RefreshDevices / Cmd::RunBench{..} / Cmd::CancelBench
 pub const PROTO_VERSION: u32;           // 结构性增删时递增
 ```
@@ -239,15 +283,18 @@ pub const PROTO_VERSION: u32;           // 结构性增删时递增
 | `UiEvent::DownloadProgress(String)` | `Download(DownloadEvent)` | backend.rs:389-397 拼串 → app.rs:1978-1995 反解析 |
 | `UiEvent::DownloadFailed(String)` | `{kind, message}` | lt-models `Display` 前缀 → state.rs:1261-1288 逐前缀还原 |
 | `UiEvent::UpdateMonitor` | Monitor 快照格（§3.2.2） | 31/s proxy 泛洪（R23） |
-| `UiMsg::Menu(String)` / `UiMsg::Tray(String)` | `TrayCommand(TrayCommand)` | backend.rs:127 `Menu("quit")` 借道托盘语义 |
+| `UiMsg::Menu(String)` / `UiMsg::Tray(String)` | `AppCommand(AppCommand)` | backend.rs:127 `Menu("quit")` 借道托盘语义 |
+| `UiMsg::Cmd(Cmd)`（W4） | —（cmd mpsc 由 shell 直排，控制通路归一 §3.2.3） | 生产者仅 backend reflow 四处（grep 实证） |
 | `Cmd::Start`（死契约） | —（无人发送无人处理，shell.rs:235 兜底臂） | W0 即删 |
 | bench `__DONE__` 哨兵 | `BenchEvent::Finished` | bench.rs:402 → app.rs:1053 → benchmark_tab.rs:80 三端 |
 
 **不变**：`AddMessage`/`UpdateTranslation`/`UpdateStreaming`/`AsrDevice`/`AsrUnavailable`/`LogLine`/`DownloadSucceeded`/`DownloadCancelled`/`ModelLoadStart`/`ModelLoadDone`/`TranslatorUnavailable`/`TestTranslatorResult` 及 `Cmd` 其余全体。`LogLine` 语义收紧为**仅人读日志**——机器控制流寄生日志总线从此禁止（防线：§6.2 grep 禁令）。
 
+**UiMsg v2 最终形态**（W4 后）：`{ Event(UiEvent), Events(Vec<UiEvent>), AppCommand(AppCommand) }`——命令不再骑事件枚举，事件不再逐条唤醒。**PROTO_VERSION 定位**：repo 卫生标记（评审/守护对照用），**非 wire 版本**——唯一真进程边界是 worker IPC，而 worker 与主程序同 exe 同版本，不存在 wire 兼容面。
+
 **冻结规则修订案**（W2 落入 AGENTS.md）：
 
-> lt-proto 仍为契约唯一权威，`PROTO_VERSION` 随结构变更递增。豁免评审：纯新增 Cmd/UiEvent/TrayCommand 变体、纯新增 Settings 字段（须 serde default 兼容旧档）、既有枚举增项。仍须评审（记录入决策史 D-xx）：删除/改名/改型/改语义任何既有契约项。**新增禁令：任何跨 crate 边界的字符串编码协议（前缀/分隔符/哨兵值）一经发现按 P1 立案。**
+> lt-proto 仍为契约唯一权威，`PROTO_VERSION` 随结构变更递增。豁免评审：纯新增 Cmd/UiEvent/AppCommand 变体、纯新增 Settings 字段（须 serde default 兼容旧档）、既有枚举增项。仍须评审（记录入决策史 D-xx）：删除/改名/改型/改语义任何既有契约项。**新增禁令：任何跨 crate 边界的字符串编码协议（前缀/分隔符/哨兵值）一经发现按 P1 立案。**
 
 ### 3.4 lt-ui v2：AppUi 拆分 + WindowManager 单真源
 
@@ -305,6 +352,8 @@ WinId::Overlay => { let AppUi { overlay, session, settings, modal, .. } = app;
 
 `transcripts_dir` 失败回退 CWD（pipeline.rs:345-347，R26）改为回退配置目录 + error 事件。
 
+**停机序 v2**（`shell.shutdown`；现状顺序经评审无死锁，v2 插入监督与动脉两环）：确认模态 → `event_loop.exit` → `supervisor.stopping` 置位（INV4，先于一切线程信号）→ `pipeline.stop`（stop 标志 + **全线程 join——含 tl worker，修复现状 JobPool 不 join** + worker shutdown 5s ack→kill）→ 动脉桥排空 + 限时 join（≤500ms，残余事件丢弃计数）→ settings 终写 → 托盘 Quit + ack 限时分离 → Job Object 收尾。
+
 ### 3.6 外部依赖增删审计（2026-09-09，arch-v2 分支实证补立）
 
 审计方法：①逐依赖 grep 声明处（Cargo.toml）vs 使用处（src 含内嵌测试）；②Cargo.lock 版本唯一性核对（657 包）；③tokio/windows 特性位 API 面实测；④工具链 rustc 1.98.1 对新增依赖 MSRV 余量核对。
@@ -333,6 +382,28 @@ WinId::Overlay => { let AppUi { overlay, session, settings, modal, .. } = app;
 
 **版本策略：全部锁定不动。** reqwest 全仓单版本 0.13.1（async-openai 0.41 未引入重复 HTTP 栈，Cargo.lock 实证）；tokio 单版本 1.53.1；egui 0.36 系/winit 0.30.13/tray-icon 0.24 与大坑清单强耦合，升级=§7 非目标；uuid 为真依赖（pipeline.rs:1451 消息 ID、lt-asr/client.rs:235/284 请求 ID、lt-pipeline/transcript.rs:205 会话 ID），非死依赖；其余 24 个工作区外部依赖逐个核实均有真实使用，零死依赖。结论：**本方案对外部依赖面零侵入——仅增 1 个轻量 crate（arc-swap），不引入任何框架/异步运行时/新 Win32 特性面。**
 
+### 3.7 行为偏差登记表（INV12 载体，预占 D-60+）
+
+结构波次禁止夹带行为变化；下表是本方案**全部**用户可见行为变化的事先登记——合入对应波次时以实际 D 号落决策史并过验收，未登记的行为变化一律不得合入：
+
+| 预占 | 波次 | 用户可见差异 | 验证 |
+|---|---|---|---|
+| D-60 | W1 | VAD 模式热切换真实生效（R2 修复——现状切了没效果且无提示） | 模式切换集成测试 + 实机 |
+| D-61 | W1 | models_dir 失败可唤醒（R3，AH-1 哲学推广） | 注入唤醒测试 |
+| D-62 | W1 | 线程死亡可见 + 自动重启（R1） | panic 注入探针 |
+| D-63 | W1 | 字幕窗开关持久化对称（R7）——按钮/X 关闭后重启不再复活 | 状态回归测试 |
+| D-64 | W1 | 翻译池有界 keep-latest 64 + 水位告警（R15）——极端积压时最旧待译段放弃，logwin WARN（10s 限频） | 慢消费者注入 |
+| D-65 | W1 | 启动早期失败弹原生窗（R11①） | 人工制造 ort 失败 |
+| D-66 | W1 | settings 坏档隔离为 `.corrupt-<ts>`（R17）——生效行为同默认值，证据保留 | 单测 |
+| D-67 | W2 | Monitor 条改 ~30ms 节拍重绘（视觉应无差异；事件驱动改节拍驱动） | 实机走查平滑度 |
+| D-68 | W2 | 下载卡片/托盘/悬浮窗菜单命令类型化（用户无感，仅架构面） | 行为回归 |
+| D-69 | W4 | qwen3 钳制不再写穿用户设置（R18） | 回归测试 |
+| D-70 | W4 | 控制面五跳→两跳（用户无感；**引擎切换延迟至静默间隙的语义保留不变**，见 §7） | 既有行为 |
+| D-71 | W5 | 悬浮窗拖动手工化（R22，D-37 同法） | 拖动探针 + 实机 |
+| D-72 | W6 | 设备切换清段队列 + VAD 复位（R31） | 拼接错位回归 |
+| D-73 | W6 | 二次启动激活已有窗口（WD-5） | 实机 |
+| D-74 | W6 | 同语言免翻译比较归一化（`zh` vs `zh-CN`；pipeline.rs:1473 现为裸字符串比较） | 归一单测 |
+
 ---
 
 ## 4. 风险追溯矩阵（评审 R1~R32 全覆盖）
@@ -353,7 +424,7 @@ WinId::Overlay => { let AppUi { overlay, session, settings, modal, .. } = app;
 | R12 Pipeline::start 半初始化泄漏 | P1 | W1 | StartGuard 守卫回滚 | 注入 spawn 失败 → backend.stop 被调（音频线程不泄漏） |
 | R13 lt-ui 越白名单 + 帧内 COM 枚举 | P1 | W5 | §3.4 设备下沉 | lt-ui/Cargo.toml 无 lt-audio；`enumerate_devices` 不在 UI crate |
 | R14 i18n 无校验 + 静默空表 | P1 | W0 键集测试 / W1 硬错 / W2 动态键审计（可选） | §3.5 步骤 6 | `assert_eq!(zh.keys(), en.keys())` 测试入 CI；坏 yaml → boot 失败呈现 |
-| R15 翻译队列无界无水位 | P1 | W1 有界 + W2 水位事件 | JobPool 改 `ArrayQueue::force_push` keep-latest 64 + QueuePressure | 慢 LLM 模拟：队列深度封顶 + 丢弃计数事件 |
+| R15 翻译队列无界无水位 | P1 | W1 有界 + W2 水位事件 | JobPool 改复用 `BoundedDropQueue` keep-latest 64（§3.6/ADR-2）+ QueuePressure | 慢 LLM 模拟：队列深度封顶 + 丢弃计数事件 |
 | R16 无 CI | P1 | W1 | §6.3 CI 规范 | GitHub Actions 绿；PR 触发 |
 | R17 settings 落盘窗口 + 坏档覆盖 | P2 | W1 | .bak 链 + 坏档隔离 | 单元测试：rename 注入失败 → .bak 回读成功；坏档 → corrupt-<ts> 保留 |
 | R18 qwen3 钳制写穿 | P2 | W4 | overlay 派生视图，raw 不变 | 回归测试：qwen3 切离后 `raw.max_speech_duration` 保持用户值 |
@@ -391,7 +462,7 @@ WinId::Overlay => { let AppUi { overlay, session, settings, modal, .. } = app;
 
 1. **CI**（§6.3 全规范）：windows-latest + uv sync + sherpa 缓存 + `cargo test --workspace` + hygiene + clippy advisory。
 2. **panic hook**（§3.2.1；crash 文件；hook 内禁 MessageBoxW）。
-3. **Supervisor 雏形**暂住 lt-app/src/supervisor.rs（W3 随编排域迁走）：lt-tl-0..7 转 Always、lt-asr-main/capture 接入死亡监视、bench 转 Never。
+3. **Supervisor 雏形**暂住 lt-app/src/supervisor.rs（W3 随编排域迁走）：lt-tl-0..7 / lt-capture / lt-asr-main 转 Always、bench 转 Never；**stop 全 join（修复现状 JobPool 不 join + tl 句柄丢弃）**；停机协议 INV4（`stopping` 置位禁 respawn）与重启语义 INV5（会话复位）随出生即生效。
 4. **R3**：models_dir 失败 → 待命态。
 5. **R12**：`Pipeline::start` 守卫回滚。
 6. **R4①**：lt-audio 注入 `AudioStatus` Sender（本 crate 枚举不过 proto）→ bridge 转 `UiEvent::Capture`（首个加法豁免变体，修订后冻结规则自本波启用）。
@@ -405,7 +476,7 @@ WinId::Overlay => { let AppUi { overlay, session, settings, modal, .. } = app;
 
 ### W2 契约类型化 + 事件动脉（2~3 天）
 
-§3.3 全量落地：新变体 + 删清单双端迁移；四旁路清除（backend format_event / state.rs 前缀解析 / bench 三端 / Menu-quit 三生产点）；事件动脉（ArrayQueue + wake + `UiMsg::Events` 批量排空）；logbridge 并入动脉；UpdateMonitor → 快照格 + 33ms tick；`PROTO_VERSION`；AGENTS 冻结规则修订案落文。
+§3.3 全量落地：新变体 + 删清单双端迁移（Menu/Tray → **AppCommand**，变体含托盘 + 悬浮窗菜单全集）；四旁路清除（backend format_event / state.rs 前缀解析 / bench 三端 / Menu-quit 三生产点）；事件动脉（BoundedDropQueue 复用 + wake + `UiMsg::Events` 批量排空，INV8 序保证 + 256 批量上限）；logbridge 并入动脉；**UpdateMonitor 移除与 ~30ms Monitor tick 为同波原子对（禁止分波——先删事件不落 tick = 电平条冻结）**；`PROTO_VERSION`；AGENTS 冻结规则修订案落文。
 - **验收**：§6.2 四 grep 清零；下载卡片/基准窗/托盘/日志窗行为回归；日志风暴注入 winit 唤醒速率有界。
 - 规模：proto +180，两端改造 ~450，删除 ~120。
 
@@ -420,7 +491,7 @@ WinId::Overlay => { let AppUi { overlay, session, settings, modal, .. } = app;
 
 ### W4 设置总线（2~3 天，净减代码）
 
-§3.2.3 全量落地：arc-swap 引入 workspace；SettingsBus + EffectiveSettings 派生视图（qwen3 钳制归一为 overlay）；五个镜像拆除（§3.2.3 表）；publish 幂等统一 ApplySettings 重放与快捷命令；`AsrPendingHandle` 语言/pad 参数化。
+§3.2.3 全量落地：arc-swap 引入 workspace；SettingsBus + EffectiveSettings 派生视图（qwen3 钳制归一为 overlay）；五个镜像拆除（§3.2.3 表）；publish 幂等统一 ApplySettings 重放与快捷命令；`AsrPendingHandle` 语言/pad 参数化；**lt-backend 线程退役**（cmd 改 shell `about_to_wait` 直排 + `UiMsg::Cmd` 删除 + TlSwitch 收敛三臂，§3.2.3/ADR-4）；同语言比较归一化（pipeline.rs:1473 裸比较 → TlView 派生时归一，D-74）。
 - **验收**：镜像 grep 清零；R18 回归测试（切离 qwen3 后 raw 用户值不变）；AH-3 场景回归。
 - 规模：~600 行改造、净减 ~200。
 
@@ -438,7 +509,7 @@ WinId::Overlay => { let AppUi { overlay, session, settings, modal, .. } = app;
 4. **WorkerConfig 签名修正**：display_name 移出（Manager 侧标签表）；`options: serde_json::Value` → `WorkerOptions` 类型化枚举。
 5. **R28**：worker 配置 stdin 首行传递。
 6. **R31 + R4②**：设备切换两路统一清 chunk/段队列/VAD reset/interim 复位；read_loop 每 tick 每设备至多一次重开尝试（mic 故障不饿死 loopback）。
-7. **R24**：退避 tick 化。**R11②**：单实例激活 WD-5（§3.5 步骤 4）。R29 可选契约键。
+7. **R24**：退避 tick 化。**R11②**：单实例激活 WD-5（§3.5 步骤 4）。R29 可选契约键。顺手项：空闲 RSS 回收复用 `sysinfo::System` 实例（manager.rs:477 每 500ms 新建，评审 §3.3 P2 承接）。
 - **验收**：cargo tree 全表符合 §3.1；命令行无模型路径；60s 烧穿注入测试；设备切换错位回归。
 - 规模：~800 行 + 982 行移动。
 
@@ -449,6 +520,8 @@ WinId::Overlay => { let AppUi { overlay, session, settings, modal, .. } = app;
 - 规模：~200 行脚本 + 文档。
 
 **规模总览**：8 波 ≈ 2~4 周净施工（单人 + 子代理并行，承重墙波次 W3/W4 主线程亲做——AGENTS 分工纪律）；净增 ~1.5k 行、移动 ~5.4k 行、净删 ~0.8k 行、测试净增 ~40。
+
+**波次依赖与回滚语义**：W0→W1→W2→W3→W4→W5→W6→W7 为**强序依赖**——W3/W4 同触 pipeline.rs 与 backend.rs 禁止并行，W5 依赖 W2 的事件动脉与 W4 的总线句柄，W6 依赖 W5 的拓扑定型。回滚：**波次回滚 = revert 该波及其后全部已合波次**（后波建立在前波之上，单波 revert 仅当其为最新合入波时可行）；已发布后的缺陷优先**前向修复**（新提交）而非 revert——405 基线全绿是唯一回退门槛，每波合入前必须达成。
 
 ---
 
@@ -509,6 +582,8 @@ jobs:
 | 流式 ASR worker 骨架重写 | 帧协议/id=None 通道/代际校验已留位，待需求出现独立立项 |
 | 双窗/DComp 逐像素 alpha | D-36 已裁定 P2 远期 |
 | i18n Key 编译期类型化（579 键改面） | CI 键集测试 + 解析硬错已兜底；列远期方向 |
+| busy 中打断在途 transcribe（IPC Cancel） | 控制面空闲分支消费的语义**保留**（评审 §3.3 P2——持续语音期间引擎切换延迟到静默间隙是现行为，改它是行为变更而非结构需求，列远期） |
+| worker 帧读取按长度前缀整块分配（上限 256MB） | 现实帧尺寸 KB~MB 级，无受益场景，保持 |
 | WP-9 性能预算执行（启动<2s/空闲 CPU<1%/8h 长跑） | 独立实机工作，与本计划并行不混波 |
 | data-lifecycle 12 项整改候选 | 并行裁决，不阻塞本计划（D-38~ 段编号让与之协调） |
 
@@ -531,6 +606,8 @@ jobs:
 2. 设置镜像数：评审"6 个表示"→ 精化为 **7 处**（VadProcessor 内部生效值与 vad_update 槽分计）。
 3. 新增评审未立案事实：bench 线程无 join 且 panic 后 `bench_running` 永卡（本方案 W1/W2 收口）；`SetMic` 不清 chunk 队列（R31 细化）；单实例 `ERROR_ALREADY_EXISTS` 未检查（R11 细化）；i18n `unwrap_or_default` 精确位置 lib.rs:42-45。
 4. 评审路线图三批次 → 本方案映射：批次一（止血）→ W0/W1；批次二（结构卫生）→ W1/W2；批次三（结构性）→ W3~W6。本方案在其上补齐：boot v2 全序列、单实例激活（WD-5 合流）、Monitor 快照格、bench 迁移、R24/R26/R29/R31、CI 全规范与守护脚本。
+5. 评审两条未编号 P2 本轮承接：同语言免翻译裸字符串比较（评审 §3.2 P2 → W4/D-74）、空闲 RSS 每 500ms 新建 `sysinfo::System`（评审 §3.3 P2 → W6 顺手项）。
+6. 二次严审（2026-09-09，v1.1）新增发现与修订：①停机-respawn 竞态设计洞（原方案未定义停机协议）→ INV4 停机协议封堵；②JobPool shutdown 不 join + tl 句柄丢弃 → W1 修复；③`UiMsg::Cmd` 生产者全集仅 backend 四处 reflow（grep 实证）→ W4 lt-backend 线程退役 + 变体删除 + 控制面五跳→两跳；④TlSwitch 七臂中四臂可被总线吸收 → 收敛三臂；⑤托盘线程 respawn 与 muda handler 进程级单例冲突 → ADR-6 Never；⑥TrayCommand 更名 AppCommand（悬浮窗菜单同源）；⑦全部用户可见行为变化预登记 §3.7（D-60~D-74）。
 
 ### 8.3 外部选型证据表（子代理调研，2026-09-09）
 
@@ -544,7 +621,19 @@ jobs:
 | drop-oldest 队列 | **crossbeam `ArrayQueue::force_push`**（无现成 bounded drop-oldest channel） | crossbeam-channel 0.5.17（2026-09-05）bounded 满时只有阻塞/报错；`ArrayQueue::force_push` 队满移除最旧再入队——正是 BoundedDropQueue 语义，翻译池 keep-latest 复用 |
 | CI runner 现状 | **windows-latest=Server 2025，工作目录已在 D:**，C: 缩至 150GB | runner-images 官方 issue #14144/#12744；rust-cache 10GB 仓库级上限；job timeout 默认=最大 360min。target/ 落 checkout（D:）无压力；CARGO_HOME 必要时迁 D: |
 
-### 8.4 局限性
+### 8.4 关键决策备选记录（ADR）
+
+| ADR | 决策 | 备选与落选理由 |
+|---|---|---|
+| ADR-1 | 设置快照用 **arc-swap** | tokio watch：读侧 RwLock 守卫 + async 通知，同步读者不划算；`Mutex<Option>`+轮询：读侧加锁、丢代际语义；left-right：单写者 handle 约束 + 双倍内存 + 无通知（证据 §8.3-1） |
+| ADR-2 | 动脉载体**复用 BoundedDropQueue** | crossbeam-queue `ArrayQueue::force_push`：需新增外部依赖而语义重叠（§3.6）；tokio mpsc：异步面向同步读者；std mpsc：无 try 满检测下的丢最旧需自旋 |
+| ADR-3 | 死亡检测 = **500ms join 轮询** | catch_unwind 包裹：覆盖不了 abort/栈溢出且污染全部线程闭包；监督 crate（recoverable-spawn 等）：生态不成熟（下载量 5.4 万/月级），不值得引依赖（§8.3-3） |
+| ADR-4 | **lt-backend 线程退役**而非保留路由 | 保留：镜像死后仅剩转发职责，五跳控制面纯开销；双通路（mpsc + proxy reflow）正是 D-33 时代病灶的形状 |
+| ADR-5 | **lt-pipeline 改名 lt-audio** | 保留原名：编排域迁出后"pipeline 不在 pipeline"的误导加倍；git mv 成本一次性 |
+| ADR-6 | 托盘线程 **policy=Never** | Always：respawn 须重跑 TrayIconBuilder + muda `set_event_handler` 进程级单例二次注册（tray.rs:319-327，与 R32 断言冲突）；死亡可见即止 |
+| ADR-7 | rfd 用**同步 API 跑 worker 线程** | rfd AsyncFileDialog：需 async 特性与执行器；阻塞面已被线程隔离，异步无增益 |
+
+### 8.5 局限性
 
 - 行号/计数基于 `314644b` 基线，随波次施工漂移（各波施工卡以当时实测为准）。
 - 实机行为（拖动/穿透/DPI/Toast 视觉/monitor 平滑度）不在静态方案验证范围，走查清单随波建立（§6.4）。
