@@ -878,8 +878,9 @@ mod probe_nano_tmp {
     #[test]
     #[ignore = "真实网络下载 ~1GB（hf-mirror，写真实缓存）；WP-A 演练/测速用"]
     fn probe_nano_download_via_hf_mirror() {
-        let md = std::path::Path::new("C:/Users/fjqz177/.config/livetranslate/models");
-        let dl = Downloader::new(md, ProxyMode::None).with_hf_endpoint("https://hf-mirror.com");
+        // docs/path-hygiene.md PH-1：路径走 paths 派生（env 可重定向，默认真实缓存）
+        let md = crate::paths::models_dir(None).expect("models_dir 解析失败");
+        let dl = Downloader::new(&md, ProxyMode::None).with_hf_endpoint("https://hf-mirror.com");
         let cancel = Arc::new(AtomicBool::new(false));
         let (tx, rx) = std::sync::mpsc::channel();
         let t0 = Instant::now();

@@ -605,29 +605,32 @@ mod tests {
 
 #[cfg(test)]
 mod probe_tmp {
+    /// 真实缓存只读探针（只打印不断言；docs/path-hygiene.md PH-1）：
+    /// 路径走 paths 派生（LIVETRANSLATE_CONFIG_DIR 可重定向，默认 ~/.config/livetranslate）
     #[test]
     fn probe_real_cache() {
-        let md = std::path::Path::new("C:/Users/fjqz177/.config/livetranslate/models");
+        let md = crate::paths::models_dir(None).expect("models_dir 解析失败");
+        println!("models_dir = {}", md.display());
         println!(
             "whisper_model_path tiny = {:?}",
-            crate::cache::whisper_model_path(md, "tiny")
+            crate::cache::whisper_model_path(&md, "tiny")
         );
         println!(
             "is_whisper_cached tiny = {}",
-            crate::cache::is_whisper_cached(md, "tiny")
+            crate::cache::is_whisper_cached(&md, "tiny")
         );
-        println!("hf_cache_root = {:?}", crate::paths::hf_cache_root(md));
+        println!("hf_cache_root = {:?}", crate::paths::hf_cache_root(&md));
     }
 }
 
 #[cfg(test)]
 mod probe_settings_tmp {
+    /// 冒烟目录 settings 加载探针（docs/path-hygiene.md PH-1）：
+    /// 不再在测试内 set_var（进程级环境修改与并行测试竞态）——
+    /// 外部设 LIVETRANSLATE_CONFIG_DIR 指向冒烟目录后 --ignored 运行
     #[test]
+    #[ignore = "手动探针：外部设 LIVETRANSLATE_CONFIG_DIR 指向冒烟目录后加 --ignored 运行"]
     fn probe_load_from_smoke_dir() {
-        std::env::set_var(
-            "LIVETRANSLATE_CONFIG_DIR",
-            "C:/Users/fjqz177/.zcode/tmp/lt_smoke",
-        );
         let s = crate::settings_io::load();
         println!("load = {s:?}");
         if let Ok(Some(s)) = s {
