@@ -202,6 +202,24 @@ inactive 描边宽度必须全等（WP-B 只覆盖了 hover，本次补齐 activ
 | 面板 8 页渲染冒烟 | panel/mod.rs | 保持 |
 | 全量 | -- | 约 380 测（现 378 + 2） |
 
+## 10. 完工注记（2026-09-08，4054f4b）
+
+BP-1~BP-3 全部落地，**380 测全绿**（净增 2，ignored 5 不变）+ 新码 clippy
+零告警 + release 冒烟零错：
+
+- BP-1：`overlay.rs` 三态覆盖补齐 active（`BTN_PRESSED_FILL` 按压底色、
+  描边 1.0 同款、圆角继承），注释落 D-32 成因；按压反馈=仅色变。
+- BP-2：`style.rs` 基准下限修正为三态**一并**抬到 `max(1.0)`——施工中发现
+  「只抬 hovered/active」会让 dark 窗 inactive→hover 回归 1px 位移
+  （旧 WP-B 钉的故障重演），inactive 描边色透明故外观不变、几何才真正全等；
+  深色窗按钮 hover/active 1.0px 描边为预期增强。
+- BP-3：`widget_stability.rs` 新增
+  `overlay_button_text_does_not_shift_when_pressed`（idle/hover/按压连跑 3 帧
+  文字 rect 全等）与 `stabilize_reaches_one_px_floor`（dark/panel 双输入）；
+  既有 `plain_dark_theme_is_stabilized` 断言经新语义验证仍通过。
+- 程序化验收（§7 第 1~4 条）：按压零位移已由回归钉常量断言；
+  §7 第 5 条（实机长按 ≥1s 无位移 + 按压底色加深观感）**待用户实机截图确认**。
+
 ## 附录 A：探针证物（TS-3，`press_probe.rs` 临时文件）
 
 关键点：`ctx.run_ui` + `RawInput{events: PointerMoved + PointerButton(pressed)}`；

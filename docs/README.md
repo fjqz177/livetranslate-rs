@@ -15,7 +15,7 @@
 | `mic-monitor-fix.md` | 麦克风输入开关与监视条（幽灵 MIC 条根因=mic_rms 代理启用状态+无 chunk 不发事件；DEC-1~5 + MC-1~4 施工卡；D-29 登记） | 完成（2026-09-08，368 测；MC-1~3 落地，实机双场景冒烟过） |
 | `log-tab-redesign.md` | 面板「日志」tab 界面改造（双滚动条根因=外层 ScrollArea 溢出+叠内层日志滚动区；LT-1~6 施工卡；D-31 登记） | 完成（2026-09-08，378 测，416bbfd；实机用户截图对照过） |
 | `sensevoice-language-fix.md` | SenseVoice 语言恒 auto（三优先语言决策 resolve_language；SV-1~3 施工卡；D-30 登记） | 完成（2026-09-08，369 测，66871a0；实机探针 6 组全绿） |
-| `button-press-feedback.md` | 悬浮窗行1按钮按压文字右移（根因=egui button_style 内边距公式×stabilize 基准×overlay active 未覆盖；BP-1~3 施工卡；D-32 登记） | 计划定稿（2026-09-08，378 测基线；BP-1~3 待施工） |
+| `button-press-feedback.md` | 悬浮窗行1按钮按压文字右移（根因=egui button_style 内边距公式×stabilize 基准×overlay active 未覆盖；BP-1~3 施工卡；D-32 登记） | 完成（2026-09-08，380 测，4054f4b；实机长按确认待用户截图） |
 
 ## 归档文档（`docs/archive/`，只读决策史）
 
