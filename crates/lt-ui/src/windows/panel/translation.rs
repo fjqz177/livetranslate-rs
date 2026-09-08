@@ -104,7 +104,7 @@ pub fn duplicate_model(models: &mut Vec<ModelConfig>, row: usize) -> Option<usiz
 /// 翻译页恢复默认：models 回默认单行（LM Studio 本地端点）、清 prompt、
 /// timeout 回 10s；恢复后重发 SwitchTranslator（N3 生效管道）。
 /// 破坏性（抹掉 API Key）——调用前必须已过确认框。
-fn restore_translation_page(state: &mut AppState) {
+pub(crate) fn restore_translation_page(state: &mut AppState) {
     let def = lt_proto::Settings::default();
     state.settings.models = def.models.clone();
     state.settings.active_model = 0;
@@ -135,16 +135,13 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
         .collect();
     if !page_diffs.is_empty() {
         super::reset_toolbar(ui, pal, page_diffs.len(), &page_diffs.join("、"), |_| {
-            if rfd::MessageDialog::new()
-                .set_title(lt_i18n::t("reset_confirm_title"))
-                .set_description(lt_i18n::t("reset_confirm_translation"))
-                .set_buttons(rfd::MessageButtons::OkCancel)
-                .set_level(rfd::MessageLevel::Warning)
-                .show()
-                == rfd::MessageDialogResult::Ok
-            {
-                restore_translation_page(state);
-            }
+            // D-33/H-5：确认改 egui 模态（原位 rfd 同步框阻塞事件循环线程）
+            state.request_confirm(
+                crate::state::ConfirmKind::ResetTranslation,
+                false,
+                lt_i18n::t("reset_confirm_title"),
+                lt_i18n::t("reset_confirm_translation"),
+            );
         });
     }
 

@@ -14,7 +14,7 @@
 //! 近似还原 Qt 配色，非逐像素。
 
 use crate::state::{
-    AppState, OverlayMessage, OverlayMode, WinAction, WinId,
+    AppState, ConfirmKind, OverlayMessage, OverlayMode, WinAction, WinId,
 };
 use crate::style::{self, parse_color};
 use egui::{Align2, Button, Color32, ComboBox, CornerRadius, FontId, RichText, ScrollArea, Sense, Stroke, Ui, Vec2};
@@ -104,6 +104,8 @@ pub fn overlay_ui(ui: &mut Ui, state: &mut AppState) {
             messages_area(ui, state, compact, opa_pct);
             resize_grip(ui, state);
         });
+    // 确认模态（D-33/H-3：悬浮窗宿主；在 Frame 外渲染避免吃布局/背景）
+    crate::windows::confirm::render_confirm_if_host(ui, state, WinId::Overlay);
 }
 
 // ── DragHandle（原版 DragHandle） ──
@@ -185,25 +187,22 @@ fn row1(ui: &mut Ui, state: &mut AppState, compact: bool, opa_pct: u32) {
             state.running = !running;
         }
 
-        // 清空（紧凑模式隐藏；转写自动落盘时免确认，否则确认一次防误触）
+        // 清空（紧凑模式隐藏；转写自动落盘时免确认，否则确认一次防误触）。
+        // D-33/H-5：确认改 egui 模态（原位 rfd 同步框会与置顶悬浮窗叠置不可见+阻塞）
         if !compact
             && ui
                 .add(small_btn(lt_i18n::t("clear"), BTN_FILL, BTN_STROKE, BTN_TEXT, opa_pct))
                 .clicked()
         {
-            let confirm = if state.settings.auto_save_transcript {
-                true
-            } else {
-                rfd::MessageDialog::new()
-                    .set_title(lt_i18n::t("clear_confirm_title"))
-                    .set_description(lt_i18n::t("clear_confirm_msg"))
-                    .set_buttons(rfd::MessageButtons::OkCancel)
-                    .set_level(rfd::MessageLevel::Warning)
-                    .show()
-                    == rfd::MessageDialogResult::Ok
-            };
-            if confirm {
+            if state.settings.auto_save_transcript {
                 state.messages.clear();
+            } else {
+                state.request_confirm(
+                    ConfirmKind::Clear,
+                    true,
+                    lt_i18n::t("clear_confirm_title"),
+                    lt_i18n::t("clear_confirm_msg"),
+                );
             }
         }
 
@@ -217,10 +216,18 @@ fn row1(ui: &mut Ui, state: &mut AppState, compact: bool, opa_pct: u32) {
             state.enqueue_action(WinId::Overlay, WinAction::ShowPanel);
         }
 
-        // 退出（红底；与托盘同一确认语义——P1-1，不再秒退）
+        // 退出（红底；与托盘同一确认语义——P1-1，不再秒退）。
+        // D-33/H-3：确认改 egui 模态；紧凑/低矮时模态装不下 → 改由面板宿主。
         if ui.add(small_btn(lt_i18n::t("quit"), QUIT_FILL, QUIT_STROKE, BTN_TEXT, opa_pct)).clicked() {
-            if crate::tray::confirm_quit() {
-                state.quit_requested = true;
+            let overlay_ok = !compact && ui.ctx().content_rect().height() >= 280.0;
+            let opened = state.request_confirm(
+                ConfirmKind::Quit,
+                overlay_ok,
+                lt_i18n::t("quit_confirm_title"),
+                lt_i18n::t("quit_confirm_msg"),
+            );
+            if opened && !overlay_ok {
+                state.enqueue_action(WinId::Panel, WinAction::ShowPanel);
             }
         }
     });

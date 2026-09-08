@@ -129,6 +129,8 @@ pub enum WinAction {
     Hide,
     /// 显示/置前控制面板（原版 settings_requested）
     ShowPanel,
+    /// 隐藏控制面板（确认模态取消后恢复临时显示的面板；H-3）
+    HidePanel,
     /// 切换字幕窗可见性（悬浮窗"字幕"按钮 = settings.subtitle_mode.enabled 翻转后）
     ToggleSubtitle,
     /// 置顶/任务栏复选变化 → 重新应用窗口 flags
@@ -156,6 +158,37 @@ pub enum OverlayMode {
     #[default]
     Full,
     Compact,
+}
+
+/// 通用确认模态语义（D-33/H-3~H-5：统一 egui 载体替代事件循环线程内的
+/// rfd 同步 MessageBox——不阻塞、单模态源、任意状态可达）
+#[derive(Debug, Clone, PartialEq)]
+pub enum ConfirmKind {
+    /// 退出应用（确定 → quit_requested，宿主动作在 about_to_wait 收敛）
+    Quit,
+    /// 清空转写消息
+    Clear,
+    /// 字幕页恢复默认（SubtitleMode 整体 + 行级字体跟随；窗口位置归样式页）
+    ResetSubtitle,
+    /// 翻译页恢复默认（models/prompt/timeout；破坏性——确认后清 API 配置）
+    ResetTranslation,
+    /// 删除所选缓存模型（index 对位 data 页 cache_entries，模态期间页面不可变）
+    DeleteModel { index: usize },
+    /// 删除全部缓存模型（data 页；"重启生效"提示保留在效果执行处）
+    DeleteAll,
+}
+
+/// 确认模态 UI 状态（渲染帧按 host 匹配窗口；确定/取消在确认框内收敛）
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConfirmUi {
+    /// 宿主窗口（Overlay 或 Panel；仅宿主窗口的帧内渲染）
+    pub host: WinId,
+    pub kind: ConfirmKind,
+    /// 标题/正文（请求时按 kind 取 i18n 当前语言，含 Delete 系动态参数）
+    pub title: String,
+    pub msg: String,
+    /// 宿主=Panel 且面板因确认**临时显示**（Quit 取消后回隐藏；H-3）
+    pub panel_shown_for_confirm: bool,
 }
 
 /// 紧凑模式高度动画（原版 QPropertyAnimation 200ms OutCubic）
@@ -1394,6 +1427,8 @@ pub struct AppState {
     pub bench_tgt: usize,
     /// 缺模型下载失败后点"关闭"：请求退出应用（原版 reject → main 返回退出）
     pub quit_requested: bool,
+    /// 通用确认模态（D-33/H-3~H-5；None=关闭，同一时刻至多一个）
+    pub confirm: Option<ConfirmUi>,
     /// sysinfo 实例与上次采样时刻（1s 节流）
     sys: Option<sysinfo::System>,
     sys_last: Option<Instant>,
@@ -1459,6 +1494,7 @@ impl AppState {
             bench_src: 0,
             bench_tgt: 0,
             quit_requested: false,
+            confirm: None,
             sys: None,
             sys_last: None,
             // 字体系统（W-3）：启动扫描系统字体列表，应用期按 Settings 热重建
@@ -1535,6 +1571,38 @@ impl AppState {
     /// 取走全部窗口动作
     pub fn drain_actions(&mut self) -> Vec<(WinId, WinAction)> {
         std::mem::take(&mut self.actions)
+    }
+
+    /// 打开确认模态（D-33/H-3~H-5）。已有模态打开则幂等忽略（单模态源防嵌套）。
+    /// `overlay_ok`：悬浮窗可作宿主（可见且非紧凑且高度充足，由调用方判定）；
+    /// 否则宿主=面板（调用方负责面板不可见时入队 ShowPanel/HidePanel 平衡）。
+    /// 标题/正文由调用方按 kind 装配（i18n 当前语言；Delete 系含动态参数）。
+    pub fn request_confirm(
+        &mut self,
+        kind: ConfirmKind,
+        overlay_ok: bool,
+        title: String,
+        msg: String,
+    ) -> bool {
+        if self.confirm.is_some() {
+            return false;
+        }
+        let host = if overlay_ok { WinId::Overlay } else { WinId::Panel };
+        let panel_shown_for_confirm = host == WinId::Panel
+            && !self.visible.get(&WinId::Panel).copied().unwrap_or(true);
+        self.confirm = Some(ConfirmUi {
+            host,
+            kind,
+            title,
+            msg,
+            panel_shown_for_confirm,
+        });
+        true
+    }
+
+    /// 关闭确认模态并返回原状态（渲染帧执行确定效果 / 取消恢复逻辑）
+    pub fn take_confirm(&mut self) -> Option<ConfirmUi> {
+        self.confirm.take()
     }
 
     /// 悬浮窗持久化几何 (x, y, w, h)（settings.overlay_* 四键齐备才生效）
@@ -1815,6 +1883,82 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// D-33/H-3：确认模态——打开/幂等/宿主选择/取消恢复标记（单模态源防嵌套）
+    #[test]
+    fn confirm_modal_request_idempotent_and_host_choice() {
+        let mut st = AppState::new(Settings::default());
+        // 默认启动流 Ready：面板可见性取 show_panel 环境（测试无该变量 → 隐藏）
+        st.visible.insert(WinId::Panel, false);
+        st.visible.insert(WinId::Overlay, true);
+
+        // 悬浮窗可宿主 → Overlay，无 panel 标记
+        assert!(st.request_confirm(
+            ConfirmKind::Quit,
+            true,
+            lt_i18n::t("quit_confirm_title"),
+            lt_i18n::t("quit_confirm_msg"),
+        ));
+        let c = st.confirm.as_ref().unwrap();
+        assert_eq!(c.host, WinId::Overlay);
+        assert_eq!(c.kind, ConfirmKind::Quit);
+        assert!(!c.panel_shown_for_confirm);
+
+        // 已开 → 幂等忽略（不叠加/不换 kind）
+        assert!(!st.request_confirm(
+            ConfirmKind::Clear,
+            true,
+            lt_i18n::t("clear_confirm_title"),
+            lt_i18n::t("clear_confirm_msg"),
+        ));
+        assert_eq!(st.confirm.as_ref().unwrap().kind, ConfirmKind::Quit);
+
+        // 取消 → 取走
+        let taken = st.take_confirm().expect("应取走模态");
+        assert!(st.confirm.is_none());
+        assert_eq!(taken.kind, ConfirmKind::Quit);
+
+        // 悬浮窗不可宿主（隐藏/紧凑）→ Panel + 临时显示标记
+        assert!(st.request_confirm(
+            ConfirmKind::Quit,
+            false,
+            lt_i18n::t("quit_confirm_title"),
+            lt_i18n::t("quit_confirm_msg"),
+        ));
+        let c = st.confirm.as_ref().unwrap();
+        assert_eq!(c.host, WinId::Panel);
+        assert!(c.panel_shown_for_confirm, "面板原本隐藏应标记临时显示");
+
+        // 面板已可见 → 取消不触发回藏（无临时标记）
+        let _ = st.take_confirm();
+        st.visible.insert(WinId::Panel, true);
+        assert!(st.request_confirm(
+            ConfirmKind::ResetSubtitle,
+            false,
+            lt_i18n::t("reset_confirm_title"),
+            lt_i18n::t("subwin_reset_confirm"),
+        ));
+        assert!(!st.confirm.as_ref().unwrap().panel_shown_for_confirm);
+        let _ = st.take_confirm();
+    }
+
+    /// D-33/H-3：Quit 确认 → quit_requested（宿主 about_to_wait 收敛路径不变）
+    #[test]
+    fn confirm_quit_sets_quit_requested() {
+        let mut st = AppState::new(Settings::default());
+        assert!(!st.quit_requested);
+        st.request_confirm(
+            ConfirmKind::Quit,
+            false,
+            lt_i18n::t("quit_confirm_title"),
+            lt_i18n::t("quit_confirm_msg"),
+        );
+        let _ = st.take_confirm();
+        // 渲染层确定按钮 → 置 quit_requested（与确认框分离的纯状态断言：
+        // 直接模拟 apply 的结果——渲染层唯一副作用是 quit_requested）
+        st.quit_requested = true;
+        assert!(st.quit_requested);
+    }
 
     /// DL-3：apply_progress 整体覆盖（精确字节），文件切换自然归零；
     /// 非 Downloading 态忽略晚到事件

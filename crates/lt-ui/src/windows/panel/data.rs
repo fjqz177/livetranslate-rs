@@ -246,7 +246,9 @@ fn open_models_dir(state: &AppState) {
     tracing::info!("打开模型目录: {}", dir.display());
 }
 
-/// 删除所选模型（原版 _delete_selected：warning 确认 → rmtree → 刷新）
+/// 删除所选模型（原版 _delete_selected：warning 确认 → rmtree → 刷新）。
+/// D-33/H-5：确认改 egui 模态（rfd 同步框阻塞事件循环线程；确认后执行见
+/// [`apply_delete_selected`]）。
 fn delete_selected(state: &mut AppState) {
     let entries = state.panel.cache_entries.clone().unwrap_or_default();
     let Some(i) = state.panel.cache_selected else { return };
@@ -254,45 +256,50 @@ fn delete_selected(state: &mut AppState) {
     let msg = lt_i18n::t("delete_selected_confirm_msg")
         .replace("{name}", &e.name)
         .replace("{size}", &super::vad::format_size(e.size));
-    let confirmed = rfd::MessageDialog::new()
-        .set_title(lt_i18n::t("delete_selected_confirm_title"))
-        .set_description(&msg)
-        .set_buttons(rfd::MessageButtons::YesNo)
-        .set_level(rfd::MessageLevel::Warning)
-        .show();
-    if confirmed != rfd::MessageDialogResult::Yes {
-        return;
+    state.request_confirm(
+        crate::state::ConfirmKind::DeleteModel { index: i },
+        false,
+        lt_i18n::t("delete_selected_confirm_title"),
+        msg,
+    );
+}
+
+/// 模态确认后的执行：删除索引条目并刷新缓存（索引对位请求时的 cache_entries）
+pub(crate) fn apply_delete_selected(state: &mut AppState, index: usize) {
+    let entries = state.panel.cache_entries.clone().unwrap_or_default();
+    if let Some(e) = entries.get(index) {
+        remove_entry(e);
     }
-    remove_entry(e);
     refresh_cache(state);
 }
 
 /// 删除全部缓存（原版 _delete_all_and_exit：warning 确认 → 逐个 rmtree）。
-/// Rust 版不退出应用，改为提示"重启生效"（见模块注释偏差说明）。
+/// Rust 版不退出应用，改为"重启生效"原生通知（见模块注释偏差说明）。
+/// D-33/H-5：确认与完成提示均改非阻塞载体（egui 模态 + 原生通知）。
 fn delete_all_models(state: &mut AppState, entries: &[CacheEntry]) {
     let total: u64 = entries.iter().map(|e| e.size).sum();
     let msg = lt_i18n::t("dialog_delete_msg")
         .replace("{count}", &entries.len().to_string())
         .replace("{size}", &super::vad::format_size(total));
-    let confirmed = rfd::MessageDialog::new()
-        .set_title(lt_i18n::t("dialog_delete_title"))
-        .set_description(&msg)
-        .set_buttons(rfd::MessageButtons::YesNo)
-        .set_level(rfd::MessageLevel::Warning)
-        .show();
-    if confirmed != rfd::MessageDialogResult::Yes {
-        return;
-    }
-    for e in entries {
+    state.request_confirm(
+        crate::state::ConfirmKind::DeleteAll,
+        false,
+        lt_i18n::t("dialog_delete_title"),
+        msg,
+    );
+}
+
+/// 模态确认后的执行：逐条删除并刷新 + 完成提示走原生通知
+pub(crate) fn apply_delete_all(state: &mut AppState) {
+    let entries = state.panel.cache_entries.clone().unwrap_or_default();
+    for e in &entries {
         remove_entry(e);
     }
     refresh_cache(state);
-    rfd::MessageDialog::new()
-        .set_title(lt_i18n::t("dialog_delete_title"))
-        .set_description(lt_i18n::t("delete_all_done_msg").replace("{count}", &entries.len().to_string()).as_str())
-        .set_buttons(rfd::MessageButtons::Ok)
-        .set_level(rfd::MessageLevel::Info)
-        .show();
+    let done = lt_i18n::t("delete_all_done_msg").replace("{count}", &entries.len().to_string());
+    if let Err(e) = crate::notifications::show(&lt_i18n::t("dialog_delete_title"), &done) {
+        tracing::warn!("删除完成提示（原生通知）失败: {e}");
+    }
 }
 
 /// 删除单个缓存目录（原版 shutil.rmtree：失败记日志，不中断其余条目）

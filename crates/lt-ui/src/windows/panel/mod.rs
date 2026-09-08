@@ -24,7 +24,7 @@ pub mod subtitle_page;
 pub mod translation;
 pub mod vad;
 
-use crate::state::{AppState, PanelPage};
+use crate::state::{AppState, PanelPage, WinId};
 use egui::{Color32, Frame, RichText, ScrollArea, Stroke, Ui};
 use lt_proto::Settings;
 
@@ -135,6 +135,10 @@ pub fn open_url(url: &str) {
 
 /// 面板 UI 总入口（windows::dispatch 按 WinId::Panel 分派到这里）
 pub fn panel_ui(ui: &mut Ui, state: &mut AppState) {
+    // 确认模态（D-33/H-3~H-5）：帧首渲染——egui::Window 独立图层不占页面布局，
+    // 且必须置于 Log 页早退之前（确认模态在任意页均可打开）
+    super::confirm::render_confirm_if_host(ui, state, WinId::Panel);
+
     let pal = Palette::resolve(ui);
 
     // 全窗底色（QTabWidget 外围 #F0F0F0）

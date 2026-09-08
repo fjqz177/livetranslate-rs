@@ -11,6 +11,7 @@ use crate::state::{AppState, WinId};
 use egui::{Color32, RichText, Ui};
 
 pub mod bench;
+pub mod confirm;
 pub mod logwin;
 pub mod overlay;
 pub mod panel;

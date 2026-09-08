@@ -72,6 +72,15 @@ pub fn t(key: &str) -> String {
     guard.map.get(key).cloned().unwrap_or_else(|| key.to_string())
 }
 
+/// 按语言码直接查询翻译文本（不触碰全局状态——测试用；避免并行测试对
+/// 全局 set_lang 的竞争导致的语义断言不稳定）
+pub fn t_for_lang(lang: &str, key: &str) -> String {
+    parse_yaml(yaml_for_lang(lang))
+        .get(key)
+        .cloned()
+        .unwrap_or_else(|| key.to_string())
+}
+
 /// (code, 原生显示名)。auto 项显示名由调用方用 t("asr_lang_auto") 处理，此处为 None。
 /// 逐项转录自 Python 原版 LiveTranslate/i18n.py 第 42-73 行，共 30 项。
 pub const LANGUAGES: &[(&str, Option<&str>)] = &[

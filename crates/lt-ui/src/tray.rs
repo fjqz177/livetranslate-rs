@@ -42,17 +42,8 @@ pub struct Tray {
     pub handles: TrayHandles,
 }
 
-/// 统一退出确认（原版 on_quit(confirm=True)；托盘菜单与悬浮窗退出按钮共用同一
-/// 语义——P1-1 修复：同一动作不再双语义）
-pub fn confirm_quit() -> bool {
-    rfd::MessageDialog::new()
-        .set_title(lt_i18n::t("quit_confirm_title"))
-        .set_description(lt_i18n::t("quit_confirm_msg"))
-        .set_buttons(rfd::MessageButtons::OkCancel)
-        .set_level(rfd::MessageLevel::Info)
-        .show()
-        == rfd::MessageDialogResult::Ok
-}
+// 退出确认已迁出本模块（D-33/H-3：egui 内嵌模态，见 windows::confirm；
+// 注入 rfd 同步框在事件循环线程内阻塞、且可被其他模态串行/不可达）。
 
 impl Tray {
 /// 切换托盘状态图标（原版 tray.setIcon(create_app_icon(status))）

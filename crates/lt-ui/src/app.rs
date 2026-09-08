@@ -10,8 +10,8 @@
 //! - 点击穿透由窗口层按 50ms 轮询处理（M4 接入），本宿主只负责窗口创建与 flags。
 
 use crate::state::{
-    AppState, DownloadUiState, OverlayMessage, PanelPage, StartupFlow, TickKind, WinAction,
-    WinId, push_log_line,
+    AppState, ConfirmKind, DownloadUiState, OverlayMessage, OverlayMode, PanelPage, StartupFlow,
+    TickKind, WinAction, WinId, push_log_line,
 };
 use crate::tray::{self, Tray};
 use crate::windows;
@@ -382,6 +382,21 @@ impl MultiWindowApp {
         }
     }
 
+    /// 悬浮窗可作确认模态宿主：可见 + 非紧凑模式 + 高度 ≥ 280 逻辑 px
+    /// （紧凑 200px 装不下居中确认框；D-33/H-3 审查修正）
+    fn overlay_can_host_confirm(&self) -> bool {
+        let Some(hw) = self.find(WinId::Overlay) else {
+            return false;
+        };
+        if !hw.window.is_visible().unwrap_or(false) {
+            return false;
+        }
+        if self.app_state.overlay.mode == OverlayMode::Compact {
+            return false;
+        }
+        hw.window.inner_size().to_logical::<f32>(hw.window.scale_factor()).height >= 280.0
+    }
+
     /// 把 AppState 的勾选状态同步到托盘菜单（三向同步的一环）
     /// 托盘状态同步（新版最小菜单：仅状态行文字；模型/语言切换收敛悬浮窗）
     fn sync_tray_checks(&mut self) {
@@ -389,7 +404,7 @@ impl MultiWindowApp {
     }
 
     /// 托盘菜单动作（新版最小菜单：暂停/悬浮窗显隐/面板/退出）
-    fn on_menu(&mut self, event_loop: &ActiveEventLoop, id: &str) {
+    fn on_menu(&mut self, _event_loop: &ActiveEventLoop, id: &str) {
         use tray::ids as m;
         match id {
             m::PAUSE => {
@@ -420,10 +435,24 @@ impl MultiWindowApp {
                 self.set_visible(WinId::Panel, vis);
             }
             m::QUIT => {
-                // 原版 on_quit(confirm=True)：确认框；取消则不退出
-                if tray::confirm_quit() {
-                    tracing::info!("收到退出指令（已确认）");
-                    event_loop.exit();
+                // D-33/H-3：退出确认改 egui 内嵌模态（原位 rfd 同步框会被其他
+                // 模态串行/不可达）。悬浮窗可作宿主（可见/非紧凑/高度足）则就地弹，
+                // 否则显示面板承载——任意状态（含全 UI 隐藏）下确认框必有宿主。
+                let overlay_ok = self.overlay_can_host_confirm();
+                let opened = self.app_state.request_confirm(
+                    ConfirmKind::Quit,
+                    overlay_ok,
+                    lt_i18n::t("quit_confirm_title"),
+                    lt_i18n::t("quit_confirm_msg"),
+                );
+                if opened {
+                    if overlay_ok {
+                        self.redraw(WinId::Overlay);
+                    } else {
+                        self.set_visible(WinId::Panel, true);
+                    }
+                } else {
+                    tracing::debug!("确认模态已打开，忽略重复退出请求");
                 }
             }
             other => {
@@ -487,7 +516,9 @@ impl MultiWindowApp {
     }
 
     /// 悬浮窗显隐统一入口（托盘 OVERLAY_TOGGLE 与主面板"隐藏"按钮共用；
-    /// 原版 on_toggle_overlay：托盘菜单文字翻转 + 首次隐藏气泡提示）
+    /// 原版 on_toggle_overlay：托盘菜单文字翻转 + 首次隐藏提示）。
+    /// D-33/H-1：**先藏后提示**——原位 rfd 同步弹窗（先弹后藏 + 无 owner 非置顶
+    /// 被裸置顶悬浮窗压住）已移除，首次隐藏改原生通知（非阻塞）。
     fn set_overlay_visible_with_hint(&mut self, vis: bool) {
         if let Some(t) = &self.tray {
             let text = if vis {
@@ -496,21 +527,12 @@ impl MultiWindowApp {
                 lt_i18n::t("tray_show_overlay")
             };
             let _ = t.handles.overlay_toggle.set_text(text);
-            // 首次隐藏提示（原版 tray.showMessage 气泡；tray-icon 0.24
-            // 无气泡 API → 一次性 info 弹窗兜底，避免"悬浮窗不见了"困惑）
-            if !vis && !self.overlay_hide_notified {
-                self.overlay_hide_notified = true;
-                let hint = lt_i18n::t("hide_tray_hint");
-                tracing::info!("{hint}");
-                rfd::MessageDialog::new()
-                    .set_title(lt_i18n::t("hide_tray_hint_title"))
-                    .set_description(&hint)
-                    .set_buttons(rfd::MessageButtons::Ok)
-                    .set_level(rfd::MessageLevel::Info)
-                    .show();
-            }
         }
         self.set_visible(WinId::Overlay, vis);
+        if !vis && !self.overlay_hide_notified {
+            self.overlay_hide_notified = true;
+            crate::notifications::show_hidden_hint();
+        }
     }
 
     /// 应用悬浮窗置顶/任务栏窗口 flags（穿透轮询 M4 接入）
@@ -849,12 +871,14 @@ impl MultiWindowApp {
                         if done && self.app_state.bench_running {
                             self.app_state.bench_running = false;
                             tracing::info!("性能基准完成");
-                            rfd::MessageDialog::new()
-                                .set_title(lt_i18n::t("bench_done_title"))
-                                .set_description(lt_i18n::t("bench_done_msg").as_str())
-                                .set_buttons(rfd::MessageButtons::Ok)
-                                .set_level(rfd::MessageLevel::Info)
-                                .show();
+                            // D-33/H-5：完成提示改原生通知（原位 rfd 同步框
+                            // 在事件循环线程内阻塞）
+                            if let Err(e) = crate::notifications::show(
+                                &lt_i18n::t("bench_done_title"),
+                                &lt_i18n::t("bench_done_msg"),
+                            ) {
+                                tracing::warn!("基准完成提示（原生通知）失败: {e}");
+                            }
                         }
                     }
                     if self.app_state.logwin.push(crate::state::LogLineEntry {
@@ -919,6 +943,10 @@ impl MultiWindowApp {
                 }
                 WinAction::ShowPanel => {
                     self.set_visible(WinId::Panel, true);
+                }
+                WinAction::HidePanel => {
+                    // D-33/H-3：确认模态取消后恢复临时显示的面板
+                    self.set_visible(WinId::Panel, false);
                 }
                 WinAction::ShowBenchmark => {
                     // 原版 BenchmarkDialog.exec()：显示独立工具窗
@@ -1155,6 +1183,19 @@ impl MultiWindowApp {
             Self::set_window_transparent(&window, false);
             return;
         }
+        // D-33/H-4：确认模态（宿主=悬浮窗）打开期间强制非穿透——否则模态按钮
+        // 落在正文区，点击被 WS_EX_TRANSPARENT 击穿，确认框将不可操作。模态关闭
+        // 后下一拍（50ms）自动恢复光标判定（节拍在 ov_click_through 期间持续续拍）。
+        let modal_on_overlay = self
+            .app_state
+            .confirm
+            .as_ref()
+            .map(|c| c.host == WinId::Overlay)
+            .unwrap_or(false);
+        if modal_on_overlay {
+            Self::set_window_transparent(&window, false);
+            return;
+        }
         let Ok(win_pos) = window.outer_position() else { return };
         let mut pt = POINT::default();
         if unsafe { GetCursorPos(&mut pt) }.is_err() {
@@ -1222,13 +1263,14 @@ impl MultiWindowApp {
     /// 执行导出（原版 export_messages；rfd 保存对话框 + 三种模式行格式）
     fn run_export(&mut self, mode: &str) {
         if self.app_state.messages.is_empty() {
-            // P1-4：空导出就地弹窗提示（原版仅日志；用户点了按钮必须看到反馈）
-            rfd::MessageDialog::new()
-                .set_title(lt_i18n::t("export_dialog_title"))
-                .set_description(lt_i18n::t("export_empty"))
-                .set_buttons(rfd::MessageButtons::Ok)
-                .set_level(rfd::MessageLevel::Info)
-                .show();
+            // P1-4：空导出就地提示（原版仅日志；用户点了按钮必须看到反馈）。
+            // D-33/H-5：改原生通知（原位 rfd 同步框阻塞事件循环线程）。
+            if let Err(e) = crate::notifications::show(
+                &lt_i18n::t("export_dialog_title"),
+                &lt_i18n::t("export_empty"),
+            ) {
+                tracing::warn!("空导出提示（原生通知）失败: {e}");
+            }
             tracing::info!("{}", lt_i18n::t("export_empty"));
             return;
         }

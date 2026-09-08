@@ -108,24 +108,14 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
         .map(|p: &String| p.as_str())
         .collect();
     if !page_diffs.is_empty() {
-        super::reset_toolbar(ui, pal, page_diffs.len(), &page_diffs.join("、"), |ui| {
-            if rfd::MessageDialog::new()
-                .set_title(lt_i18n::t("reset_confirm_title"))
-                .set_description(lt_i18n::t("subwin_reset_confirm"))
-                .set_buttons(rfd::MessageButtons::OkCancel)
-                .set_level(rfd::MessageLevel::Warning)
-                .show()
-                == rfd::MessageDialogResult::Ok
-            {
-                state.settings.subtitle_mode = lt_proto::SubtitleMode::default();
-                // 行级字体跟随（空串）解析自注册表 → 重装字体链
-                crate::fonts::apply_fonts(ui.ctx(), &state.settings, &mut state.fonts);
-                state.enqueue_action(
-                    crate::state::WinId::Panel,
-                    crate::state::WinAction::ToggleSubtitle,
-                );
-                mark_settings_dirty(state);
-            }
+        super::reset_toolbar(ui, pal, page_diffs.len(), &page_diffs.join("、"), |_| {
+            // D-33/H-5：确认改 egui 模态（原位 rfd 同步框阻塞事件循环线程）
+            state.request_confirm(
+                crate::state::ConfirmKind::ResetSubtitle,
+                false,
+                lt_i18n::t("reset_confirm_title"),
+                lt_i18n::t("subwin_reset_confirm"),
+            );
         });
     }
 
