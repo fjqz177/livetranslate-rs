@@ -155,15 +155,15 @@ impl Supervisor {
 
 ```mermaid
 graph LR
-  O[lt-orchestrator 各线程] -->|force_push| Q[ArrayQueue&lt;UiEvent&gt; cap 4096 满丢最旧+计数]
-  L[lt-logbridge 日志桥] -->|force_push| Q
-  B[bench/download/设备探测] -->|force_push| Q
+  O[lt-orchestrator 各线程] -->|push 满丢最旧| Q[BoundedDropQueue&lt;UiEvent&gt; cap 4096 +丢弃计数]
+  L[lt-logbridge 日志桥] -->|push| Q
+  B[bench/download/设备探测] -->|push| Q
   Q -->|wake 信号 bounded(1) try_send| BR[lt-app 桥线程]
   BR -->|drain 至空 → 单次唤醒| P[EventLoopProxy<br>UiMsg::Events&#40;Vec&lt;UiEvent&gt;&#41;]
   P --> S[shell 逐帧排空分发]
 ```
 
-- 生产侧无锁（`ArrayQueue::force_push`，外部证据 §8.3-6：crossbeam 系自带 drop-oldest 原语）；唤醒侧 bounded(1) 信号位（满 = 桥已待醒，丢弃）——alacritty Wakeup 同款模式。
+- 生产侧无锁丢最旧：**复用资产 A2 `lt-audio::BoundedDropQueue<T>`**（audio/mod.rs:155-199，泛型、`push` 即满丢最旧、`pop_timeout` 阻塞读）——动脉 cap 4096 与 JobPool keep-latest 64（W1）用同一原语，**零新增外部依赖**（§3.6）；唤醒侧 bounded(1) 信号位（满 = 桥已待醒，丢弃）——alacritty Wakeup 同款模式。
 - **UpdateMonitor 退出事件面**：capture 每 chunk 写 `Arc<ArcSwap<MonitorSample>>` 快照格；悬浮窗可见时以 ~33ms Monitor tick 读格重绘（有界重绘率，语义等价现 31/s 事件驱动）；`UpdateMonitor` 变体随 W2 删除。sysinfo 1s 采样 tick 不变。
 - `UiMsg::Events(Vec<UiEvent>)` 批量变体 + 保留单条 `Event(UiEvent)` 便利变体。
 
@@ -304,6 +304,34 @@ WinId::Overlay => { let AppUi { overlay, session, settings, modal, .. } = app;
 | 9 | 事件动脉桥 + backend + AppShell（现状顺序保留：先藏后显、启动流不接线直进主界面） | 面板红字（现状已好） |
 
 `transcripts_dir` 失败回退 CWD（pipeline.rs:345-347，R26）改为回退配置目录 + error 事件。
+
+### 3.6 外部依赖增删审计（2026-09-09，arch-v2 分支实证补立）
+
+审计方法：①逐依赖 grep 声明处（Cargo.toml）vs 使用处（src 含内嵌测试）；②Cargo.lock 版本唯一性核对（657 包）；③tokio/windows 特性位 API 面实测；④工具链 rustc 1.98.1 对新增依赖 MSRV 余量核对。
+
+**新增（仅 1 项）：**
+
+| 依赖 | 版本策略 | 落点 | 用途 |
+|---|---|---|---|
+| arc-swap | `arc-swap = "1"`（workspace 声明，锁定时取 1.9.x；rustc 1.98.1 远高于其 MSRV） | lt-proto（`MonitorSample` 类型定义）/ lt-orchestrator（SettingsBus + MonitorSample 写侧）/ lt-ui（MonitorSample 读侧，经 lt-app 装配注入句柄）/ lt-app | W2 Monitor 快照格 + W4 SettingsBus；选型证据 §8.3-1 |
+
+**明确不加（含对原方案的修订）：**
+
+| 项 | 决定 | 理由 |
+|---|---|---|
+| crossbeam-queue（原 §3.2.2 暗示新增） | **不加**——动脉与 JobPool 改复用资产 A2 `BoundedDropQueue<T>` | 泛型 + `push` 满丢最旧 + `pop_timeout` 阻塞读（audio/mod.rs:155-199），语义完全覆盖两处需求；少一个外部依赖 |
+| windows 特性增补（W6 单实例激活） | **不加** | FindWindowW/PostMessageW/AllowSetForegroundWindow/GetWindowThreadProcessId 全在 `Win32_UI_WindowsAndMessaging`，根特性已含，lt-app 经 `windows = { workspace = true }` 继承（lt-ui 另有 16 特性自用，不受影响） |
+| rfd async feature / 对话框运行时 | **不加** | W5 异步化 = 同步 rfd 挪 Supervisor one-shot 线程，阻塞面仅该线程，无需 async 特性与新运行时 |
+
+**裁剪（可选卫生，W2 顺手）：**
+
+| 项 | 现状 | 裁剪为 | 说明 |
+|---|---|---|---|
+| tokio 特性位 | rt-multi-thread, macros, net, time, fs, process, signal, sync | `["rt-multi-thread", "time", "sync"]` | API 面实测全仓仅 `tokio::{sync, time, runtime}` 三组（translator.rs:27 Builder + 广播桥 + 超时）；macros/net/fs/process/signal 零直接使用。注意：最终编译特性集由全图统一化决定（reqwest 携带其所需），收益=声明诚实而非编译提速 |
+
+**随波次移动（非增删，版本不变）：** W0 删 lt-pipeline→lt-proto 死依赖；W6 reqwest+sha2 声明自 lt-models 随下载域迁至 lt-download。
+
+**版本策略：全部锁定不动。** reqwest 全仓单版本 0.13.1（async-openai 0.41 未引入重复 HTTP 栈，Cargo.lock 实证）；tokio 单版本 1.53.1；egui 0.36 系/winit 0.30.13/tray-icon 0.24 与大坑清单强耦合，升级=§7 非目标；uuid 为真依赖（pipeline.rs:1451 消息 ID、lt-asr/client.rs:235/284 请求 ID、lt-pipeline/transcript.rs:205 会话 ID），非死依赖；其余 24 个工作区外部依赖逐个核实均有真实使用，零死依赖。结论：**本方案对外部依赖面零侵入——仅增 1 个轻量 crate（arc-swap），不引入任何框架/异步运行时/新 Win32 特性面。**
 
 ---
 
