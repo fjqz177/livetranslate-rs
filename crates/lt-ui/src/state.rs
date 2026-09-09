@@ -795,8 +795,9 @@ pub const PANEL_APPLY_DEBOUNCE_MS: u64 = 300;
 /// 翻译页 system_prompt 防抖时长（原版 translation_tab._prompt_debounce 600ms）
 pub const PROMPT_APPLY_DEBOUNCE_MS: u64 = 600;
 
-/// ModelEditDialog 高级参数覆写行的键序（原版 _adv_rows 的插入序；
-/// 与 lt_proto::ModelConfig.overrides BTreeMap 的键集合一致）
+/// ModelEditDialog 高级参数覆写行的键序（原版 _adv_rows 的插入序）。
+/// 非「镜像」：overrides 经 BTreeMap 透传（lt-translate 侧无键枚举，F5），
+/// 本清单是 UI 编辑对话框的呈现面——新增可编辑覆写键即在此追加
 pub const OVERRIDE_KEYS: [&str; 6] = [
     "temperature",
     "top_p",

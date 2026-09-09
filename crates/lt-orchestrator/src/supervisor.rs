@@ -76,6 +76,14 @@ impl Supervisor {
         policy: Policy,
         factory: impl Fn() -> Box<dyn FnOnce() + Send + 'static> + Send + 'static,
     ) {
+        // E1-3/INV4 延伸：stopping 置位后拒绝一切出生——monitor 的 respawn
+        // 封堵（begin_shutdown 后复查）之外，本出生口是另一条路，停机期迟到
+        // 的任务（如收尾中触发的下载/探测）不得把线程重新拉起。拒绝不 panic：
+        // 停机竞态宁可漏一次任务，不可炸穿收尾序。
+        if self.stopping.load(Ordering::SeqCst) {
+            tracing::error!("Supervisor::spawn 停机后被调用（{role:?}）——已拒绝（INV4）");
+            return;
+        }
         let name = name.into();
         let run = factory();
         let handle = std::thread::Builder::new()
@@ -324,6 +332,19 @@ mod tests {
             "stopping 后不得重生（INV4）"
         );
         assert!(rx.try_recv().is_err(), "停机期不上报死亡事件");
+        sup.join_all();
+    }
+
+    /// E1-3：begin_shutdown 后 spawn 被拒绝（INV4 延伸——出生口自身的停机
+    /// 封堵，非 monitor respawn 面）；拒绝不入表，join_all 立即收敛
+    #[test]
+    fn spawn_after_shutdown_is_noop() {
+        let (sup, _rx) = setup();
+        sup.begin_shutdown();
+        sup.spawn(ThreadRole::Capture, "test-late-spawn", Policy::Always, || {
+            Box::new(|| panic!("停机后出生的线程不应存在（E1-3 拒绝失守）"))
+        });
+        assert!(sup.entries.lock().unwrap().is_empty(), "拒绝出生不得入表");
         sup.join_all();
     }
 

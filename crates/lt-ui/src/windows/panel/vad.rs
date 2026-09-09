@@ -471,7 +471,8 @@ pub fn page(ui: &mut Ui, panel: &mut PanelUi, session: &mut SessionView, setting
                 0.0..=5.0,
                 true,
             ) {
-                settings.sensevoice_pad_seconds = sv;
+                // E1-4：只发命令——草稿写入收敛在 shell 纯写入面
+                //（apply_settings_side_effects），UI 不再发送前预写
                 session.send_cmd(lt_proto::Cmd::SetPadding {
                     engine: "funasr".into(),
                     secs: sv,
@@ -490,7 +491,7 @@ pub fn page(ui: &mut Ui, panel: &mut PanelUi, session: &mut SessionView, setting
                 0.0..=5.0,
                 true,
             ) {
-                settings.whisper_pad_seconds = wv;
+                // E1-4：同上——草稿写入唯一落点在 shell
                 session.send_cmd(lt_proto::Cmd::SetPadding {
                     engine: "whisper".into(),
                     secs: wv,
@@ -815,7 +816,7 @@ pub fn page(ui: &mut Ui, panel: &mut PanelUi, session: &mut SessionView, setting
             ))
             .changed()
         {
-            settings.incremental_asr = inc;
+            // E1-4：只发命令——草稿写入收敛在 shell 纯写入面
             session.send_cmd(lt_proto::Cmd::IncrementalAsr {
                 enabled: inc,
                 interval: settings.interim_interval,
@@ -835,7 +836,7 @@ pub fn page(ui: &mut Ui, panel: &mut PanelUi, session: &mut SessionView, setting
             hint_line(ui, pal, &lt_i18n::t("interim_interval_disabled_tooltip"));
         }
         if itv_changed {
-            settings.interim_interval = itv;
+            // E1-4：只发命令——草稿写入收敛在 shell 纯写入面
             session.send_cmd(lt_proto::Cmd::IncrementalAsr {
                 enabled: inc,
                 interval: itv,

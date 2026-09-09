@@ -24,6 +24,54 @@ use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
 
+/// 命令 → 设置草稿的纯写入面（E1-4，写入点唯一化）：所有携带设置语义的
+/// 命令，其草稿写入只发生在本函数——旧实现里 `SetPadding`/`IncrementalAsr`
+/// 依赖 UI 发送前预写草稿、shell 只发布（同一命令枚举两种暗规则，照抄
+/// 即埋雷）。收敛后 UI 只发命令；`handle_cmd` 分派前先过本函数。纯函数：
+/// 只改 Settings，不触管道/总线/落盘（那些留在 handle_cmd 各臂）。
+/// pad 的 engine 值域 = `funasr`/`whisper` 两族（与识别页滑杆一一对应，
+/// 非 ASR_ENGINES 全集——nano 无 padding 语义，UI 侧不产生该载荷）。
+fn apply_settings_side_effects(s: &mut Settings, cmd: &Cmd) {
+    match cmd {
+        Cmd::SetAsrLanguage(lang) => s.asr_language = lang.clone(),
+        Cmd::SetPadding { engine, secs } => match engine.as_str() {
+            "funasr" => s.sensevoice_pad_seconds = *secs,
+            "whisper" => s.whisper_pad_seconds = *secs,
+            other => tracing::warn!("SetPadding 未知 engine 值域: {other}（忽略写入）"),
+        },
+        Cmd::IncrementalAsr {
+            enabled, interval, ..
+        } => {
+            s.incremental_asr = *enabled;
+            s.interim_interval = *interval;
+        }
+        Cmd::SetTargetLanguage(lang) => s.target_language = lang.clone(),
+        Cmd::SetTimeout(secs) => s.timeout = *secs,
+        Cmd::SwitchTranslator(config) => {
+            // 记为当前激活模型（按名匹配；越界/未知名不动 active_model）
+            if let Some(idx) = s.models.iter().position(|m| m.name == config.name) {
+                s.active_model = idx;
+            }
+        }
+        Cmd::SwitchEngine {
+            engine,
+            funasr_model,
+            whisper_model_size,
+            language,
+            ..
+        } => {
+            s.asr_engine = engine.clone();
+            s.funasr_model = funasr_model.clone();
+            s.whisper_model_size = whisper_model_size.clone();
+            s.asr_language = language.clone();
+        }
+        Cmd::SetAudioDevice(choice) => s.audio_device = choice.clone().into(),
+        Cmd::SetMicDevice(choice) => s.mic_device = choice.clone().into(),
+        Cmd::ApplySettings(new) | Cmd::PersistSettings(new) => *s = (**new).clone(),
+        _ => {}
+    }
+}
+
 pub struct AppShell {
     pub ui: lt_ui::MultiWindowApp,
     /// 事件动脉（全后台→UI 事件出口；W4 起 UiMsg::Cmd 回环已不存在，
@@ -133,6 +181,9 @@ impl AppShell {
 
     /// 管道域命令分发（对照原版 App 的 overlay/托盘信号处理段）
     fn handle_cmd(&mut self, cmd: Cmd) {
+        // E1-4：设置写入点唯一——分派前先过纯写入面，各臂只剩管道动作/
+        // 日志/发布/落盘（臂内不再直接改 settings）
+        apply_settings_side_effects(&mut self.ui.app_state.settings, &cmd);
         match cmd {
             Cmd::Pause => {
                 if let Some(p) = self.pipeline.as_mut() {
@@ -154,11 +205,10 @@ impl AppShell {
                 }
                 tracing::info!("管道恢复");
             }
-            // W4：语言/目标/超时/padding 全部走总线发布（INV7）——旧挂起机制
-            // （pending + 镜像同步命令）退役：ASR 线程每段 load().asr_lang，
+            // W4：语言/目标/超时/padding 全部走总线发布（INV7）——草稿写入
+            // 已在 apply_settings_side_effects 完成；ASR 线程每段 load().asr_lang，
             // 与 worker 的 delta 应用由 Manager 内部比对执行
             Cmd::SetAsrLanguage(lang) => {
-                self.ui.app_state.settings.asr_language = lang.clone();
                 tracing::info!("源语言: {lang}");
                 self.publish_settings();
                 self.persist_settings();
@@ -169,7 +219,7 @@ impl AppShell {
                 self.persist_settings();
             }
             // 增量识别热应用（原版 _incremental_asr_cb → _incremental_enabled/
-            // _interim_interval）；settings 字段已由面板写入
+            // _interim_interval）；草稿写入已过纯写入面
             Cmd::IncrementalAsr { enabled, interval } => {
                 if let Some(p) = &self.pipeline {
                     p.set_interim(enabled, interval);
@@ -179,30 +229,18 @@ impl AppShell {
                 self.persist_settings();
             }
             Cmd::SetTargetLanguage(lang) => {
-                self.ui.app_state.settings.target_language = lang.clone();
                 tracing::info!("目标语言: {lang}");
                 self.publish_settings();
                 self.persist_settings();
             }
             Cmd::SetTimeout(secs) => {
-                self.ui.app_state.settings.timeout = secs;
+                tracing::info!("超时: {secs}s");
                 self.publish_settings();
                 self.persist_settings();
             }
             Cmd::SwitchTranslator(config) => {
                 if let Some(p) = self.pipeline.as_mut() {
                     p.switch_translator(&config);
-                }
-                // 记为当前激活模型并持久化
-                if let Some(idx) = self
-                    .ui
-                    .app_state
-                    .settings
-                    .models
-                    .iter()
-                    .position(|m| m.name == config.name)
-                {
-                    self.ui.app_state.settings.active_model = idx;
                 }
                 tracing::info!("Switching translator: {} ({})", config.name, config.model);
                 self.publish_settings();
@@ -213,8 +251,8 @@ impl AppShell {
                     p.test_translator(&config);
                 }
             }
-            Cmd::PersistSettings(settings) => {
-                self.ui.app_state.settings = *settings;
+            Cmd::PersistSettings(_settings) => {
+                // E1-4：草稿整体替换已过纯写入面，本臂只剩发布 + 落盘
                 self.publish_settings();
                 if let Err(e) = lt_models::settings_io::save(&self.ui.app_state.settings) {
                     tracing::error!("设置保存失败: {e:#}");
@@ -230,39 +268,22 @@ impl AppShell {
                 if let Some(p) = self.pipeline.as_ref() {
                     p.switch_engine(&engine, &funasr_model, &whisper_model_size, &language);
                 }
-                let s = &mut self.ui.app_state.settings;
-                s.asr_engine = engine;
-                s.funasr_model = funasr_model;
-                s.whisper_model_size = whisper_model_size;
-                s.asr_language = language;
                 // W4：引擎切换必须先发布（总线按新引擎重算 VAD 钳制 overlay——
                 // 切离 qwen3 立即恢复全值，R18 根除"等用户下次应用"）
                 self.publish_settings();
                 self.persist_settings();
             }
             Cmd::SetAudioDevice(choice) => {
-                let dev = match &choice {
-                    lt_proto::AudioDeviceChoice::SystemDefault => None,
-                    lt_proto::AudioDeviceChoice::Named(n) => Some(n.clone()),
-                    lt_proto::AudioDeviceChoice::Disabled => Some("__disabled__".into()),
-                };
                 if let Some(p) = self.pipeline.as_mut() {
                     p.set_audio_device(choice);
                 }
-                self.ui.app_state.settings.audio_device = dev;
                 self.publish_settings();
                 self.persist_settings();
             }
             Cmd::SetMicDevice(choice) => {
-                let dev = match &choice {
-                    lt_proto::MicDeviceChoice::Off => None,
-                    lt_proto::MicDeviceChoice::Default => Some("__default__".into()),
-                    lt_proto::MicDeviceChoice::Named(n) => Some(n.clone()),
-                };
                 if let Some(p) = self.pipeline.as_mut() {
                     p.set_mic_device(choice);
                 }
-                self.ui.app_state.settings.mic_device = dev;
                 self.publish_settings();
                 self.persist_settings();
             }
@@ -279,7 +300,6 @@ impl AppShell {
                     // Pipeline 字段，不再经旧 transcript_shared 全局单例）
                     p.set_transcript_enabled(s.auto_save_transcript);
                 }
-                self.ui.app_state.settings = s;
                 self.publish_settings();
                 self.persist_settings();
                 tracing::info!("设置已应用");
@@ -508,5 +528,60 @@ impl ApplicationHandler<UiMsg> for AppShell {
             self.handle_cmd(cmd);
         }
         self.ui.about_to_wait(event_loop);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// E1-4：SetPadding 写入点唯一——纯写入面从载荷直接落草稿
+    ///（旧实现该命令载荷被 shell 丢弃，生效依赖 UI 发送前预写）
+    #[test]
+    fn set_padding_writes_draft_from_payload() {
+        let mut s = Settings::default();
+        apply_settings_side_effects(&mut s, &Cmd::SetPadding { engine: "funasr".into(), secs: 1.5 });
+        assert_eq!(s.sensevoice_pad_seconds, 1.5);
+        apply_settings_side_effects(&mut s, &Cmd::SetPadding { engine: "whisper".into(), secs: 2.0 });
+        assert_eq!(s.whisper_pad_seconds, 2.0);
+        assert_eq!(s.sensevoice_pad_seconds, 1.5, "另一族 pad 不得被串写");
+    }
+
+    /// E1-4：IncrementalAsr 同法——enabled/interval 都从载荷落草稿
+    #[test]
+    fn incremental_asr_writes_draft_from_payload() {
+        let mut s = Settings::default();
+        apply_settings_side_effects(&mut s, &Cmd::IncrementalAsr { enabled: true, interval: 3.0 });
+        assert!(s.incremental_asr);
+        assert_eq!(s.interim_interval, 3.0);
+    }
+
+    /// E1-4：未知 pad engine 值域拒绝写入（防新值域静默串写）
+    #[test]
+    fn set_padding_unknown_engine_is_ignored() {
+        let mut s = Settings::default();
+        apply_settings_side_effects(&mut s, &Cmd::SetPadding { engine: "qwen3".into(), secs: 9.0 });
+        assert_eq!(s.sensevoice_pad_seconds, 0.5, "默认值不动");
+        assert_eq!(s.whisper_pad_seconds, 0.5);
+    }
+
+    /// E1-4：SwitchTranslator 按名记激活模型；未知名不动 active_model
+    #[test]
+    fn switch_translator_records_active_model_by_name() {
+        let mut s = Settings::default();
+        let second = lt_proto::ModelConfig {
+            name: "second".into(),
+            ..Default::default()
+        };
+        s.models.push(second);
+        let cfg = s.models[1].clone();
+        apply_settings_side_effects(&mut s, &Cmd::SwitchTranslator(Box::new(cfg)));
+        assert_eq!(s.active_model, 1);
+        let ghost = lt_proto::ModelConfig {
+            name: "ghost".into(),
+            ..Default::default()
+        };
+        apply_settings_side_effects(&mut s, &Cmd::SwitchTranslator(Box::new(ghost)));
+        assert_eq!(s.active_model, 1, "未知名不得改激活模型");
     }
 }
