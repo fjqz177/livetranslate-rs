@@ -156,10 +156,10 @@ cargo run -p lt-app
 
 ### 5. 代码结构（分层规则）
 
-workspace 8 crates，依赖链**单向**，改码不得违反：
+workspace 9 crates（架构 2.0 W0~W3 已合入；十 crate 终局另加 lt-download，见 docs/architecture-v2.md），依赖链**单向**，改码不得违反：
 
 ```
-lt-proto → lt-i18n → lt-models → lt-pipeline → lt-asr → lt-translate → lt-ui → lt-app
+lt-proto → lt-i18n → lt-models → lt-audio → lt-asr → lt-translate → lt-orchestrator → lt-ui → lt-app
 ```
 
 | crate | 职责 |
@@ -167,15 +167,17 @@ lt-proto → lt-i18n → lt-models → lt-pipeline → lt-asr → lt-translate �
 | `lt-proto` | 事件/命令/数据契约。**已冻结**：值域扩展（如 ASR 引擎增项）允许，结构字段/Cmd/Event 增删需评审 |
 | `lt-i18n` | UI 字符串。zh/en 两份 yaml **必须同步修改**（`assets/i18n/zh.yaml` + `en.yaml`，各 579 键） |
 | `lt-models` | Settings 读写、模型注册表（仓库映射/文件清单/体积/sha256）、下载器 |
-| `lt-pipeline` | wasapi 采集、silero VAD、onnxruntime 内嵌与解压 |
+| `lt-audio` | wasapi 采集、silero VAD、onnxruntime 内嵌与解压（W3 改名自 lt-pipeline） |
 | `lt-asr` | ASR worker 子进程 + IPC（worker 由主进程用**同 exe `--asr-worker`** 自拉起，Job Object 孤儿兜底） |
 | `lt-translate` | async-openai LLM 调用 |
+| `lt-orchestrator` | 编排域（W3 自 lt-app 迁入）：识别/翻译管道 + 线程监督器 + 事件动脉队列侧 + 下载管理 + 日志桥；禁依赖 lt-ui/winit |
 | `lt-ui` | egui 多窗口：悬浮窗/字幕窗/控制面板/日志窗/托盘 |
-| `lt-app` | 装配入口（`livetranslate` 二进制 + 单实例互斥量 + worker 分派） |
+| `lt-app` | 组合根瘦壳（boot + 单实例 + worker 分派 + 命令路由 + 动脉桥） |
 
 **红线**：
 
 - `lt-ui` 允许**只读**依赖 `lt-models`（注册表/缓存探测）与 `lt-translate`（bench 直调），这是 f266a8b 的有意决策，**不得依赖 lt-app**；
+- `lt-orchestrator` 依赖白名单 = proto/models/audio/asr/translate（禁 ui/winit/i18n——用户文案经 `Msg` 注入，W3）；
 - 新增 UI 能力**不得扩 lt-proto 契约**（日志经 `LogLine { target }` 回流）；Settings 运行时落盘走 `Cmd::PersistSettings`，由 backend 统一写（300ms 防抖对齐原版）；
 - 参考副本 `LiveTranslate/`（Python 原版）仅供参考，新功能不必拘泥其行为。
 
