@@ -2627,14 +2627,14 @@ mod tests {
     #[test]
     fn wizard_defaults_follow_lang() {
         // 中文界面 → ModelScope，其余 → HuggingFace（原版按系统语言选源）
-        lt_i18n::set_lang("zh");
+        lt_i18n::set_lang("zh").expect("zh 表解析");
         let w = WizardState::new();
         assert_eq!(w.hub_index, 0);
         assert_eq!(w.proxy_index, 1); // 默认跟随系统代理
         assert_eq!(w.countdown, 15);
         assert_eq!(w.phase, WizardPhase::Idle);
         assert!(w.log.is_empty());
-        lt_i18n::set_lang("en");
+        lt_i18n::set_lang("en").expect("en 表解析");
         let w = WizardState::new();
         assert_eq!(w.hub_index, 1);
     }

@@ -856,6 +856,20 @@ impl MultiWindowApp {
     /// 单条业务事件分发（on_msg 的 Event 臂；Events 批量逐一复用）
     fn on_event(&mut self, _event_loop: &ActiveEventLoop, e: UiEvent) {
         match e {
+            // R11②/D-73（WD-5）：二次启动激活——显示面板并前置
+            //（用户再次双击入口 → 既有界面浮到前台，而非"无响应"）
+            lt_proto::UiEvent::SecondInstance => {
+                self.set_visible(WinId::Panel, true);
+                #[cfg(windows)]
+                if let Some(hw) = self.find_mut(WinId::Panel) {
+                    unsafe {
+                        let _ = ::windows::Win32::UI::WindowsAndMessaging::SetForegroundWindow(
+                            Self::hwnd_of(&hw.window).expect("Panel HWND 可得"),
+                        );
+                    }
+                }
+                self.redraw(WinId::Panel);
+            }
                 // 新识别消息 → 追加到悬浮窗消息链并重绘
                 lt_proto::UiEvent::AddMessage {
                     id,

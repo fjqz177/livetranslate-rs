@@ -39,25 +39,32 @@ fn yaml_for_lang(lang: &str) -> &'static str {
     }
 }
 
-/// 把 YAML 文本解析为扁平键值表；解析失败按空表处理（此后 t() 回退返回 key）
-fn parse_yaml(text: &str) -> HashMap<String, String> {
-    from_str(text).unwrap_or_default()
+/// 把 YAML 文本解析为扁平键值表（R14/D-62：解析失败返回值——内嵌资产
+/// 损坏即全 UI 显示原始键名的静默空表，应作为 boot 硬错让用户可见）
+fn parse_yaml(text: &str) -> Result<HashMap<String, String>, serde_yaml::Error> {
+    from_str(text)
 }
 
 /// 取全局状态锁（不存在则先用系统语言懒初始化）
 fn state() -> &'static RwLock<State> {
     STATE.get_or_init(|| {
         let lang = detect_system_lang().to_string();
-        let map = parse_yaml(yaml_for_lang(&lang));
+        // 内嵌资产损坏（构建期后）是致命故障：此处无 Result 面（懒初始化
+        // 取引用），直接 panic——boot 期 get 前会先经 set_lang 硬错呈现
+        let map = parse_yaml(yaml_for_lang(&lang))
+            .unwrap_or_else(|e| panic!("内嵌 i18n 资产损坏: {e}"));
         RwLock::new(State { lang, map })
     })
 }
 
-/// 切换界面语言并重新加载对应语言表（无对应内嵌表时加载英文表）
-pub fn set_lang(lang: &str) {
+/// 切换界面语言并重新加载对应语言表（无对应内嵌表时加载英文表）。
+/// R14：内嵌资产解析失败 → Err（boot 期硬错呈现；运行期恢复默认英文表）
+pub fn set_lang(lang: &str) -> Result<(), String> {
     let mut guard = state().write().unwrap_or_else(|e| e.into_inner());
+    let map = parse_yaml(yaml_for_lang(lang)).map_err(|e| format!("i18n 解析失败: {e}"))?;
     guard.lang = lang.to_string();
-    guard.map = parse_yaml(yaml_for_lang(lang));
+    guard.map = map;
+    Ok(())
 }
 
 /// 获取当前语言码（如 "zh" / "en"）
@@ -80,9 +87,8 @@ pub fn t(key: &str) -> String {
 /// 全局 set_lang 的竞争导致的语义断言不稳定）
 pub fn t_for_lang(lang: &str, key: &str) -> String {
     parse_yaml(yaml_for_lang(lang))
-        .get(key)
-        .cloned()
-        .unwrap_or_else(|| key.to_string())
+        .map(|m| m.get(key).cloned().unwrap_or_else(|| key.to_string()))
+        .unwrap_or_else(|_| key.to_string())
 }
 
 /// (code, 原生显示名)。auto 项显示名由调用方用 t("asr_lang_auto") 处理，此处为 None。
@@ -137,8 +143,8 @@ mod tests {
     /// 此测试即刻爆掉——杜绝"一侧显示原文键名"的漂移
     #[test]
     fn zh_en_key_sets_identical() {
-        let zh_map = parse_yaml(ZH_YAML);
-        let en_map = parse_yaml(EN_YAML);
+        let zh_map = parse_yaml(ZH_YAML).expect("zh.yaml 解析");
+        let en_map = parse_yaml(EN_YAML).expect("en.yaml 解析");
         assert!(!zh_map.is_empty(), "zh.yaml 不应为空");
         let mut missing_in_en: Vec<&String> =
             zh_map.keys().filter(|k| !en_map.contains_key(*k)).collect();
@@ -155,19 +161,19 @@ mod tests {
     #[test]
     fn set_lang_switches_table() {
         // 前置确认：内嵌的 zh/en 两表都确有 quit 键，且两表译文不同
-        let zh_map = parse_yaml(ZH_YAML);
-        let en_map = parse_yaml(EN_YAML);
+        let zh_map = parse_yaml(ZH_YAML).expect("zh.yaml 解析");
+        let en_map = parse_yaml(EN_YAML).expect("en.yaml 解析");
         assert!(zh_map.contains_key("quit"), "zh.yaml 应包含 quit 键");
         assert!(en_map.contains_key("quit"), "en.yaml 应包含 quit 键");
         assert_ne!(zh_map["quit"], en_map["quit"]);
 
         // 切到 zh：语言码与译文都应生效
-        set_lang("zh");
+        set_lang("zh").expect("zh 表解析");
         assert_eq!(get_lang(), "zh");
         assert_eq!(t("quit"), zh_map["quit"]);
 
         // 切到 en：同key 译文必须不同，证明表确实被重新加载
-        set_lang("en");
+        set_lang("en").expect("en 表解析");
         assert_eq!(get_lang(), "en");
         assert_eq!(t("quit"), en_map["quit"]);
         assert_ne!(zh_map["quit"], en_map["quit"]);

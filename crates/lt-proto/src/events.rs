@@ -115,6 +115,10 @@ pub enum UiEvent {
     },
     /// 字幕背景图选择回执（W5/R19：同上——path=None = 用户取消）
     BgImagePicked { path: Option<String> },
+    /// 二次启动激活（W6/R11②/WD-5）：第二个实例检测到首实例互斥量并已
+    /// 经 message-only 窗投递激活消息——首实例 UI 显示面板并前置。
+    /// 纯新增变体（冻结规则加法豁免，PROTO_VERSION 不递增）。
+    SecondInstance,
 }
 
 /// 应用级命令（托盘菜单与悬浮窗菜单同源；W2 替代 `Menu(String)` 字符串协议。

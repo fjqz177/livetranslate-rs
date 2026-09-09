@@ -15,6 +15,7 @@ mod artery;
 mod logging;
 mod panic_hook;
 mod shell;
+mod singleton;
 
 use lt_proto::{Cmd, UiMsg};
 
@@ -34,16 +35,17 @@ fn main() -> anyhow::Result<()> {
     let early = (|| -> anyhow::Result<lt_proto::Settings> {
         // R-4 预案 A：ort 走 load-dynamic，任何 ort 调用前解压 dll 并指向它
         lt_audio::ensure_ort_dylib()?;
-        ensure_single_instance()?;
         // 无 settings 文件 → 全默认值（直进主界面；模型缺失走识别页按需下载）
         let initial_settings = lt_models::settings_io::load()?.unwrap_or_default();
         // ui_lang="system" → 系统语言解析（新版 general_tab 的 resolve_ui_lang 语义）
         let ui_lang = initial_settings.ui_lang.clone();
+        // R14②：i18n 解析失败 = 内嵌资产损坏（构建期后）→ 硬错进 boot 呈现
         lt_i18n::set_lang(if ui_lang == "system" {
             lt_i18n::detect_system_lang()
         } else {
             &ui_lang
-        });
+        })
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
         logging::init()?;
         Ok(initial_settings)
     })();
@@ -69,6 +71,13 @@ fn main() -> anyhow::Result<()> {
     app.kick_ticks();
 
     let proxy = event_loop.create_proxy();
+    // R11②/D-73（WD-5）：单实例——mutex 判已有实例即激活其窗口并退出；
+    // message-only 窗在 run_app 泵启动前入队、启动后 WndProc 投 SecondInstance
+    //（须在 run_app 前建窗：PostMessage 的队列缓冲依赖窗已存在）
+    if let Err(e) = singleton::ensure(proxy.clone()) {
+        fatal_early(&format!("{e:#}"));
+        return Ok(());
+    }
     // ── 事件动脉（W2/INV1：后台 → UI 事件的唯一通路；满丢最旧 cap 4096）──
     let artery = lt_orchestrator::EventArtery::new();
     let app_sup = lt_orchestrator::Supervisor::new(lt_orchestrator::supervisor::artery_sink(
@@ -108,31 +117,6 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// 单实例：命名互斥量直接 Create 判 ERROR_ALREADY_EXISTS（W1/R11：消除旧
-/// 「Open 探测 → Create」两步之间的 TOCTOU 竞窗——两进程可同时通过探测）。
-/// W6 将在此叠加二次启动激活已有窗口（WD-5）
-#[cfg(windows)]
-fn ensure_single_instance() -> anyhow::Result<()> {
-    use windows::core::PCWSTR;
-    use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
-    use windows::Win32::System::Threading::CreateMutexW;
-
-    // 裸名（无反斜杠）：落在会话 BaseNamedObjects 根，
-    // 带斜杠的名字会被对象命名空间当子目录解析而报 0x80070003
-    let name: Vec<u16> = "LiveTranslateSingleInstance\0".encode_utf16().collect();
-    let pcw = PCWSTR(name.as_ptr());
-    unsafe {
-        // windows crate 仅在失败路径消费 last error，成功路径保留 → 可靠判定
-        CreateMutexW(None, true, pcw)
-            .map_err(|e| anyhow::anyhow!("创建单实例互斥量失败: {e}"))?;
-        if GetLastError() == ERROR_ALREADY_EXISTS {
-            return Err(anyhow::anyhow!("LiveTranslate 已在运行（单实例互斥量已存在）"));
-        }
-        // HANDLE 是裸包装无 Drop：不关即存活到进程退出，由 OS 回收
-    }
-    Ok(())
-}
-
 /// 早期启动失败的呈现（W1/R11①/D-65）：此时尚无事件循环线程，同步
 /// MessageBoxW 不违反 D-33；双击后「无事发生」的黑洞从此有形
 #[cfg(windows)]
@@ -160,10 +144,6 @@ fn fatal_early(msg: &str) {
     eprintln!("LiveTranslate 启动失败: {msg}");
 }
 
-#[cfg(not(windows))]
-fn ensure_single_instance() -> anyhow::Result<()> {
-    Ok(())
-}
 
 /// worker 子进程主循环：SenseVoice / Whisper（M5.1）/ Fun-ASR-Nano（WP-A）/ Qwen3-ASR（WP-B）
 fn asr_worker_entry() -> anyhow::Result<()> {

@@ -7,7 +7,7 @@
 //! 副作用与产品行为一致：首次运行会在用户开始菜单创建 LiveTranslate 快捷方式。
 
 fn main() {
-    lt_i18n::set_lang("zh");
+    lt_i18n::set_lang("zh").expect("zh 表解析");
     let (title, body) = lt_ui::notifications::hidden_hint_texts();
     match lt_ui::notifications::show(&title, &body) {
         Ok(()) => {

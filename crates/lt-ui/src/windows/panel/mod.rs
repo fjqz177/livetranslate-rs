@@ -535,7 +535,7 @@ mod tests {
     #[test]
     fn panel_apply_debounce_tick_roundtrip() {
         let mut st = crate::state::AppUi::new(Settings::default());
-        lt_i18n::set_lang("zh");
+        lt_i18n::set_lang("zh").expect("zh 表解析");
         crate::state::register_panel_apply(&mut st.panel, &mut st.session, std::time::Instant::now());
         let due = st.panel.state.apply_due_at.expect("登记后应有到期时刻");
         assert!(st.take_due_panel_apply(due).is_some());
