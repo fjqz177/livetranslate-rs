@@ -9,7 +9,7 @@
 //! 菜单/托盘事件仍经 proxy（EventLoopProxy::send_event，线程安全）回流 winit 循环。
 
 use anyhow::Context;
-use lt_proto::UiMsg;
+use lt_proto::{AppCommand, UiMsg};
 use muda::{accelerator::Accelerator, Menu, MenuId, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
@@ -315,10 +315,14 @@ fn build_inner(proxy: &std::sync::Arc<dyn Fn(UiMsg) + Send + Sync>) -> anyhow::R
     menu.append(&quit)?;
 
     // 事件转发（Windows：托盘与菜单事件在托盘线程触发，经 EventLoopProxy 桥接
-    // 回 winit 循环，与 D-33 同构；EventLoopProxy::send_event 线程安全）
+    // 回 winit 循环，与 D-33 同构；EventLoopProxy::send_event 线程安全）。
+    // W2：Menu(String) 字符串协议 → AppCommand 类型化（id ↔ 命令映射在
+    // lt-proto：AppCommand::from_menu_id，双侧测试钉防漂移）
     let proxy_menu = proxy.clone();
     muda::MenuEvent::set_event_handler(Some(move |ev: muda::MenuEvent| {
-        proxy_menu(UiMsg::Menu(ev.id.0.to_string()));
+        if let Some(cmd) = AppCommand::from_menu_id(&ev.id.0) {
+            proxy_menu(UiMsg::AppCommand(cmd));
+        }
     }));
     let proxy_tray = proxy.clone();
     TrayIconEvent::set_event_handler(Some(move |_ev: TrayIconEvent| {
@@ -451,5 +455,18 @@ mod tests {
             "set_* 必须非阻塞（通道投递）"
         );
         drop(tray); // Quit + 唤醒 → 线程排空点退出 → ack + join
+    }
+
+    /// W2：ids 全集均可映射为 AppCommand（STATUS 为只读状态行不产生命令；
+    /// 与 proto 侧 AppCommand::from_menu_id 测试双端钉防漂移）
+    #[test]
+    fn menu_ids_all_map_to_commands() {
+        for id in [ids::PAUSE, ids::OVERLAY_TOGGLE, ids::SHOW_PANEL, ids::QUIT] {
+            assert!(AppCommand::from_menu_id(id).is_some(), "菜单 id {id} 必须可映射");
+        }
+        assert!(
+            AppCommand::from_menu_id(ids::STATUS).is_none(),
+            "状态行不产生命令"
+        );
     }
 }

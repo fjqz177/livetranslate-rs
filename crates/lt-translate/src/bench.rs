@@ -85,6 +85,17 @@ pub struct BenchModel {
 /// 单轮结果：(ttft_ms, total_ms, 结果文本前 60 字符由输出层截取)
 pub type BenchRound = (f64, f64, String);
 
+/// 基准回调输出（W2：替代 `&str` + 完成哨兵——完成语义类型化。
+/// lt-translate 无 lt-proto 依赖（白名单），UI 侧适配为 proto::BenchEvent；
+/// W5 基准迁 orchestrator 时转换层随迁）
+#[derive(Debug, Clone)]
+pub enum BenchOutput {
+    /// 逐行输出（格式稳定，原版 benchmark.py 样式）
+    Line(String),
+    /// 全部完成（ok = 无失败模型；elapsed_ms = 全程耗时）
+    Finished { ok: bool, elapsed_ms: u64 },
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct BenchResult {
     pub name: String,
@@ -285,7 +296,9 @@ pub fn run_benchmark_blocking(
         .collect()
 }
 
-/// 后台线程版基准（对照原版 run_benchmark）：逐行回调输出，最后输出 "__DONE__"。
+/// 后台线程版基准（对照原版 run_benchmark）：逐行回调输出，最后回调
+/// `BenchEvent::Finished`（W2：替代 `LogLine{target:"benchmark"}`+完成哨兵
+/// 哨兵——完成语义类型化，基准不再借道日志总线）。
 #[allow(clippy::too_many_arguments)]
 pub fn run_benchmark<F>(
     models: Vec<BenchModel>,
@@ -293,23 +306,24 @@ pub fn run_benchmark<F>(
     target_lang: &str,
     timeout_s: u32,
     prompt: &str,
-    on_line: F,
+    on_event: F,
 ) -> std::thread::JoinHandle<()>
 where
-    F: Fn(&str) + Send + Sync + 'static,
+    F: Fn(BenchOutput) + Send + Sync + 'static,
 {
     let source_lang = source_lang.to_string();
     let target_lang = target_lang.to_string();
     let prompt = prompt.to_string();
     let rounds = sentences_for(&source_lang).len();
     std::thread::spawn(move || {
-        on_line(&format!(
+        let t0 = std::time::Instant::now();
+        on_event(BenchOutput::Line(format!(
             "Testing {} model(s) x {rounds} rounds  |  timeout={timeout_s}s  |  {} -> {}\n{}",
             models.len(),
             source_lang,
             target_lang,
             "=".repeat(60),
-        ));
+        )));
 
         // 每模型一个线程（原版 ThreadPoolExecutor(max_workers=len(models))），
         // 测完即输出该模型明细行（提交顺序）
@@ -371,7 +385,7 @@ where
         for h in handles {
             if let Ok((lines, r)) = h.join() {
                 for l in &lines {
-                    on_line(l);
+                    on_event(BenchOutput::Line(l.clone()));
                 }
                 if let Some(r) = r {
                     results.push(r);
@@ -384,21 +398,25 @@ where
                 .partial_cmp(&b.avg_ttft)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
-        on_line(&format!("\n{}", "=".repeat(60)));
-        on_line("Ranking by Avg TTFT:");
+        on_event(BenchOutput::Line(format!("\n{}", "=".repeat(60))));
+        on_event(BenchOutput::Line("Ranking by Avg TTFT:".into()));
         for (i, r) in (1..).zip(results.iter().filter(|r| r.error.is_none())) {
-            on_line(&format!(
+            on_event(BenchOutput::Line(format!(
                 "  #{i}  TTFT {:6.0}ms \u{b1} {:4.0}ms  Total {:6.0}ms \u{b1} {:4.0}ms  {}",
                 r.avg_ttft, r.std_ttft, r.avg_total, r.std_total, r.name
-            ));
+            )));
         }
         for r in results.iter().filter(|r| r.error.is_some()) {
-            on_line(&format!(
+            on_event(BenchOutput::Line(format!(
                 "  FAIL  {}: {}",
                 r.name,
                 r.error.clone().unwrap_or_default()
-            ));
+            )));
         }
-        on_line("__DONE__");
+        let ok = !results.is_empty() && results.iter().all(|r| r.error.is_none());
+        on_event(BenchOutput::Finished {
+            ok,
+            elapsed_ms: t0.elapsed().as_millis() as u64,
+        });
     })
 }

@@ -21,7 +21,7 @@ use crate::windows::subtitle::{
 };
 use egui::{Context, ViewportId};
 use egui_wgpu::winit::Painter;
-use lt_proto::UiMsg;
+use lt_proto::{UiEvent, UiMsg};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use winit::application::ApplicationHandler;
@@ -429,11 +429,10 @@ impl MultiWindowApp {
         self.update_tray_status();
     }
 
-    /// 托盘菜单动作（新版最小菜单：暂停/悬浮窗显隐/面板/退出）
-    fn on_menu(&mut self, _event_loop: &ActiveEventLoop, id: &str) {
-        use tray::ids as m;
-        match id {
-            m::PAUSE => {
+    /// 应用级命令（W2：Menu(String) → AppCommand；托盘菜单与命令路由同源）
+    fn on_command(&mut self, _event_loop: &ActiveEventLoop, cmd: lt_proto::AppCommand) {
+        match cmd {
+            lt_proto::AppCommand::Pause => {
                 self.app_state.running = !self.app_state.running;
                 if let Some(t) = &self.tray {
                     let text = if self.app_state.running {
@@ -459,15 +458,15 @@ impl MultiWindowApp {
                     }
                 );
             }
-            m::OVERLAY_TOGGLE => {
+            lt_proto::AppCommand::OverlayToggle => {
                 let vis = !self.window(WinId::Overlay).is_visible().unwrap_or(false);
                 self.set_overlay_visible_with_hint(vis);
             }
-            m::SHOW_PANEL => {
+            lt_proto::AppCommand::ShowPanel => {
                 let vis = !self.window(WinId::Panel).is_visible().unwrap_or(false);
                 self.set_visible(WinId::Panel, vis);
             }
-            m::QUIT => {
+            lt_proto::AppCommand::Quit => {
                 // D-33/H-3：退出确认改 egui 内嵌模态（原位 rfd 同步框会被其他
                 // 模态串行/不可达）。悬浮窗可作宿主（可见/非紧凑/高度足）则就地弹，
                 // 否则显示面板承载——任意状态（含全 UI 隐藏）下确认框必有宿主。
@@ -487,9 +486,6 @@ impl MultiWindowApp {
                 } else {
                     tracing::debug!("确认模态已打开，忽略重复退出请求");
                 }
-            }
-            other => {
-                tracing::debug!("未知托盘菜单项: {other}");
             }
         }
         self.apply_overlay_flags();
@@ -802,13 +798,23 @@ impl MultiWindowApp {
     /// UiMsg 统一入口（管道事件/托盘事件）
     fn on_msg(&mut self, event_loop: &ActiveEventLoop, msg: UiMsg) {
         match msg {
-            UiMsg::Menu(id) => self.on_menu(event_loop, &id),
-            UiMsg::Tray(_t) => {}
+            // 应用级命令（W2：Menu(String) 字符串协议 → AppCommand 类型化）
+            UiMsg::AppCommand(cmd) => self.on_command(event_loop, cmd),
+            // 事件动脉批量变体（W2：桥线程单次 wake 排空 ≤256 条一次投递）
+            UiMsg::Events(events) => {
+                for ev in events {
+                    self.on_event(event_loop, ev);
+                }
+            }
             // 管道域命令由 lt-app::AppShell.user_event 处理（本层无 Pipeline）
             UiMsg::Cmd(_) => {}
-            // catch-all 为未来新增事件防黑洞（当前枚举已全覆盖则不可达）
-            #[allow(unreachable_patterns)]
-            UiMsg::Event(e) => match e {
+            UiMsg::Event(e) => self.on_event(event_loop, e),
+        }
+    }
+
+    /// 单条业务事件分发（on_msg 的 Event 臂；Events 批量逐一复用）
+    fn on_event(&mut self, _event_loop: &ActiveEventLoop, e: UiEvent) {
+        match e {
                 // 监视条数据（capture 线程每 chunk 一条 → 节流重绘）
                 lt_proto::UiEvent::UpdateMonitor { rms, vad, mic_rms } => {
                     let m = &mut self.app_state.monitor;
@@ -944,41 +950,42 @@ impl MultiWindowApp {
                         crate::state::TestTranslatorState::Done { ok, error, ms };
                     self.redraw(WinId::Panel);
                 }
-                // ── 启动流：下载日志流（向导/缺模型对话框共用）──
-                lt_proto::UiEvent::DownloadProgress(line) => {
+                // ── 启动流：下载进度（向导/缺模型对话框共用；W2 类型化，
+                // 人读行由本臂按原格式生成；进度条直取事件字段）──
+                lt_proto::UiEvent::Download(ev) => {
+                    let human = format_download_line(&ev);
                     match &mut self.app_state.startup {
-                        StartupFlow::Wizard(w) => push_log_line(&mut w.log, line),
-                        StartupFlow::DownloadMissing { log, .. } => push_log_line(log, line),
+                        StartupFlow::Wizard(w) => push_log_line(&mut w.log, human),
+                        StartupFlow::DownloadMissing { log, .. } => push_log_line(log, human),
                         StartupFlow::Ready => {
-                            // D-19 直进主界面 → 运行期下载：进度写识别页缓存卡片。
-                            // DL-3：人读段进卡片日志，\t 机器段（精确字节）驱动进度条
-                            let (human, prog) = split_progress_line(&line);
-                            if let Some((file, k, n, done, total)) = prog {
-                                self.app_state
-                                    .download
-                                    .apply_progress(file, k, n, done, total);
-                            }
-                            self.app_state.download.push_log(human.to_string());
+                            // D-19 直进主界面 → 运行期下载：进度写识别页缓存卡片
+                            self.app_state.download.apply_progress(
+                                ev.file.clone(),
+                                ev.index,
+                                ev.count,
+                                ev.done,
+                                ev.total.unwrap_or(0),
+                            );
+                            self.app_state.download.push_log(human);
                             self.redraw(WinId::Panel);
                         }
                     }
                     self.redraw_setup();
                 }
                 // ── 启动流：下载失败（可重试；恢复控件 / 显示"关闭"按钮）──
-                lt_proto::UiEvent::DownloadFailed(e) => {
-                    let failed_line = lt_i18n::t("download_failed").replace("{error}", &e);
+                lt_proto::UiEvent::DownloadFailed { kind, message } => {
+                    let failed_line = lt_i18n::t("download_failed").replace("{error}", &message);
                     match &mut self.app_state.startup {
                         StartupFlow::Wizard(w) => {
                             w.phase = crate::state::WizardPhase::Failed;
                             push_log_line(&mut w.log, failed_line);
                         }
                         StartupFlow::DownloadMissing { failed, log, .. } => {
-                            *failed = Some(e);
+                            *failed = Some(message);
                             push_log_line(log, failed_line);
                         }
                         StartupFlow::Ready => {
                             // 运行期下载失败：分类提示 + 历史日志收进卡片（P0-1/P1-6）
-                            let (kind, detail) = crate::state::DownloadErrKind::parse(&e);
                             let mut log = match &self.app_state.download {
                                 DownloadUiState::Downloading { log, .. }
                                 | DownloadUiState::Cancelled { log }
@@ -986,7 +993,8 @@ impl MultiWindowApp {
                                 _ => Vec::new(),
                             };
                             log.push(failed_line.clone());
-                            self.app_state.download = DownloadUiState::Failed { kind, detail, log };
+                            self.app_state.download =
+                                DownloadUiState::Failed { kind, detail: message, log };
                             // DL-6/F12：磁盘内容已变，探测缓存失效
                             self.app_state.panel.cache_probe = None;
                             self.redraw(WinId::Panel);
@@ -1046,25 +1054,21 @@ impl MultiWindowApp {
                     self.redraw_setup();
                 }
                 // 日志行（常驻桥接线程全程转发 → 日志窗；级别过滤在窗口状态内）。
-                // target=="benchmark" 的行为基准输出流：同步追加到 bench_lines
-                // （独立窗渲染源）并重绘基准窗；__DONE__ 复位运行态 + 完成提示。
+                // target=="download"：下载人读行（W2）——除日志窗外同步进
+                // 向导日志 / 识别页下载卡片（原 DownloadProgress 的日志面）
                 lt_proto::UiEvent::LogLine { level, target, msg } => {
-                    if target == "benchmark" {
-                        let done = msg == "__DONE__";
-                        self.app_state.push_bench_line(msg.clone());
-                        self.redraw(WinId::Benchmark);
-                        if done && self.app_state.bench_running {
-                            self.app_state.bench_running = false;
-                            tracing::info!("性能基准完成");
-                            // D-33/H-5：完成提示改原生通知（原位 rfd 同步框
-                            // 在事件循环线程内阻塞）
-                            if let Err(e) = crate::notifications::show(
-                                &lt_i18n::t("bench_done_title"),
-                                &lt_i18n::t("bench_done_msg"),
-                            ) {
-                                tracing::warn!("基准完成提示（原生通知）失败: {e}");
+                    if target == "download" {
+                        match &mut self.app_state.startup {
+                            StartupFlow::Wizard(w) => push_log_line(&mut w.log, msg.clone()),
+                            StartupFlow::DownloadMissing { log, .. } => {
+                                push_log_line(log, msg.clone())
+                            }
+                            StartupFlow::Ready => {
+                                self.app_state.download.push_log(msg.clone());
+                                self.redraw(WinId::Panel);
                             }
                         }
+                        self.redraw_setup();
                     }
                     if self.app_state.logwin.push(crate::state::LogLineEntry {
                         time: chrono::Local::now().format("%H:%M:%S").to_string(),
@@ -1088,6 +1092,33 @@ impl MultiWindowApp {
                         }
                     }
                 }
+                // ── 性能基准流（W2：Line 逐行 → 基准窗渲染；Finished 复位
+                // 运行态 + 完成提示——替代 LogLine[benchmark] + 完成哨兵）──
+                lt_proto::UiEvent::Bench(ev) => match ev {
+                    lt_proto::BenchEvent::Line(l) => {
+                        self.app_state.push_bench_line(l);
+                        self.redraw(WinId::Benchmark);
+                    }
+                    lt_proto::BenchEvent::Finished { ok, elapsed_ms } => {
+                        self.app_state.push_bench_line(format!(
+                            "=== {} ({elapsed_ms}ms) ===",
+                            lt_i18n::t("bench_done_title")
+                        ));
+                        self.redraw(WinId::Benchmark);
+                        if self.app_state.bench_running {
+                            self.app_state.bench_running = false;
+                            tracing::info!("性能基准完成（ok={ok}，{elapsed_ms}ms）");
+                            // D-33/H-5：完成提示改原生通知（原位 rfd 同步框
+                            // 在事件循环线程内阻塞）
+                            if let Err(e) = crate::notifications::show(
+                                &lt_i18n::t("bench_done_title"),
+                                &lt_i18n::t("bench_done_msg"),
+                            ) {
+                                tracing::warn!("基准完成提示（原生通知）失败: {e}");
+                            }
+                        }
+                    }
+                },
                 // ── 音频采集可用性（架构 2.0 W1/R4/D-62）：日志窗可见告警。
                 // 事件本身边沿触发（Unavailable 转坏一次/Recovered 转好一次），
                 // 语义对齐 AsrUnavailable；面板设备卡片深化呈现随 W5 ──
@@ -1142,7 +1173,6 @@ impl MultiWindowApp {
                 lt_proto::UiEvent::ModelLoadDone { .. } => self.close_load_dialog(),
                 // M1：其余管道事件尚未接入（M2 起逐个接线）；先落日志防黑洞
                 other => tracing::debug!("UI 事件（待接线）: {other:?}"),
-            },
         }
     }
 
@@ -2037,29 +2067,32 @@ impl ApplicationHandler<UiMsg> for MultiWindowApp {
     }
 }
 
-/// 解析下载进度行末端的 "done / total" 字节对（backend format_event 形态：
-/// `[{repo}] {file} 238.4 MB / 410.3 MB`——人性化单位，含 B/KB/MB/GB）。
-/// 非进度行（无 "/" 分隔或不可解析）→ None。
-/// 进度行拆分（DL-3，替代 F3 病灶 parse_progress_tokens）：backend format_event
-/// 的固定形态 `"{人读段}\t{file}\t{k} {n} {done_bytes} {total_bytes}"`（total 未知
-/// 为 0）。返回 (人读段, 机器段)；无 `\t` 或机器段非法（旧格式行/任意日志行）
-/// → (原文, None)。
-fn split_progress_line(line: &str) -> (&str, Option<(String, u32, u32, u64, u64)>) {
-    let Some((human, rest)) = line.split_once('\t') else {
-        return (line, None);
-    };
-    let Some((file, data)) = rest.split_once('\t') else {
-        return (human, None);
-    };
-    let mut it = data.split_whitespace();
-    let (Some(k), Some(n), Some(done), Some(total), None) =
-        (it.next(), it.next(), it.next(), it.next(), it.next())
-    else {
-        return (human, None);
-    };
-    match (k.parse(), n.parse(), done.parse(), total.parse()) {
-        (Ok(k), Ok(n), Ok(done), Ok(total)) => (human, Some((file.to_string(), k, n, done, total))),
-        _ => (human, None),
+/// 下载进度的人读行（W2：与旧 backend format_event 人读段同格式——
+/// `[{repo}] {file} {done} / {total}`，人性化单位含 B/KB/MB/GB）
+fn format_download_line(ev: &lt_proto::DownloadEvent) -> String {
+    match ev.total {
+        Some(t) => format!(
+            "[{}] {} {} / {}",
+            ev.repo,
+            ev.file,
+            format_size(ev.done),
+            format_size(t)
+        ),
+        None => format!("[{}] {} {}", ev.repo, ev.file, format_size(ev.done)),
+    }
+}
+
+/// 字节量人性化（阈值与精度对齐原版 model_manager.format_size；
+/// backend 侧同实现——UI 只读事件字段不再依赖生产端拼串）
+fn format_size(size_bytes: u64) -> String {
+    if size_bytes < 1024 {
+        format!("{size_bytes} B")
+    } else if size_bytes < 1024u64.pow(2) {
+        format!("{:.1} KB", size_bytes as f64 / 1024.0)
+    } else if size_bytes < 1024u64.pow(3) {
+        format!("{:.1} MB", size_bytes as f64 / 1024u64.pow(2) as f64)
+    } else {
+        format!("{:.2} GB", size_bytes as f64 / 1024u64.pow(3) as f64)
     }
 }
 
@@ -2179,41 +2212,33 @@ fn apply_window_region(window: &Window, w: u32, h: u32, radius_px: u32) {
 mod tests {
     use super::*;
 
-    /// DL-3：机器段（精确字节）解析——人读段原样保留，file/k/n/done/total 就位
+    /// W2：Download 事件的人读行与旧 format_event 人读段同格式
+    ///（`[{repo}] {file} {done} / {total}`，人性化单位）；total=None 走单值
     #[test]
-    fn split_progress_line_parses_machine_segment() {
-        let line = "[a/b] m.onnx 1.0 KB / 2.0 KB\tm.onnx\t1 2 1024 2048";
-        let (human, prog) = split_progress_line(&line);
-        assert_eq!(human, "[a/b] m.onnx 1.0 KB / 2.0 KB");
-        assert_eq!(prog, Some(("m.onnx".into(), 1, 2, 1024, 2048)));
-        // total 未知以 0 表示
-        let (_, prog) = split_progress_line("[a/b] m.onnx 4.0 KB\tm.onnx\t2 2 4096 0");
-        assert_eq!(prog.map(|p| p.4), Some(0));
-        // >4GB 大文件不溢出
-        let (_, prog) = split_progress_line("[r] f 5.0 GB\tf\t1 1 5368709120 5368709120");
-        assert_eq!(prog.map(|p| p.3), Some(5_368_709_120));
+    fn download_event_line_readable() {
+        let ev = lt_proto::DownloadEvent {
+            repo: "a/b".into(),
+            file: "m.onnx".into(),
+            index: 1,
+            count: 2,
+            done: 1024,
+            total: Some(2048),
+            phase: lt_proto::DownloadPhase::Progress,
+        };
+        assert_eq!(format_download_line(&ev), "[a/b] m.onnx 1.0 KB / 2.0 KB");
+        let ev_none = lt_proto::DownloadEvent {
+            total: None,
+            ..ev
+        };
+        assert_eq!(format_download_line(&ev_none), "[a/b] m.onnx 1.0 KB");
     }
 
-    /// DL-3/F3 回归：旧格式行（无机器段）与任意日志行 → 原文透传、无进度数据，
-    /// 不再走"取 token 拿到单位词"的必败解析
+    /// 字节人性化（阈值与精度对齐原版 model_manager.format_size）
     #[test]
-    fn split_progress_line_ignores_legacy_and_foreign_lines() {
-        // 任意路径样例 temp 派生（合成绝对路径不写字面量，path-hygiene PH-2）
-        let snapshot_line = format!("[a/b] 快照就绪: {}/x", std::env::temp_dir().display());
-        for s in [
-            "[a/b] m.onnx 1.0 KB / 2.0 KB".to_string(),
-            "[a/b] m.onnx 下载完成".to_string(),
-            snapshot_line,
-            "已存在，跳过 x".to_string(),
-            String::new(),
-        ] {
-            let (human, prog) = split_progress_line(&s);
-            assert_eq!(human, s);
-            assert!(prog.is_none(), "{s}");
-        }
-        // 机器段字段缺失/非法
-        assert!(split_progress_line("h\tf\t1 2 3").1.is_none());
-        assert!(split_progress_line("h\tf\t1 2 x 4").1.is_none());
-        assert!(split_progress_line("h\tf\t1 2 3 4 5").1.is_none());
+    fn size_format_matches_original() {
+        assert_eq!(format_size(512), "512 B");
+        assert_eq!(format_size(2048), "2.0 KB");
+        assert_eq!(format_size(250_000_000), "238.4 MB");
+        assert_eq!(format_size(3_100_000_000), "2.89 GB");
     }
 }

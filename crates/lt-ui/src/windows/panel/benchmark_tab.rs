@@ -62,8 +62,7 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
         }
     });
 
-    // ── 输出区（原版 QTextEdit 深底等宽；__DONE__ 行不显示——原版 append 会
-    //     显示但随即复位按钮；此处过滤保持输出干净）──
+    // ── 输出区（原版 QTextEdit 深底等宽；W2 起行流不再含 完成哨兵）──
     egui::Frame::NONE
         .fill(LOG_BG)
         .corner_radius(0.0)
@@ -77,9 +76,6 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
                     ui.set_min_height(min_h);
                     // 原版空态为空白输出区
                     for line in &state.bench_lines {
-                        if line == "__DONE__" {
-                            continue;
-                        }
                         let color = if line.contains("FAILED") || line.contains("FAIL ") {
                             Color32::from_rgb(0xf4, 0x47, 0x47)
                         } else if line.contains("OK") || line.contains("✓") {

@@ -616,6 +616,8 @@ download_err_http: "下载源返回错误（连接被拒绝或服务异常）。
 download_err_disk: "写入磁盘失败。请检查磁盘空间与配置目录权限。"
 download_err_length: "文件下载不完整。请重试（续传会自动衔接）。"
 download_err_other: "下载未成功。请点击重试；若反复失败，可去「日志」页复制错误信息反馈。"
+download_err_cancelled: "下载已取消，进度已保留。可点击「继续下载」续传。"
+download_err_checksum: "内容完整性校验失败（下载内容与官方清单不符）。重试或更换源均无效，请删除缓存目录后重新下载。"
 translator_error_banner: "翻译组件未就绪："
 translator_unavailable_placeholder: "（翻译组件未就绪 — 请到「翻译」页检查模型配置）"
 test_translator_btn: "测试连接"

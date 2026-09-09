@@ -1,15 +1,15 @@
 //! 性能基准独立工具窗（对照原版 panel/tabs/benchmark_dialog.py + benchmark_tab.py；
 //! 由识别页页头"性能基准…"按钮打开，WinId::Benchmark 常规装饰窗口）：
 //! 源/目标语言下拉 + 模型多选（settings.models 全部默认勾选）+ 开始按钮 +
-//! 只读输出区（Consolas，含 "__DONE__" 停止标记）+ 关闭按钮。
+//! 只读输出区（Consolas）+ 关闭按钮。
 //!
 //! 数据流（egui 无跨线程句柄；本版事件通道复用方案）：
-//! 后台线程经 `lt_translate::bench::run_benchmark` 测试，on_line 闭包通过
-//! `AppState.event_tx`（EventLoopProxy 转发）回流
-//! `UiEvent::LogLine { target: "benchmark", msg }`——日志窗照常显示（独立窗 +
-//! 日志双显），UI 线程在 app.rs 的 LogLine 分支把 benchmark 行同步追加到
-//! `AppState.bench_lines` 渲染，`__DONE__` 到达即复位运行态并弹完成提示。
-//! 契约冻结：不新增 UiEvent 变体。
+//! 后台线程经 `lt_translate::bench::run_benchmark` 测试，回调
+//! `lt_translate::bench::BenchOutput` 适配为 `proto::BenchEvent` 经
+//! `AppState.event_tx`（EventLoopProxy 转发）回流 `UiEvent::Bench`，UI 线程
+//! 在 app.rs 的 Bench 分支把 Line 同步追加到 `AppState.bench_lines` 渲染，
+//! `Finished` 到达即复位运行态并弹完成提示（W2：不借道日志总线，无
+//! 完成哨兵）。
 
 use crate::state::AppState;
 use egui::{Color32, RichText, ScrollArea, Ui};
@@ -104,7 +104,7 @@ pub fn bench_ui(ui: &mut Ui, state: &mut AppState) {
         }
     });
 
-    // ── 输出区（只读 Consolas；含 __DONE__ 停止提示）──
+    // ── 输出区（只读 Consolas）──
     egui::Frame::NONE
         .fill(LOG_BG)
         .corner_radius(4.0)
@@ -116,14 +116,7 @@ pub fn bench_ui(ui: &mut Ui, state: &mut AppState) {
                     ui.set_min_height(ui.available_height().max(120.0));
                     for line in &state.bench_lines {
                         let text = RichText::new(line).monospace().size(12.0).color(LOG_FG);
-                        if line == "__DONE__" {
-                            ui.label(
-                                RichText::new(line)
-                                    .monospace()
-                                    .size(12.0)
-                                    .color(Color32::GRAY),
-                            );
-                        } else if line.starts_with("  FAILED") || line.starts_with("  FAIL ") {
+                        if line.starts_with("  FAILED") || line.starts_with("  FAIL ") {
                             ui.label(
                                 RichText::new(line)
                                     .monospace()
@@ -197,13 +190,19 @@ fn start_benchmark(state: &mut AppState) {
 
     state.bench_lines.clear();
     state.bench_running = true;
-    // 原版 run_benchmark：后台线程 + result_callback 逐行回传，末行 "__DONE__"
-    run_benchmark(models, src, tgt, timeout, &prompt, move |line: &str| {
-        event_tx(UiMsg::Event(UiEvent::LogLine {
-            level: 20,
-            target: "benchmark".into(),
-            msg: line.to_string(),
-        }));
+    // 原版 run_benchmark：后台线程 + result_callback 逐行回传，末行完成标记
+    // ——W2 类型化：Line/Finished 回调经 proto::BenchEvent 回流（不再借道
+    // LogLine[benchmark] + 完成哨兵，INV9）
+    run_benchmark(models, src, tgt, timeout, &prompt, move |out| {
+        let ev = match out {
+            lt_translate::bench::BenchOutput::Line(l) => {
+                UiEvent::Bench(lt_proto::BenchEvent::Line(l))
+            }
+            lt_translate::bench::BenchOutput::Finished { ok, elapsed_ms } => {
+                UiEvent::Bench(lt_proto::BenchEvent::Finished { ok, elapsed_ms })
+            }
+        };
+        event_tx(UiMsg::Event(ev));
     });
     tracing::info!("性能基准已启动（{src} → {tgt}，timeout={timeout}s）");
 }
@@ -286,24 +285,26 @@ mod tests {
     }
 
     /// 基准窗无头渲染冒烟：带模型勾选与输出行跑两帧不 panic；
-    /// LogLine(target="benchmark") 回流 → bench_lines 追加 + __DONE__ 复位运行态
+    /// 行流（原 LogLine[benchmark] 模拟）→ bench_lines 追加 + Finished 复位运行态
     #[test]
     fn bench_ui_smoke_and_bench_line_flow() {
         let ctx = egui::Context::default();
         let mut st = AppState::new(lt_proto::Settings::default());
         align_selection(&mut st.bench_selected, st.settings.models.len());
-        // 模拟 app.rs 的 LogLine 消费路径
+        // 模拟 app.rs 的 Bench 消费路径
         st.bench_running = true;
         st.push_bench_line("Testing 1 model(s)".into());
         st.push_bench_line("  FAILED: timeout".into());
-        st.push_bench_line("__DONE__".into());
+        // Finished（ok=false）复位运行态
         st.bench_running = false;
+        assert!(!st.bench_running);
+        assert!(st.bench_lines.len() == 2);
         for _ in 0..2 {
             let mut out = ctx.run_ui(egui::RawInput::default(), |ui| bench_ui(ui, &mut st));
             assert!(!out.shapes.is_empty(), "基准窗应产出图元");
             out.textures_delta.clear();
         }
-        assert_eq!(st.bench_lines.len(), 3);
+        assert_eq!(st.bench_lines.len(), 2);
         assert!(!st.bench_running);
     }
 }

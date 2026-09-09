@@ -111,59 +111,12 @@ const BACKOFFS: [Duration; 3] = [
 /// 进度事件节流：累计增量超过此值才发一条
 const PROGRESS_STEP: u64 = 256 * 1024;
 
-// ── 失败分类（DL-2 类型化；Display 仍带 `[net] `/`[http] `/`[http-404] ` 等前缀，
-//    契约不变：DownloadFailed 仍是 String，UI 端按前缀分流提示，未知/无前缀回落
-//    第 3 类）──
+// ── 失败分类（DL-2 类型化；W2 迁入 lt-proto 成为契约——Display 前缀
+//    `[net]` 等保留仅为人读日志形态，UI 分流不再依赖字符串还原）──
 
-/// 失败分类
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FailKind {
-    /// 网络层失败（reqwest：超时/连接拒绝/DNS/TLS/读取中断）
-    Net,
-    /// HTTP 状态码非 2xx（含 404 仓库缺失、限流、服务端错误）
-    Http(u16),
-    /// 磁盘/IO 失败（创建目录、写入、rename）
-    Disk,
-    /// 长度校验失败（下载不完整）
-    Length,
-    /// sha256 内容校验失败（AH-5/H8：内容损坏是确定性的，重试/换源无解）
-    Checksum,
-    /// 用户取消（保留 .incomplete 续传现场；DL-4）
-    Cancelled,
-}
-
-impl FailKind {
-    pub fn prefix(self) -> &'static str {
-        match self {
-            FailKind::Net => "net",
-            FailKind::Http(404) => "http-404",
-            FailKind::Http(_) => "http",
-            FailKind::Disk => "disk",
-            FailKind::Length => "length",
-            FailKind::Checksum => "checksum",
-            FailKind::Cancelled => "cancel",
-        }
-    }
-
-    /// 是否值得退避重试（DL-2/F5 快速失败）：网络中断与长度不完整可续传重试；
-    /// 5xx/429 属服务端暂时性；其余 4xx（404 缺失/401 私有/403 禁止）、磁盘、
-    /// 取消均为永久态，立即返回不再白等 1/4/16s。
-    pub fn retryable(self) -> bool {
-        match self {
-            FailKind::Net | FailKind::Length => true,
-            FailKind::Http(s) => s >= 500 || s == 429,
-            FailKind::Disk | FailKind::Checksum | FailKind::Cancelled => false,
-        }
-    }
-
-    /// 是否值得换另一 hub 回落（DL-5）：仓库缺失或网络不可达才回落；
-    /// 磁盘/长度/取消等问题换源无解。
-    pub fn fallback_candidate(self) -> bool {
-        matches!(self, FailKind::Net | FailKind::Http(404))
-    }
-    // 注意：Checksum 不回落另一 hub——同一注册表哈希对两源一致（镜像同步），
-    // 换源无解（AH-5）
-}
+/// 失败分类（契约权威在 lt-proto；`DlError.kind` 原样透传给
+/// `UiEvent::DownloadFailed{kind,..}`，跨 crate 不再经字符串前缀往返）
+pub use lt_proto::DownloadFailKind as FailKind;
 
 /// 下载错误（Display = `"[{前缀}] {message}"`，与既有失败前缀契约兼容）
 #[derive(Debug)]
@@ -178,6 +131,11 @@ impl DlError {
             kind,
             message: message.into(),
         }
+    }
+
+    /// 原始错误串（无 `[前缀]`；UiEvent::DownloadFailed.message 的直供源）
+    pub fn message(&self) -> &str {
+        &self.message
     }
 }
 

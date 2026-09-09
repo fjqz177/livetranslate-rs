@@ -5,8 +5,8 @@
 //! Rust 版：UI 只发 [`Cmd::StartDownload`]，本线程起**下载会话线程**
 //! （DL-4：下载期间命令线程保持响应，PersistSettings/SwitchEngine 照常消化，
 //! 设置镜像不再过期），会话内跑 [`Downloader`]（阻塞式专用线程 + 取消令牌），
-//! 把 Downloader 事件与 tracing 广播行统一转发为
-//! [`UiEvent::DownloadProgress`] 日志流；成功发
+//! 把 Downloader 事件类型化转发为 [`UiEvent::Download`]（进度）与
+//! [`UiEvent::LogLine`]（target="download" 人读行）；成功发
 //! [`UiEvent::DownloadSucceeded`]（向导=13 键默认块，原版 `_check_done`），
 //! 取消发 [`UiEvent::DownloadCancelled`]（D-23）。落盘权归 UI 侧单写者
 //! （DEC-4）：backend 不再直接写 settings.json。
@@ -14,13 +14,20 @@
 //! settings 镜像（M5.1）：拦截 PersistSettings/ApplySettings/SwitchEngine 先更新
 //! 本地镜像再照旧转发 UI 循环——StartDownload 据此现场重算缺失清单，运行中
 //! 切换的引擎/档位即时生效（启动快照会下错模型）。
+//!
+//! W2（架构 2.0 §3.3）：四条字符串旁路之一在此收口——`format_event` 的
+//! `\t` 机器段协议废除：进度改推类型化 [`DownloadEvent`]，下载期 tracing
+//! 广播行不再经会话泵二次转发（常驻日志桥已把它送日志窗），对话框人读行
+//! 由本层以 `LogLine{target:"download"}` 直接发（保序、与进度事件同源）。
 
-use crate::logging;
 use lt_models::cache::MissingModel;
 use lt_models::download::{
-    hf_endpoint_for, hub_chain, DlError, DownloadEvent, Downloader, FailKind, Hub, ProxyMode,
+    hf_endpoint_for, hub_chain, DlError, DownloadEvent, Downloader, Hub, ProxyMode,
 };
-use lt_proto::{Cmd, Settings, UiEvent, UiMsg};
+use lt_proto::{
+    AppCommand, Cmd, DownloadEvent as ProtoDownload, DownloadFailKind, DownloadPhase, Settings,
+    UiEvent, UiMsg,
+};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::sync::Arc;
@@ -122,9 +129,9 @@ pub fn spawn(
         .ok();
 }
 
-/// 借托盘退出菜单项触发应用退出（MultiWindowApp::on_menu 的 QUIT 分支）
+/// 借托盘退出菜单项触发应用退出（MultiWindowApp::on_command 的 Quit 分支）
 fn quit(proxy: &EventLoopProxy<UiMsg>) {
-    let _ = proxy.send_event(UiMsg::Menu("quit".into()));
+    let _ = proxy.send_event(UiMsg::AppCommand(AppCommand::Quit));
 }
 
 fn proxy_mode_from(s: &str) -> ProxyMode {
@@ -181,7 +188,7 @@ fn run_download(
     let models_dir = match lt_models::paths::models_dir(settings.models_dir.as_deref()) {
         Ok(d) => d,
         Err(e) => {
-            fail(proxy, &format!("模型目录不可用: {e:#}"));
+            fail(proxy, DownloadFailKind::Disk, &format!("模型目录不可用: {e:#}"));
             return;
         }
     };
@@ -206,6 +213,7 @@ fn run_download(
         if free < need {
             fail(
                 proxy,
+                DownloadFailKind::Disk,
                 &format!(
                     "磁盘剩余空间不足：本模型约需 {}，当前仅剩 {}（可改 models_dir 或清理磁盘）",
                     format_size(need),
@@ -248,18 +256,12 @@ fn run_download(
         })
         .expect("下载线程可启动");
 
-    // 泵：转发 Downloader 事件 + 下载期 INFO 级 tracing 行（原版 _LogCapture）
-    let mut log_rx = logging::subscribe();
+    // 泵：Downloader 事件类型化转发（W2：进度 → Download；人读行 →
+    // LogLine[download]）。下载期 tracing 广播行由常驻日志桥直送日志窗，
+    // 不再经本会话泵二次转发（单通道，无重复）。
     loop {
-        loop {
-            match log_rx.try_recv() {
-                Ok(UiEvent::LogLine { msg, .. }) => line(proxy, &msg),
-                Ok(_) => {}
-                Err(_) => break,
-            }
-        }
         match rx.try_recv() {
-            Ok(ev) => line(proxy, &format_event(&ev)),
+            Ok(ev) => emit_download_event(proxy, &ev),
             Err(TryRecvError::Empty) => {}
             Err(TryRecvError::Disconnected) => break,
         }
@@ -271,19 +273,23 @@ fn run_download(
     // 收尾先排空事件通道再下结论（DL-6/F9：尾部 FileDone/Done 不再丢；
     // worker 已退出 → tx 已 drop，排空必然收敛）
     while let Ok(ev) = rx.try_recv() {
-        line(proxy, &format_event(&ev));
+        emit_download_event(proxy, &ev);
     }
     match worker.join().expect("下载线程不 panic") {
         Ok(()) => succeed(proxy, first_launch, settings, hub_s, proxy_s),
         Err((name, e)) => {
             let cancelled = e
                 .downcast_ref::<DlError>()
-                .is_some_and(|d| d.kind == FailKind::Cancelled);
+                .is_some_and(|d| d.kind == DownloadFailKind::Cancelled);
             if cancelled {
                 tracing::info!("模型下载已被用户取消: {name}");
                 let _ = proxy.send_event(UiMsg::Event(UiEvent::DownloadCancelled));
             } else {
-                fail(proxy, &format!("{name}: {e:#}"));
+                let dl = e.downcast_ref::<DlError>();
+                match dl {
+                    Some(d) => fail(proxy, d.kind, &format!("{name}: {}", d.message())),
+                    None => fail(proxy, DownloadFailKind::Other, &format!("{name}: {e:#}")),
+                }
             }
         }
     }
@@ -362,21 +368,29 @@ fn succeed(
     }));
 }
 
-fn fail(proxy: &EventLoopProxy<UiMsg>, msg: &str) {
+fn fail(proxy: &EventLoopProxy<UiMsg>, kind: DownloadFailKind, msg: &str) {
     // 失败必须进日志（日志 tab/日志窗双通道），否则运行时下载失败无处可查
     tracing::error!("模型下载失败: {msg}");
-    let _ = proxy.send_event(UiMsg::Event(UiEvent::DownloadFailed(msg.to_string())));
+    let _ = proxy.send_event(UiMsg::Event(UiEvent::DownloadFailed {
+        kind,
+        message: msg.to_string(),
+    }));
 }
 
 fn line(proxy: &EventLoopProxy<UiMsg>, s: &str) {
-    let _ = proxy.send_event(UiMsg::Event(UiEvent::DownloadProgress(s.to_string())));
+    // 下载人读行：target="download" 专用日志流（UI 侧分流进下载框/卡片
+    // 日志 + 日志窗）。机器控制流不再骑日志总线（INV9，W2）
+    let _ = proxy.send_event(UiMsg::Event(UiEvent::LogLine {
+        level: 20,
+        target: "download".into(),
+        msg: s.to_string(),
+    }));
 }
 
-/// 下载事件 → 对话框日志行（进度走日志流，原版 UI 形态）。
-/// DL-3（docs/archive/download-overhaul.md DEC-2）：进度行尾部附 `\t` 机器段
-/// `"{file}\t{k} {n} {done_bytes} {total_bytes}"`（total 未知为 0），UI 按
-/// 精确字节驱动进度条；人读段保持原样进日志，旧格式行（无 `\t`）被 UI 忽略。
-fn format_event(ev: &DownloadEvent) -> String {
+/// Downloader 事件 → 类型化 UiEvent（W2，替代 format_event 的 `\t` 机器段）：
+/// Progress → `UiEvent::Download`（UI 驱动进度条 + 同格式人读行）；
+/// FileDone/Done/Log → 人读行（`LogLine[download]`）。
+fn emit_download_event(proxy: &EventLoopProxy<UiMsg>, ev: &DownloadEvent) {
     match ev {
         DownloadEvent::Progress {
             repo,
@@ -386,19 +400,19 @@ fn format_event(ev: &DownloadEvent) -> String {
             done,
             total,
         } => {
-            let human = match total {
-                Some(t) => format!(
-                    "[{repo}] {file} {} / {}",
-                    format_size(*done),
-                    format_size(*t)
-                ),
-                None => format!("[{repo}] {file} {}", format_size(*done)),
-            };
-            format!("{human}\t{file}\t{k} {n} {done} {}", total.unwrap_or(0))
+            let _ = proxy.send_event(UiMsg::Event(UiEvent::Download(ProtoDownload {
+                repo: repo.clone(),
+                file: file.clone(),
+                index: *k as u32,
+                count: *n as u32,
+                done: *done,
+                total: *total,
+                phase: DownloadPhase::Progress,
+            })));
         }
-        DownloadEvent::FileDone { repo, file } => format!("[{repo}] {file} 下载完成"),
-        DownloadEvent::Done { repo, dir } => format!("[{repo}] 快照就绪: {}", dir.display()),
-        DownloadEvent::Log(s) => s.clone(),
+        DownloadEvent::FileDone { repo, file } => line(proxy, &format!("[{repo}] {file} 下载完成")),
+        DownloadEvent::Done { repo, dir } => line(proxy, &format!("[{repo}] 快照就绪: {}", dir.display())),
+        DownloadEvent::Log(s) => line(proxy, s),
     }
 }
 
@@ -436,34 +450,6 @@ mod tests {
             proxy_mode_from("http://127.0.0.1:7890"),
             ProxyMode::Url(_)
         ));
-    }
-
-    #[test]
-    fn event_lines_readable() {
-        assert_eq!(
-            format_event(&DownloadEvent::Progress {
-                repo: "a/b".into(),
-                file: "m.onnx".into(),
-                k: 1,
-                n: 2,
-                done: 1024,
-                total: Some(2048)
-            }),
-            "[a/b] m.onnx 1.0 KB / 2.0 KB\tm.onnx\t1 2 1024 2048",
-            "DL-3：人读段 + \\t 机器段（精确字节，total 未知为 0）"
-        );
-        assert_eq!(
-            format_event(&DownloadEvent::Progress {
-                repo: "a/b".into(),
-                file: "m.onnx".into(),
-                k: 2,
-                n: 2,
-                done: 4096,
-                total: None
-            }),
-            "[a/b] m.onnx 4.0 KB\tm.onnx\t2 2 4096 0"
-        );
-        assert_eq!(format_event(&DownloadEvent::Log("x".into())), "x");
     }
 
     /// 下载目标现场重算：跟随 settings 镜像的引擎/档位（M5.1 快照 bug 回归测试）。

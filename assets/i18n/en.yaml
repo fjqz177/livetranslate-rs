@@ -615,6 +615,8 @@ download_err_http: "The hub returned an error (rejected or server issue). Retry 
 download_err_disk: "Failed writing to disk. Check free space and permissions of the config directory."
 download_err_length: "The file is incomplete. Retry (resume will pick up automatically)."
 download_err_other: "Download did not succeed. Click Retry; if it keeps failing, copy the details from the Logs page."
+download_err_cancelled: "Download cancelled; progress is kept. Click Resume to continue."
+download_err_checksum: "Checksum verification failed (content does not match the manifest). Retry or switching mirrors will not help; delete the cache directory and download again."
 translator_error_banner: "Translator unavailable: "
 translator_unavailable_placeholder: "(translator not ready — check model config on the Translation page)"
 test_translator_btn: "Test connection"

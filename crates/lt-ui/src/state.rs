@@ -1256,46 +1256,15 @@ pub struct DeviceCache {
     pub default_output: Option<String>,
 }
 
-/// 下载失败分类（由 lt-models 错误字符串前缀 `[net]`/`[http-404]`/`[disk]`... 解析；
-/// 未知/无前缀 → Other，展示原始错误）
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DownloadErrKind {
-    Net,
-    Http404,
-    Http,
-    Disk,
-    Length,
-    Other,
-}
-
-impl DownloadErrKind {
-    /// 解析下载失败消息的前缀码；未知/无前缀回落 Other 并返回原文
-    pub fn parse(msg: &str) -> (Self, String) {
-        let (prefix, rest) = match msg.strip_prefix('[').and_then(|m| m.split_once("] ")) {
-            Some((p, r)) => (p, r),
-            None => return (Self::Other, msg.to_string()),
-        };
-        let kind = match prefix {
-            "net" => Self::Net,
-            "http-404" => Self::Http404,
-            "http" => Self::Http,
-            "disk" => Self::Disk,
-            "length" => Self::Length,
-            _ => Self::Other,
-        };
-        (kind, rest.to_string())
-    }
-}
-
 /// 模型下载运行态（识别页缓存卡片的状态机；运行期下载的唯一 UI 反馈源）
 #[derive(Debug, Clone, Default, PartialEq)]
 pub enum DownloadUiState {
     /// 无下载（未开始/已成功/被替换）
     #[default]
     Idle,
-    /// 下载进行中：按**当前文件**显示进度（DL-3——file/k/n 来自 backend 机器段，
-    /// done_bytes/total_bytes 为精确字节；total_bytes=0 表示未知，走日志模式）；
-    /// log 为进度/日志行环形缓冲（上限 200）
+    /// 下载进行中：按**当前文件**显示进度（DL-3——file/index/count 来自
+    /// `UiEvent::Download`，done_bytes/total_bytes 为精确字节；total 未知走
+    /// 日志模式）；log 为进度/日志行环形缓冲（上限 200）
     Downloading {
         file: String,
         k: u32,
@@ -1307,9 +1276,10 @@ pub enum DownloadUiState {
     /// 下载被用户取消（DL-4/D-23）：.incomplete 续传现场保留，卡片给
     /// 「继续下载」按钮；log 为取消前日志
     Cancelled { log: Vec<String> },
-    /// 下载失败：kind 供分类提示，detail 为原始错误串，log 为失败前日志
+    /// 下载失败：kind 供分类提示（W2：`proto::DownloadFailKind` 直供，
+    /// 不再字符串前缀还原），detail 为原始错误串，log 为失败前日志
     Failed {
-        kind: DownloadErrKind,
+        kind: lt_proto::DownloadFailKind,
         detail: String,
         log: Vec<String>,
     },
@@ -1609,10 +1579,10 @@ pub struct AppState {
     /// UI → 事件环回出口（宿主构造时注入 EventLoopProxy 转发；后台线程经
     /// send_event 回流 UiMsg——benchmark 窗的 on_line 日志流即走此通道）
     pub event_tx: Option<std::sync::Arc<dyn Fn(UiMsg) + Send + Sync>>,
-    /// 性能基准输出行（后台线程经 LogLine{target:"benchmark"} 事件回流追加；
-    /// 含结尾 "__DONE__" 停止标记，上限 500 行防内存膨胀）
+    /// 性能基准输出行（W2 起经 `UiEvent::Bench(Line)` 事件回流追加；
+    /// 上限 500 行防内存膨胀；完成态由 Finished 事件复位）
     pub bench_lines: Vec<String>,
-    /// 性能基准运行中（开始按钮禁用/文案切换；__DONE__ 到达即复位）
+    /// 性能基准运行中（开始按钮禁用/文案切换；`Bench(Finished)` 到达即复位）
     pub bench_running: bool,
     /// 性能基准参与模型勾选（与 settings.models 对位；缺省全选）
     pub bench_selected: Vec<bool>,

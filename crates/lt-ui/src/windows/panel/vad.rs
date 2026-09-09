@@ -13,7 +13,7 @@
 //! - "性能基准"按钮在页头（mod.rs），点击仅记日志（窗口随 M4.4 接入）。
 
 use super::{group_card, hint_line, mark_settings_dirty, send_switch_engine, Palette};
-use crate::state::{AppState, DeviceCache, DownloadErrKind, DownloadUiState};
+use crate::state::{AppState, DeviceCache, DownloadUiState};
 use egui::{RichText, Ui};
 use lt_proto::{AudioDeviceChoice, MicDeviceChoice};
 
@@ -1141,15 +1141,18 @@ fn start_download(state: &mut AppState) {
     });
 }
 
-/// 失败分类 → 用户建议（i18n；未知类别给通用指引）
-fn download_err_advice(kind: DownloadErrKind) -> String {
+/// 失败分类 → 用户建议（i18n；W2：`proto::DownloadFailKind` 直供——checksum/
+/// cancelled 也获专属提示，不再落通用其他）
+fn download_err_advice(kind: lt_proto::DownloadFailKind) -> String {
     let key = match kind {
-        DownloadErrKind::Net => "download_err_net",
-        DownloadErrKind::Http404 => "download_err_http404",
-        DownloadErrKind::Http => "download_err_http",
-        DownloadErrKind::Disk => "download_err_disk",
-        DownloadErrKind::Length => "download_err_length",
-        DownloadErrKind::Other => "download_err_other",
+        lt_proto::DownloadFailKind::Net => "download_err_net",
+        lt_proto::DownloadFailKind::Http(404) => "download_err_http404",
+        lt_proto::DownloadFailKind::Http(_) => "download_err_http",
+        lt_proto::DownloadFailKind::Disk => "download_err_disk",
+        lt_proto::DownloadFailKind::Length => "download_err_length",
+        lt_proto::DownloadFailKind::Checksum => "download_err_checksum",
+        lt_proto::DownloadFailKind::Cancelled => "download_err_cancelled",
+        lt_proto::DownloadFailKind::Other => "download_err_other",
     };
     lt_i18n::t(key)
 }

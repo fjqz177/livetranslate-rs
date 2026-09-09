@@ -12,11 +12,13 @@ use crate::settings::{ModelConfig, Settings};
 pub enum UiMsg {
     /// 管道/下载/翻译等业务事件
     Event(UiEvent),
-    /// 托盘图标事件（点击/双击等）
-    Tray(String),
-    /// muda 菜单点击（携带 MenuItemId）
-    Menu(String),
-    /// UI → 宿主的管道命令（backend 线程转发；AppShell 统一分发）
+    /// 事件动脉批量变体（W2：桥线程单次 wake 排空 ≤256 条——日志风暴下
+    /// winit 唤醒速率与帧率同阶而非逐条 PostMessage）
+    Events(Vec<UiEvent>),
+    /// 应用级命令（W2 起替代 `Menu(String)`/`Tray(String)` 字符串协议；托盘
+    /// 与悬浮窗菜单同源，变体全集见 [`AppCommand`]）
+    AppCommand(AppCommand),
+    /// UI → 宿主的管道命令（backend 线程转发；AppShell 统一分发；W4 退役）
     Cmd(Cmd),
 }
 
@@ -69,13 +71,17 @@ pub enum UiEvent {
         target: String,
         msg: String,
     },
-    /// 下载进度/日志行（向导与缺模型下载对话框共用的日志流形态；
-    /// 承载 Downloader 事件与下载期间 INFO 级 tracing 行）
-    DownloadProgress(String),
+    /// 下载进度（W2：替代 `DownloadProgress(String)` —— 由字符串协议淘出
+    /// `\t` 机器段进类型化事件；人类可读行改由 `LogLine{target:"download"}` 携带）
+    Download(DownloadEvent),
     /// 下载成功（携带应生效的设置：向导=13 键默认块，缺模型=现有设置）
     DownloadSucceeded { settings: Box<Settings> },
-    /// 下载失败（可重试；UI 恢复控件并显示 btn_retry）
-    DownloadFailed(String),
+    /// 下载失败（可重试；UI 恢复控件并显示 btn_retry）。W2：类型化 kind
+    /// 替代字符串前缀还原（checksum/cancel 此前落 Other，分类从此精确）
+    DownloadFailed {
+        kind: DownloadFailKind,
+        message: String,
+    },
     /// 下载被用户取消（DL-4/D-23）：UI 卡片回「已取消，进度已保留」态，
     /// 再次下载从 .incomplete 断点续传（仅追加成员，既有成员语义不变）
     DownloadCancelled,
@@ -92,6 +98,153 @@ pub enum UiEvent {
         error: Option<String>,
         ms: u64,
     },
+    /// 性能基准流（W2：替代 `LogLine{target:"benchmark"}` + 完成哨兵；
+    /// 逐行输出 + 完成语义类型化，基准窗不再借道日志总线）
+    Bench(BenchEvent),
+    /// 有界队列水位（R15②：翻译池满丢最旧时上报；慢 LLM 积压不再静默）
+    QueuePressure {
+        queue: QueueId,
+        dropped_total: u64,
+    },
+}
+
+/// 应用级命令（托盘菜单与悬浮窗菜单同源；W2 替代 `Menu(String)` 字符串协议。
+/// 变体全集 = 托盘 ids（lt-ui/tray.rs [ids]）+ quit 专用命令）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppCommand {
+    /// 暂停/恢复管道
+    Pause,
+    /// 悬浮窗 显示/隐藏
+    OverlayToggle,
+    /// 控制面板 显示/隐藏
+    ShowPanel,
+    /// 退出应用（宿主侧带确认框）
+    Quit,
+}
+
+impl AppCommand {
+    /// muda 菜单 id → 命令。id 清单与 lt-ui/tray.rs `ids` 常量一一对应；
+    /// 状态行等只读项无事件故无变体；未知 id → None（不做字符串预言机）
+    pub fn from_menu_id(id: &str) -> Option<Self> {
+        Some(match id {
+            "tray_pause" => Self::Pause,
+            "tray_hide_overlay" => Self::OverlayToggle,
+            "tray_show_panel" => Self::ShowPanel,
+            "quit" => Self::Quit,
+            _ => return None,
+        })
+    }
+}
+
+/// 下载进度事件（W2 替代 DownloadProgress(String) 的 `\t` 机器段协议；
+/// UI 据字段驱动进度条，人读段由 UI 侧按同格式生成）
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DownloadEvent {
+    /// 仓库标识（"modelscope/{org}--{name}" 等）
+    pub repo: String,
+    pub file: String,
+    /// 当前第 index/count 个文件（1 起；DL-3 的 k/n）
+    pub index: u32,
+    pub count: u32,
+    pub done: u64,
+    /// None = 未知（UI 走日志模式）
+    pub total: Option<u64>,
+    pub phase: DownloadPhase,
+}
+
+/// 下载进度阶段（UI 进度条状态语义；当前下载器仅产 Progress，Start/
+/// Integrity 为契约预留）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DownloadPhase {
+    Start,
+    Progress,
+    Integrity,
+}
+
+/// 下载失败分类（自 lt-models `FailKind` 迁入；谓词与全组合测试随迁。
+/// Display 前缀 `[net]` 等不再作为 UI 分流载体——契约字符串协议禁令 INV9）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DownloadFailKind {
+    /// 网络层失败（reqwest：超时/连接拒绝/DNS/TLS/读取中断）
+    Net,
+    /// HTTP 状态码非 2xx（含 404 仓库缺失、限流、服务端错误）
+    Http(u16),
+    /// 磁盘/IO 失败（创建目录、写入、rename）
+    Disk,
+    /// 长度校验失败（下载不完整）
+    Length,
+    /// sha256 内容校验失败（AH-5/H8：内容损坏是确定性的，重试/换源无解）
+    Checksum,
+    /// 用户取消（保留 .incomplete 续传现场；DL-4）
+    Cancelled,
+    /// 未知（非下载器 DlError 的防御兜底；UI 示通用提示）
+    Other,
+}
+
+impl DownloadFailKind {
+    /// 前缀串（DlError Display 形态 `[{prefix}] {message}`；人读日志用，
+    /// 不再是 UI 分流载体——保留仅为可读性）
+    pub fn prefix(self) -> &'static str {
+        match self {
+            DownloadFailKind::Net => "net",
+            DownloadFailKind::Http(404) => "http-404",
+            DownloadFailKind::Http(_) => "http",
+            DownloadFailKind::Disk => "disk",
+            DownloadFailKind::Length => "length",
+            DownloadFailKind::Checksum => "checksum",
+            DownloadFailKind::Cancelled => "cancel",
+            DownloadFailKind::Other => "other",
+        }
+    }
+
+    /// 是否值得退避重试（DL-2/F5 快速失败）：网络中断与长度不完整可续传重试；
+    /// 5xx/429 属服务端暂时性；其余 4xx（404 缺失/401 私有/403 禁止）、磁盘、
+    /// 取消均为永久态，立即返回不再白等 1/4/16s。
+    pub fn retryable(self) -> bool {
+        match self {
+            DownloadFailKind::Net | DownloadFailKind::Length => true,
+            DownloadFailKind::Http(s) => s >= 500 || s == 429,
+            DownloadFailKind::Disk
+            | DownloadFailKind::Checksum
+            | DownloadFailKind::Cancelled
+            | DownloadFailKind::Other => false,
+        }
+    }
+
+    /// 是否值得换另一 hub 回落（DL-5）：仓库缺失或网络不可达才回落；
+    /// 磁盘/长度/取消等问题换源无解。Checksum 不回落——同一注册表哈希对
+    /// 两源一致（镜像同步），换源无解（AH-5）
+    pub fn fallback_candidate(self) -> bool {
+        matches!(self, DownloadFailKind::Net | DownloadFailKind::Http(404))
+    }
+}
+
+/// 性能基准流事件（W2：替代 `LogLine{target:"benchmark"}` 的 完成哨兵；
+/// 基准窗独享通道，不再借日志总线搬运机器控制流——INV9）
+#[derive(Debug, Clone)]
+pub enum BenchEvent {
+    /// 逐行输出（格式稳定，原版 benchmark.py 样式）
+    Line(String),
+    /// 全部完成（ok = 无失败模型；elapsed_ms = 全程耗时）
+    Finished { ok: bool, elapsed_ms: u64 },
+}
+
+/// 有界队列身份（QueuePressure 水位告警定位）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueueId {
+    /// 翻译池（R15：待译段 keep-latest 64，满丢最旧）
+    Translation,
+}
+
+/// 音频监视快照（W2 快照格：capture 线程写 ArcSwap，UI 以 ~33ms 节拍读格
+/// 重绘——替代每 chunk 一条 `UpdateMonitor` 事件的逐条唤醒）
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct MonitorSample {
+    pub rms: f32,
+    pub vad: f32,
+    pub mic_rms: Option<f32>,
+    /// 单调序号：写侧递增；读者廉价比对「是否变了」（浮点比对不可靠）
+    pub seq: u64,
 }
 
 /// 音频采集角色（R4）
@@ -263,5 +416,68 @@ mod tests {
                 other => assert_eq!(rt.as_deref(), other),
             }
         }
+    }
+
+    /// W2：托盘菜单 id 全集 → AppCommand（防 tray.rs ids 与映射漂移；
+    /// STATUS 为只读状态行无事件，不产生命令）
+    #[test]
+    fn app_command_menu_id_mapping() {
+        assert_eq!(AppCommand::from_menu_id("tray_pause"), Some(AppCommand::Pause));
+        assert_eq!(
+            AppCommand::from_menu_id("tray_hide_overlay"),
+            Some(AppCommand::OverlayToggle)
+        );
+        assert_eq!(
+            AppCommand::from_menu_id("tray_show_panel"),
+            Some(AppCommand::ShowPanel)
+        );
+        assert_eq!(AppCommand::from_menu_id("quit"), Some(AppCommand::Quit));
+        // 未知/只读项 → None（不许静默当作某命令）
+        assert_eq!(AppCommand::from_menu_id("tray_status"), None);
+        assert_eq!(AppCommand::from_menu_id(""), None);
+    }
+
+    /// DL-2/F5：重试分类表——net/length/5xx/429 可重试；404/401/403/磁盘/
+    /// 取消立即失败（自 lt-models 随迁）
+    #[test]
+    fn fail_kind_retry_classification() {
+        assert!(DownloadFailKind::Net.retryable());
+        assert!(DownloadFailKind::Length.retryable());
+        assert!(DownloadFailKind::Http(500).retryable());
+        assert!(DownloadFailKind::Http(503).retryable());
+        assert!(DownloadFailKind::Http(429).retryable());
+        assert!(!DownloadFailKind::Http(404).retryable());
+        assert!(!DownloadFailKind::Http(401).retryable());
+        assert!(!DownloadFailKind::Http(403).retryable());
+        assert!(!DownloadFailKind::Http(418).retryable());
+        assert!(!DownloadFailKind::Disk.retryable());
+        assert!(!DownloadFailKind::Cancelled.retryable());
+        assert!(!DownloadFailKind::Checksum.retryable());
+        assert!(!DownloadFailKind::Other.retryable());
+    }
+
+    /// DL-5 前置：回落候选 = 仓库缺失或网络不可达；其余换源无解
+    #[test]
+    fn fail_kind_fallback_candidates() {
+        assert!(DownloadFailKind::Http(404).fallback_candidate());
+        assert!(DownloadFailKind::Net.fallback_candidate());
+        assert!(!DownloadFailKind::Http(401).fallback_candidate());
+        assert!(!DownloadFailKind::Http(500).fallback_candidate());
+        assert!(!DownloadFailKind::Length.fallback_candidate());
+        assert!(!DownloadFailKind::Disk.fallback_candidate());
+        assert!(!DownloadFailKind::Checksum.fallback_candidate());
+        assert!(!DownloadFailKind::Cancelled.fallback_candidate());
+    }
+
+    /// 前缀串（DlError Display 形态；字符串不再承载契约语义，仅人读日志）
+    #[test]
+    fn fail_kind_prefixes() {
+        assert_eq!(DownloadFailKind::Net.prefix(), "net");
+        assert_eq!(DownloadFailKind::Http(404).prefix(), "http-404");
+        assert_eq!(DownloadFailKind::Http(500).prefix(), "http");
+        assert_eq!(DownloadFailKind::Disk.prefix(), "disk");
+        assert_eq!(DownloadFailKind::Length.prefix(), "length");
+        assert_eq!(DownloadFailKind::Checksum.prefix(), "checksum");
+        assert_eq!(DownloadFailKind::Cancelled.prefix(), "cancel");
     }
 }
