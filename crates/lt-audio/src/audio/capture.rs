@@ -49,6 +49,13 @@ impl InterimControl {
             self.last_check_ms.store(0, Ordering::Relaxed);
         }
     }
+
+    /// R31/D-72：会话边界复位——只清进度计数（enabled/interval 保持，
+    /// 开关是用户意图，设备切换不应重置；vad_flush 同语义）
+    pub fn reset_counter(&self) {
+        self.last_interim_samples.store(0, Ordering::Relaxed);
+        self.last_check_ms.store(0, Ordering::Relaxed);
+    }
 }
 
 /// 触发判定纯函数（对照原版 main.py `_capture_loop` 的条件组合，真值表单测锚点）：
@@ -598,5 +605,24 @@ mod tests {
         assert!(seg_tx2.is_empty(), "静音（不在说话）不应触发 interim 标记");
         running2.store(true, Ordering::Relaxed);
         let _ = h2.join();
+    }
+
+    /// R31/D-72：reset_counter 只清进度计数（enabled/interval 保持）——
+    /// 设备切换是会话边界，但用户开关意图不应被重置
+    #[test]
+    fn interim_reset_counter_keeps_toggles() {
+        let c = InterimControl::default();
+        c.set(true, 2.0);
+        c.last_interim_samples.store(1234, Ordering::Relaxed);
+        c.last_check_ms.store(999, Ordering::Relaxed);
+        c.reset_counter();
+        assert_eq!(c.last_interim_samples.load(Ordering::Relaxed), 0);
+        assert_eq!(c.last_check_ms.load(Ordering::Relaxed), 0);
+        assert!(c.enabled.load(Ordering::Relaxed), "开关保持");
+        assert_eq!(
+            f32::from_bits(c.interval_bits.load(Ordering::Relaxed)),
+            2.0,
+            "间隔保持"
+        );
     }
 }

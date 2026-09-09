@@ -436,6 +436,12 @@ pub struct Pipeline {
     sup: Arc<Supervisor>,
     /// 转录写盘（原版 self._transcript；TlRig/面板共用同一句柄）
     transcript: Arc<lt_audio::transcript::TranscriptWriter>,
+    /// R31/D-72：与 capture/ASR 线程共享的 VAD（集切换复位入口——
+    /// 设备切换 = 会话边界：清段队列 + VAD 重置 + interim 复位，
+    /// 防新旧设备/会话段拼接错位）
+    vad_shared: Arc<Mutex<VadProcessor>>,
+    /// R31：段队列（ASR 段消费侧同一实例；切换清空丢弃残留半段）
+    segment_queue_shared: Arc<BoundedDropQueue<(SegmentSource, Vec<f32>)>>,
 }
 
 /// ASR 线程消费的翻译器/引擎命令（W4 收敛三臂——目标语言/超时/语言/padding
@@ -729,6 +735,8 @@ impl Pipeline {
             interim,
             sup,
             transcript,
+            vad_shared: vad.clone(),
+            segment_queue_shared: segment_queue.clone(),
         })
     }
 
@@ -780,23 +788,39 @@ impl Pipeline {
     }
 
     /// 运行时切换采集设备（原版 set_audio_device；后端线程内重启）
+    /// R31/D-72：设备切换 = 会话边界——清段队列 + VAD reset + interim 复位，
+    /// 防新旧设备/会话段拼接错位（wasapi 线程内已清 chunk 队列）
     pub fn set_audio_device(&mut self, choice: lt_proto::AudioDeviceChoice) {
         let dev = match choice {
             lt_proto::AudioDeviceChoice::SystemDefault => None,
             lt_proto::AudioDeviceChoice::Named(n) => Some(n),
             lt_proto::AudioDeviceChoice::Disabled => Some("__disabled__".into()),
         };
+        self.reset_session_after_device_switch();
         self.backend.set_device(dev);
     }
 
     /// 运行时切换麦克风（原版 set_mic_device；None=禁用）
+    /// R31：与 set_audio_device 同语义（会话边界清根）
     pub fn set_mic_device(&mut self, choice: lt_proto::MicDeviceChoice) {
         let dev = match choice {
             lt_proto::MicDeviceChoice::Off => None,
             lt_proto::MicDeviceChoice::Default => Some("__default__".into()),
             lt_proto::MicDeviceChoice::Named(n) => Some(n),
         };
+        self.reset_session_after_device_switch();
         self.backend.set_mic_device(dev);
+    }
+
+    /// R31/D-72：会话复位（设备切换共用入口）——清段队列（丢弃残留半段，
+    /// ASR 线程下轮 pop 自然空）、VAD 状态重置、interim 复位（旧会话
+    /// 增量识别上下文不得跨设备存活）。INV6：vad 锁内不取第二把锁。
+    fn reset_session_after_device_switch(&self) {
+        self.segment_queue_shared.clear();
+        if let Ok(mut v) = self.vad_shared.lock() {
+            v.reset();
+        }
+        self.interim.reset_counter();
     }
 
     /// 增量识别开关/间隔热应用（原版 _incremental_asr_cb → _incremental_enabled/

@@ -535,6 +535,9 @@ fn read_loop(
                     requested_mic = m;
                     close_mic(&mut mic);
                     mic_buf.clear();
+                    // R31/D-72：与 SetDevice 同语义——切换即清根，残留
+                    // chunk 不得混入新会话（方案点名 SetMic 缺此清，460-471）
+                    chunk_tx.clear();
                     if requested_mic.is_some() {
                         match open_mic(requested_mic.as_deref()) {
                             Ok(m) => {
@@ -628,23 +631,11 @@ fn read_loop(
                                 true,
                                 &format!("read error: {e:#}"),
                             );
+                            // R4②：读错误 → 本轮关闭、下轮循环重开——不在此
+                            // 立即重试（连续失败时同 tick 两次 open+两段 sleep
+                            // 会饿死 mic 处理；每设备每 tick 至多一次尝试）
                             std::thread::sleep(Duration::from_millis(500));
                             close_loopback(&mut st);
-                            match open_loopback(requested_device.as_deref()) {
-                                Ok(s) => {
-                                    report(&mut loopback_down, false, true, "");
-                                    st = Some(s);
-                                }
-                                Err(e) => {
-                                    tracing::error!("读错误后重启失败: {e:#}");
-                                    report(
-                                        &mut loopback_down,
-                                        true,
-                                        true,
-                                        &format!("{e:#}"),
-                                    );
-                                }
-                            }
                             chunk_tx.clear();
                             continue;
                         }
