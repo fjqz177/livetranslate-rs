@@ -260,6 +260,7 @@ ADR-11 裁决后，本波由「删除」改为「**留空间的具象化**」：
 | PH-6 | 参考图 GPU 中性化重拍 | **不做**（用户立场：GPU 长期不支持，不值得投入） |
 | UX 三期 | 保存失败 UI 流/错误译文样式 | 缓，后续开发时考虑 |
 | whisper sha256 | 其余五档完整性校验值补齐 | **a 案：有网时段安排补齐**（届时提醒用户在真机跑一次登记脚本；AH-5 链路收尾） |
+| D-81 | E6 死契约清理 | **删除 `EngineError::WorkerExited`（全仓零构造零消费）与 `Cmd::SetTimeout`（零生产者，超时走 ApplySettings 重放）**；`Cmd::CancelBench` 零生产者为真功能缺口——W5f 取消链缺 UI 按钮，E6 补接线（基准窗运行中显示"取消基准"）；PROTO_VERSION=5。守卫校准发现的合法单边形态（`AppCommand.OverlayToggle` 经 from_menu_id 生产、`ThreadRole.LogBridge/ArteryBridge` 仅出生点命名）确认豁免 |
 | 3~7 | D-79 改型 / E3 白名单 / D-80 Backoff / 死契约守卫严格度 / 写入点方向 | **全部按推荐案通过**（2026-09-09 二轮裁决）：③ D-79 执行；④ E3 白名单变更通过；⑤ D-80 接受、参数默认（500ms/30s/8 次/60s，动脉桥 Always）；⑥ A 硬 gate；⑦ A 案（后台写入点唯一） |
 
 ---

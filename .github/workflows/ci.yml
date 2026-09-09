@@ -48,5 +48,8 @@ jobs:
       - name: Source ban guards (W7)
         run: powershell -ExecutionPolicy Bypass -File scripts/check_guards.ps1
 
+      - name: Dead contract guard (E6)
+        run: powershell -ExecutionPolicy Bypass -File scripts/check_dead_contract.ps1
+
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings

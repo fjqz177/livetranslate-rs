@@ -14,8 +14,11 @@ pub mod settings;
 /// DownloadProgress→Download、DownloadFailed 类型化、完成哨兵→Bench、
 /// 新增 Events 批量变体）= 2；W4 设置总线（`UiMsg::Cmd` 删除——控制面
 /// mpsc 由 AppShell 直排，INV2；lt-backend 线程退役）= 3；E2 值域枚举化
-/// （`Cmd::StartDownload` 载荷改型 String→`Hub`/`ProxyMode`，D-79）= 4。
-pub const PROTO_VERSION: u32 = 4;
+/// （`Cmd::StartDownload` 载荷改型 String→`Hub`/`ProxyMode`，D-79）= 4；
+/// E6 死契约清理（`EngineError::WorkerExited`/`Cmd::SetTimeout` 删除，
+/// 守卫校准发现零引用/零生产者；基准取消按钮接线补齐 `CancelBench`
+/// 生产者，D-81）= 5。
+pub const PROTO_VERSION: u32 = 5;
 
 pub use asr_result::{language_display, AsrResult, EngineError, WordTs};
 pub use events::{

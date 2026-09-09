@@ -46,7 +46,7 @@ fn apply_settings_side_effects(s: &mut Settings, cmd: &Cmd) {
             s.interim_interval = *interval;
         }
         Cmd::SetTargetLanguage(lang) => s.target_language = lang.clone(),
-        Cmd::SetTimeout(secs) => s.timeout = *secs,
+        // E6/D-81：SetTimeout 契约变体已删（零生产者）——timeout 走 ApplySettings 重放
         Cmd::SwitchTranslator(config) => {
             // 记为当前激活模型（按名匹配；越界/未知名不动 active_model）
             if let Some(idx) = s.models.iter().position(|m| m.name == config.name) {
@@ -233,11 +233,8 @@ impl AppShell {
                 self.publish_settings();
                 self.persist_settings();
             }
-            Cmd::SetTimeout(secs) => {
-                tracing::info!("超时: {secs}s");
-                self.publish_settings();
-                self.persist_settings();
-            }
+            // E6/D-81：Cmd::SetTimeout 处理臂随契约变体删除（零生产者，
+            // 超时改动经 ApplySettings 整体重放）
             Cmd::SwitchTranslator(config) => {
                 if let Some(p) = self.pipeline.as_mut() {
                     p.switch_translator(&config);

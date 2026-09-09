@@ -117,13 +117,19 @@ pub fn bench_ui(ui: &mut Ui, bench: &mut BenchUi, session: &mut SessionView, set
                 });
         });
 
-    // ── 关闭行（原版 row + close_btn）──
+    // ── 关闭行（原版 row + close_btn）。E6：取消按钮接线——W5f 取消链
+    //    （shell bench_cancel → translate 模型边界截停）早已闭环，唯缺 UI
+    //    生产者（死契约守卫校准发现）；运行中显示取消按钮 ──
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
         if ui.button(lt_i18n::t("btn_close")).clicked() {
             session.enqueue_action(
                 crate::state::WinId::Benchmark,
                 crate::state::WinAction::Hide,
             );
+        }
+        if bench.running && ui.button(lt_i18n::t("btn_cancel_bench")).clicked() {
+            session.send_cmd(Cmd::CancelBench);
+            tracing::info!("请求取消基准（模型边界截停）");
         }
     });
 }

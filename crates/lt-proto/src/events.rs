@@ -382,7 +382,8 @@ pub enum Cmd {
     ApplySettings(Box<Settings>),
     SwitchTranslator(Box<ModelConfig>),
     SetTargetLanguage(String),
-    SetTimeout(u32),
+    // E6/D-81：`SetTimeout(u32)` 删除——死契约守卫校准发现零生产者
+    //（翻译页超时改动走 ApplySettings 整体重放），shell 处理臂随删
     IncrementalAsr {
         enabled: bool,
         interval: f32,

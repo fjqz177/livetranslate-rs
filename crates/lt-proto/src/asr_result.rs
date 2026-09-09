@@ -29,6 +29,8 @@ pub struct WordTs {
 
 /// 引擎错误 —— recoverable 语义与原版 asr_worker 对齐：
 /// 加载失败 = 不可恢复；单命令执行错误 = 可恢复（连续 3 次才致命）。
+/// E6/D-81：WorkerExited 变体删除（死契约守卫校准发现——定义/谓词/测试
+/// 之外全仓零构造零消费，worker 退出路径实际走 AsrUnavailable 穿透）
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum EngineError {
     #[error("不支持的操作")]
@@ -39,8 +41,6 @@ pub enum EngineError {
     Runtime { message: String, recoverable: bool },
     #[error("请求超时")]
     Timeout,
-    #[error("worker 进程退出: {0}")]
-    WorkerExited(String),
 }
 
 impl EngineError {
@@ -50,7 +50,6 @@ impl EngineError {
             EngineError::Load(_) => false,
             EngineError::Runtime { recoverable, .. } => *recoverable,
             EngineError::Timeout => true,
-            EngineError::WorkerExited(_) => false,
         }
     }
 }
@@ -108,7 +107,6 @@ mod tests {
             recoverable: false
         }
         .recoverable());
-        assert!(!EngineError::WorkerExited("1".into()).recoverable());
     }
 
     #[test]
