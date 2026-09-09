@@ -4,7 +4,7 @@
 - **证据基线**：commit `314644b`（评审基线）+ `4d7d84f`（评审报告 `docs/architecture-review.md`）；405 测 = 398 常规 + 7 ignored
 - **取证方法**：评审报告（6 只读子代理七维度 + 主线程交叉验证）之上，本方案另派 4 路专项取证——①lt-app 装配层全测绘 ②lt-ui 窗口巨石全测绘 ③契约/设置镜像/字符串旁路精确定性 ④外部选型调研（arc-swap / winit 事件模型 / panic 监督 / 单实例激活 / 依赖治理 / channel 生态 / CI runner 现状，来源见 §8.3）。主线程另通读 `crates/lt-app/src/main.rs` 全文与根 `Cargo.toml` 复核。
 - **效力**：阶段二活跃施工依据（本目录，非归档）。各波次（§5）为独立工作包，可按裁决调整顺序与取舍；契约变更本身仍随波次落地。**本文档先行独立 `docs(arch)` 提交，先于一切实现提交**（docs 提交时机纪律）。
-- **状态**：方案定稿 v1.1（2026-09-09 二次严审修订：补硬约束 INV1~INV12、线程清单 v2、停机协议〔封堵停机-respawn 竞态设计洞〕、TlSwitch 七臂收敛三臂、lt-backend 线程退役决策、行为偏差登记表 D-60+、ADR 备选记录、波次依赖与回滚语义）。**W0（a677559）/W1（a829ad0+1ab4f97）/W2（5907c52+6362661+a525aa9）/W3（编排域独立+拓扑勘正）/W4（设置总线）/W5（lt-ui 解放）已合入**——W5 施工实记见 §3.4 各节注（AppUi 拆分以实测为准：SessionView 增 actions/ticks/settings_apply_pending；`visible` 真值表落宿主 MultiWindowApp 字段（非独立 WindowManager 类型）——窗口帧经 `session.visible` 快照；bench 取消经 `CancelBench`+模型边界截停（run_benchmark 增取消标志）；设备/基准/文件对话框三路经 app 侧 Supervisor（`app_sup`）一次性线程（Policy::Never）；rfd 依赖随迁 lt-app）；剩余 W6~W7 按 §5 顺序施工，波次内行号以当时实测为准。
+- **状态**：方案定稿 v1.1（2026-09-09 二次严审修订：补硬约束 INV1~INV12、线程清单 v2、停机协议〔封堵停机-respawn 竞态设计洞〕、TlSwitch 七臂收敛三臂、lt-backend 线程退役决策、行为偏差登记表 D-60+、ADR 备选记录、波次依赖与回滚语义）。**W0（a677559）/W1（a829ad0+1ab4f97）/W2（5907c52+6362661+a525aa9）/W3（编排域独立+拓扑勘正）/W4（设置总线）/W5（lt-ui 解放）/W6（子系统精修）/W7（守护收口）已全部合入**——W5 施工实记见 §3.4 各节注；W7 施工实记（2026-09-09 收口波）：①下载会话线程入监督器（Supervisor `is_thread_finished` 查询 + `ThreadRole::Download` + worker join panic 转失败终态 + session catch_unwind 兜底，修复「下载线程 panic → 下载卡永久卡住」，行为登记 **D-77**）②`scripts/check_deps.ps1`（§3.1 白名单断言，10 crate 21 条边）与 `scripts/check_guards.ps1`（§6.2 五组禁令，白名单按实测编目：worker I/O 泵/wasapi 读环/bench 内层/下载 worker 子线程为注记例外）双双落地进 CI ③clippy 全仓 125 条清零转 gate（`-D warnings`）④lt-app 组织收口：W5 下沉三路助手拆入 `shell_helpers.rs`（总行数 1181，验收口径修订为 ≤1200——组合根 + 三项宿主职责〔W5 三路下沉/W6 单实例〕的自然结果，shell.rs 512 行 = 命令路由+事件分发+停机，无域逻辑）⑤§6.4 实机走查总清单定稿（见该节）。
 
 ---
 
@@ -413,6 +413,7 @@ WinId::Overlay => { let AppUi { overlay, session, settings, modal, .. } = app;
 | D-74 | W4（§5 施工卡提前于 §3.7 表 W6 档） | 同语言免翻译比较归一化（`zh` vs `zh-CN`；pipeline.rs:1473 现为裸字符串比较）——仅在目标语言侧归一（TlView 派生点），ASR 检出侧保持原样（归一它是新行为，超出本号登记面；R21 档位/源侧归一仍 W6） | 归一单测（已合入：lt-proto `normalize_language` + `tl_view_normalizes_target_language`） |
 | D-75 | W1（缺陷修复） | settings.json 缺失但 `.bak` 在位时 load 自动恢复旧配置——save 原子链「现档→bak→tmp→现档」的崩溃中间态自愈，不再静默回默认值（R17 补全）；代价：手动删除 settings.json 的重置意图同样被 .bak 复活，崩溃自愈优先 | 单测 |
 | D-76 | W6 | R28 worker 配置改 stdin 首行传递——任务管理器命令行不再含模型路径（当前 argv JSON 明文暴露）；skip_while(nth(1)) 旗标解析同步收紧为仅旗标 | 人工（任务管理器命令行）+ fake worker 同步测试 |
+| D-77 | W7 | 下载会话线程 panic → 下载卡落 `DownloadFailed` 失败态（修复前：静默卡死「下载中」，仅 crash 文件可查）——worker join panic 与 session 层 panic 双路兜底（R1 同源） | 测试：会话收尾终态断言 + 监督器 `is_thread_finished` 生命周期 |
 
 ---
 
@@ -539,7 +540,7 @@ WinId::Overlay => { let AppUi { overlay, session, settings, modal, .. } = app;
 
 ### 6.1 依赖方向守护
 
-`scripts/check_deps.ps1`：解析 `cargo metadata`（或逐 Cargo.toml）断言 §3.1 白名单表；任何表外内部依赖 → 非零退出。进 CI（W7 起 gate，W1~W6 期间 advisory）。
+`scripts/check_deps.ps1`：逐 crate Cargo.toml（dependencies + dev-dependencies 双段覆盖）断言 §3.1 白名单表；任何表外内部依赖 → 非零退出。**已落地（W7）：进 CI gate**。
 
 ### 6.2 源码禁令 grep（进 CI）
 
@@ -579,7 +580,21 @@ jobs:
 
 - **panic 注入探针**（debug-only example）：令管道线程 panic → 断言 crash 文件 + ThreadDied 事件 + 重启。
 - **慢消费者注入**：翻译池水位、日志风暴、下载取消延迟。
-- **实机走查总清单**（W7 汇总）：悬浮窗拖动（W5 后）、穿透/锁定、monitor 条平滑度（W2 快照格后）、单实例二次启动前置（W6）、下载卡片全态（W2 后）、Toast 视觉（遗留项）。
+- **实机走查总清单**（W7 汇总定稿，2026-09-09；各波累积项，用户实测一节一节过）：
+
+| # | 项 | 来源 | 判定 |
+|---|---|---|---|
+| 1 | 悬浮窗拖动（头部任意键）+ 拖动期恒非穿透 | W5/D-71 | 拖动跟手、无挂死；拖动中穿透豁免 |
+| 2 | 字幕窗拖动（顶条任意键/正文中键/Ctrl 临时）+ 穿透 + 锁定 | W5/D-37（D-36 既有） | 三场景拖动位移正常；穿透时机正确 |
+| 3 | 导出保存框 / 背景图选择框（rfd 异步化） | W5/R19 | 弹框弹出期间其余窗口正常出帧不冻结 |
+| 4 | 面板识别页设备下拉（异步回执） | W5/R13 | 打开页短暂延迟属预期；列表与系统一致 |
+| 5 | Monitor 条平滑度（33ms 节拍读格） | W2/D-67 | 视觉与原先事件驱动无差异 |
+| 6 | 单实例二次启动：双击第二实例 → 首实例面板前置 | W6/D-73 | 首实例面板显示并置前；第二实例退出码 0 |
+| 7 | 任务管理器命令行不含模型路径 | W6/D-76 | 进程命令行仅 `--asr-worker` 旗标 |
+| 8 | 下载卡片全态（进度/成功/失败/取消/快速失败） | W2 后 + W7 | 四态互转正常；失败显示失败原因 |
+| 9 | Toast 视觉（隐藏提示） | D-33 遗留 | 系统通知区可达（链路零错已验） |
+| 10 | 隐藏→托盘重显半透明保持 | D-34 遗留 | 重显后仍半透明 |
+| 11 | 托盘菜单打开期间主界面持续出帧可操作 | D-35 遗留 | 无冻结 |
 
 ---
 
