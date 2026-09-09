@@ -171,6 +171,8 @@ impl Supervisor {
 | lt-tray | **lt-ui 裸 spawn 白名单特例**（tray.rs:136；拓扑所限 lt-ui 不得依赖 orchestrator） | **Never，禁止 respawn** | 既有 stop join（tray.rs:121）保留 | ThreadDied 可见、托盘失效可接受 | **respawn 须重跑 muda `set_event_handler` 进程级单例注册（tray.rs:319-327），二次注册触发 R32 断言——这是 Never 的硬理由** |
 | worker 子进程 ×N | Manager 同 exe 自拉起（A4 保留） | 进程级隔离 | 三层孤儿防护 | EngineError 穿透 | 不变 |
 
+**表外补充（W1 实证勘正）**：wasapi 读环线程（`lt-audio`，wasapi_win.rs `WasapiBackend::start`）在 lt-pipeline crate 内部裸出生——监督器（lt-app/orchestrator）在依赖方向上位，不可及；其可观测性由 R4 `AudioStatus` 边沿事件（W1 已接入，经 AudioBridge 转发线程转 `UiEvent::Capture`）承接，停机随 backend.stop 内 join。该线程是否随 W3 改名迁移纳入 orchestrator 监督为 W3 决议点，§6.2 spawn grep 白名单届时同步修订。另：`ThreadRole::Bench` 为 W2 预留变体——bench 线程仍在 lt-translate 内裸 spawn（lt-ui 直调 lt-translate，监督器同样不可及），转入 orchestrator 后按本表转 Never 接管。
+
 **Supervisor 自身边界与停机协议**：①monitor 线程死亡不自动重生（监督者自举无解，接受）——hook crash 文件兜底可见性，monitor 循环零 unwrap 零阻塞调用把死亡概率压到最低；②**停机竞态封堵（INV4）**：`Supervisor::stopping`（AtomicBool）先于一切线程停止信号置位，monitor 判定 respawn 前必须复查 stopping——panic 恰好发生在置位瞬间时，宁可漏一次 respawn 不可多一次；③**重启语义（INV5）**：factory 必须构造干净初态，capture/asr 重生一律会话复位，ASR 重生固定走待命态入口（等价 AH-1 路径），不得从主循环中段恢复。
 
 **panic hook 实现约束**（W1）：①hook 内零 unwrap、分配最小化（allocator 中毒时仍须存活）；②线程安全（多线程同时 panic：tracing 层自身线程安全 + crash 文件经 `OnceLock<Mutex<File>>`）；③知晓**双 panic = 直接 abort** 语义（hook 自身 panic 即进程终止，故 ① 是硬规则）；④**禁止 MessageBoxW/任何模态**——hook 可能运行在 winit 线程上（INV11；alacritty hook 弹窗做法不可效仿，§8.3-3）；⑤crash 文件固定 `~/.config/livetranslate/logs/crash-<ts>.log`，tracing 未初始化时也必须可写。
@@ -403,6 +405,7 @@ WinId::Overlay => { let AppUi { overlay, session, settings, modal, .. } = app;
 | D-72 | W6 | 设备切换清段队列 + VAD 复位（R31） | 拼接错位回归 |
 | D-73 | W6 | 二次启动激活已有窗口（WD-5） | 实机 |
 | D-74 | W6 | 同语言免翻译比较归一化（`zh` vs `zh-CN`；pipeline.rs:1473 现为裸字符串比较） | 归一单测 |
+| D-75 | W1（缺陷修复） | settings.json 缺失但 `.bak` 在位时 load 自动恢复旧配置——save 原子链「现档→bak→tmp→现档」的崩溃中间态自愈，不再静默回默认值（R17 补全）；代价：手动删除 settings.json 的重置意图同样被 .bak 复活，崩溃自愈优先 | 单测 |
 
 ---
 
