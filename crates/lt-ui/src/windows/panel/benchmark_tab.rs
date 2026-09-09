@@ -7,14 +7,14 @@
 //! 状态共享。原版 Tab 版无模型多选（跑全部模型），按钮语义 = 全选。
 
 use super::{group_card, Palette};
-use crate::state::AppState;
+use crate::state::{BenchUi, Settings};
 use crate::windows::bench::{self, BENCH_SRC_LANGS, BENCH_TGT_LANGS, LOG_BG, LOG_FG};
 use egui::{Color32, RichText, ScrollArea, Ui};
 
 /// 基准测试 Tab UI 总入口（panel_ui 按 PanelPage::Benchmark 分派）
-pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
+pub fn page(ui: &mut Ui, settings: &mut Settings, bench: &mut BenchUi, pal: &Palette) {
     // 模型勾选与 settings.models 对位（Tab 版 = 全部勾选，原版 _run_benchmark 语义）
-    bench::align_selection(&mut state.bench_selected, state.settings.models.len());
+    bench::align_selection(&mut bench.selected, settings.models.len());
 
     // ── 控制行（原版 ctrl_row：源语言 / 目标语言 / stretch / 测试全部模型）──
     group_card(ui, pal, &lt_i18n::t("group_benchmark"), |ui| {
@@ -23,7 +23,7 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
             lang_combo(
                 ui,
                 "bench_tab_src",
-                &mut state.bench_src,
+                &mut bench.src,
                 &BENCH_SRC_LANGS,
                 pal,
             );
@@ -32,28 +32,28 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
             lang_combo(
                 ui,
                 "bench_tab_tgt",
-                &mut state.bench_tgt,
+                &mut bench.tgt,
                 &BENCH_TGT_LANGS,
                 pal,
             );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let btn_text = if state.bench_running {
+                let btn_text = if bench.running {
                     lt_i18n::t("testing")
                 } else {
                     lt_i18n::t("btn_test_all")
                 };
                 if ui
                     .add_enabled(
-                        !state.bench_running,
+                        !bench.running,
                         egui::Button::new(RichText::new(btn_text).size(12.5)),
                     )
                     .clicked()
                 {
-                    bench::start_benchmark_public(state);
+                    bench::start_benchmark_public(bench, settings);
                 }
             });
         });
-        if state.settings.models.is_empty() {
+        if settings.models.is_empty() {
             ui.label(
                 RichText::new(lt_i18n::t("bench_no_models_hint"))
                     .size(11.5)
@@ -75,7 +75,7 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
                 .show(ui, |ui| {
                     ui.set_min_height(min_h);
                     // 原版空态为空白输出区
-                    for line in &state.bench_lines {
+                    for line in &bench.lines {
                         let color = if line.contains("FAILED") || line.contains("FAIL ") {
                             Color32::from_rgb(0xf4, 0x47, 0x47)
                         } else if line.contains("OK") || line.contains("✓") {
@@ -86,7 +86,7 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
                         ui.label(RichText::new(line).monospace().size(12.0).color(color));
                     }
                     // 运行中新行到达时贴底（原版 append 自动滚到底）
-                    if state.bench_running {
+                    if bench.running {
                         ui.scroll_to_cursor(Some(egui::Align::BOTTOM));
                     }
                 });

@@ -11,7 +11,7 @@
 //!   （Rust 版窗口即应用，退出语义过重；原版 QApplication.quit() 为已知偏差）。
 
 use super::{group_card, hint_line, mark_settings_dirty, Palette};
-use crate::state::{AppState, CacheEntry};
+use crate::state::{CacheEntry, ModalUi, PanelUi, SessionView, Settings};
 use egui::{RichText, Ui};
 
 // ── 缓存扫描（原版 get_cache_entries + dir_size 的 Rust 化） ──
@@ -97,11 +97,11 @@ pub fn scan_cache_entries(models_dir: &std::path::Path) -> Vec<CacheEntry> {
 // ── UI ──
 
 /// 数据与存储页 UI 总入口
-pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
+pub fn page(ui: &mut Ui, panel: &mut PanelUi, session: &mut SessionView, settings: &mut Settings, modal: &mut ModalUi, pal: &Palette) {
     // ── 转录持久化（原版 ts_group）──
     group_card(ui, pal, &lt_i18n::t("group_transcript"), |ui| {
         ui.horizontal(|ui| {
-            let mut auto_save = state.settings.auto_save_transcript;
+            let mut auto_save = settings.auto_save_transcript;
             if ui
                 .add(egui::Checkbox::new(
                     &mut auto_save,
@@ -110,9 +110,9 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
                 .on_hover_text(lt_i18n::t("auto_save_transcript_tooltip"))
                 .changed()
             {
-                state.settings.auto_save_transcript = auto_save;
+                settings.auto_save_transcript = auto_save;
                 // 300ms 防抖 ApplySettings → shell → pipeline.set_transcript_enabled（W3）
-                mark_settings_dirty(state);
+                mark_settings_dirty(session);
             }
             if ui
                 .add(
@@ -129,10 +129,10 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
     // ── 模型缓存（原版 top_row + cache_list + manage_row）──
     group_card(ui, pal, &lt_i18n::t("group_model_cache"), |ui| {
         // 首次进入页面同步扫描（None=未扫描）
-        if state.panel.cache_entries.is_none() {
-            refresh_cache(state);
+        if panel.state.cache_entries.is_none() {
+            refresh_cache(panel, settings);
         }
-        let entries = state.panel.cache_entries.clone().unwrap_or_default();
+        let entries = panel.state.cache_entries.clone().unwrap_or_default();
         let total: u64 = entries.iter().map(|e| e.size).sum();
 
         // 总量行 + 打开目录 + 删除全部
@@ -154,7 +154,7 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
                 )
                 .clicked()
             {
-                open_models_dir(state);
+                open_models_dir(settings);
             }
             let delete_all = ui
                 .add_enabled(
@@ -164,7 +164,7 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
                 )
                 .clicked();
             if delete_all {
-                delete_all_models(state, &entries);
+                delete_all_models(modal, &entries);
             }
         });
 
@@ -177,7 +177,7 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
                 .push_id(i, |ui| {
                     ui.add(
                         egui::Button::selectable(
-                            state.panel.cache_selected == Some(i),
+                            panel.state.cache_selected == Some(i),
                             RichText::new(&text).monospace().size(12.0),
                         )
                         .corner_radius(4.0)
@@ -186,7 +186,7 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
                 })
                 .inner;
             if resp.clicked() {
-                select = if state.panel.cache_selected == Some(i) {
+                select = if panel.state.cache_selected == Some(i) {
                     None
                 } else {
                     Some(i)
@@ -197,7 +197,7 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
             hint_line(ui, pal, &lt_i18n::t("no_cached_models"));
         }
         if select.is_some() {
-            state.panel.cache_selected = select;
+            panel.state.cache_selected = select;
         }
 
         ui.add_space(4.0);
@@ -205,13 +205,13 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
         ui.horizontal(|ui| {
             let del = ui
                 .add_enabled(
-                    state.panel.cache_selected.is_some(),
+                    panel.state.cache_selected.is_some(),
                     egui::Button::new(RichText::new(lt_i18n::t("btn_delete_selected")).size(12.0))
                         .corner_radius(6.0),
                 )
                 .clicked();
             if del {
-                delete_selected(state);
+                delete_selected(panel, modal);
             }
             if ui
                 .add(
@@ -220,7 +220,7 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
                 )
                 .clicked()
             {
-                refresh_cache(state);
+                refresh_cache(panel, settings);
             }
             hint_line(ui, pal, &lt_i18n::t("cache_select_hint"));
         });
@@ -230,11 +230,11 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
 }
 
 /// 重新扫描缓存（UI 线程同步；扫描前重置选中）
-fn refresh_cache(state: &mut AppState) {
-    state.panel.cache_selected = None;
-    let dir = lt_models::paths::models_dir(state.settings.models_dir.as_deref())
+fn refresh_cache(panel: &mut PanelUi, settings: &Settings) {
+    panel.state.cache_selected = None;
+    let dir = lt_models::paths::models_dir(settings.models_dir.as_deref())
         .unwrap_or_else(|_| std::env::temp_dir());
-    state.panel.cache_entries = Some(scan_cache_entries(&dir));
+    panel.state.cache_entries = Some(scan_cache_entries(&dir));
 }
 
 /// 打开转录目录（原版 _open_transcripts_folder：mkdir 兜底 + open_path）
@@ -246,8 +246,8 @@ fn open_transcripts_dir() {
 }
 
 /// 打开模型目录（原版 _open_models_folder：mkdir 兜底 + open_path）
-fn open_models_dir(state: &AppState) {
-    let dir = lt_models::paths::models_dir(state.settings.models_dir.as_deref())
+fn open_models_dir(settings: &Settings) {
+    let dir = lt_models::paths::models_dir(settings.models_dir.as_deref())
         .unwrap_or_else(|_| std::env::temp_dir());
     let _ = std::fs::create_dir_all(&dir);
     super::open_in_explorer(&dir);
@@ -257,55 +257,68 @@ fn open_models_dir(state: &AppState) {
 /// 删除所选模型（原版 _delete_selected：warning 确认 → rmtree → 刷新）。
 /// D-33/H-5：确认改 egui 模态（rfd 同步框阻塞事件循环线程；确认后执行见
 /// [`apply_delete_selected`]）。
-fn delete_selected(state: &mut AppState) {
-    let entries = state.panel.cache_entries.clone().unwrap_or_default();
-    let Some(i) = state.panel.cache_selected else {
+fn delete_selected(panel: &mut PanelUi, modal: &mut ModalUi) {
+    let entries = panel.state.cache_entries.clone().unwrap_or_default();
+    let Some(i) = panel.state.cache_selected else {
         return;
     };
     let Some(e) = entries.get(i) else { return };
     let msg = lt_i18n::t("delete_selected_confirm_msg")
         .replace("{name}", &e.name)
         .replace("{size}", &super::vad::format_size(e.size));
-    state.request_confirm(
+    modal.request_confirm(
         crate::state::ConfirmKind::DeleteModel { index: i },
         false,
+        true,
         lt_i18n::t("delete_selected_confirm_title"),
         msg,
     );
 }
 
 /// 模态确认后的执行：删除索引条目并刷新缓存（索引对位请求时的 cache_entries）
-pub(crate) fn apply_delete_selected(state: &mut AppState, index: usize) {
-    let entries = state.panel.cache_entries.clone().unwrap_or_default();
+pub(crate) fn apply_delete_selected(
+    panel: &mut PanelUi,
+    session: &mut SessionView,
+    settings: &mut Settings,
+    index: usize,
+) {
+    let entries = panel.state.cache_entries.clone().unwrap_or_default();
     if let Some(e) = entries.get(index) {
         remove_entry(e);
     }
-    refresh_cache(state);
+    refresh_cache(panel, settings);
+    let _ = session;
 }
 
 /// 删除全部缓存（原版 _delete_all_and_exit：warning 确认 → 逐个 rmtree）。
 /// Rust 版不退出应用，改为"重启生效"原生通知（见模块注释偏差说明）。
 /// D-33/H-5：确认与完成提示均改非阻塞载体（egui 模态 + 原生通知）。
-fn delete_all_models(state: &mut AppState, entries: &[CacheEntry]) {
+fn delete_all_models(modal: &mut ModalUi, entries: &[CacheEntry]) {
     let total: u64 = entries.iter().map(|e| e.size).sum();
     let msg = lt_i18n::t("dialog_delete_msg")
         .replace("{count}", &entries.len().to_string())
         .replace("{size}", &super::vad::format_size(total));
-    state.request_confirm(
+    modal.request_confirm(
         crate::state::ConfirmKind::DeleteAll,
         false,
+        true,
         lt_i18n::t("dialog_delete_title"),
         msg,
     );
 }
 
 /// 模态确认后的执行：逐条删除并刷新 + 完成提示走原生通知
-pub(crate) fn apply_delete_all(state: &mut AppState) {
-    let entries = state.panel.cache_entries.clone().unwrap_or_default();
+pub(crate) fn apply_delete_all(
+    panel: &mut PanelUi,
+    session: &mut SessionView,
+    settings: &mut Settings,
+) {
+    let entries = panel.state.cache_entries.clone().unwrap_or_default();
     for e in &entries {
         remove_entry(e);
     }
-    refresh_cache(state);
+    refresh_cache(panel, settings);
+    let _ = session;
     let done = lt_i18n::t("delete_all_done_msg").replace("{count}", &entries.len().to_string());
     if let Err(e) = crate::notifications::show(&lt_i18n::t("dialog_delete_title"), &done) {
         tracing::warn!("删除完成提示（原生通知）失败: {e}");

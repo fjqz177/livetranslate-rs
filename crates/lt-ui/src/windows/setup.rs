@@ -7,7 +7,7 @@
 //! 定时不在这里做：倒计时与 500ms 收尾延迟由宿主 about_to_wait 的 Setup 节拍驱动，
 //! 本模块只提供 [`needs_setup_tick`] 供宿主判断是否需要节拍。
 
-use crate::state::{AppState, StartupFlow, WizardPhase};
+use crate::state::{ModalUi, SessionView, StartupFlow, StartupUi, WizardPhase};
 use egui::{Color32, RichText, Ui};
 
 /// 日志区底色（原版 QTextEdit 样式 background: #1e1e2e）
@@ -18,18 +18,23 @@ const LOG_FG: Color32 = Color32::from_rgb(0xcd, 0xd6, 0xf4);
 const ERROR_RED: Color32 = Color32::from_rgb(0xf3, 0x8b, 0xa8);
 
 /// Setup 窗 UI 总入口（windows::dispatch 按 WinId::Setup 分派到这里）
-pub fn setup_ui(ui: &mut Ui, state: &mut AppState) {
+pub fn setup_ui(
+    ui: &mut Ui,
+    startup: &mut StartupUi,
+    session: &mut SessionView,
+    modal: &mut ModalUi,
+) {
     // 模型加载对话框优先（与启动流互斥，加载框显示期间覆盖向导/下载内容）
-    if state.load_dialog.is_some() {
-        load_dialog_ui(ui, state);
+    if startup.load_dialog.is_some() {
+        load_dialog_ui(ui, startup);
         return;
     }
-    let is_wizard = matches!(state.startup, StartupFlow::Wizard(_));
-    let is_missing = matches!(state.startup, StartupFlow::DownloadMissing { .. });
+    let is_wizard = matches!(startup.flow, StartupFlow::Wizard(_));
+    let is_missing = matches!(startup.flow, StartupFlow::DownloadMissing { .. });
     if is_wizard {
-        wizard_ui(ui, state);
+        wizard_ui(ui, startup, session);
     } else if is_missing {
-        download_missing_ui(ui, state);
+        download_missing_ui(ui, startup, session, modal);
     } else {
         // 无启动流且无加载框：窗口此时不应可见，兜底空显示
     }
@@ -37,8 +42,9 @@ pub fn setup_ui(ui: &mut Ui, state: &mut AppState) {
 
 /// Setup 窗是否需要节拍驱动：向导倒计时（Idle）/ 向导成功后的 500ms 收尾（Done）/
 /// 缺模型下载成功后的 500ms 收尾（finished）。失败与下载中由事件驱动，无需节拍。
-pub fn needs_setup_tick(state: &AppState) -> bool {
-    match &state.startup {
+pub fn needs_setup_tick(flow: &StartupFlow, load_dialog: &Option<String>) -> bool {
+    let _ = load_dialog; // 加载框在调度期由事件驱动，无需节拍
+    match flow {
         StartupFlow::Wizard(w) => matches!(w.phase, WizardPhase::Idle | WizardPhase::Done),
         StartupFlow::DownloadMissing { finished, .. } => *finished,
         StartupFlow::Ready => false,
@@ -46,12 +52,12 @@ pub fn needs_setup_tick(state: &AppState) -> bool {
 }
 
 /// 首启向导（对照 SetupWizardDialog）：分组 + ComboBox + URL 输入 + 倒计时按钮 + 日志区
-fn wizard_ui(ui: &mut Ui, state: &mut AppState) {
+fn wizard_ui(ui: &mut Ui, startup: &mut StartupUi, session: &mut SessionView) {
     ui.heading(lt_i18n::t("window_setup"));
     ui.add_space(4.0);
 
     let start_clicked = {
-        let StartupFlow::Wizard(w) = &mut state.startup else {
+        let StartupFlow::Wizard(w) = &mut startup.flow else {
             return;
         };
         let busy = matches!(w.phase, WizardPhase::Downloading);
@@ -149,18 +155,23 @@ fn wizard_ui(ui: &mut Ui, state: &mut AppState) {
     };
     if start_clicked {
         // 与倒计时归零共用同一条路径：切 Downloading + 发 StartDownload
-        state.wizard_auto_start();
+        crate::state::wizard_auto_start(&mut startup.flow, session);
     }
 }
 
 /// 缺模型下载对话框（对照 ModelDownloadDialog）：说明行 + 日志区；
 /// 无失败时没有任何按钮（原版：不能取消），失败后才出现"关闭"。
-fn download_missing_ui(ui: &mut Ui, state: &mut AppState) {
+fn download_missing_ui(
+    ui: &mut Ui,
+    startup: &mut StartupUi,
+    session: &mut SessionView,
+    modal: &mut ModalUi,
+) {
     let mut close_clicked = false;
     {
         let StartupFlow::DownloadMissing {
             names, log, failed, ..
-        } = &mut state.startup
+        } = &mut startup.flow
         else {
             return;
         };
@@ -184,16 +195,16 @@ fn download_missing_ui(ui: &mut Ui, state: &mut AppState) {
         // 成功路径无按钮：DownloadSucceeded 置 finished 后由 500ms 节拍自动关窗
     }
     if close_clicked {
-        state.send_cmd(lt_proto::Cmd::Stop);
-        state.quit_requested = true;
+        session.send_cmd(lt_proto::Cmd::Stop);
+        modal.quit_requested = true;
     }
 }
 
 /// 模型加载对话框（对照 _ModelLoadDialog，简化版）。
 /// 已知偏差：原版加载框内嵌 INFO 日志流（_LogCapture 捕获 tracing 输出），
 /// 本版日志窗 M4 才有，这里日志区暂为占位不接日志流，先显示消息本体（M4 接线）。
-fn load_dialog_ui(ui: &mut Ui, state: &mut AppState) {
-    let Some(label) = state.load_dialog.clone() else {
+fn load_dialog_ui(ui: &mut Ui, startup: &mut StartupUi) {
+    let Some(label) = startup.load_dialog.clone() else {
         return;
     };
     ui.add_space(4.0);

@@ -13,8 +13,8 @@
 //! - 删除模型时若被删行在活动模型之前，active_model 前移一位
 //!   （原版仅做越界钳制，行前移会错位指向别的模型——有意修正）。
 
-use super::{group_card, hint_line, mark_settings_dirty, Palette};
-use crate::state::{AppState, ModelEditState, TestTranslatorState, THINKING_STYLE_VALUES};
+use super::{group_card, hint_line, mark_settings_dirty, Palette, schedule_prompt_apply};
+use crate::state::{ModalUi, ModelEditState, PanelUi, SessionView, Settings, TestTranslatorState, THINKING_STYLE_VALUES};
 use egui::{RichText, Ui};
 use lt_proto::ModelConfig;
 
@@ -116,26 +116,30 @@ pub fn duplicate_model(models: &mut Vec<ModelConfig>, row: usize) -> Option<usiz
 /// 翻译页恢复默认：models 回默认单行（LM Studio 本地端点）、清 prompt、
 /// timeout 回 10s；恢复后重发 SwitchTranslator（N3 生效管道）。
 /// 破坏性（抹掉 API Key）——调用前必须已过确认框。
-pub(crate) fn restore_translation_page(state: &mut AppState) {
+pub(crate) fn restore_translation_page(
+    panel: &mut PanelUi,
+    session: &mut SessionView,
+    settings: &mut Settings,
+) {
     let def = lt_proto::Settings::default();
-    state.settings.models = def.models.clone();
-    state.settings.active_model = 0;
-    state.settings.system_prompt = def.system_prompt.clone();
-    state.settings.timeout = def.timeout;
-    state.panel.model_selected = None;
-    state.panel.model_editor = None;
-    if let Some(cfg) = super::active_model_config(&state.settings) {
-        state.send_cmd(lt_proto::Cmd::SwitchTranslator(Box::new(cfg)));
+    settings.models = def.models.clone();
+    settings.active_model = 0;
+    settings.system_prompt = def.system_prompt.clone();
+    settings.timeout = def.timeout;
+    panel.state.model_selected = None;
+    panel.state.model_editor = None;
+    if let Some(cfg) = super::active_model_config(settings) {
+        session.send_cmd(lt_proto::Cmd::SwitchTranslator(Box::new(cfg)));
     }
-    mark_settings_dirty(state);
+    mark_settings_dirty(session);
 }
 
 // ── UI ──
 
 /// 翻译页 UI 总入口
-pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
+pub fn page(ui: &mut Ui, panel: &mut PanelUi, session: &mut SessionView, settings: &mut Settings, modal: &mut ModalUi, pal: &Palette) {
     // N3/N4：翻译页偏离默认提示 + 恢复本页（恢复会清掉 API 配置 → 确认框）
-    let diffs = crate::panel_diff::diff_paths(&state.settings);
+    let diffs = crate::panel_diff::diff_paths(settings);
     let page_diffs: Vec<&str> = diffs
         .iter()
         .filter(|p| {
@@ -148,9 +152,10 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
     if !page_diffs.is_empty() {
         super::reset_toolbar(ui, pal, page_diffs.len(), &page_diffs.join("、"), |_| {
             // D-33/H-5：确认改 egui 模态（原位 rfd 同步框阻塞事件循环线程）
-            state.request_confirm(
+            modal.request_confirm(
                 crate::state::ConfirmKind::ResetTranslation,
                 false,
+                session.visible.get(&crate::state::WinId::Panel).copied().unwrap_or(true),
                 lt_i18n::t("reset_confirm_title"),
                 lt_i18n::t("reset_confirm_translation"),
             );
@@ -161,7 +166,7 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
     group_card(ui, pal, &lt_i18n::t("group_model_configs"), |ui| {
         // 翻译装置不可用（配置无效）：状态行红字 + 指引（P0-2 修复——
         // 不再是静默关闭整条翻译）
-        if let Some(reason) = &state.translator_error {
+        if let Some(reason) = &panel.translator_error {
             ui.label(
                 RichText::new(format!(
                     "{} {reason}",
@@ -172,12 +177,12 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
             );
             ui.add_space(2.0);
         }
-        let active = state.settings.active_model;
-        let count = state.settings.models.len();
+        let active = settings.active_model;
+        let count = settings.models.len();
         let mut select: Option<usize> = None;
         let mut edit_row: Option<usize> = None;
         for i in 0..count {
-            let text = model_row_text(i, active, &state.settings.models[i]);
+            let text = model_row_text(i, active, &settings.models[i]);
             let mut rich = RichText::new(&text).monospace().size(12.0);
             if i == active {
                 rich = rich.strong();
@@ -185,7 +190,7 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
             let resp = ui
                 .push_id(i, |ui| {
                     ui.add(
-                        egui::Button::selectable(state.panel.model_selected == Some(i), rich)
+                        egui::Button::selectable(panel.state.model_selected == Some(i), rich)
                             .corner_radius(4.0)
                             .min_size(egui::vec2(ui.available_width(), 0.0)),
                     )
@@ -202,13 +207,13 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
 
         // 行选中 → active_model 跟随并即时切换翻译器（原版"当前模型"语义）
         if let Some(i) = select {
-            state.panel.model_selected = Some(i);
-            if i != state.settings.active_model && i < state.settings.models.len() {
-                state.settings.active_model = i;
-                if let Some(cfg) = super::active_model_config(&state.settings) {
-                    state.send_cmd(lt_proto::Cmd::SwitchTranslator(Box::new(cfg)));
+            panel.state.model_selected = Some(i);
+            if i != settings.active_model && i < settings.models.len() {
+                settings.active_model = i;
+                if let Some(cfg) = super::active_model_config(settings) {
+                    session.send_cmd(lt_proto::Cmd::SwitchTranslator(Box::new(cfg)));
                 }
-                mark_settings_dirty(state);
+                mark_settings_dirty(session);
             }
         }
 
@@ -222,9 +227,9 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
                 )
                 .clicked()
             {
-                state.panel.model_editor = Some(ModelEditState::new_add());
+                panel.state.model_editor = Some(ModelEditState::new_add());
             }
-            let edit_target = edit_row.or(state.panel.model_selected);
+            let edit_target = edit_row.or(panel.state.model_selected);
             if ui
                 .add_enabled(
                     edit_target.is_some(),
@@ -234,28 +239,28 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
                 .clicked()
             {
                 if let Some(i) = edit_target {
-                    if i < state.settings.models.len() {
-                        let cfg = state.settings.models[i].clone();
-                        state.panel.model_editor = Some(ModelEditState::new_edit(i, &cfg));
+                    if i < settings.models.len() {
+                        let cfg = settings.models[i].clone();
+                        panel.state.model_editor = Some(ModelEditState::new_edit(i, &cfg));
                     }
                 }
             }
             if ui
                 .add_enabled(
-                    state.panel.model_selected.is_some(),
+                    panel.state.model_selected.is_some(),
                     egui::Button::new(RichText::new(lt_i18n::t("btn_duplicate")).size(12.5))
                         .corner_radius(6.0),
                 )
                 .clicked()
             {
-                if let Some(i) = state.panel.model_selected {
-                    if duplicate_model(&mut state.settings.models, i).is_some() {
-                        mark_settings_dirty(state);
+                if let Some(i) = panel.state.model_selected {
+                    if duplicate_model(&mut settings.models, i).is_some() {
+                        mark_settings_dirty(session);
                     }
                 }
             }
             let can_remove =
-                state.settings.models.len() > 1 && state.panel.model_selected.is_some();
+                settings.models.len() > 1 && panel.state.model_selected.is_some();
             if ui
                 .add_enabled(
                     can_remove,
@@ -264,26 +269,26 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
                 )
                 .clicked()
             {
-                if let Some(i) = state.panel.model_selected {
-                    let mut active = state.settings.active_model;
-                    if remove_model(&mut state.settings.models, &mut active, i) {
-                        state.settings.active_model = active;
-                        state.panel.model_selected = None;
+                if let Some(i) = panel.state.model_selected {
+                    let mut active = settings.active_model;
+                    if remove_model(&mut settings.models, &mut active, i) {
+                        settings.active_model = active;
+                        panel.state.model_selected = None;
                         // active 可能变化 → 重建翻译器（原版 _emit_models_list_changed 面）
-                        if let Some(cfg) = super::active_model_config(&state.settings) {
-                            state.send_cmd(lt_proto::Cmd::SwitchTranslator(Box::new(cfg)));
+                        if let Some(cfg) = super::active_model_config(settings) {
+                            session.send_cmd(lt_proto::Cmd::SwitchTranslator(Box::new(cfg)));
                         }
-                        mark_settings_dirty(state);
+                        mark_settings_dirty(session);
                     }
                 }
             }
             // 「测试连接」（Rust 版新增）：对选中行（无选中取活跃模型）发一次
             // 最简请求并回执结果——LLM API 接入的及时验证闭环
-            let test_target = edit_row.or(state.panel.model_selected);
+            let test_target = edit_row.or(panel.state.model_selected);
             let test_cfg = test_target
-                .and_then(|i| state.settings.models.get(i).cloned())
-                .or_else(|| super::active_model_config(&state.settings));
-            let testing = matches!(state.test_translator, TestTranslatorState::Running);
+                .and_then(|i| settings.models.get(i).cloned())
+                .or_else(|| super::active_model_config(settings));
+            let testing = matches!(panel.test_translator, TestTranslatorState::Running);
             if ui
                 .add_enabled(
                     test_cfg.is_some() && !testing,
@@ -299,14 +304,14 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
                 .clicked()
             {
                 if let Some(cfg) = test_cfg {
-                    state.test_translator = TestTranslatorState::Running;
-                    state.send_cmd(lt_proto::Cmd::TestTranslator(Box::new(cfg)));
+                    panel.test_translator = TestTranslatorState::Running;
+                    session.send_cmd(lt_proto::Cmd::TestTranslator(Box::new(cfg)));
                 }
             }
         });
 
         // 测试结果行（Success 绿 / 失败红 + 耗时；hover 展开错误全文）
-        if let TestTranslatorState::Done { ok, error, ms } = &state.test_translator {
+        if let TestTranslatorState::Done { ok, error, ms } = &panel.test_translator {
             ui.add_space(2.0);
             if *ok {
                 ui.label(
@@ -333,7 +338,7 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
     // ── 系统提示词（原版 prompt_group）──
     group_card(ui, pal, &lt_i18n::t("group_system_prompt"), |ui| {
         // 预设下拉（原版 _prompt_preset：4 预设精确匹配；DEFAULT_PROMPT → daily）
-        let cur = prompt_preset_index(&state.settings.system_prompt);
+        let cur = prompt_preset_index(&settings.system_prompt);
         let mut next = cur;
         ui.horizontal(|ui| {
             ui.label(
@@ -352,22 +357,22 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
         });
         if next != cur && next < 4 {
             // 原版 _on_prompt_preset_changed：写入预设文本并立即应用
-            state.settings.system_prompt = lt_translate::PROMPT_PRESETS[next].1.to_string();
-            state.schedule_prompt_apply();
-            mark_settings_dirty(state);
+            settings.system_prompt = lt_translate::PROMPT_PRESETS[next].1.to_string();
+            schedule_prompt_apply(panel, session, std::time::Instant::now());
+            mark_settings_dirty(session);
         }
         ui.add_space(2.0);
         // 多行编辑（Consolas 等宽；变更 → 600ms 防抖 SwitchTranslator + 300ms 落盘）
         let resp = ui.add(
-            egui::TextEdit::multiline(&mut state.settings.system_prompt)
+            egui::TextEdit::multiline(&mut settings.system_prompt)
                 .hint_text(lt_translate::DEFAULT_PROMPT)
                 .desired_width(f32::INFINITY)
                 .min_size(egui::vec2(0.0, 88.0))
                 .font(egui::TextStyle::Monospace),
         );
         if resp.changed() {
-            state.schedule_prompt_apply();
-            mark_settings_dirty(state);
+            schedule_prompt_apply(panel, session, std::time::Instant::now());
+            mark_settings_dirty(session);
         }
     });
 
@@ -375,7 +380,7 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
     group_card(ui, pal, &lt_i18n::t("group_network"), |ui| {
         ui.horizontal(|ui| {
             ui.label(RichText::new(format!("{} ", lt_i18n::t("label_timeout"))).color(pal.text));
-            let mut v = state.settings.timeout.clamp(1, 60) as f32;
+            let mut v = settings.timeout.clamp(1, 60) as f32;
             let resp = ui.add(
                 egui::DragValue::new(&mut v)
                     .range(1.0..=60.0)
@@ -383,8 +388,8 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
                     .suffix(" s"),
             );
             if resp.changed() {
-                state.settings.timeout = v.round() as u32;
-                mark_settings_dirty(state);
+                settings.timeout = v.round() as u32;
+                mark_settings_dirty(session);
             }
         });
         hint_line(ui, pal, &lt_i18n::t("context_turns_hint"));
@@ -393,12 +398,18 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
     ui.add_space(8.0);
 
     // ── ModelEditDialog（egui::Window 居中模态区，对照 dialogs.py）──
-    render_model_editor(ui, state, pal);
+    render_model_editor(ui, panel, session, settings, pal);
 }
 
 /// ModelEditDialog 模态区（打开中每帧渲染；确定/取消/关闭由 outcome 收敛）
-fn render_model_editor(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
-    if state.panel.model_editor.is_none() {
+fn render_model_editor(
+    ui: &mut Ui,
+    panel: &mut PanelUi,
+    session: &mut SessionView,
+    settings: &mut Settings,
+    pal: &Palette,
+) {
+    if panel.state.model_editor.is_none() {
         return;
     }
     let mut open = true;
@@ -406,8 +417,7 @@ fn render_model_editor(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
     // Some(cfg) = 确定；None + 窗关闭/取消 = 放弃编辑
     let mut accepted: Option<ModelConfig> = None;
     {
-        let panel = &mut state.panel;
-        let Some(ed) = panel.model_editor.as_mut() else {
+        let Some(ed) = panel.state.model_editor.as_mut() else {
             return;
         };
         let title = if ed.is_new {
@@ -460,32 +470,39 @@ fn render_model_editor(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
             });
     }
     if let Some(cfg) = accepted {
-        let ed = state.panel.model_editor.take().expect("编辑器打开中");
-        apply_editor_result(state, cfg, ed.index, ed.is_new);
+        let ed = panel.state.model_editor.take().expect("编辑器打开中");
+        apply_editor_result(panel, session, settings, cfg, ed.index, ed.is_new);
     } else if !open || cancel {
-        state.panel.model_editor = None;
+        panel.state.model_editor = None;
     }
 }
 
 /// 对话框确定后的写回（原版 _add_model/_edit_model：name+model 非空才收；
 /// 编辑活动模型 → 即时 SwitchTranslator；统一防抖落盘）
-fn apply_editor_result(state: &mut AppState, cfg: ModelConfig, index: usize, is_new: bool) {
+fn apply_editor_result(
+    panel: &mut PanelUi,
+    session: &mut SessionView,
+    settings: &mut Settings,
+    cfg: ModelConfig,
+    index: usize,
+    is_new: bool,
+) {
     if cfg.name.is_empty() || cfg.model.is_empty() {
         return; // 原版 get_data 后的 if data["name"] and data["model"] 守卫
     }
     if is_new {
-        state.settings.models.push(cfg);
-        state.panel.model_selected = Some(state.settings.models.len() - 1);
+        settings.models.push(cfg);
+        panel.state.model_selected = Some(settings.models.len() - 1);
     } else {
-        let idx = index.min(state.settings.models.len() - 1);
-        let was_active = idx == state.settings.active_model;
-        state.settings.models[idx] = cfg.clone();
-        state.panel.model_selected = Some(idx);
+        let idx = index.min(settings.models.len() - 1);
+        let was_active = idx == settings.active_model;
+        settings.models[idx] = cfg.clone();
+        panel.state.model_selected = Some(idx);
         if was_active {
-            state.send_cmd(lt_proto::Cmd::SwitchTranslator(Box::new(cfg)));
+            session.send_cmd(lt_proto::Cmd::SwitchTranslator(Box::new(cfg)));
         }
     }
-    mark_settings_dirty(state);
+    mark_settings_dirty(session);
 }
 
 /// 对话框字段全集（Basic + Advanced，原版 QFormLayout 逐行）
@@ -932,19 +949,19 @@ mod tests {
     #[test]
     fn model_editor_modal_smoke_renders_headless() {
         let ctx = egui::Context::default();
-        let mut st = AppState::new(lt_proto::Settings::default());
-        st.panel.page = crate::state::PanelPage::Translation;
+        let mut st = crate::state::AppUi::new(lt_proto::Settings::default());
+        st.panel.state.page = crate::state::PanelPage::Translation;
         let mut ed = ModelEditState::new_edit(0, &st.settings.models[0]);
         ed.extra_body_text = "{\"a\": 1}".into();
-        st.panel.model_editor = Some(ed);
+        st.panel.state.model_editor = Some(ed);
         for _ in 0..2 {
             let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
-                crate::windows::panel::panel_ui(ui, &mut st)
+                crate::windows::dispatch(crate::state::WinId::Panel, ui, &mut st)
             });
             assert!(!out.shapes.is_empty(), "编辑器打开态应产出图元");
             out.textures_delta.clear();
         }
         // 确定按钮不在帧内点击；编辑器保持打开（状态未被意外消费）
-        assert!(st.panel.model_editor.is_some());
+        assert!(st.panel.state.model_editor.is_some());
     }
 }

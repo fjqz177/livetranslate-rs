@@ -13,7 +13,10 @@
 //! （winit+wgpu 无安全窗口级透明度 API，视觉等价）；按钮/下拉视觉按 egui 控件
 //! 近似还原 Qt 配色，非逐像素。
 
-use crate::state::{AppState, ConfirmKind, OverlayMessage, OverlayMode, WinAction, WinId};
+use crate::state::{
+    ConfirmKind, ModalUi, OverlayMessage, OverlayMode, OverlayUi, SessionView, Settings, UiContext,
+    WinAction, WinId,
+};
 use crate::style::{self, parse_color};
 use egui::{
     Align2, Button, Color32, ComboBox, CornerRadius, FontId, RichText, ScrollArea, Sense, Stroke,
@@ -60,22 +63,29 @@ const BAR_STROKE: Color32 = Color32::from_rgba_premultiplied(30, 30, 30, 30);
 
 // ── 入口 ──
 
-pub fn overlay_ui(ui: &mut Ui, state: &mut AppState) {
-    let st = &state.settings.style;
+pub fn overlay_ui(
+    ui: &mut Ui,
+    overlay: &mut OverlayUi,
+    session: &mut SessionView,
+    settings: &mut Settings,
+    modal: &mut ModalUi,
+    ctx: &mut UiContext,
+) {
+    let st = &settings.style;
     let opa_pct = st.window_opacity;
-    let compact = state.overlay.mode == OverlayMode::Compact;
+    let compact = overlay.state.mode == OverlayMode::Compact;
     // 背景画成不透明色：整窗 alpha 由宿主 LWA_ALPHA（bg_opacity × window_opacity
     // 的单层等价）承担——半透明填充在键控品红清除区上会混出色偏，必须不透明
     let bg = parse_color(&st.bg_color, Color32::from_rgb(15, 15, 25));
     let radius = st.border_radius as f32;
 
     // 动画驱动：进行中则每帧请求窗口高度调整 + 重绘
-    if let Some(h) = state
-        .overlay
+    if let Some(h) = overlay
+        .state
         .anim
         .and_then(|a| a.current(std::time::Instant::now()))
     {
-        state.enqueue_action(WinId::Overlay, WinAction::SetHeight(h));
+        session.enqueue_action(WinId::Overlay, WinAction::SetHeight(h));
         ui.ctx().request_repaint();
     }
 
@@ -102,20 +112,18 @@ pub fn overlay_ui(ui: &mut Ui, state: &mut AppState) {
             vis.widgets.active.bg_stroke = Stroke::new(1.0, BTN_STROKE);
             vis.widgets.active.corner_radius = vis.widgets.inactive.corner_radius;
 
-            drag_handle(ui, state, compact, opa_pct);
+            drag_handle(ui, overlay, session, settings, modal, compact, opa_pct);
             if !compact {
-                monitor_bar(ui, state, opa_pct);
+                monitor_bar(ui, overlay, settings, opa_pct);
             }
-            messages_area(ui, state, compact, opa_pct);
-            resize_grip(ui, state);
+            messages_area(ui, overlay, settings, ctx, compact, opa_pct);
+            resize_grip(ui, session);
         });
-    // 确认模态（D-33/H-3：悬浮窗宿主；在 Frame 外渲染避免吃布局/背景）
-    crate::windows::confirm::render_confirm_if_host(ui, state, WinId::Overlay);
 }
 
 // ── DragHandle（原版 DragHandle） ──
 
-fn drag_handle(ui: &mut Ui, state: &mut AppState, compact: bool, opa_pct: u32) {
+fn drag_handle(ui: &mut Ui, overlay: &mut OverlayUi, session: &mut SessionView, settings: &mut Settings, modal: &mut ModalUi, compact: bool, opa_pct: u32) {
     // 原版 DragHandle 是 QWidget 子类且未设 WA_StyledBackground/paintEvent，
     // 其 QSS 背景（含 apply_style 的 header_color）从未被渲染——头部区域即
     // 容器黑玻璃贯穿。header_color/header_opacity 字段与样式页控件 1:1 保留，
@@ -123,17 +131,17 @@ fn drag_handle(ui: &mut Ui, state: &mut AppState, compact: bool, opa_pct: u32) {
     egui::Frame::NONE
         .inner_margin(egui::Margin::symmetric(8, 2))
         .show(ui, |ui| {
-            row1(ui, state, compact, opa_pct);
+            row1(ui, overlay, session, settings, modal, compact, opa_pct);
             if !compact {
-                row2_checks(ui, state);
-                row2_combos(ui, state);
+                row2_checks(ui, overlay, session);
+                row2_combos(ui, session, settings);
             }
         });
 }
 
 /// 行1：拖动标题 + 操作按钮（高度 24；按钮顺序=原版 row1：
 /// 隐藏/字幕/启停/清除/完整/设置/退出）
-fn row1(ui: &mut Ui, state: &mut AppState, compact: bool, opa_pct: u32) {
+fn row1(ui: &mut Ui, overlay: &mut OverlayUi, session: &mut SessionView, settings: &mut Settings, modal: &mut ModalUi, compact: bool, opa_pct: u32) {
     ui.horizontal(|ui| {
         ui.set_min_height(22.0);
         // 拖动区：标题文本 + 空白拉伸
@@ -152,7 +160,7 @@ fn row1(ui: &mut Ui, state: &mut AppState, compact: bool, opa_pct: u32) {
             .interact(drag_rect, ui.id().with("ov_drag"), Sense::click_and_drag())
             .drag_started()
         {
-            state.enqueue_action(WinId::Overlay, WinAction::Drag);
+            session.enqueue_action(WinId::Overlay, WinAction::Drag);
         }
 
         // 隐藏（原版 hide_btn：隐藏悬浮窗，托盘"显示悬浮窗"可恢复 + 首次气泡提示）
@@ -166,12 +174,12 @@ fn row1(ui: &mut Ui, state: &mut AppState, compact: bool, opa_pct: u32) {
             ))
             .clicked()
         {
-            state.enqueue_action(WinId::Overlay, WinAction::Hide);
+            session.enqueue_action(WinId::Overlay, WinAction::Hide);
         }
 
         // 字幕按钮（紧凑模式隐藏；开启时绿底，原版 set_subtitle_checked）
         if !compact {
-            let on = state.settings.subtitle_mode.enabled;
+            let on = settings.subtitle_mode.enabled;
             // WP-1：手势提示悬停文案（首次开启另有 toast，见 app.rs ToggleSubtitle）
             let sub = ui
                 .add(small_btn(
@@ -184,14 +192,14 @@ fn row1(ui: &mut Ui, state: &mut AppState, compact: bool, opa_pct: u32) {
                 .on_hover_text(lt_i18n::t("subwin_btn_hint"));
             if sub.clicked() {
                 // 原版 subtitle_toggled → 切换字幕窗可见性
-                let vis = !state.settings.subtitle_mode.enabled;
-                state.settings.subtitle_mode.enabled = vis;
-                state.enqueue_action(WinId::Overlay, WinAction::ToggleSubtitle);
+                let vis = !settings.subtitle_mode.enabled;
+                settings.subtitle_mode.enabled = vis;
+                session.enqueue_action(WinId::Overlay, WinAction::ToggleSubtitle);
             }
         }
 
         // 启停按钮（运行=普通样式 t("running")；暂停=琥珀色 t("paused")）
-        let running = state.running;
+        let running = session.running;
         let (label, fill, stroke, text) = if running {
             (lt_i18n::t("running"), BTN_FILL, BTN_STROKE, BTN_TEXT)
         } else {
@@ -204,8 +212,8 @@ fn row1(ui: &mut Ui, state: &mut AppState, compact: bool, opa_pct: u32) {
             } else {
                 lt_proto::Cmd::Resume
             };
-            state.send_cmd(cmd);
-            state.running = !running;
+            session.send_cmd(cmd);
+            session.running = !running;
         }
 
         // 清空（紧凑模式隐藏；转写自动落盘时免确认，否则确认一次防误触）。
@@ -221,12 +229,13 @@ fn row1(ui: &mut Ui, state: &mut AppState, compact: bool, opa_pct: u32) {
                 ))
                 .clicked()
         {
-            if state.settings.auto_save_transcript {
-                state.messages.clear();
+            if settings.auto_save_transcript {
+                overlay.messages.clear();
             } else {
-                state.request_confirm(
+                modal.request_confirm(
                     ConfirmKind::Clear,
                     true,
+                    session.visible.get(&WinId::Panel).copied().unwrap_or(true),
                     lt_i18n::t("clear_confirm_title"),
                     lt_i18n::t("clear_confirm_msg"),
                 );
@@ -245,7 +254,7 @@ fn row1(ui: &mut Ui, state: &mut AppState, compact: bool, opa_pct: u32) {
             ))
             .clicked()
         {
-            toggle_mode(state, compact);
+            toggle_mode(overlay, session, compact);
         }
 
         if ui
@@ -258,7 +267,7 @@ fn row1(ui: &mut Ui, state: &mut AppState, compact: bool, opa_pct: u32) {
             ))
             .clicked()
         {
-            state.enqueue_action(WinId::Overlay, WinAction::ShowPanel);
+            session.enqueue_action(WinId::Overlay, WinAction::ShowPanel);
         }
 
         // 退出（红底；与托盘同一确认语义——P1-1，不再秒退）。
@@ -274,23 +283,24 @@ fn row1(ui: &mut Ui, state: &mut AppState, compact: bool, opa_pct: u32) {
             .clicked()
         {
             let overlay_ok = !compact && ui.ctx().content_rect().height() >= 280.0;
-            let opened = state.request_confirm(
+            let opened = modal.request_confirm(
                 ConfirmKind::Quit,
                 overlay_ok,
+                session.visible.get(&WinId::Panel).copied().unwrap_or(true),
                 lt_i18n::t("quit_confirm_title"),
                 lt_i18n::t("quit_confirm_msg"),
             );
             if opened && !overlay_ok {
-                state.enqueue_action(WinId::Panel, WinAction::ShowPanel);
+                session.enqueue_action(WinId::Panel, WinAction::ShowPanel);
             }
         }
     });
 }
 
 /// 行2a：穿透/置顶/自动滚动/任务栏 复选
-fn row2_checks(ui: &mut Ui, state: &mut AppState) {
+fn row2_checks(ui: &mut Ui, overlay: &mut OverlayUi, session: &mut SessionView) {
     ui.horizontal(|ui| {
-        let mut ct = state.ov_click_through;
+        let mut ct = overlay.ov_click_through;
         if ui
             .add(egui::Checkbox::new(
                 &mut ct,
@@ -298,12 +308,12 @@ fn row2_checks(ui: &mut Ui, state: &mut AppState) {
             ))
             .changed()
         {
-            state.ov_click_through = ct;
+            overlay.ov_click_through = ct;
             if ct {
-                state.schedule_click_through_tick();
+                overlay.schedule_click_through_tick(session);
             }
         }
-        let mut tm = state.ov_topmost;
+        let mut tm = overlay.ov_topmost;
         if ui
             .add(egui::Checkbox::new(
                 &mut tm,
@@ -311,10 +321,10 @@ fn row2_checks(ui: &mut Ui, state: &mut AppState) {
             ))
             .changed()
         {
-            state.ov_topmost = tm;
-            state.enqueue_action(WinId::Overlay, WinAction::ApplyOverlayFlags);
+            overlay.ov_topmost = tm;
+            session.enqueue_action(WinId::Overlay, WinAction::ApplyOverlayFlags);
         }
-        let mut asr = state.ov_auto_scroll;
+        let mut asr = overlay.ov_auto_scroll;
         if ui
             .add(egui::Checkbox::new(
                 &mut asr,
@@ -322,9 +332,9 @@ fn row2_checks(ui: &mut Ui, state: &mut AppState) {
             ))
             .changed()
         {
-            state.ov_auto_scroll = asr;
+            overlay.ov_auto_scroll = asr;
         }
-        let mut tb = state.ov_taskbar;
+        let mut tb = overlay.ov_taskbar;
         if ui
             .add(egui::Checkbox::new(
                 &mut tb,
@@ -332,14 +342,14 @@ fn row2_checks(ui: &mut Ui, state: &mut AppState) {
             ))
             .changed()
         {
-            state.ov_taskbar = tb;
-            state.enqueue_action(WinId::Overlay, WinAction::ApplyOverlayFlags);
+            overlay.ov_taskbar = tb;
+            session.enqueue_action(WinId::Overlay, WinAction::ApplyOverlayFlags);
         }
     });
 }
 
 /// 行2b：模型 / 源语言 / 目标语言 下拉（拉伸宽度 3:2:2）
-fn row2_combos(ui: &mut Ui, state: &mut AppState) {
+fn row2_combos(ui: &mut Ui, session: &mut SessionView, settings: &mut Settings) {
     ui.horizontal(|ui| {
         let lbl = |ui: &mut Ui, s: String| {
             ui.label(
@@ -355,36 +365,34 @@ fn row2_combos(ui: &mut Ui, state: &mut AppState) {
         let w_tgt = total * 0.24;
 
         lbl(ui, lt_i18n::t("model_label"));
-        let active = state
-            .settings
+        let active = settings
             .active_model
-            .min(state.settings.models.len().saturating_sub(1));
+            .min(settings.models.len().saturating_sub(1));
         ComboBox::from_id_salt("ov_model")
             .width(w_model - 60.0)
             .selected_text(
-                state
-                    .settings
+                settings
                     .models
                     .get(active)
                     .map(|m| m.name.clone())
                     .unwrap_or_else(|| "?".into()),
             )
             .show_ui(ui, |ui| {
-                for (i, m) in state.settings.models.iter().enumerate() {
-                    ui.selectable_value(&mut state.settings.active_model, i, m.name.clone());
+                for (i, m) in settings.models.iter().enumerate() {
+                    ui.selectable_value(&mut settings.active_model, i, m.name.clone());
                 }
             });
 
         lbl(ui, lt_i18n::t("source_label"));
         ComboBox::from_id_salt("ov_src_lang")
             .width(w_src - 50.0)
-            .selected_text(lang_label(true, &state.settings.asr_language))
+            .selected_text(lang_label(true, &settings.asr_language))
             .show_ui(ui, |ui| {
                 for (code, _native) in lt_i18n::LANGUAGES {
-                    let v = state.settings.asr_language == *code;
+                    let v = settings.asr_language == *code;
                     if ui.selectable_label(v, lang_label(true, code)).clicked() {
-                        state.settings.asr_language = code.to_string();
-                        state.send_cmd(lt_proto::Cmd::SetAsrLanguage(code.to_string()));
+                        settings.asr_language = code.to_string();
+                        session.send_cmd(lt_proto::Cmd::SetAsrLanguage(code.to_string()));
                     }
                 }
             });
@@ -392,16 +400,16 @@ fn row2_combos(ui: &mut Ui, state: &mut AppState) {
         lbl(ui, lt_i18n::t("target_label"));
         ComboBox::from_id_salt("ov_tgt_lang")
             .width(w_tgt - 50.0)
-            .selected_text(lang_label(false, &state.settings.target_language))
+            .selected_text(lang_label(false, &settings.target_language))
             .show_ui(ui, |ui| {
                 for (code, _native) in lt_i18n::LANGUAGES {
                     if *code == "auto" {
                         continue;
                     }
-                    let v = state.settings.target_language == *code;
+                    let v = settings.target_language == *code;
                     if ui.selectable_label(v, lang_label(false, code)).clicked() {
-                        state.settings.target_language = code.to_string();
-                        state.send_cmd(lt_proto::Cmd::SetTargetLanguage(code.to_string()));
+                        settings.target_language = code.to_string();
+                        session.send_cmd(lt_proto::Cmd::SetTargetLanguage(code.to_string()));
                     }
                 }
             });
@@ -430,41 +438,41 @@ fn lang_label(with_auto: bool, code: &str) -> String {
 /// 紧凑模式切换：UI 侧仅翻转模式并投递 ToggleMode；
 /// 高度动画的 from/to 由宿主按当前窗口高度计算（原版 _on_mode_changed 的
 /// _height_before_compact/minimumHeight 逻辑在窗口层）。
-fn toggle_mode(state: &mut AppState, to_compact: bool) {
-    state.overlay.mode = if to_compact {
+fn toggle_mode(overlay: &mut OverlayUi, session: &mut SessionView, to_compact: bool) {
+    overlay.state.mode = if to_compact {
         OverlayMode::Compact
     } else {
         OverlayMode::Full
     };
-    state.enqueue_action(WinId::Overlay, WinAction::ToggleMode);
+    session.enqueue_action(WinId::Overlay, WinAction::ToggleMode);
 }
 
 // ── MonitorBar（原版 MonitorBar） ──
 
-fn monitor_bar(ui: &mut Ui, state: &AppState, opa_pct: u32) {
+fn monitor_bar(ui: &mut Ui, overlay: &OverlayUi, settings: &Settings, opa_pct: u32) {
     ui.horizontal(|ui| {
         // D-29：MIC 条显隐按"启用意图"（settings.mic_device 有值）驱动，mic_rms 仅作为
         // 条值填充。原版以 mic_rms 有值驱动，而事件只在有 loopback 数据时到达 →
         // 系统首次出声才"冒出" MIC 条（用户实测幽灵条根因）。
-        let mic_active = mic_bar_active(state);
+        let mic_active = mic_bar_active(settings);
         let n_bars = if mic_active { 3.0 } else { 2.0 };
         let bar_w = ((ui.available_width() - 26.0 * n_bars - 12.0) / n_bars).max(60.0);
         if mic_active {
-            let mic = state.monitor.mic_rms.unwrap_or(0.0);
+            let mic = overlay.monitor.mic_rms.unwrap_or(0.0);
             level_bar(ui, "MIC", mic, BAR_MIC, opa_pct, bar_w);
         }
-        level_bar(ui, "RMS:", state.monitor.rms, BAR_RMS, opa_pct, bar_w);
-        level_bar(ui, "VAD:", state.monitor.vad, BAR_VAD, opa_pct, bar_w);
+        level_bar(ui, "RMS:", overlay.monitor.rms, BAR_RMS, opa_pct, bar_w);
+        level_bar(ui, "VAD:", overlay.monitor.vad, BAR_VAD, opa_pct, bar_w);
     });
     ui.add_space(2.0);
-    stats_line(ui, state, opa_pct);
+    stats_line(ui, overlay, opa_pct);
     ui.add_space(2.0);
 }
 
 /// MIC 条显隐：以麦克风启用意图为准（D-29，见 monitor_bar 注）。启用但尚无音频数据
 /// 时 mic_rms 为 None → 显示 0%（而非隐藏，避免"幽灵出现"观感）。
-fn mic_bar_active(state: &AppState) -> bool {
-    state.settings.mic_device.is_some()
+fn mic_bar_active(settings: &Settings) -> bool {
+    settings.mic_device.is_some()
 }
 
 /// 原版 update_audio：value = min(100, int(v * 500))
@@ -503,7 +511,7 @@ fn level_bar(ui: &mut Ui, label: &str, v: f32, color: Color32, opa_pct: u32, w: 
 }
 
 /// 统计行（原版 _refresh_stats 的富文本 span 序列：数值继承 #888，cost 在行尾）
-fn stats_line(ui: &mut Ui, state: &AppState, opa_pct: u32) {
+fn stats_line(ui: &mut Ui, overlay: &OverlayUi, opa_pct: u32) {
     let dev_color = |t: &str| {
         if t.to_lowercase().contains("cuda") {
             Color32::from_rgb(0x4e, 0xc9, 0xb0)
@@ -511,8 +519,8 @@ fn stats_line(ui: &mut Ui, state: &AppState, opa_pct: u32) {
             Color32::from_rgb(0xdc, 0xdc, 0xaa)
         }
     };
-    let m = state.monitor;
-    let stats = state.stats;
+    let m = overlay.monitor;
+    let stats = overlay.stats;
     let total_tokens = stats.prompt_tokens + stats.completion_tokens;
     let tokens_str = if total_tokens >= 1000 {
         format!("{:.1}k", total_tokens as f64 / 1000.0)
@@ -522,7 +530,7 @@ fn stats_line(ui: &mut Ui, state: &AppState, opa_pct: u32) {
     let o = |c: Color32| opa(c, opa_pct);
 
     ui.horizontal_wrapped(|ui| {
-        if let Some(dev) = &state.asr_label {
+        if let Some(dev) = &overlay.asr_label {
             ui.label(
                 RichText::new(dev.clone())
                     .monospace()
@@ -632,30 +640,37 @@ fn stats_line(ui: &mut Ui, state: &AppState, opa_pct: u32) {
 
 // ── 消息流 ──
 
-fn messages_area(ui: &mut Ui, state: &mut AppState, compact: bool, opa_pct: u32) {
+fn messages_area(
+    ui: &mut Ui,
+    overlay: &mut OverlayUi,
+    settings: &Settings,
+    ctx: &UiContext,
+    compact: bool,
+    opa_pct: u32,
+) {
     // 记录消息区顶部 y（穿透轮询的可交互分界）
-    state.overlay.header_px = ui.cursor().top();
+    overlay.state.header_px = ui.cursor().top();
 
     ScrollArea::vertical()
         .auto_shrink([false, false])
         .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded)
         .show(ui, |ui| {
             // 原版空态为纯黑空白（无占位文本）
-            for msg in &state.messages {
+            for msg in &overlay.messages {
                 let mut export: Option<String> = None;
                 let mut clear = false;
-                message_block(ui, state, msg, compact, opa_pct, &mut export, &mut clear);
+                message_block(ui, settings, ctx, msg, compact, opa_pct, &mut export, &mut clear);
                 if let Some(mode) = export {
-                    state.overlay.export_request = Some(mode);
+                    overlay.state.export_request = Some(mode);
                 }
                 if clear {
-                    state.clear_request = true;
+                    overlay.clear_request = true;
                 }
                 ui.add_space(2.0);
             }
-            if state.overlay.scroll_pending && state.ov_auto_scroll {
+            if overlay.state.scroll_pending && overlay.ov_auto_scroll {
                 ui.scroll_to_cursor(Some(egui::Align::BOTTOM));
-                state.overlay.scroll_pending = false;
+                overlay.state.scroll_pending = false;
             }
         });
 }
@@ -666,14 +681,15 @@ fn messages_area(ui: &mut Ui, state: &mut AppState, compact: bool, opa_pct: u32)
 /// 菜单动作经局部标志回传（消息链借用期间不可变写 AppState）。
 fn message_block(
     ui: &mut Ui,
-    state: &AppState,
+    settings: &Settings,
+    ctx: &UiContext,
     msg: &OverlayMessage,
     compact: bool,
     opa_pct: u32,
     export: &mut Option<String>,
     clear: &mut bool,
 ) {
-    let s = &state.settings.style;
+    let s = &settings.style;
     let o = |c: Color32| opa(c, opa_pct);
     let orig_c = o(parse_color(
         &s.original_color,
@@ -693,9 +709,9 @@ fn message_block(
         crate::fonts::font_family_for(
             crate::fonts::resolve_family(
                 &s.original_font_family,
-                &state.settings.subtitle_font_family,
+                &settings.subtitle_font_family,
             ),
-            &state.fonts,
+            &ctx.fonts,
         ),
     );
     let trans_font = FontId::new(
@@ -703,9 +719,9 @@ fn message_block(
         crate::fonts::font_family_for(
             crate::fonts::resolve_family(
                 &s.translation_font_family,
-                &state.settings.subtitle_font_family,
+                &settings.subtitle_font_family,
             ),
-            &state.fonts,
+            &ctx.fonts,
         ),
     );
     let ms_font = FontId::proportional(pt(9));
@@ -848,7 +864,7 @@ fn button_reserved(compact: bool) -> f32 {
 }
 
 /// 右下角尺寸手柄（原版 QSizeGrip 16×16 的小点串斜纹；拖动生效）
-fn resize_grip(ui: &mut Ui, state: &mut AppState) {
+fn resize_grip(ui: &mut Ui, session: &mut SessionView) {
     let rect = egui::Rect::from_min_size(
         ui.clip_rect().right_bottom() - Vec2::new(16.0, 16.0),
         Vec2::new(16.0, 16.0),
@@ -870,14 +886,13 @@ fn resize_grip(ui: &mut Ui, state: &mut AppState) {
         .interact(rect, ui.id().with("ov_grip"), Sense::click_and_drag())
         .drag_started()
     {
-        state.enqueue_action(WinId::Overlay, WinAction::ResizeSouthEast);
+        session.enqueue_action(WinId::Overlay, WinAction::ResizeSouthEast);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::AppState;
 
     /// D-29：MIC 条显隐跟随"启用意图"（mic_device 有值），与是否有监控数据无关。
     /// 默认禁用 → 恒不显示；启用（默认/具名）→ 立即显示。
@@ -885,16 +900,16 @@ mod tests {
     fn mic_bar_follows_enable_intent() {
         let base = lt_proto::Settings::default();
         assert!(
-            !mic_bar_active(&AppState::new(base.clone())),
+            !mic_bar_active(&base),
             "默认 mic_device=None = 禁用"
         );
 
         let mut s = base.clone();
         s.mic_device = Some("__default__".into());
-        assert!(mic_bar_active(&AppState::new(s)), "系统默认 = 启用");
+        assert!(mic_bar_active(&s), "系统默认 = 启用");
 
         let mut s = base;
         s.mic_device = Some("Mic X".into());
-        assert!(mic_bar_active(&AppState::new(s)), "具名设备 = 启用");
+        assert!(mic_bar_active(&s), "具名设备 = 启用");
     }
 }

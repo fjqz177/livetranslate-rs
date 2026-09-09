@@ -6,6 +6,7 @@
 //! 行级选择器首项「跟随（默认）」→ 空串（D-17 级联）。
 
 use crate::fonts::{self, FontsState, SystemFont};
+use crate::state::{Settings, UiContext};
 use egui::{ComboBox, FontId, RichText, ScrollArea, TextEdit, Ui};
 use lt_i18n::t;
 
@@ -134,11 +135,11 @@ pub fn font_picker_row(
 }
 
 /// 字体组预览卡：界面字体与字幕字体各一行中英韩样例（选中即所见）。
-pub fn font_group_preview(ui: &mut Ui, state: &crate::state::AppState) {
-    let ui_fam = fonts::font_family_for(&state.settings.ui_font_family, &state.fonts);
+pub fn font_group_preview(ui: &mut Ui, settings: &Settings, ctx: &UiContext) {
+    let ui_fam = fonts::font_family_for(&settings.ui_font_family, &ctx.fonts);
     let sub_fam = fonts::font_family_for(
-        fonts::resolve_family("", &state.settings.subtitle_font_family),
-        &state.fonts,
+        fonts::resolve_family("", &settings.subtitle_font_family),
+        &ctx.fonts,
     );
     ui.add_space(4.0);
     ui.label(

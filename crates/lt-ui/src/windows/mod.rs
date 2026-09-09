@@ -7,7 +7,7 @@
 //! - log：日志窗（M4.5）
 //! - bench：性能基准独立工具窗（M4.4）
 
-use crate::state::{AppState, WinId};
+use crate::state::{AppUi, WinId};
 use egui::{Color32, RichText, Ui};
 
 pub mod bench;
@@ -43,16 +43,73 @@ pub(crate) fn log_jump_button(ui: &mut Ui, unread: usize) -> bool {
     .clicked()
 }
 
-/// 按窗口分发（根 Ui 由宿主经 ctx.run_ui 提供）
-pub fn dispatch(win: WinId, ui: &mut Ui, state: &mut AppState) {
+/// 按窗口分发（根 Ui 由宿主经 ctx.run_ui 提供）。
+///
+/// W5/R8：**解构分发**——各窗口模块只拿本域 `&mut` + 共享 `&`，借用检查器
+/// 强制窗口边界（越界不再靠命名纪律）；跨域写（打开面板某页/设置防抖意图）
+/// 经 WinAction / SessionView 意图由宿主根消费。确认模态（跨全域应用逻辑）
+/// 在窗口帧之后由根渲染（confirm::render_confirm_if_host）。
+pub fn dispatch(win: WinId, ui: &mut Ui, app: &mut AppUi) {
     match win {
-        WinId::Overlay => overlay::overlay_ui(ui, state),
-        WinId::Subtitle => subtitle::subtitle_ui(ui, state),
-        WinId::Panel => panel::panel_ui(ui, state),
-        WinId::Log => logwin::log_ui(ui, state),
+        WinId::Overlay => {
+            let AppUi {
+                settings,
+                ctx,
+                session,
+                overlay,
+                modal,
+                ..
+            } = app;
+            overlay::overlay_ui(ui, overlay, session, settings, modal, ctx);
+            confirm::render_confirm_if_host(ui, app, WinId::Overlay);
+        }
+        WinId::Subtitle => {
+            let AppUi {
+                settings,
+                ctx,
+                session,
+                subtitle,
+                ..
+            } = app;
+            subtitle::subtitle_ui(ui, subtitle, session, settings, ctx);
+        }
+        WinId::Panel => {
+            let AppUi {
+                settings,
+                ctx,
+                session,
+                modal,
+                panel,
+                log,
+                bench,
+                ..
+            } = app;
+            panel::panel_ui(ui, panel, session, settings, modal, log, bench, ctx);
+            confirm::render_confirm_if_host(ui, app, WinId::Panel);
+        }
+        WinId::Log => {
+            let AppUi { log, .. } = app;
+            logwin::log_ui(ui, log);
+        }
         // 启动流对话框（首启向导/缺模型下载/模型加载按 state 内部阶段再分派）
-        WinId::Setup => setup::setup_ui(ui, state),
+        WinId::Setup => {
+            let AppUi {
+                session,
+                startup,
+                modal,
+                ..
+            } = app;
+            setup::setup_ui(ui, startup, session, modal);
+        }
         // 性能基准独立工具窗（识别页页头按钮打开）
-        WinId::Benchmark => bench::bench_ui(ui, state),
+        WinId::Benchmark => {
+            let AppUi {
+                settings,
+                session,
+                bench,
+                ..
+            } = app;
+            bench::bench_ui(ui, bench, session, settings);
+        }
     }
 }

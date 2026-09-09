@@ -60,7 +60,7 @@ fn main() -> anyhow::Result<()> {
     let monitor_cell: std::sync::Arc<arc_swap::ArcSwap<lt_proto::MonitorSample>> =
         std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(lt_proto::MonitorSample::default()));
     let mut app = lt_ui::MultiWindowApp::new(
-        lt_ui::AppState::new(initial_settings.clone()),
+        lt_ui::AppUi::new(initial_settings.clone()),
         &event_loop,
         Some(cmd_tx),
         Some(monitor_cell.clone()),

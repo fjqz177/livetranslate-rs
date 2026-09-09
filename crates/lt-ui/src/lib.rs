@@ -9,4 +9,4 @@ pub mod tray;
 pub mod windows;
 
 pub use app::MultiWindowApp;
-pub use state::{startup_flow, AppState, StartupFlow, WinId};
+pub use state::{startup_flow, AppUi, StartupFlow, WinId};

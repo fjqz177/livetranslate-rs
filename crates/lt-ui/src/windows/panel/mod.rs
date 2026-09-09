@@ -24,9 +24,12 @@ pub mod subtitle_page;
 pub mod translation;
 pub mod vad;
 
-use crate::state::{AppState, PanelPage, WinId};
+use crate::state::{
+    BenchUi, LogUi, ModalUi, PanelPage, PanelUi, SessionView, Settings, UiContext, WinId,
+};
+use crate::state::TickKind;
 use egui::{Color32, Frame, RichText, ScrollArea, Stroke, Ui};
-use lt_proto::Settings;
+use std::time::Instant;
 
 /// Tab 条页签高度（原版 QTabBar 页签视觉高度）
 const TAB_H: f32 = 26.0;
@@ -84,15 +87,25 @@ impl Palette {
     };
 }
 
-/// 控件变更 → 300ms 防抖应用（原版 TabBase.auto_save 的面板侧统一入口）
-pub fn mark_settings_dirty(state: &mut AppState) {
-    state.schedule_panel_apply();
+/// 控件变更 → 300ms 防抖应用（原版 TabBase.auto_save 的面板侧统一入口）。
+/// W5：跨域意图化——本函数可被字幕窗/确认模态/面板页任意调用，宿主在
+/// about_to_wait 消费意图后再做面板域防抖登记（窗口边界由借用检查强制）。
+pub fn mark_settings_dirty(session: &mut SessionView) {
+    session.request_settings_apply();
+}
+
+/// 翻译页 prompt 600ms 防抖登记（原版 _prompt_debounce.start()：重启单发定时；
+/// 面板域内部——prompt_apply_due 在面板状态、节拍在会话协调面）
+pub fn schedule_prompt_apply(panel: &mut PanelUi, session: &mut SessionView, now: Instant) {
+    panel.state.prompt_apply_due = Some(now + std::time::Duration::from_millis(600));
+    let at = now + std::time::Duration::from_millis(600);
+    session.schedule_tick(WinId::Panel, TickKind::PromptApply, at);
 }
 
 /// 引擎/模型变化（原版 settings_changed → main 侧 switch_engine 的即时路径）
-pub fn send_switch_engine(state: &AppState) {
-    let s = &state.settings;
-    state.send_cmd(lt_proto::Cmd::SwitchEngine {
+pub fn send_switch_engine(settings: &Settings, session: &SessionView) {
+    let s = settings;
+    session.send_cmd(lt_proto::Cmd::SwitchEngine {
         engine: s.asr_engine.clone(),
         funasr_model: s.funasr_model.clone(),
         whisper_model_size: s.whisper_model_size.clone(),
@@ -138,12 +151,19 @@ pub fn open_url(url: &str) {
 
 // ── 框架布局 ──
 
-/// 面板 UI 总入口（windows::dispatch 按 WinId::Panel 分派到这里）
-pub fn panel_ui(ui: &mut Ui, state: &mut AppState) {
-    // 确认模态（D-33/H-3~H-5）：帧首渲染——egui::Window 独立图层不占页面布局，
-    // 且必须置于 Log 页早退之前（确认模态在任意页均可打开）
-    super::confirm::render_confirm_if_host(ui, state, WinId::Panel);
-
+/// 面板 UI 总入口（windows::dispatch 按 WinId::Panel 分派到这里；W5 起只拿
+/// 面板窗口域面：panel/session/settings/modal/log/bench/ctx——不含兄弟窗口域）
+#[allow(clippy::too_many_arguments)]
+pub fn panel_ui(
+    ui: &mut Ui,
+    panel: &mut PanelUi,
+    session: &mut SessionView,
+    settings: &mut Settings,
+    modal: &mut ModalUi,
+    log: &mut LogUi,
+    bench: &mut BenchUi,
+    ctx: &mut UiContext,
+) {
     let pal = Palette::resolve(ui);
 
     // 全窗底色（QTabWidget 外围 #F0F0F0）
@@ -152,7 +172,7 @@ pub fn panel_ui(ui: &mut Ui, state: &mut AppState) {
 
     // Tab 条（原版 QTabWidget North 页签行）
     ui.add_space(4.0);
-    tab_strip(ui, state, &pal);
+    tab_strip(ui, panel, &pal);
 
     // Tab 页内容区：白底 + 灰边框（pane），内容按需滚动（make_scroll_area）
     let pane = ui.available_rect_before_wrap();
@@ -164,14 +184,14 @@ pub fn panel_ui(ui: &mut Ui, state: &mut AppState) {
         egui::StrokeKind::Inside,
     );
 
-    let page = state.panel.page;
+    let page = panel.state.page;
     if page == PanelPage::Log {
         // 日志页自带滚动区（工具行置顶 + 单滚动条），不套页面级 ScrollArea：
         // 一旦内容（底部提示行等）超出 pane 高度会出现第二根滚动条（LT-1，
         // 见 docs/archive/log-tab-redesign.md）。
         Frame::NONE
             .inner_margin(egui::Margin::same(12))
-            .show(ui, |ui| log_tab::page(ui, state, &pal));
+            .show(ui, |ui| log_tab::page(ui, log, &pal));
         return;
     }
     ScrollArea::vertical()
@@ -181,13 +201,19 @@ pub fn panel_ui(ui: &mut Ui, state: &mut AppState) {
             Frame::NONE
                 .inner_margin(egui::Margin::same(12))
                 .show(ui, |ui| match page {
-                    PanelPage::VadAsr => vad::page(ui, state, &pal),
-                    PanelPage::Translation => translation::page(ui, state, &pal),
-                    PanelPage::Style => style::page(ui, state, &pal),
-                    PanelPage::Subtitle => subtitle_page::page(ui, state, &pal),
-                    PanelPage::Benchmark => benchmark_tab::page(ui, state, &pal),
-                    PanelPage::Cache => data::page(ui, state, &pal),
-                    PanelPage::Changelog => changelog_tab::page(ui, state, &pal),
+                    PanelPage::VadAsr => vad::page(ui, panel, session, settings, &pal),
+                    PanelPage::Translation => {
+                        translation::page(ui, panel, session, settings, modal, &pal)
+                    }
+                    PanelPage::Style => style::page(ui, session, settings, ctx, &pal),
+                    PanelPage::Subtitle => {
+                        subtitle_page::page(ui, panel, session, settings, modal, ctx, &pal)
+                    }
+                    PanelPage::Benchmark => {
+                        benchmark_tab::page(ui, settings, bench, &pal)
+                    }
+                    PanelPage::Cache => data::page(ui, panel, session, settings, modal, &pal),
+                    PanelPage::Changelog => changelog_tab::page(ui, &pal),
                     PanelPage::Log => unreachable!("日志页已在上方特判，不进入页面级滚动区"),
                 });
             ui.add_space(12.0);
@@ -196,11 +222,11 @@ pub fn panel_ui(ui: &mut Ui, state: &mut AppState) {
 
 /// 顶部 Tab 条（原版 QTabBar：选中=白底带边框且与下方内容区相连；
 /// 未选中=#E9E9E9 灰底；hover 淡蓝）
-fn tab_strip(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
+fn tab_strip(ui: &mut Ui, panel: &mut PanelUi, pal: &Palette) {
     ui.horizontal(|ui| {
         ui.add_space(4.0);
         for page in PanelPage::ALL {
-            let selected = state.panel.page == page;
+            let selected = panel.state.page == page;
             let label = lt_i18n::t(page.tab_key());
             let font = egui::FontId::proportional(12.5);
             // 预测文本宽定页签宽（Qt 页签 = 文字 + 左右 padding）
@@ -234,7 +260,7 @@ fn tab_strip(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
                 pal.text,
             );
             if resp.clicked() {
-                state.panel.page = page;
+                panel.state.page = page;
             }
         }
     });
@@ -489,13 +515,15 @@ mod tests {
     #[test]
     fn panel_ui_smoke_renders_all_pages_headless() {
         let ctx = egui::Context::default();
-        let mut st = AppState::new(Settings::default());
+        let mut st = crate::state::AppUi::new(Settings::default());
         // VAD/ASR 页强制走设备枚举 + 缓存探测双分支（mlt 保存值 → Unavailable 提示）
         st.settings.funasr_model = "funasr-mlt-nano-2512".into();
         for page in PanelPage::ALL {
-            st.panel.page = page;
+            st.panel.state.page = page;
             for _ in 0..2 {
-                let mut out = ctx.run_ui(egui::RawInput::default(), |ui| panel_ui(ui, &mut st));
+                let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                    crate::windows::dispatch(crate::state::WinId::Panel, ui, &mut st)
+                });
                 assert!(!out.shapes.is_empty(), "{page:?} 页应产出图元");
                 // epaint debug 断言要求消费纹理增量（无渲染器 → 显式丢弃）
                 out.textures_delta.clear();
@@ -506,10 +534,10 @@ mod tests {
     /// 设置防抖登记 → 节拍消费闭环（UI 外）
     #[test]
     fn panel_apply_debounce_tick_roundtrip() {
-        let mut st = AppState::new(Settings::default());
+        let mut st = crate::state::AppUi::new(Settings::default());
         lt_i18n::set_lang("zh");
-        st.schedule_panel_apply();
-        let due = st.panel.apply_due_at.expect("登记后应有到期时刻");
+        crate::state::register_panel_apply(&mut st.panel, &mut st.session, std::time::Instant::now());
+        let due = st.panel.state.apply_due_at.expect("登记后应有到期时刻");
         assert!(st.take_due_panel_apply(due).is_some());
     }
 }

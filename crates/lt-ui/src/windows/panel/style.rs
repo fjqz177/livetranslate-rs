@@ -8,7 +8,7 @@
 //! - 恢复默认 → preset_style("default") 整组覆写（原版 _reset_style）。
 
 use super::{color_field, group_card, mark_settings_dirty, Palette};
-use crate::state::AppState;
+use crate::state::{SessionView, Settings, UiContext};
 use crate::style::{preset_style, PRESET_NAMES};
 use egui::{Color32, RichText, Ui};
 use lt_proto::Style;
@@ -48,10 +48,10 @@ pub fn reset_style(style: &mut Style) {
 // ── UI ──
 
 /// 样式页 UI 总入口
-pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
+pub fn page(ui: &mut Ui, session: &mut SessionView, settings: &mut Settings, ctx: &mut UiContext, pal: &Palette) {
     // N3/N4：样式页偏离默认提示 + 恢复本页（Style 14 键 + 两把主字体键；
     // 窗口几何（overlay_x 等）不纳入——样式页已有「重置窗口位置」按钮）
-    let diffs = crate::panel_diff::diff_paths(&state.settings);
+    let diffs = crate::panel_diff::diff_paths(&settings);
     let page_diffs: Vec<&str> = diffs
         .iter()
         .filter(|p| {
@@ -64,65 +64,65 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
     if !page_diffs.is_empty() {
         super::reset_toolbar(ui, pal, page_diffs.len(), &page_diffs.join("、"), |ui| {
             let def = lt_proto::Settings::default();
-            state.settings.style = def.style.clone();
-            state.settings.ui_font_family = def.ui_font_family.clone();
-            state.settings.subtitle_font_family = def.subtitle_font_family.clone();
+            settings.style = def.style.clone();
+            settings.ui_font_family = def.ui_font_family.clone();
+            settings.subtitle_font_family = def.subtitle_font_family.clone();
             // 字体键变化必须重装字体链（D-17：行级"跟随"解析自注册表）
-            crate::fonts::apply_fonts(ui.ctx(), &state.settings, &mut state.fonts);
-            mark_settings_dirty(state);
+            crate::fonts::apply_fonts(ui.ctx(), &settings, &mut ctx.fonts);
+            mark_settings_dirty(session);
         });
     }
 
     // ── 字体（D-17：界面/字幕两把主旋钮；其余行级在下方「文字」组）──
     group_card(ui, pal, &lt_i18n::t("group_fonts"), |ui| {
-        let cur_ui = state.settings.ui_font_family.clone();
+        let cur_ui = settings.ui_font_family.clone();
         if let Some(next) = super::font_picker::font_picker_row(
             ui,
-            &mut state.fonts,
+            &mut ctx.fonts,
             "font_ui",
             &lt_i18n::t("label_ui_font"),
             cur_ui,
             "",
             false,
         ) {
-            state.settings.ui_font_family = next;
-            crate::fonts::apply_fonts(ui.ctx(), &state.settings, &mut state.fonts);
-            mark_settings_dirty(state);
+            settings.ui_font_family = next;
+            crate::fonts::apply_fonts(ui.ctx(), &settings, &mut ctx.fonts);
+            mark_settings_dirty(session);
         }
-        let cur_sub = state.settings.subtitle_font_family.clone();
+        let cur_sub = settings.subtitle_font_family.clone();
         if let Some(next) = super::font_picker::font_picker_row(
             ui,
-            &mut state.fonts,
+            &mut ctx.fonts,
             "font_sub",
             &lt_i18n::t("label_subtitle_font"),
             cur_sub,
             "",
             false,
         ) {
-            state.settings.subtitle_font_family = next;
-            crate::fonts::apply_fonts(ui.ctx(), &state.settings, &mut state.fonts);
-            mark_settings_dirty(state);
+            settings.subtitle_font_family = next;
+            crate::fonts::apply_fonts(ui.ctx(), &settings, &mut ctx.fonts);
+            mark_settings_dirty(session);
         }
         ui.label(
             RichText::new(lt_i18n::t("hint_subtitle_font_scope"))
                 .size(11.0)
                 .color(ui.visuals().weak_text_color()),
         );
-        super::font_picker::font_group_preview(ui, state);
+        super::font_picker::font_group_preview(ui, settings, ctx);
     });
 
     // ── 预设（原版 preset_group）──
     group_card(ui, pal, &lt_i18n::t("group_preset"), |ui| {
         let labels = preset_labels();
-        let cur = preset_index_for(&state.settings.style.preset);
+        let cur = preset_index_for(&settings.style.preset);
         ui.horizontal(|ui| {
             let next = super::subtitle_page::combo_index(ui, "style_preset", cur, &labels, 260.0);
             if let Some(next) = next {
                 if next < PRESET_NAMES.len() {
-                    apply_preset(&mut state.settings.style, PRESET_NAMES[next]);
+                    apply_preset(&mut settings.style, PRESET_NAMES[next]);
                     // 预设可能改写行级字体键（D-17 默认=跟随），字体链需同步
-                    crate::fonts::apply_fonts(ui.ctx(), &state.settings, &mut state.fonts);
-                    mark_settings_dirty(state);
+                    crate::fonts::apply_fonts(ui.ctx(), &settings, &mut ctx.fonts);
+                    mark_settings_dirty(session);
                 }
             }
             if ui
@@ -132,9 +132,9 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
                 )
                 .clicked()
             {
-                reset_style(&mut state.settings.style);
-                crate::fonts::apply_fonts(ui.ctx(), &state.settings, &mut state.fonts);
-                mark_settings_dirty(state);
+                reset_style(&mut settings.style);
+                crate::fonts::apply_fonts(ui.ctx(), &settings, &mut ctx.fonts);
+                mark_settings_dirty(session);
             }
             // 原版样式 Tab 同行右侧"重置窗口位置"（_on_reset_positions → reset_positions 信号）
             if ui
@@ -144,49 +144,54 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
                 )
                 .clicked()
             {
-                state.enqueue_action(
+                session.enqueue_action(
                     crate::state::WinId::Panel,
                     crate::state::WinAction::ResetPositions,
                 );
             }
         });
         ui.add_space(4.0);
-        style_preview(ui, state, pal);
+        style_preview(ui, settings, pal);
     });
 
     // ── 背景（原版 bg_group：颜色/不透明度/头部颜色/头部不透明度/圆角）──
     group_card(ui, pal, &lt_i18n::t("group_background"), |ui| {
         style_color_row(
             ui,
-            state,
+            settings,
+            session,
             "style_bg_color",
             &lt_i18n::t("label_bg_color"),
             |s| &mut s.bg_color,
         );
         style_pct_row(
             ui,
-            state,
+            settings,
+            session,
             "style_bg_op",
             &lt_i18n::t("label_bg_opacity"),
             |s| &mut s.bg_opacity,
         );
         style_color_row(
             ui,
-            state,
+            settings,
+            session,
             "style_header_color",
             &lt_i18n::t("label_header_color"),
             |s| &mut s.header_color,
         );
         style_pct_row(
             ui,
-            state,
+            settings,
+            session,
             "style_header_op",
             &lt_i18n::t("label_header_opacity"),
             |s| &mut s.header_opacity,
         );
         style_u32_row(
             ui,
-            state,
+            settings,
+            session,
             "style_radius",
             &lt_i18n::t("label_border_radius"),
             |s| &mut s.border_radius,
@@ -199,14 +204,17 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
     group_card(ui, pal, &lt_i18n::t("group_text"), |ui| {
         font_row(
             ui,
-            state,
+            settings,
+            session,
+            ctx,
             "style_orig_font",
             &lt_i18n::t("label_original_font"),
             |s| &mut s.original_font_family,
         );
         style_u32_row(
             ui,
-            state,
+            settings,
+            session,
             "style_orig_size",
             &lt_i18n::t("label_original_font_size"),
             |s| &mut s.original_font_size,
@@ -215,21 +223,25 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
         );
         style_color_row(
             ui,
-            state,
+            settings,
+            session,
             "style_orig_color",
             &lt_i18n::t("label_original_color"),
             |s| &mut s.original_color,
         );
         font_row(
             ui,
-            state,
+            settings,
+            session,
+            ctx,
             "style_trans_font",
             &lt_i18n::t("label_translation_font"),
             |s| &mut s.translation_font_family,
         );
         style_u32_row(
             ui,
-            state,
+            settings,
+            session,
             "style_trans_size",
             &lt_i18n::t("label_translation_font_size"),
             |s| &mut s.translation_font_size,
@@ -238,14 +250,16 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
         );
         style_color_row(
             ui,
-            state,
+            settings,
+            session,
             "style_trans_color",
             &lt_i18n::t("label_translation_color"),
             |s| &mut s.translation_color,
         );
         style_color_row(
             ui,
-            state,
+            settings,
+            session,
             "style_ts_color",
             &lt_i18n::t("label_timestamp_color"),
             |s| &mut s.timestamp_color,
@@ -258,14 +272,14 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
             ui.label(
                 RichText::new(format!("{} ", lt_i18n::t("label_window_opacity"))).color(pal.text),
             );
-            let mut pct = state.settings.style.window_opacity.clamp(30, 100) as i32;
+            let mut pct = settings.style.window_opacity.clamp(30, 100) as i32;
             let resp = ui.add(
                 egui::Slider::new(&mut pct, 30..=100).custom_formatter(|v, _| format!("{v:.0}%")),
             );
             if resp.changed() {
-                state.settings.style.window_opacity = pct.clamp(30, 100) as u32;
-                mark_custom(&mut state.settings.style);
-                mark_settings_dirty(state);
+                settings.style.window_opacity = pct.clamp(30, 100) as u32;
+                mark_custom(&mut settings.style);
+                mark_settings_dirty(session);
             }
         });
     });
@@ -274,8 +288,8 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
 }
 
 /// 预览小卡（当前配色：头部行 + 原文/译文 + 时间戳，色值取 settings.style）
-fn style_preview(ui: &mut Ui, state: &AppState, pal: &Palette) {
-    let st = &state.settings.style;
+fn style_preview(ui: &mut Ui, settings: &Settings, pal: &Palette) {
+    let st = &settings.style;
     let bg = crate::style::parse_color(&st.bg_color, Color32::BLACK)
         .gamma_multiply(st.bg_opacity.clamp(0, 255) as f32 / 255.0);
     egui::Frame::NONE
@@ -308,18 +322,19 @@ fn style_preview(ui: &mut Ui, state: &AppState, pal: &Palette) {
 /// "标签 + 颜色字段"行（改动 → custom 联动 + 防抖）
 fn style_color_row(
     ui: &mut Ui,
-    state: &mut AppState,
+    settings: &mut Settings,
+    session: &mut SessionView,
     id: &str,
     label: &str,
     field: impl Fn(&mut Style) -> &mut String,
 ) {
     ui.horizontal(|ui| {
         ui.label(RichText::new(format!("{label} ")).color(ui.visuals().text_color()));
-        let mut color = field(&mut state.settings.style).clone();
+        let mut color = field(&mut settings.style).clone();
         if color_field(ui, id, &mut color) {
-            *field(&mut state.settings.style) = color;
-            mark_custom(&mut state.settings.style);
-            mark_settings_dirty(state);
+            *field(&mut settings.style) = color;
+            mark_custom(&mut settings.style);
+            mark_settings_dirty(session);
         }
     });
 }
@@ -327,7 +342,8 @@ fn style_color_row(
 /// "标签 + 百分比滑条"行（存储 0-255 ↔ 显示 %；原版 QSpinBox % 表述）
 fn style_pct_row(
     ui: &mut Ui,
-    state: &mut AppState,
+    settings: &mut Settings,
+    session: &mut SessionView,
     id: &str,
     label: &str,
     field: impl Fn(&mut Style) -> &mut u32,
@@ -336,7 +352,7 @@ fn style_pct_row(
         ui.horizontal(|ui| {
             ui.label(RichText::new(format!("{label} ")).color(ui.visuals().text_color()));
             let mut pct =
-                (f64::from(*field(&mut state.settings.style)) / 255.0 * 100.0).round() as i32;
+                (f64::from(*field(&mut settings.style)) / 255.0 * 100.0).round() as i32;
             let resp = ui
                 .add(
                     egui::Slider::new(&mut pct, 0..=100)
@@ -344,10 +360,10 @@ fn style_pct_row(
                 )
                 .changed();
             if resp {
-                *field(&mut state.settings.style) =
+                *field(&mut settings.style) =
                     (f64::from(pct.clamp(0, 100)) / 100.0 * 255.0).round() as u32;
-                mark_custom(&mut state.settings.style);
-                mark_settings_dirty(state);
+                mark_custom(&mut settings.style);
+                mark_settings_dirty(session);
             }
         });
     });
@@ -356,7 +372,8 @@ fn style_pct_row(
 /// "标签 + 整数 DragValue"行（px/pt 后缀）
 fn style_u32_row(
     ui: &mut Ui,
-    state: &mut AppState,
+    settings: &mut Settings,
+    session: &mut SessionView,
     id: &str,
     label: &str,
     field: impl Fn(&mut Style) -> &mut u32,
@@ -367,7 +384,7 @@ fn style_u32_row(
         ui.horizontal(|ui| {
             ui.label(RichText::new(format!("{label} ")).color(ui.visuals().text_color()));
             let (lo, hi) = (*range.start(), *range.end());
-            let mut v = (*field(&mut state.settings.style)).clamp(lo, hi) as i32;
+            let mut v = (*field(&mut settings.style)).clamp(lo, hi) as i32;
             let resp = ui
                 .add(
                     egui::DragValue::new(&mut v)
@@ -376,9 +393,9 @@ fn style_u32_row(
                 )
                 .changed();
             if resp {
-                *field(&mut state.settings.style) = v.clamp(lo as i32, hi as i32) as u32;
-                mark_custom(&mut state.settings.style);
-                mark_settings_dirty(state);
+                *field(&mut settings.style) = v.clamp(lo as i32, hi as i32) as u32;
+                mark_custom(&mut settings.style);
+                mark_settings_dirty(session);
             }
         });
     });
@@ -387,21 +404,23 @@ fn style_u32_row(
 /// "标签 + 字体选择器"行（D-17：行级空串=跟随；选中即应用字体链并防抖落盘）
 fn font_row(
     ui: &mut Ui,
-    state: &mut AppState,
+    settings: &mut Settings,
+    session: &mut SessionView,
+    ctx: &mut UiContext,
     id: &str,
     label: &str,
     field: impl Fn(&mut Style) -> &mut String,
 ) {
     ui.push_id(id, |ui| {
-        let cur = field(&mut state.settings.style).clone();
-        let master = state.settings.subtitle_font_family.clone();
+        let cur = field(&mut settings.style).clone();
+        let master = settings.subtitle_font_family.clone();
         if let Some(next) =
-            super::font_picker::font_picker_row(ui, &mut state.fonts, id, label, cur, &master, true)
+            super::font_picker::font_picker_row(ui, &mut ctx.fonts, id, label, cur, &master, true)
         {
-            *field(&mut state.settings.style) = next;
-            mark_custom(&mut state.settings.style);
-            crate::fonts::apply_fonts(ui.ctx(), &state.settings, &mut state.fonts);
-            mark_settings_dirty(state);
+            *field(&mut settings.style) = next;
+            mark_custom(&mut settings.style);
+            crate::fonts::apply_fonts(ui.ctx(), &settings, &mut ctx.fonts);
+            mark_settings_dirty(session);
         }
     });
 }

@@ -91,7 +91,7 @@ impl AppShell {
                 // 源在本字段；细节经日志文件/日志页可查），不再只进日志
                 let msg = format!("{e:#}");
                 tracing::error!("管道启动失败: {msg}");
-                self.ui.app_state.pipeline_error = Some(msg);
+                self.ui.app_state.session.pipeline_error = Some(msg);
             }
         }
     }
@@ -120,7 +120,7 @@ impl AppShell {
                 if let Some(p) = self.pipeline.as_mut() {
                     p.set_paused(true);
                 }
-                self.ui.app_state.running = false;
+                self.ui.app_state.session.running = false;
                 if let Some(t) = &self.ui.tray {
                     t.set_status(lt_ui::tray::IconStatus::Pause);
                 }
@@ -130,7 +130,7 @@ impl AppShell {
                 if let Some(p) = self.pipeline.as_mut() {
                     p.set_paused(false);
                 }
-                self.ui.app_state.running = true;
+                self.ui.app_state.session.running = true;
                 if let Some(t) = &self.ui.tray {
                     t.set_status(lt_ui::tray::IconStatus::Run);
                 }

@@ -11,7 +11,7 @@
 //! `Finished` 到达即复位运行态并弹完成提示（W2：不借道日志总线，无
 //! 完成哨兵）。
 
-use crate::state::AppState;
+use crate::state::{BenchUi, SessionView, Settings};
 use egui::{Color32, RichText, ScrollArea, Ui};
 use lt_proto::{ModelConfig, UiEvent, UiMsg};
 use lt_translate::bench::{run_benchmark, BenchModel};
@@ -64,42 +64,42 @@ pub fn align_selection(selected: &mut Vec<bool>, models_len: usize) {
 // ── UI ──
 
 /// Benchmark 窗 UI 总入口（windows::dispatch 按 WinId::Benchmark 分派到这里）
-pub fn bench_ui(ui: &mut Ui, state: &mut AppState) {
-    align_selection(&mut state.bench_selected, state.settings.models.len());
+pub fn bench_ui(ui: &mut Ui, bench: &mut BenchUi, session: &mut SessionView, settings: &mut Settings) {
+    align_selection(&mut bench.selected, settings.models.len());
 
     // ── 控制行（原版 ctrl_row：源语言/目标语言/开始）──
     ui.horizontal(|ui| {
         ui.label(RichText::new(lt_i18n::t("label_source")).size(12.5));
-        lang_combo(ui, "bench_src", &mut state.bench_src, &BENCH_SRC_LANGS);
+        lang_combo(ui, "bench_src", &mut bench.src, &BENCH_SRC_LANGS);
         ui.label(RichText::new(lt_i18n::t("target_label")).size(12.5));
-        lang_combo(ui, "bench_tgt", &mut state.bench_tgt, &BENCH_TGT_LANGS);
-        let btn_text = if state.bench_running {
+        lang_combo(ui, "bench_tgt", &mut bench.tgt, &BENCH_TGT_LANGS);
+        let btn_text = if bench.running {
             lt_i18n::t("testing")
         } else {
             lt_i18n::t("btn_test_all")
         };
         if ui
             .add_enabled(
-                !state.bench_running,
+                !bench.running,
                 egui::Button::new(RichText::new(btn_text).size(12.5)),
             )
             .clicked()
         {
-            start_benchmark(state);
+            start_benchmark(bench, settings);
         }
     });
 
     // ── 模型多选（原版跑全部模型；本版按勾选，缺省全选）──
     egui::Frame::group(ui.style()).show(ui, |ui| {
         ui.strong(lt_i18n::t("group_bench_models"));
-        for (i, m) in state.settings.models.iter().enumerate() {
-            let mut checked = state.bench_selected.get(i).copied().unwrap_or(true);
+        for (i, m) in settings.models.iter().enumerate() {
+            let mut checked = bench.selected.get(i).copied().unwrap_or(true);
             let resp = ui.add_enabled(
-                !state.bench_running,
+                !bench.running,
                 egui::Checkbox::new(&mut checked, RichText::new(&m.name).monospace().size(12.0)),
             );
             if resp.changed() {
-                state.bench_selected[i] = checked;
+                bench.selected[i] = checked;
             }
         }
     });
@@ -114,7 +114,7 @@ pub fn bench_ui(ui: &mut Ui, state: &mut AppState) {
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     ui.set_min_height(ui.available_height().max(120.0));
-                    for line in &state.bench_lines {
+                    for line in &bench.lines {
                         let text = RichText::new(line).monospace().size(12.0).color(LOG_FG);
                         if line.starts_with("  FAILED") || line.starts_with("  FAIL ") {
                             ui.label(
@@ -135,7 +135,7 @@ pub fn bench_ui(ui: &mut Ui, state: &mut AppState) {
     // ── 关闭行（原版 row + close_btn）──
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
         if ui.button(lt_i18n::t("btn_close")).clicked() {
-            state.enqueue_action(
+            session.enqueue_action(
                 crate::state::WinId::Benchmark,
                 crate::state::WinAction::Hide,
             );
@@ -160,36 +160,35 @@ fn lang_combo(ui: &mut Ui, id: &str, index: &mut usize, langs: &[&str]) {
 /// 开始基准（原版 _run_benchmark）：清空输出 → 后台线程测试，
 /// on_line 经 event_tx 回流 LogLine{target:"benchmark"}。
 /// Tab 版/工具窗版共用入口（原版 Tab 版跑全部模型，勾选表已对位）
-pub fn start_benchmark_public(state: &mut AppState) {
-    start_benchmark(state);
+pub fn start_benchmark_public(bench: &mut BenchUi, settings: &mut Settings) {
+    start_benchmark(bench, settings);
 }
 
-fn start_benchmark(state: &mut AppState) {
-    if state.bench_running {
+fn start_benchmark(bench: &mut BenchUi, settings: &mut Settings) {
+    if bench.running {
         return;
     }
-    let models: Vec<BenchModel> = state
-        .settings
+    let models: Vec<BenchModel> = settings
         .models
         .iter()
         .enumerate()
-        .filter(|(i, _)| state.bench_selected.get(*i).copied().unwrap_or(true))
+        .filter(|(i, _)| bench.selected.get(*i).copied().unwrap_or(true))
         .map(|(_, m)| to_bench_model(m))
         .collect();
     if models.is_empty() {
         return;
     }
-    let Some(event_tx) = state.event_tx.clone() else {
+    let Some(event_tx) = bench.event_tx.clone() else {
         tracing::warn!("event_tx 未注入，无法启动基准");
         return;
     };
-    let src = BENCH_SRC_LANGS[state.bench_src.min(BENCH_SRC_LANGS.len() - 1)];
-    let tgt = BENCH_TGT_LANGS[state.bench_tgt.min(BENCH_TGT_LANGS.len() - 1)];
-    let timeout = state.settings.timeout.max(1);
-    let prompt = bench_prompt(&state.settings.system_prompt, src, tgt);
+    let src = BENCH_SRC_LANGS[bench.src.min(BENCH_SRC_LANGS.len() - 1)];
+    let tgt = BENCH_TGT_LANGS[bench.tgt.min(BENCH_TGT_LANGS.len() - 1)];
+    let timeout = settings.timeout.max(1);
+    let prompt = bench_prompt(&settings.system_prompt, src, tgt);
 
-    state.bench_lines.clear();
-    state.bench_running = true;
+    bench.lines.clear();
+    bench.running = true;
     // 原版 run_benchmark：后台线程 + result_callback 逐行回传，末行完成标记
     // ——W2 类型化：Line/Finished 回调经 proto::BenchEvent 回流（不再借道
     // LogLine[benchmark] + 完成哨兵，INV9）
@@ -289,22 +288,24 @@ mod tests {
     #[test]
     fn bench_ui_smoke_and_bench_line_flow() {
         let ctx = egui::Context::default();
-        let mut st = AppState::new(lt_proto::Settings::default());
-        align_selection(&mut st.bench_selected, st.settings.models.len());
+        let mut st = crate::state::AppUi::new(lt_proto::Settings::default());
+        align_selection(&mut st.bench.selected, st.settings.models.len());
         // 模拟 app.rs 的 Bench 消费路径
-        st.bench_running = true;
-        st.push_bench_line("Testing 1 model(s)".into());
-        st.push_bench_line("  FAILED: timeout".into());
+        st.bench.running = true;
+        st.bench.push_line("Testing 1 model(s)".into());
+        st.bench.push_line("  FAILED: timeout".into());
         // Finished（ok=false）复位运行态
-        st.bench_running = false;
-        assert!(!st.bench_running);
-        assert!(st.bench_lines.len() == 2);
+        st.bench.running = false;
+        assert!(!st.bench.running);
+        assert!(st.bench.lines.len() == 2);
         for _ in 0..2 {
-            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| bench_ui(ui, &mut st));
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                bench_ui(ui, &mut st.bench, &mut st.session, &mut st.settings)
+            });
             assert!(!out.shapes.is_empty(), "基准窗应产出图元");
             out.textures_delta.clear();
         }
-        assert_eq!(st.bench_lines.len(), 2);
-        assert!(!st.bench_running);
+        assert_eq!(st.bench.lines.len(), 2);
+        assert!(!st.bench.running);
     }
 }

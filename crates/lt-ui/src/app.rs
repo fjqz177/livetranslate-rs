@@ -10,8 +10,8 @@
 //! - 点击穿透由窗口层按 50ms 轮询处理（M4 接入），本宿主只负责窗口创建与 flags。
 
 use crate::state::{
-    push_log_line, AppState, ConfirmKind, DownloadUiState, OverlayMessage, OverlayMode, PanelPage,
-    StartupFlow, TickKind, WinAction, WinId,
+    push_log_line, initial_visibility, AppUi, ConfirmKind, DownloadUiState, OverlayMessage,
+    OverlayMode, PanelPage, StartupFlow, TickKind, WinAction, WinId,
 };
 use crate::tray::{self, Tray};
 use crate::windows;
@@ -22,7 +22,7 @@ use crate::windows::subtitle::{
 use egui::{Context, ViewportId};
 use egui_wgpu::winit::Painter;
 use arc_swap::ArcSwap;
-use lt_proto::{MonitorSample, UiEvent, UiMsg};
+use lt_proto::{MonitorSample, Settings, UiEvent, UiMsg};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use winit::application::ApplicationHandler;
@@ -47,7 +47,7 @@ struct HostedWindow {
 }
 
 pub struct MultiWindowApp {
-    pub app_state: AppState,
+    pub app_state: AppUi,
     pub ctx: Context,
     painter: Painter,
     windows: Vec<HostedWindow>,
@@ -60,21 +60,27 @@ pub struct MultiWindowApp {
     monitor_cell: Option<Arc<ArcSwap<MonitorSample>>>,
     /// 已读快照序号（免每拍重绘：格 seq 未变即跳过）
     monitor_seq: u64,
+    /// 各窗口可见性真值表（W5b/R20：单一真源——`set_visible` 唯一变更路径，
+    /// 窗口帧经 `session.visible` 只读快照访问；winit `is_visible()` 不再被查询）
+    visible: std::collections::HashMap<WinId, bool>,
+    /// sysinfo 实例与上次采样时刻（1s 节流；宿主侧采样态，W5 自 AppState 迁出）
+    sys: Option<sysinfo::System>,
+    sys_last: Option<Instant>,
 }
 
 impl MultiWindowApp {
     /// 创建宿主（需在主线程）。异步的 wgpu 初始化用 pollster 阻塞完成。
     /// cmd_tx 存入 AppState（widget 代码经 send_cmd 直接发送命令）。
     pub fn new(
-        mut app_state: AppState,
+        mut app_state: AppUi,
         event_loop: &EventLoop<UiMsg>,
         cmd_tx: Option<std::sync::mpsc::Sender<lt_proto::Cmd>>,
         monitor_cell: Option<Arc<ArcSwap<MonitorSample>>>,
     ) -> anyhow::Result<Self> {
-        app_state.cmd_tx = cmd_tx;
+        app_state.session.cmd_tx = cmd_tx;
         let ctx = Context::default();
         // 字体系统（W-3）：内嵌思源默认 + 系统字体扫描；此处按启动 Settings 装配
-        crate::fonts::apply_fonts(&ctx, &app_state.settings, &mut app_state.fonts);
+        crate::fonts::apply_fonts(&ctx, &app_state.settings, &mut app_state.ctx.fonts);
         // 主题按窗口注入（run_frame 内：Panel=Windows 原生浅色，其余=深色），
         // 不再全局 set_theme——悬浮窗/字幕窗保持深色（原版面板即原生浅色）。
         let painter = pollster::block_on(Painter::new(
@@ -88,10 +94,12 @@ impl MultiWindowApp {
         // benchmark 窗的 on_line 日志流即走此通道）
         {
             let proxy = proxy.clone();
-            app_state.event_tx = Some(std::sync::Arc::new(move |msg: UiMsg| {
+            app_state.bench.event_tx = Some(std::sync::Arc::new(move |msg: UiMsg| {
                 let _ = proxy.send_event(msg);
             }));
         }
+        // W5b：可见性真值表初始化（启动流进行中主窗口隐藏；见 initial_visibility）
+        let visible = initial_visibility(&app_state.settings, &app_state.startup.flow);
         Ok(Self {
             app_state,
             ctx,
@@ -102,7 +110,16 @@ impl MultiWindowApp {
             overlay_hide_notified: false,
             monitor_cell,
             monitor_seq: 0,
+            visible,
+            sys: None,
+            sys_last: None,
         })
+    }
+
+    /// 可见性查询（W5b：唯一权威读点——托盘/穿透轮询/避让全走本表；
+    /// winit `window.is_visible()` 不再作为事实源）
+    pub fn is_visible(&self, id: WinId) -> bool {
+        self.visible.get(&id).copied().unwrap_or(false)
     }
 
     fn viewport_of(id: WinId) -> ViewportId {
@@ -144,7 +161,7 @@ impl MultiWindowApp {
         // 性能基准独立工具窗（原版 BenchmarkDialog resize(680, 480)；默认隐藏）
         self.create_window(event_loop, WinId::Benchmark, (680, 480))?;
         // Setup 标题随启动流阶段动态化（向导/缺模型下载；加载框在 ModelLoadStart 再设）
-        let setup_title = match &self.app_state.startup {
+        let setup_title = match &self.app_state.startup.flow {
             StartupFlow::Wizard(_) => lt_i18n::t("window_setup"),
             StartupFlow::DownloadMissing { .. } => lt_i18n::t("window_download"),
             StartupFlow::Ready => "LiveTranslate".to_string(),
@@ -161,8 +178,8 @@ impl MultiWindowApp {
         self.apply_overlay_flags();
         // W2/D-67：悬浮窗可见即起音频监视节拍（快照格轮询起点；此后
         // 每条 33ms 拍读格、不可见即停）
-        if self.app_state.visible.get(&WinId::Overlay).copied().unwrap_or(false) {
-            self.app_state.schedule_audio_monitor_tick();
+        if self.visible.get(&WinId::Overlay).copied().unwrap_or(false) {
+            self.schedule_audio_monitor_tick();
         }
         // D-36：窗口创建后的 Z 序定型（创建序 = 悬浮窗先 → 字幕窗后，后建偏上——
         // 此处把字幕窗压回悬浮窗之下；运行期显示路径由 set_visible 再维护）
@@ -212,7 +229,7 @@ impl MultiWindowApp {
             // 原版 setFixedWidth：宽度固定（高度自适应）→ 禁用户拖拽缩放
             attrs = attrs.with_resizable(false);
         }
-        let visible = *self.app_state.visible.get(&id).unwrap_or(&true);
+        let visible = *self.visible.get(&id).unwrap_or(&true);
         attrs = attrs.with_visible(visible);
 
         let window = Arc::new(event_loop.create_window(attrs)?);
@@ -220,8 +237,8 @@ impl MultiWindowApp {
         // 初始 alpha 取自当前设置，运行中随设置变更在 run_frame 内刷新
         #[cfg(windows)]
         let layer_alpha = match id {
-            WinId::Overlay => Some(overlay_layered_alpha(&self.app_state)),
-            WinId::Subtitle => Some(subtitle_layered_alpha(&self.app_state)),
+            WinId::Overlay => Some(overlay_layered_alpha(&self.app_state.settings)),
+            WinId::Subtitle => Some(subtitle_layered_alpha(&self.app_state.settings)),
             _ => None,
         };
         #[cfg(not(windows))]
@@ -338,6 +355,8 @@ impl MultiWindowApp {
             hw.state.take_egui_input(&hw.window)
         };
         let app_state = &mut self.app_state;
+        // W5b：窗口帧只读快照（真值表宿主独享；窗口代码读 session.visible）
+        app_state.session.visible.clone_from(&self.visible);
         let mut full = ctx.run_ui(input, |ui| windows::dispatch(id, ui, app_state));
 
         {
@@ -375,8 +394,8 @@ impl MultiWindowApp {
         // 清位 → 每帧实测 EXSTYLE，缺位即重挂（幂等自愈，覆盖一切清位路径）。
         #[cfg(windows)]
         let target_alpha = match id {
-            WinId::Overlay => Some(overlay_layered_alpha(&self.app_state)),
-            WinId::Subtitle => Some(subtitle_layered_alpha(&self.app_state)),
+            WinId::Overlay => Some(overlay_layered_alpha(&self.app_state.settings)),
+            WinId::Subtitle => Some(subtitle_layered_alpha(&self.app_state.settings)),
             _ => None,
         };
         #[cfg(not(windows))]
@@ -408,12 +427,12 @@ impl MultiWindowApp {
         // 帧后：处理窗口动作 / 右键导出 / 清空请求
         self.process_actions();
         if id == WinId::Overlay {
-            if let Some(mode) = self.app_state.overlay.export_request.take() {
+            if let Some(mode) = self.app_state.overlay.state.export_request.take() {
                 self.run_export(&mode);
             }
-            if self.app_state.clear_request {
-                self.app_state.clear_request = false;
-                self.app_state.messages.clear();
+            if self.app_state.overlay.clear_request {
+                self.app_state.overlay.clear_request = false;
+                self.app_state.overlay.messages.clear();
             }
         }
     }
@@ -421,13 +440,14 @@ impl MultiWindowApp {
     /// 悬浮窗可作确认模态宿主：可见 + 非紧凑模式 + 高度 ≥ 280 逻辑 px
     /// （紧凑 200px 装不下居中确认框；D-33/H-3 审查修正）
     fn overlay_can_host_confirm(&self) -> bool {
+        // W5b：可见性真值表（winit is_visible 不再作为事实源，R20 收敛）
+        if !self.is_visible(WinId::Overlay) {
+            return false;
+        }
         let Some(hw) = self.find(WinId::Overlay) else {
             return false;
         };
-        if !hw.window.is_visible().unwrap_or(false) {
-            return false;
-        }
-        if self.app_state.overlay.mode == OverlayMode::Compact {
+        if self.app_state.overlay.state.mode == OverlayMode::Compact {
             return false;
         }
         hw.window
@@ -447,15 +467,15 @@ impl MultiWindowApp {
     fn on_command(&mut self, _event_loop: &ActiveEventLoop, cmd: lt_proto::AppCommand) {
         match cmd {
             lt_proto::AppCommand::Pause => {
-                self.app_state.running = !self.app_state.running;
+                self.app_state.session.running = !self.app_state.session.running;
                 if let Some(t) = &self.tray {
-                    let text = if self.app_state.running {
+                    let text = if self.app_state.session.running {
                         lt_i18n::t("tray_pause")
                     } else {
                         lt_i18n::t("tray_resume")
                     };
                     t.set_pause_label(text);
-                    let status = if self.app_state.running {
+                    let status = if self.app_state.session.running {
                         tray::IconStatus::Run
                     } else {
                         tray::IconStatus::Pause
@@ -465,7 +485,7 @@ impl MultiWindowApp {
                 self.update_tray_status();
                 tracing::info!(
                     "管道 {}",
-                    if self.app_state.running {
+                    if self.app_state.session.running {
                         "运行"
                     } else {
                         "暂停"
@@ -473,11 +493,11 @@ impl MultiWindowApp {
                 );
             }
             lt_proto::AppCommand::OverlayToggle => {
-                let vis = !self.window(WinId::Overlay).is_visible().unwrap_or(false);
+                let vis = !self.is_visible(WinId::Overlay);
                 self.set_overlay_visible_with_hint(vis);
             }
             lt_proto::AppCommand::ShowPanel => {
-                let vis = !self.window(WinId::Panel).is_visible().unwrap_or(false);
+                let vis = !self.is_visible(WinId::Panel);
                 self.set_visible(WinId::Panel, vis);
             }
             lt_proto::AppCommand::Quit => {
@@ -485,9 +505,10 @@ impl MultiWindowApp {
                 // 模态串行/不可达）。悬浮窗可作宿主（可见/非紧凑/高度足）则就地弹，
                 // 否则显示面板承载——任意状态（含全 UI 隐藏）下确认框必有宿主。
                 let overlay_ok = self.overlay_can_host_confirm();
-                let opened = self.app_state.request_confirm(
+                let opened = self.app_state.modal.request_confirm(
                     ConfirmKind::Quit,
                     overlay_ok,
+                    self.is_visible(WinId::Panel),
                     lt_i18n::t("quit_confirm_title"),
                     lt_i18n::t("quit_confirm_msg"),
                 );
@@ -508,8 +529,8 @@ impl MultiWindowApp {
     /// 刷新托盘状态行（● 状态 · 引擎 · 模型 · 源 → 目标；原版 status_action）
     fn update_tray_status(&mut self) {
         let s = &self.app_state;
-        let state = if s.running { "运行" } else { "暂停" };
-        let engine = s.asr_label.clone().unwrap_or_else(|| "--".into());
+        let state = if s.session.running { "运行" } else { "暂停" };
+        let engine = s.overlay.asr_label.clone().unwrap_or_else(|| "--".into());
         let model = s
             .settings
             .models
@@ -556,20 +577,20 @@ impl MultiWindowApp {
                 hw.window.set_visible(false);
                 // 拖动中隐藏：立即收尾手工捕获（否则鼠标输入被吞在隐藏窗，
                 // 主界面/其他窗失灵；D-37 拖动与显隐并发兜底）
-                if id == WinId::Subtitle && self.app_state.subtitle.dragging {
+                if id == WinId::Subtitle && self.app_state.subtitle.state.dragging {
                     #[cfg(windows)]
                     unsafe {
                         let _ = ::windows::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture();
                     };
-                    self.app_state.subtitle.dragging = false;
-                    self.app_state.subtitle.drag_grab = None;
+                    self.app_state.subtitle.state.dragging = false;
+                    self.app_state.subtitle.state.drag_grab = None;
                 }
             }
         }
-        self.app_state.visible.insert(id, vis);
+        self.visible.insert(id, vis);
         // W2/D-67：悬浮窗可见即起（或沿用既有）音频监视节拍
         if id == WinId::Overlay && vis {
-            self.app_state.schedule_audio_monitor_tick();
+            self.schedule_audio_monitor_tick();
         }
         // D-36 Z 序维护：字幕窗恒压悬浮窗之下、悬浮窗恒置顶（topmost 带内相对序），
         // 主界面永远可点可读；仅显示路径触发（隐藏无需维护）
@@ -705,7 +726,7 @@ impl MultiWindowApp {
         let Some(hw) = self.find(WinId::Overlay) else {
             return;
         };
-        let level = if self.app_state.ov_topmost {
+        let level = if self.app_state.overlay.ov_topmost {
             WindowLevel::AlwaysOnTop
         } else {
             WindowLevel::Normal
@@ -713,7 +734,7 @@ impl MultiWindowApp {
         hw.window.set_window_level(level);
         #[cfg(windows)]
         {
-            hw.window.set_skip_taskbar(!self.app_state.ov_taskbar);
+            hw.window.set_skip_taskbar(!self.app_state.overlay.ov_taskbar);
         }
     }
 
@@ -735,8 +756,8 @@ impl MultiWindowApp {
     /// 仅 load_dialog 显示中才动作，且仅 startup==Ready 时隐藏 Setup 窗——
     /// 避免误关首启向导/缺模型下载流程仍在使用的窗口。
     fn close_load_dialog(&mut self) {
-        if self.app_state.load_dialog.take().is_some()
-            && matches!(self.app_state.startup, StartupFlow::Ready)
+        if self.app_state.startup.load_dialog.take().is_some()
+            && matches!(self.app_state.startup.flow, StartupFlow::Ready)
         {
             self.set_visible(WinId::Setup, false);
         }
@@ -750,7 +771,7 @@ impl MultiWindowApp {
             Finish,
             None,
         }
-        let action = match &self.app_state.startup {
+        let action = match &self.app_state.startup.flow {
             StartupFlow::Wizard(w) => match w.phase {
                 crate::state::WizardPhase::Idle => Action::Countdown,
                 crate::state::WizardPhase::Done => Action::Finish,
@@ -767,14 +788,14 @@ impl MultiWindowApp {
         };
         match action {
             Action::Countdown => {
-                if let StartupFlow::Wizard(w) = &mut self.app_state.startup {
+                if let StartupFlow::Wizard(w) = &mut self.app_state.startup.flow {
                     w.countdown -= 1;
                 }
                 // 原版 _tick_countdown：归零即自动开始下载，否则按 1s 续拍
-                if matches!(&self.app_state.startup, StartupFlow::Wizard(w) if w.countdown <= 0) {
+                if matches!(&self.app_state.startup.flow, StartupFlow::Wizard(w) if w.countdown <= 0) {
                     self.app_state.wizard_auto_start();
                 } else {
-                    self.app_state.schedule_setup_tick(Duration::from_secs(1));
+                    self.app_state.startup.schedule_tick(&mut self.app_state.session, Duration::from_secs(1));
                 }
             }
             Action::Finish => {
@@ -789,17 +810,17 @@ impl MultiWindowApp {
     /// 启动流收尾（原版对话框 accept 之后）：startup=Ready、关 Setup 窗、
     /// 揭开主窗口（字幕窗按 settings.subtitle_mode.enabled，日志窗保持隐藏）
     fn finish_startup(&mut self) {
-        self.app_state.startup = StartupFlow::Ready;
+        self.app_state.startup.flow = StartupFlow::Ready;
         // 下载成功即启管道（AppShell），ModelLoadStart 可能落在 500ms 收尾期内——
         // 原版两个对话框先后出现，这里共用一个原生窗口，故加载框已开则保留窗口
-        if self.app_state.load_dialog.is_none() {
+        if self.app_state.startup.load_dialog.is_none() {
             self.set_visible(WinId::Setup, false);
         }
         let subtitle = self.app_state.settings.subtitle_mode.enabled;
         self.set_visible(WinId::Overlay, true);
         self.set_visible(WinId::Subtitle, subtitle);
         self.set_visible(WinId::Panel, true);
-        self.app_state.visible.insert(WinId::Log, false);
+        self.visible.insert(WinId::Log, false);
         self.sync_tray_checks();
     }
 
@@ -809,6 +830,7 @@ impl MultiWindowApp {
         if let Some(snapshot) = self.app_state.take_due_panel_apply(now) {
             tracing::info!("面板设置应用（300ms 防抖到期）");
             self.app_state
+                .session
                 .send_cmd(lt_proto::Cmd::ApplySettings(Box::new(snapshot)));
         }
     }
@@ -840,7 +862,7 @@ impl MultiWindowApp {
                     lang,
                     asr_ms,
                 } => {
-                    self.app_state.push_message(OverlayMessage {
+                    self.app_state.overlay.push_message(OverlayMessage {
                         id,
                         timestamp,
                         original,
@@ -856,28 +878,24 @@ impl MultiWindowApp {
                 }
                 // 流式译文增量（原版 update_streaming；50ms 节流渲染随 M4）
                 lt_proto::UiEvent::UpdateStreaming { id, partial } => {
-                    self.app_state.update_streaming(id, partial);
+                    self.app_state.overlay.update_streaming(&mut self.app_state.session, id, partial);
                     if let Some(hw) = self.find_mut(WinId::Overlay) {
                         hw.window.request_redraw();
                     }
                 }
                 // 译文完成（含错误文本/同语言空串；原版 update_translation）
                 lt_proto::UiEvent::UpdateTranslation { id, text, tl_ms } => {
-                    self.app_state.update_translation(id, text.clone(), tl_ms);
+                    self.app_state.overlay.update_translation(id, text.clone(), tl_ms);
                     if let Some(hw) = self.find_mut(WinId::Overlay) {
                         hw.window.request_redraw();
                     }
                     // 字幕窗文本喂入（原版 pipeline 仅 _subwin.isVisible() 时 update_text）：
                     // 译文完成 → {目标语言: 译文}；同语言空串 → {目标语言: 原文}
                     // （原版 pipeline.py:459/629 同语言分支与 868/955 译文完成分支）
-                    if *self
-                        .app_state
-                        .visible
-                        .get(&WinId::Subtitle)
-                        .unwrap_or(&false)
-                    {
+                    if *self.visible.get(&WinId::Subtitle).unwrap_or(&false) {
                         let original = self
                             .app_state
+                            .overlay
                             .messages
                             .iter()
                             .rev()
@@ -891,7 +909,7 @@ impl MultiWindowApp {
                             };
                             let mut tl = std::collections::BTreeMap::new();
                             tl.insert(self.app_state.settings.target_language.clone(), value);
-                            self.app_state.subtitle_update_text(original, tl);
+                            self.app_state.subtitle.update_text(&mut self.app_state.session, &self.app_state.settings, original, tl);
                         }
                         self.redraw(WinId::Subtitle);
                     }
@@ -904,7 +922,7 @@ impl MultiWindowApp {
                     completion_tokens,
                     cost,
                 } => {
-                    self.app_state.update_stats(crate::state::OverlayStats {
+                    self.app_state.overlay.update_stats(crate::state::OverlayStats {
                         asr_n,
                         tl_n,
                         prompt_tokens,
@@ -915,9 +933,9 @@ impl MultiWindowApp {
                 // ASR 设备标签（悬浮窗 MonitorBar device 段）；同时视作加载框关闭信号
                 //（原版 App.model_load_done 在设备就绪/不可用时都会被调用）
                 lt_proto::UiEvent::AsrDevice(label) => {
-                    self.app_state.asr_label = Some(label);
+                    self.app_state.overlay.asr_label = Some(label);
                     if let Some(t) = &self.tray {
-                        let status = if self.app_state.running {
+                        let status = if self.app_state.session.running {
                             tray::IconStatus::Run
                         } else {
                             tray::IconStatus::Pause
@@ -931,7 +949,7 @@ impl MultiWindowApp {
                 }
                 // ASR 完全不可用（沿用原版字面文案）；同样关闭加载框 + 托盘错误图标
                 lt_proto::UiEvent::AsrUnavailable => {
-                    self.app_state.asr_label = Some(lt_i18n::t("asr_unavailable"));
+                    self.app_state.overlay.asr_label = Some(lt_i18n::t("asr_unavailable"));
                     if let Some(t) = &self.tray {
                         t.set_status(tray::IconStatus::Error);
                     }
@@ -942,7 +960,7 @@ impl MultiWindowApp {
                 }
                 // 翻译装置配置无效：状态行红字（翻译页）+ 日志已由 pipeline 落
                 lt_proto::UiEvent::TranslatorUnavailable { reason } => {
-                    self.app_state.translator_error = Some(reason);
+                    self.app_state.panel.translator_error = Some(reason);
                     self.redraw(WinId::Panel);
                 }
                 // 翻译配置「测试连接」回执
@@ -953,7 +971,7 @@ impl MultiWindowApp {
                     ms,
                 } => {
                     let _ = name;
-                    self.app_state.test_translator =
+                    self.app_state.panel.test_translator =
                         crate::state::TestTranslatorState::Done { ok, error, ms };
                     self.redraw(WinId::Panel);
                 }
@@ -961,19 +979,19 @@ impl MultiWindowApp {
                 // 人读行由本臂按原格式生成；进度条直取事件字段）──
                 lt_proto::UiEvent::Download(ev) => {
                     let human = format_download_line(&ev);
-                    match &mut self.app_state.startup {
+                    match &mut self.app_state.startup.flow {
                         StartupFlow::Wizard(w) => push_log_line(&mut w.log, human),
                         StartupFlow::DownloadMissing { log, .. } => push_log_line(log, human),
                         StartupFlow::Ready => {
                             // D-19 直进主界面 → 运行期下载：进度写识别页缓存卡片
-                            self.app_state.download.apply_progress(
+                            self.app_state.panel.download.apply_progress(
                                 ev.file.clone(),
                                 ev.index,
                                 ev.count,
                                 ev.done,
                                 ev.total.unwrap_or(0),
                             );
-                            self.app_state.download.push_log(human);
+                            self.app_state.panel.download.push_log(human);
                             self.redraw(WinId::Panel);
                         }
                     }
@@ -982,7 +1000,7 @@ impl MultiWindowApp {
                 // ── 启动流：下载失败（可重试；恢复控件 / 显示"关闭"按钮）──
                 lt_proto::UiEvent::DownloadFailed { kind, message } => {
                     let failed_line = lt_i18n::t("download_failed").replace("{error}", &message);
-                    match &mut self.app_state.startup {
+                    match &mut self.app_state.startup.flow {
                         StartupFlow::Wizard(w) => {
                             w.phase = crate::state::WizardPhase::Failed;
                             push_log_line(&mut w.log, failed_line);
@@ -993,17 +1011,17 @@ impl MultiWindowApp {
                         }
                         StartupFlow::Ready => {
                             // 运行期下载失败：分类提示 + 历史日志收进卡片（P0-1/P1-6）
-                            let mut log = match &self.app_state.download {
+                            let mut log = match &self.app_state.panel.download {
                                 DownloadUiState::Downloading { log, .. }
                                 | DownloadUiState::Cancelled { log }
                                 | DownloadUiState::Failed { log, .. } => log.clone(),
                                 _ => Vec::new(),
                             };
                             log.push(failed_line.clone());
-                            self.app_state.download =
+                            self.app_state.panel.download =
                                 DownloadUiState::Failed { kind, detail: message, log };
                             // DL-6/F12：磁盘内容已变，探测缓存失效
-                            self.app_state.panel.cache_probe = None;
+                            self.app_state.panel.state.cache_probe = None;
                             self.redraw(WinId::Panel);
                         }
                     }
@@ -1012,17 +1030,17 @@ impl MultiWindowApp {
                 // ── 下载取消（DL-4/D-23：卡片进「已取消，进度已保留」态）──
                 lt_proto::UiEvent::DownloadCancelled => {
                     // 启动流（向导/缺模型）无取消入口，仅运行期卡片处理
-                    if let StartupFlow::Ready = self.app_state.startup {
-                        let mut log = match &self.app_state.download {
+                    if let StartupFlow::Ready = self.app_state.startup.flow {
+                        let mut log = match &self.app_state.panel.download {
                             DownloadUiState::Downloading { log, .. }
                             | DownloadUiState::Cancelled { log }
                             | DownloadUiState::Failed { log, .. } => log.clone(),
                             _ => Vec::new(),
                         };
                         log.push(lt_i18n::t("download_cancelled_title").to_string());
-                        self.app_state.download = DownloadUiState::Cancelled { log };
+                        self.app_state.panel.download = DownloadUiState::Cancelled { log };
                         // DL-6/F12：磁盘内容已变，探测缓存失效
-                        self.app_state.panel.cache_probe = None;
+                        self.app_state.panel.state.cache_probe = None;
                         self.redraw(WinId::Panel);
                     }
                 }
@@ -1031,13 +1049,14 @@ impl MultiWindowApp {
                     // DL-4/DEC-4：UI 是 settings 事实源，不再用事件载荷覆盖本状态
                     //（F6 回踩）；落盘走单写者 shell.persist_settings——启动流在此
                     // 发 PersistSettings，运行期由 AppShell 重发 SwitchEngine 顺带落盘
-                    if !matches!(self.app_state.startup, StartupFlow::Ready) {
+                    if !matches!(self.app_state.startup.flow, StartupFlow::Ready) {
                         let s = self.app_state.settings.clone();
                         self.app_state
+                            .session
                             .send_cmd(lt_proto::Cmd::PersistSettings(Box::new(s)));
                     }
                     let done_line = lt_i18n::t("download_complete");
-                    match &mut self.app_state.startup {
+                    match &mut self.app_state.startup.flow {
                         StartupFlow::Wizard(w) => {
                             push_log_line(&mut w.log, done_line);
                             w.phase = crate::state::WizardPhase::Done;
@@ -1049,15 +1068,16 @@ impl MultiWindowApp {
                         StartupFlow::Ready => {
                             // 运行期下载成功：卡片回到已缓存（探测缓存已失效，
                             // 下一次渲染重扫磁盘翻转）+ 引擎热切换由 AppShell 处理
-                            self.app_state.download = DownloadUiState::Idle;
-                            self.app_state.panel.cache_probe = None;
+                            self.app_state.panel.download = DownloadUiState::Idle;
+                            self.app_state.panel.state.cache_probe = None;
                             self.redraw(WinId::Panel);
                         }
                     }
                     // 原版 QTimer.singleShot(500, accept)：安排 500ms 收尾节拍
-                    self.app_state.cancel_setup_tick();
+                    self.app_state.startup.cancel_tick(&mut self.app_state.session);
                     self.app_state
-                        .schedule_setup_tick(Duration::from_millis(500));
+                        .startup
+                        .schedule_tick(&mut self.app_state.session, Duration::from_millis(500));
                     self.redraw_setup();
                 }
                 // 日志行（常驻桥接线程全程转发 → 日志窗；级别过滤在窗口状态内）。
@@ -1065,19 +1085,19 @@ impl MultiWindowApp {
                 // 向导日志 / 识别页下载卡片（原 DownloadProgress 的日志面）
                 lt_proto::UiEvent::LogLine { level, target, msg } => {
                     if target == "download" {
-                        match &mut self.app_state.startup {
+                        match &mut self.app_state.startup.flow {
                             StartupFlow::Wizard(w) => push_log_line(&mut w.log, msg.clone()),
                             StartupFlow::DownloadMissing { log, .. } => {
                                 push_log_line(log, msg.clone())
                             }
                             StartupFlow::Ready => {
-                                self.app_state.download.push_log(msg.clone());
+                                self.app_state.panel.download.push_log(msg.clone());
                                 self.redraw(WinId::Panel);
                             }
                         }
                         self.redraw_setup();
                     }
-                    if self.app_state.logwin.push(crate::state::LogLineEntry {
+                    if self.app_state.log.logwin.push(crate::state::LogLineEntry {
                         time: chrono::Local::now().format("%H:%M:%S").to_string(),
                         level,
                         target,
@@ -1087,12 +1107,8 @@ impl MultiWindowApp {
                         // LT-5：面板「日志」tab 与日志窗共用同一缓冲——该 tab
                         // 正在展示时一并重绘，否则面板无输入事件不刷新，新日志
                         // 落不到画面（观感为"日志卡住"）
-                        if self.app_state.panel.page == PanelPage::Log
-                            && self
-                                .app_state
-                                .visible
-                                .get(&WinId::Panel)
-                                .copied()
+                        if self.app_state.panel.state.page == PanelPage::Log
+                            && self.visible.get(&WinId::Panel).copied()
                                 .unwrap_or(false)
                         {
                             self.redraw(WinId::Panel);
@@ -1103,17 +1119,17 @@ impl MultiWindowApp {
                 // 运行态 + 完成提示——替代 LogLine[benchmark] + 完成哨兵）──
                 lt_proto::UiEvent::Bench(ev) => match ev {
                     lt_proto::BenchEvent::Line(l) => {
-                        self.app_state.push_bench_line(l);
+                        self.app_state.bench.push_line(l);
                         self.redraw(WinId::Benchmark);
                     }
                     lt_proto::BenchEvent::Finished { ok, elapsed_ms } => {
-                        self.app_state.push_bench_line(format!(
+                        self.app_state.bench.push_line(format!(
                             "=== {} ({elapsed_ms}ms) ===",
                             lt_i18n::t("bench_done_title")
                         ));
                         self.redraw(WinId::Benchmark);
-                        if self.app_state.bench_running {
-                            self.app_state.bench_running = false;
+                        if self.app_state.bench.running {
+                            self.app_state.bench.running = false;
                             tracing::info!("性能基准完成（ok={ok}，{elapsed_ms}ms）");
                             // D-33/H-5：完成提示改原生通知（原位 rfd 同步框
                             // 在事件循环线程内阻塞）
@@ -1182,15 +1198,13 @@ impl MultiWindowApp {
                 }
                 // ── 模型加载对话框打开（标题固定 "LiveTranslate"）──
                 lt_proto::UiEvent::ModelLoadStart(label) => {
-                    self.app_state.load_dialog = Some(label);
+                    self.app_state.startup.load_dialog = Some(label);
                     self.set_visible(WinId::Setup, true);
                     self.set_setup_title("LiveTranslate");
                     self.redraw_setup();
                 }
                 // ── 模型加载结束：关闭加载框（仅 load_dialog 显示中才动作）──
                 lt_proto::UiEvent::ModelLoadDone { .. } => self.close_load_dialog(),
-                // M1：其余管道事件尚未接入（M2 起逐个接线）；先落日志防黑洞
-                other => tracing::debug!("UI 事件（待接线）: {other:?}"),
         }
     }
 
@@ -1198,19 +1212,15 @@ impl MultiWindowApp {
     /// 日志窗 + 面板日志 tab 的统一入缓冲/重绘入口（与 LogLine 臂同款刷新
     /// 语义：任一视图在展示时都要同帧重绘，否则无输入事件不刷新——观感"日志卡住"）
     fn push_log_line(&mut self, level: u8, target: &str, msg: &str) {
-        if self.app_state.logwin.push(crate::state::LogLineEntry {
+        if self.app_state.log.logwin.push(crate::state::LogLineEntry {
             time: chrono::Local::now().format("%H:%M:%S").to_string(),
             level,
             target: target.to_string(),
             msg: msg.to_string(),
         }) {
             self.redraw(WinId::Log);
-            if self.app_state.panel.page == PanelPage::Log
-                && self
-                    .app_state
-                    .visible
-                    .get(&WinId::Panel)
-                    .copied()
+            if self.app_state.panel.state.page == PanelPage::Log
+                && self.visible.get(&WinId::Panel).copied()
                     .unwrap_or(false)
             {
                 self.redraw(WinId::Panel);
@@ -1226,7 +1236,7 @@ impl MultiWindowApp {
 
     /// 消费 UI 帧入队的窗口动作（run_frame 尾部调用；winit 句柄操作在此）
     fn process_actions(&mut self) {
-        for (win, action) in self.app_state.drain_actions() {
+        for (win, action) in self.app_state.session.drain_actions() {
             let Some(hw) = self.find(win) else { continue };
             let window = hw.window.clone();
             match action {
@@ -1243,6 +1253,11 @@ impl MultiWindowApp {
                 WinAction::ShowPanel => {
                     self.set_visible(WinId::Panel, true);
                 }
+                // W5：跨域"打开面板某页"意图（字幕窗"打开设置"）——根消费
+                WinAction::OpenPanelPage(page) => {
+                    self.app_state.panel.state.page = page;
+                    self.set_visible(WinId::Panel, true);
+                }
                 WinAction::HidePanel => {
                     // D-33/H-3：确认模态取消后恢复临时显示的面板
                     self.set_visible(WinId::Panel, false);
@@ -1256,30 +1271,31 @@ impl MultiWindowApp {
                     self.set_visible(WinId::Subtitle, vis);
                     if vis {
                         // WP-1：首次开启弹拖动提示（原版 _subwin_notified 会话内一次性）
-                        if self.app_state.take_subtitle_hint() {
+                        if self.app_state.subtitle.take_subtitle_hint() {
                             crate::notifications::show_subtitle_hint();
                         }
                         // D-36：可见即续 100ms 分区穿透/悬停轮询（不再仅穿透开启时）
-                        self.app_state.schedule_subtitle_window_poll();
+                        self.app_state.subtitle.schedule_window_poll(&mut self.app_state.session);
                     }
                 }
                 WinAction::ApplyOverlayFlags => {
                     self.apply_overlay_flags();
                 }
                 WinAction::ToggleMode => {
-                    let compact = self.app_state.overlay.mode == crate::state::OverlayMode::Compact;
+                    let compact = self.app_state.overlay.state.mode == crate::state::OverlayMode::Compact;
                     let cur_h = window
                         .inner_size()
                         .to_logical::<f32>(window.scale_factor())
                         .height;
                     let (from, to) = if compact {
-                        self.app_state.overlay.height_before_compact = Some(cur_h);
+                        self.app_state.overlay.state.height_before_compact = Some(cur_h);
                         (cur_h, 200.0) // 200 = 原版 minimumHeight
                     } else {
                         (
                             cur_h,
                             self.app_state
                                 .overlay
+                                .state
                                 .height_before_compact
                                 .unwrap_or(500.0),
                         )
@@ -1288,7 +1304,7 @@ impl MultiWindowApp {
                     if (from - to).abs() < 10.0 {
                         self.enqueue_height(to);
                     } else {
-                        self.app_state.overlay.anim = Some(crate::state::HeightAnim {
+                        self.app_state.overlay.state.anim = Some(crate::state::HeightAnim {
                             from,
                             to,
                             start: Instant::now(),
@@ -1324,14 +1340,14 @@ impl MultiWindowApp {
                             };
                             Some((pt.x - pos.x, pt.y - pos.y))
                         });
-                        self.app_state.subtitle.drag_grab = grab;
+                        self.app_state.subtitle.state.drag_grab = grab;
                     }
-                    self.app_state.subtitle.dragging = true;
+                    self.app_state.subtitle.state.dragging = true;
                     // 拖动期间恒非穿透（穿透轮询见 poll_subtitle_window 的 dragging 豁免）
                     Self::set_window_transparent(&window, false);
-                    if self.app_state.subtitle.drag_grab.is_none() {
+                    if self.app_state.subtitle.state.drag_grab.is_none() {
                         // 抓握记录失败（GetCursorPos/窗位异常）：立即收尾，不悬空拖动态
-                        self.app_state.subtitle.dragging = false;
+                        self.app_state.subtitle.state.dragging = false;
                     }
                 }
                 WinAction::SubtitleDragEnd => {
@@ -1341,10 +1357,11 @@ impl MultiWindowApp {
                             let _ = ::windows::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture();
                         };
                     }
-                    self.app_state.subtitle.dragging = false;
-                    self.app_state.subtitle.drag_grab = None;
+                    self.app_state.subtitle.state.dragging = false;
+                    self.app_state.subtitle.state.drag_grab = None;
                     // 落点钳制（多屏钳回 + 防抖保存；经既有路径触发重叠避让）
                     self.app_state
+                        .session
                         .enqueue_action(WinId::Subtitle, WinAction::ClampSubtitlePos);
                 }
                 WinAction::SetSubtitleHeight(h) => {
@@ -1396,7 +1413,7 @@ impl MultiWindowApp {
                             f64::from(y),
                         ));
                     }
-                    self.app_state.schedule_subtitle_pos_save((x, y));
+                    self.app_state.subtitle.schedule_pos_save(&mut self.app_state.session, (x, y));
                 }
                 WinAction::ResetSubtitlePos => {
                     // D-36 字幕窗复位（顶条右键菜单/字幕页按钮）：回 (100,100)，
@@ -1407,8 +1424,9 @@ impl MultiWindowApp {
                     }
                     self.app_state.settings.subtitle_mode.window_x = Some(100);
                     self.app_state.settings.subtitle_mode.window_y = Some(100);
-                    self.app_state.subtitle.last_saved_pos = Some((100, 100));
+                    self.app_state.subtitle.state.last_saved_pos = Some((100, 100));
                     self.app_state
+                        .session
                         .send_cmd(lt_proto::Cmd::PersistSettings(Box::new(
                             self.app_state.settings.clone(),
                         )));
@@ -1444,8 +1462,9 @@ impl MultiWindowApp {
                     s.subtitle_mode.window_y = Some(100);
                     s.overlay_x = Some(geo.0);
                     s.overlay_y = Some(geo.1);
-                    self.app_state.subtitle.last_saved_pos = Some((100, 100));
+                    self.app_state.subtitle.state.last_saved_pos = Some((100, 100));
                     self.app_state
+                        .session
                         .send_cmd(lt_proto::Cmd::PersistSettings(Box::new(
                             self.app_state.settings.clone(),
                         )));
@@ -1453,16 +1472,16 @@ impl MultiWindowApp {
             }
         }
         // 动画推进：结束帧落定终值并清除（进行中由 UI 帧投递 SetHeight）
-        if let Some(anim) = self.app_state.overlay.anim {
+        if let Some(anim) = self.app_state.overlay.state.anim {
             if anim.current(Instant::now()).is_none() {
                 let target = anim.to;
-                self.app_state.overlay.anim = None;
+                self.app_state.overlay.state.anim = None;
                 self.enqueue_height(target);
             }
         }
         // D-37：字幕窗拖动进行中每帧推进（光标绝对跟踪；帧由捕获的鼠标移动
         // 事件持续供给——request_redraw → run_frame 回环）
-        if self.app_state.subtitle.dragging {
+        if self.app_state.subtitle.state.dragging {
             self.update_subtitle_drag();
         }
     }
@@ -1525,7 +1544,7 @@ impl MultiWindowApp {
         if self.find(WinId::Overlay).is_none() {
             return;
         }
-        let visible = |id: WinId| self.app_state.visible.get(&id).copied().unwrap_or(false);
+        let visible = |id: WinId| self.visible.get(&id).copied().unwrap_or(false);
         if !visible(WinId::Subtitle) || !visible(WinId::Overlay) {
             return;
         }
@@ -1551,7 +1570,7 @@ impl MultiWindowApp {
                     f64::from(nx),
                     f64::from(ny),
                 ));
-            self.app_state.schedule_subtitle_pos_save((nx, ny));
+            self.app_state.subtitle.schedule_pos_save(&mut self.app_state.session, (nx, ny));
         }
     }
 
@@ -1606,16 +1625,17 @@ impl MultiWindowApp {
         let w = logical.width as u32;
         let h = logical.height as u32;
         let geo = (x, y, w, h);
-        self.app_state.overlay.pos_dirty_since = None;
-        if self.app_state.overlay.last_saved_geo == Some(geo) {
+        self.app_state.overlay.state.pos_dirty_since = None;
+        if self.app_state.overlay.state.last_saved_geo == Some(geo) {
             return;
         }
-        self.app_state.overlay.last_saved_geo = Some(geo);
+        self.app_state.overlay.state.last_saved_geo = Some(geo);
         self.app_state.settings.overlay_x = Some(x);
         self.app_state.settings.overlay_y = Some(y);
         self.app_state.settings.overlay_w = Some(w);
         self.app_state.settings.overlay_h = Some(h);
         self.app_state
+            .session
             .send_cmd(lt_proto::Cmd::PersistSettings(Box::new(
                 self.app_state.settings.clone(),
             )));
@@ -1634,14 +1654,15 @@ impl MultiWindowApp {
             return;
         };
         let p = ((pos.x as f32 / scale) as i32, (pos.y as f32 / scale) as i32);
-        self.app_state.subtitle.pos_dirty_since = None;
-        if self.app_state.subtitle.last_saved_pos == Some(p) {
+        self.app_state.subtitle.state.pos_dirty_since = None;
+        if self.app_state.subtitle.state.last_saved_pos == Some(p) {
             return;
         }
-        self.app_state.subtitle.last_saved_pos = Some(p);
+        self.app_state.subtitle.state.last_saved_pos = Some(p);
         self.app_state.settings.subtitle_mode.window_x = Some(p.0);
         self.app_state.settings.subtitle_mode.window_y = Some(p.1);
         self.app_state
+            .session
             .send_cmd(lt_proto::Cmd::PersistSettings(Box::new(
                 self.app_state.settings.clone(),
             )));
@@ -1659,7 +1680,7 @@ impl MultiWindowApp {
             return;
         };
         let window = hw.window.clone();
-        let enabled = self.app_state.ov_click_through;
+        let enabled = self.app_state.overlay.ov_click_through;
         if !enabled {
             Self::set_window_transparent(&window, false);
             return;
@@ -1669,6 +1690,7 @@ impl MultiWindowApp {
         // 后下一拍（50ms）自动恢复光标判定（节拍在 ov_click_through 期间持续续拍）。
         let modal_on_overlay = self
             .app_state
+            .modal
             .confirm
             .as_ref()
             .map(|c| c.host == WinId::Overlay)
@@ -1688,7 +1710,7 @@ impl MultiWindowApp {
         let logical = window.inner_size().to_logical::<f32>(window.scale_factor());
         let local_x = (pt.x as f64 - win_pos.x as f64) / scale;
         let local_y = (pt.y as f64 - win_pos.y as f64) / scale;
-        let header_px = self.app_state.overlay.header_px as f64;
+        let header_px = self.app_state.overlay.state.header_px as f64;
         let in_header = local_x >= 0.0
             && local_x <= logical.width as f64
             && local_y >= 0.0
@@ -1709,18 +1731,14 @@ impl MultiWindowApp {
             return;
         };
         let window = hw.window.clone();
-        let visible = *self
-            .app_state
-            .visible
-            .get(&WinId::Subtitle)
-            .unwrap_or(&false);
+        let visible = *self.visible.get(&WinId::Subtitle).unwrap_or(&false);
         if !visible {
             return;
         }
         // D-37：拖动进行中恒非穿透（光标会随时进入正文区甚至窗外——分区判定
         // 会把 TRANSPARENT 重新挂上，打断 SetCapture 供给的输入链；豁免直到
         // SubtitleDragEnd 收尾）
-        if self.app_state.subtitle.dragging {
+        if self.app_state.subtitle.state.dragging {
             Self::set_window_transparent(&window, false);
             return;
         }
@@ -1748,6 +1766,7 @@ impl MultiWindowApp {
         if self
             .app_state
             .subtitle
+            .state
             .set_toolbar_hover(zone != SubtitleZone::Outside, std::time::Instant::now())
         {
             self.redraw(WinId::Subtitle);
@@ -1802,7 +1821,7 @@ impl MultiWindowApp {
         let Some(hw) = self.find(WinId::Subtitle) else {
             return;
         };
-        let Some((gx, gy)) = self.app_state.subtitle.drag_grab else {
+        let Some((gx, gy)) = self.app_state.subtitle.state.drag_grab else {
             return;
         };
         let mut pt = POINT::default();
@@ -1822,7 +1841,7 @@ impl MultiWindowApp {
 
     /// 执行导出（原版 export_messages；rfd 保存对话框 + 三种模式行格式）
     fn run_export(&mut self, mode: &str) {
-        if self.app_state.messages.is_empty() {
+        if self.app_state.overlay.messages.is_empty() {
             // P1-4：空导出就地提示（原版仅日志；用户点了按钮必须看到反馈）。
             // D-33/H-5：改原生通知（原位 rfd 同步框阻塞事件循环线程）。
             if let Err(e) = crate::notifications::show(
@@ -1853,7 +1872,7 @@ impl MultiWindowApp {
             return;
         };
         let mut lines = Vec::new();
-        for msg in &self.app_state.messages {
+        for msg in &self.app_state.overlay.messages {
             let ts = &msg.timestamp;
             let orig = msg.original.trim();
             let trans = msg.translation.as_deref().unwrap_or("").trim();
@@ -1885,18 +1904,49 @@ impl MultiWindowApp {
     /// 悬浮窗监视节拍（overlay 行为不变）+ 启动流节拍（向导倒计时/收尾延迟）
     /// + 字幕窗 100ms 光标感知轮询（D-36：可见即续，穿透开关不再决定链的存续）
     pub fn kick_ticks(&mut self) {
-        self.app_state.schedule_monitor_tick(WinId::Overlay);
-        self.app_state.kick_setup_tick();
-        if self.app_state.ov_click_through {
-            self.app_state.schedule_click_through_tick();
+        self.app_state.session.schedule_tick(
+            WinId::Overlay,
+            TickKind::Monitor,
+            Instant::now() + Duration::from_secs(1),
+        );
+        self.app_state.startup.kick_tick(&mut self.app_state.session);
+        if self.app_state.overlay.ov_click_through {
+            self.app_state
+                .overlay
+                .schedule_click_through_tick(&mut self.app_state.session);
         }
-        if *self
-            .app_state
-            .visible
-            .get(&WinId::Subtitle)
-            .unwrap_or(&false)
-        {
-            self.app_state.schedule_subtitle_window_poll();
+        if *self.visible.get(&WinId::Subtitle).unwrap_or(&false) {
+            self.app_state
+                .subtitle
+                .schedule_window_poll(&mut self.app_state.session);
+        }
+    }
+
+    /// 音频监视 33ms 节拍排班（W2/D-67：快照格轮询——悬浮窗可见时持续续拍）
+    fn schedule_audio_monitor_tick(&mut self) {
+        let at = Instant::now() + Duration::from_millis(33);
+        self.app_state
+            .session
+            .schedule_tick(WinId::Overlay, TickKind::AudioMonitor, at);
+    }
+
+    /// 1s 节流的系统采样（进程 CPU/RSS，对照原版 psutil.Process）；
+    /// 在监视节拍触发时调用。CPU 占用需两次采样才有意义，首次为 0 属预期。
+    fn sample_system(&mut self) {
+        let now = Instant::now();
+        if !self.sys_last.map_or(true, |t| {
+            now.duration_since(t) >= std::time::Duration::from_secs(1)
+        }) {
+            return;
+        }
+        self.sys_last = Some(now);
+        let sys = self.sys.get_or_insert_with(sysinfo::System::new);
+        let pid = sysinfo::Pid::from_u32(std::process::id());
+        sys.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[pid]), true);
+        let m = &mut self.app_state.overlay.monitor;
+        if let Some(proc) = sys.process(pid) {
+            m.cpu = proc.cpu_usage();
+            m.ram_mb = proc.memory() as f32 / 1024.0 / 1024.0;
         }
     }
 }
@@ -1944,7 +1994,7 @@ impl ApplicationHandler<UiMsg> for MultiWindowApp {
                     self.app_state.settings.subtitle_mode.enabled = false;
                     // R7（架构 2.0 W1）：与字幕窗顶条隐藏/穿透路径同款登记防抖
                     // 脏标记，enabled=false 才会落盘（否则重启后字幕窗复活）
-                    crate::windows::panel::mark_settings_dirty(&mut self.app_state);
+                    crate::windows::panel::mark_settings_dirty(&mut self.app_state.session);
                 }
                 self.set_visible(id, false);
                 self.sync_tray_checks();
@@ -1961,12 +2011,17 @@ impl ApplicationHandler<UiMsg> for MultiWindowApp {
                 match id {
                     WinId::Overlay => {
                         // 拖动/移动结束防抖保存（原版 moveEvent → _schedule_pos_save）
-                        self.app_state.schedule_pos_save(self.overlay_geo());
+                        let geo = self.overlay_geo();
+                        self.app_state
+                            .overlay
+                            .schedule_pos_save(&mut self.app_state.session, geo);
                     }
                     WinId::Subtitle => {
                         // 字幕窗移动防抖保存（原版 mouseReleaseEvent → position_changed）
+                        let pos = self.subtitle_pos();
                         self.app_state
-                            .schedule_subtitle_pos_save(self.subtitle_pos());
+                            .subtitle
+                            .schedule_pos_save(&mut self.app_state.session, pos);
                     }
                     _ => {}
                 }
@@ -1993,17 +2048,31 @@ impl ApplicationHandler<UiMsg> for MultiWindowApp {
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         // 0) 缺模型下载失败后点"关闭"：退出应用（原版 reject → main 返回）
-        if self.app_state.quit_requested {
+        if self.app_state.modal.quit_requested {
             tracing::info!("退出请求（启动流对话框关闭）");
             event_loop.exit();
             return;
         }
+        // 0.5) W5：设置变更意图消费（跨域请求 → 面板 300ms 防抖登记）——
+        // 字幕窗/确认模态/面板页的 mark_settings_dirty 均收敛于此（原版
+        // _auto_save 的宿主侧落点；登记后 PanelApply 节拍到期整体重放）
+        if self.app_state.session.take_settings_apply_pending() {
+            crate::state::register_panel_apply(
+                &mut self.app_state.panel,
+                &mut self.app_state.session,
+                Instant::now(),
+            );
+        }
         // 1) 到期节拍按 kind 分派（同窗口可并存多种节拍）
-        for tick in self.app_state.drain_due_ticks() {
+        for tick in self.app_state.session.drain_due_ticks() {
             match tick.kind {
                 TickKind::Monitor => {
-                    self.app_state.sample_system();
-                    self.app_state.schedule_monitor_tick(WinId::Overlay);
+                    self.sample_system();
+                    self.app_state.session.schedule_tick(
+                        WinId::Overlay,
+                        TickKind::Monitor,
+                        Instant::now() + Duration::from_secs(1),
+                    );
                     self.redraw(WinId::Overlay);
                 }
                 // W2/D-67：音频监视快照格（~33ms 读格，seq 变了才重绘；
@@ -2013,19 +2082,19 @@ impl ApplicationHandler<UiMsg> for MultiWindowApp {
                         let snap = cell.load_full();
                         if snap.seq != self.monitor_seq {
                             self.monitor_seq = snap.seq;
-                            let m = &mut self.app_state.monitor;
+                            let m = &mut self.app_state.overlay.monitor;
                             m.rms = snap.rms;
                             m.vad = snap.vad;
                             m.mic_rms = snap.mic_rms;
                             self.redraw(WinId::Overlay);
                         }
                     }
-                    if self.app_state.visible.get(&WinId::Overlay).copied().unwrap_or(false) {
-                        self.app_state.schedule_audio_monitor_tick();
+                    if self.visible.get(&WinId::Overlay).copied().unwrap_or(false) {
+                        self.schedule_audio_monitor_tick();
                     }
                 }
                 TickKind::StreamFlush => {
-                    self.app_state.flush_streams();
+                    self.app_state.overlay.flush_streams();
                     self.redraw(WinId::Overlay);
                 }
                 TickKind::PosSave => match tick.win {
@@ -2037,19 +2106,18 @@ impl ApplicationHandler<UiMsg> for MultiWindowApp {
                         // 字幕窗 100ms 分区穿透 + 顶条悬停轮询（D-36：可见即续拍，
                         // 穿透开关不再决定链的存续——悬停工具条在非穿透态也需要）
                         self.poll_subtitle_window();
-                        if *self
-                            .app_state
-                            .visible
-                            .get(&WinId::Subtitle)
-                            .unwrap_or(&false)
-                        {
-                            self.app_state.schedule_subtitle_window_poll();
+                        if *self.visible.get(&WinId::Subtitle).unwrap_or(&false) {
+                            self.app_state
+                                .subtitle
+                                .schedule_window_poll(&mut self.app_state.session);
                         }
                     }
                     _ => {
                         self.poll_click_through();
-                        if self.app_state.ov_click_through {
-                            self.app_state.schedule_click_through_tick();
+                        if self.app_state.overlay.ov_click_through {
+                            self.app_state
+                                .overlay
+                                .schedule_click_through_tick(&mut self.app_state.session);
                         }
                     }
                 },
@@ -2065,6 +2133,7 @@ impl ApplicationHandler<UiMsg> for MultiWindowApp {
                     if self
                         .app_state
                         .subtitle
+                        .state
                         .on_auto_hide_timeout(&anim, dur, Instant::now())
                     {
                         self.redraw(WinId::Subtitle);
@@ -2072,7 +2141,10 @@ impl ApplicationHandler<UiMsg> for MultiWindowApp {
                 }
                 // 字幕窗排队句子到点（原版 _pending_segment_timers 的 singleShot 到期）
                 TickKind::SubtitlePending => {
-                    if self.app_state.subtitle_flush_pending() {
+                    if self.app_state.subtitle.flush_pending(
+                        &mut self.app_state.session,
+                        &self.app_state.settings,
+                    ) {
                         self.redraw(WinId::Subtitle);
                     }
                 }
@@ -2083,11 +2155,12 @@ impl ApplicationHandler<UiMsg> for MultiWindowApp {
                 // 翻译页 prompt 600ms 防抖到期（原版 _prompt_debounce → _apply_prompt：
                 // system_prompt 已实时写入 settings，此处重建活动模型翻译器）
                 TickKind::PromptApply => {
-                    if self.app_state.take_due_prompt_apply(Instant::now()) {
+                    if self.app_state.panel.state.take_prompt_apply_due(Instant::now()) {
                         let s = &self.app_state;
                         if let Some(cfg) = s.settings.models.get(s.settings.active_model).cloned() {
                             tracing::info!("System prompt updated（600ms 防抖到期，重建翻译器）");
                             self.app_state
+                                .session
                                 .send_cmd(lt_proto::Cmd::SwitchTranslator(Box::new(cfg)));
                         }
                     }
@@ -2097,6 +2170,7 @@ impl ApplicationHandler<UiMsg> for MultiWindowApp {
         // 2) 空闲策略：等待最近节拍或事件
         let deadline = self
             .app_state
+            .session
             .next_tick()
             .unwrap_or_else(|| Instant::now() + Duration::from_secs(3600));
         event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
@@ -2149,16 +2223,16 @@ fn clear_color_for(id: WinId) -> [f32; 4] {
 /// 背景精确等价，文本/控件随之乘同系数（原版文本仅乘 window_opacity，
 /// 默认 95% 下相差 ≤5.6pp，实机不可辨；transparent 预设文本偏淡为已知偏差）。
 #[cfg(windows)]
-fn overlay_layered_alpha(s: &AppState) -> u8 {
-    let st = &s.settings.style;
+fn overlay_layered_alpha(s: &Settings) -> u8 {
+    let st = &s.style;
     ((st.window_opacity.min(100) * st.bg_opacity.min(255)) / 100) as u8
 }
 
 /// 字幕窗整窗不透明度：原版无 setWindowOpacity，仅背景 QSS alpha。
 /// bg_opacity=0 全透明模式退化为不透明底+文字（键控仍镂空圆角空区，已知偏差）。
 #[cfg(windows)]
-fn subtitle_layered_alpha(s: &AppState) -> u8 {
-    let sm = &s.settings.subtitle_mode;
+fn subtitle_layered_alpha(s: &Settings) -> u8 {
+    let sm = &s.subtitle_mode;
     if sm.bg_opacity == 0 {
         255
     } else {

@@ -13,7 +13,7 @@
 //! - "性能基准"按钮在页头（mod.rs），点击仅记日志（窗口随 M4.4 接入）。
 
 use super::{group_card, hint_line, mark_settings_dirty, send_switch_engine, Palette};
-use crate::state::{AppState, DeviceCache, DownloadUiState};
+use crate::state::{DeviceCache, DownloadUiState, PanelUi, SessionView, Settings};
 use egui::{RichText, Ui};
 use lt_proto::{AudioDeviceChoice, MicDeviceChoice};
 
@@ -295,9 +295,9 @@ pub fn format_size(size_bytes: u64) -> String {
 // ── UI ──
 
 /// 识别页 UI 总入口
-pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
+pub fn page(ui: &mut Ui, panel: &mut PanelUi, session: &mut SessionView, settings: &mut Settings, pal: &Palette) {
     // N3/N4：识别页偏离默认值提示 + 恢复本页（ui_lang 为语言偏好，不提示不恢复）
-    let diffs = crate::panel_diff::diff_paths(&state.settings);
+    let diffs = crate::panel_diff::diff_paths(settings);
     let page_diffs: Vec<&str> = diffs
         .iter()
         .filter(|p| {
@@ -309,16 +309,16 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
         .collect();
     if !page_diffs.is_empty() {
         super::reset_toolbar(ui, pal, page_diffs.len(), &page_diffs.join("、"), |_| {
-            restore_vad_page(state);
+            restore_vad_page(settings, session);
         });
     }
 
-    let engine = state.settings.asr_engine.clone();
+    let engine = settings.asr_engine.clone();
     let is_funasr = engine == "funasr";
 
     // 设备枚举缓存：首次进入识别页时构建（UI 线程临时 WasapiBackend，COM 自 init）
-    if state.panel.devices.is_none() {
-        state.panel.devices = Some(enumerate_devices());
+    if panel.state.devices.is_none() {
+        panel.state.devices = Some(enumerate_devices());
     }
 
     // ── ASR 引擎（原版 asr_group）──
@@ -335,21 +335,21 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
                         let selected = i == eng_idx;
                         let label = engine_display(id);
                         if ui.selectable_label(selected, label).clicked() && !selected {
-                            state.settings.asr_engine = (*id).to_string();
-                            send_switch_engine(state);
+                            settings.asr_engine = (*id).to_string();
+                            send_switch_engine(settings, session);
                         }
                     }
                 });
         });
         // 状态提示行（原版 _engine_status_label；安装/变体按钮为 Python 打包专属，省略）
-        let (status_text, status_color) = engine_status(state, &engine, pal);
+        let (status_text, status_color) = engine_status(settings, &engine, pal);
         ui.add_space(2.0);
         ui.label(RichText::new(status_text).size(11.0).color(status_color));
 
         ui.add_space(4.0);
         // 识别语言（原版 _asr_lang：asr_language_changed → Cmd::SetAsrLanguage）
         let langs = asr_lang_items();
-        let lang_idx = asr_lang_index_for(&state.settings.asr_language);
+        let lang_idx = asr_lang_index_for(&settings.asr_language);
         ui.horizontal(|ui| {
             ui.label(
                 RichText::new(format!("{} ", lt_i18n::t("label_language_hint"))).color(pal.text),
@@ -363,7 +363,7 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
                             && lang_idx != i
                         {
                             // 即时命令：shell 写 settings.asr_language + 持久化
-                            state.send_cmd(lt_proto::Cmd::SetAsrLanguage(code.clone()));
+                            session.send_cmd(lt_proto::Cmd::SetAsrLanguage(code.clone()));
                         }
                     }
                 });
@@ -377,7 +377,7 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
         // FunASR 模型（仅 funasr 引擎显示；原版 _on_engine_changed_whisper_vis）
         if is_funasr {
             let items = funasr_model_items();
-            let m_idx = funasr_index_for(&state.settings.funasr_model);
+            let m_idx = funasr_index_for(&settings.funasr_model);
             ui.add_space(2.0);
             ui.horizontal(|ui| {
                 ui.label(
@@ -399,8 +399,8 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
                                 .clicked()
                                 && m_idx != i
                             {
-                                state.settings.funasr_model = item.key.to_string();
-                                send_switch_engine(state);
+                                settings.funasr_model = item.key.to_string();
+                                send_switch_engine(settings, session);
                             }
                         }
                     });
@@ -415,7 +415,7 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
         // 未缓存 → 仅落盘（缓存组下载完成后经 DownloadSucceeded 重发切换）
         if engine == "whisper" {
             let tiers = whisper_tier_items();
-            let sel_idx = whisper_tier_index_for(&state.settings.whisper_model_size);
+            let sel_idx = whisper_tier_index_for(&settings.whisper_model_size);
             ui.add_space(2.0);
             ui.horizontal(|ui| {
                 ui.label(
@@ -423,7 +423,7 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
                         .color(pal.text),
                 );
                 egui::ComboBox::from_id_salt("panel_whisper_model")
-                    .selected_text(whisper_tier_display_for(&state.settings.whisper_model_size))
+                    .selected_text(whisper_tier_display_for(&settings.whisper_model_size))
                     .width(240.0)
                     .show_ui(ui, |ui| {
                         for (i, item) in tiers.iter().enumerate() {
@@ -432,15 +432,15 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
                                 .clicked()
                                 && sel_idx != Some(i)
                             {
-                                state.settings.whisper_model_size = item.key.to_string();
-                                mark_settings_dirty(state);
+                                settings.whisper_model_size = item.key.to_string();
+                                mark_settings_dirty(session);
                                 let cached = lt_models::paths::models_dir(
-                                    state.settings.models_dir.as_deref(),
+                                    settings.models_dir.as_deref(),
                                 )
                                 .map(|d| lt_models::cache::is_whisper_cached(&d, item.key))
                                 .unwrap_or(false);
                                 if cached {
-                                    send_switch_engine(state);
+                                    send_switch_engine(settings, session);
                                 }
                             }
                         }
@@ -448,7 +448,7 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
             });
             if tiers
                 .iter()
-                .any(|t| t.slow && t.key == state.settings.whisper_model_size)
+                .any(|t| t.slow && t.key == settings.whisper_model_size)
             {
                 hint_line(ui, pal, &lt_i18n::t("whisper_slow_hint"));
             }
@@ -461,8 +461,8 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
         ui.add_space(4.0);
         // nano 无 padding 语义（原版 funasr_supports_padding: nano=false，manager 亦
         // 跳过下发）→ 滑杆仅 sensevoice 有意义，选中 nano 时隐藏（显示而无效果属误导）
-        if is_funasr && state.settings.funasr_model != "funasr-nano-2512" {
-            let mut sv = state.settings.sensevoice_pad_seconds;
+        if is_funasr && settings.funasr_model != "funasr-nano-2512" {
+            let mut sv = settings.sensevoice_pad_seconds;
             if drag_secs(
                 ui,
                 "panel_pad_sensevoice",
@@ -471,17 +471,17 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
                 0.0..=5.0,
                 true,
             ) {
-                state.settings.sensevoice_pad_seconds = sv;
-                state.send_cmd(lt_proto::Cmd::SetPadding {
+                settings.sensevoice_pad_seconds = sv;
+                session.send_cmd(lt_proto::Cmd::SetPadding {
                     engine: "funasr".into(),
                     secs: sv,
                 });
-                mark_settings_dirty(state);
+                mark_settings_dirty(session);
             }
             hint_line(ui, pal, &lt_i18n::t("sensevoice_padding_tooltip"));
         }
         if engine == "whisper" {
-            let mut wv = state.settings.whisper_pad_seconds;
+            let mut wv = settings.whisper_pad_seconds;
             if drag_secs(
                 ui,
                 "panel_pad_whisper",
@@ -490,12 +490,12 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
                 0.0..=5.0,
                 true,
             ) {
-                state.settings.whisper_pad_seconds = wv;
-                state.send_cmd(lt_proto::Cmd::SetPadding {
+                settings.whisper_pad_seconds = wv;
+                session.send_cmd(lt_proto::Cmd::SetPadding {
                     engine: "whisper".into(),
                     secs: wv,
                 });
-                mark_settings_dirty(state);
+                mark_settings_dirty(session);
             }
             hint_line(ui, pal, &lt_i18n::t("whisper_padding_tooltip"));
         }
@@ -503,7 +503,7 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
         // ── 下载源（原版 _hub_combo：ms/hf 二选一，_auto_save 落盘）──
         ui.add_space(4.0);
         let hubs = [lt_i18n::t("hub_modelscope"), lt_i18n::t("hub_huggingface")];
-        let hub_idx = if state.settings.hub == "hf" { 1 } else { 0 };
+        let hub_idx = if settings.hub == "hf" { 1 } else { 0 };
         ui.horizontal(|ui| {
             ui.label(RichText::new(format!("{} ", lt_i18n::t("label_hub"))).color(pal.text));
             egui::ComboBox::from_id_salt("panel_hub")
@@ -514,8 +514,8 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
                         if ui.selectable_label(hub_idx == i, label.clone()).clicked()
                             && hub_idx != i
                         {
-                            state.settings.hub = if i == 1 { "hf".into() } else { "ms".into() };
-                            mark_settings_dirty(state);
+                            settings.hub = if i == 1 { "hf".into() } else { "ms".into() };
+                            mark_settings_dirty(session);
                         }
                     }
                 });
@@ -523,12 +523,12 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
         // D-24/AH-6：hub=ms 但所选模型无真实 MS 源 → 诚实提示自动经 HF 镜像下载。
         // 判定从注册表派生（entry.ms.is_none()），不再手写引擎/模型键清单
         // （H10：硬编码清单漏过 whisper 档）；本地 GGML 路径自然不提示
-        if state.settings.hub == "ms" {
-            let hf_only = match state.settings.asr_engine.as_str() {
-                "funasr" => lt_models::registry::funasr_entry(&state.settings.funasr_model)
+        if settings.hub == "ms" {
+            let hf_only = match settings.asr_engine.as_str() {
+                "funasr" => lt_models::registry::funasr_entry(&settings.funasr_model)
                     .is_some_and(|e| e.ms.is_none()),
                 "whisper" => {
-                    lt_models::registry::whisper_entry_for(&state.settings.whisper_model_size)
+                    lt_models::registry::whisper_entry_for(&settings.whisper_model_size)
                         .is_some_and(|e| e.ms.is_none())
                 }
                 "qwen3" => lt_models::registry::qwen3_entry().ms.is_none(),
@@ -545,7 +545,7 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
             ui.label(RichText::new(format!("{} ", lt_i18n::t("label_ui_lang"))).color(pal.text));
             let zh = lt_i18n::t("lang_zh");
             let langs = ["English", zh.as_str()]; // 与原版 addItem(["English","中文"]) 顺序一致
-            let lang_idx = if state.settings.ui_lang == "zh" { 1 } else { 0 };
+            let lang_idx = if settings.ui_lang == "zh" { 1 } else { 0 };
             egui::ComboBox::from_id_salt("panel_ui_lang_vad")
                 .selected_text(langs[lang_idx].to_string())
                 .width(240.0)
@@ -556,8 +556,8 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
                             .clicked()
                             && lang_idx != i
                         {
-                            state.settings.ui_lang = if i == 1 { "zh".into() } else { "en".into() };
-                            mark_settings_dirty(state);
+                            settings.ui_lang = if i == 1 { "zh".into() } else { "en".into() };
+                            mark_settings_dirty(session);
                         }
                     }
                 });
@@ -567,12 +567,12 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
 
     // ── 设备组（原版 asr_group 的 audio/mic 行 + 刷新按钮；Rust 版独立成卡）──
     group_card(ui, pal, &lt_i18n::t("group_devices"), |ui| {
-        let devices = state.panel.devices.clone().unwrap_or_default();
+        let devices = panel.state.devices.clone().unwrap_or_default();
         let outputs = devices.outputs.clone();
         let inputs = devices.inputs.clone();
 
         // 扬声器（loopback）：禁用/系统默认/具名（原版 index 0/1/2+ 布局）
-        let a_idx = audio_index_for(state.settings.audio_device.as_deref(), &outputs);
+        let a_idx = audio_index_for(settings.audio_device.as_deref(), &outputs);
         ui.horizontal(|ui| {
             ui.label(RichText::new(format!("{} ", lt_i18n::t("label_audio"))).color(pal.text));
             egui::ComboBox::from_id_salt("panel_audio_device")
@@ -584,20 +584,20 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
                         .clicked()
                         && a_idx != 0
                     {
-                        apply_audio_setting(state, audio_setting_for(0, &outputs));
+                        apply_audio_setting(settings, session, audio_setting_for(0, &outputs));
                     }
                     if ui
                         .selectable_label(a_idx == 1, lt_i18n::t("system_default"))
                         .clicked()
                         && a_idx != 1
                     {
-                        apply_audio_setting(state, audio_setting_for(1, &outputs));
+                        apply_audio_setting(settings, session, audio_setting_for(1, &outputs));
                     }
                     for (i, name) in outputs.iter().enumerate() {
                         let idx = i + 2;
                         if ui.selectable_label(a_idx == idx, name.clone()).clicked() && a_idx != idx
                         {
-                            apply_audio_setting(state, Some(name.clone()));
+                            apply_audio_setting(settings, session, Some(name.clone()));
                         }
                     }
                 });
@@ -608,16 +608,16 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
                 )
                 .clicked()
             {
-                state.panel.devices = Some(enumerate_devices());
+                panel.state.devices = Some(enumerate_devices());
             }
         });
 
         // 麦克风（D-29）：显式「启用麦克风输入」勾选框 + 设备下拉（未勾选置灰）。
         // 原版为"禁用/系统默认/具名"三值下拉、禁用藏在下拉第一项 → 用户感知不到开关；
         // 勾选=true 写 __default__/具名，取消=false 写 None（后端立即停采）。
-        let m_enabled = mic_enabled_for(&state.settings.mic_device);
+        let m_enabled = mic_enabled_for(&settings.mic_device);
         // 下拉从"系统默认"起（1）；未勾选时同样显示"系统默认"预览（置灰不可交互）
-        let m_idx = mic_index_for(state.settings.mic_device.as_deref(), &inputs).max(1);
+        let m_idx = mic_index_for(settings.mic_device.as_deref(), &inputs).max(1);
         ui.horizontal(|ui| {
             let mut enabled = m_enabled;
             if ui
@@ -625,7 +625,8 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
                 .changed()
             {
                 apply_mic_setting(
-                    state,
+                    settings,
+                    session,
                     if enabled {
                         Some("__default__".into())
                     } else {
@@ -643,13 +644,13 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
                         .clicked()
                         && m_idx != 1
                     {
-                        apply_mic_setting(state, mic_setting_for(1, &inputs));
+                        apply_mic_setting(settings, session, mic_setting_for(1, &inputs));
                     }
                     for (i, name) in inputs.iter().enumerate() {
                         let idx = i + 2;
                         if ui.selectable_label(m_idx == idx, name.clone()).clicked() && m_idx != idx
                         {
-                            apply_mic_setting(state, Some(name.clone()));
+                            apply_mic_setting(settings, session, Some(name.clone()));
                         }
                     }
                 });
@@ -673,7 +674,7 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
         ];
         let mode_idx = modes
             .iter()
-            .position(|m| *m == state.settings.vad_mode)
+            .position(|m| *m == settings.vad_mode)
             .unwrap_or(0);
         let mut next = mode_idx;
         egui::ComboBox::from_id_salt("panel_vad_mode")
@@ -688,8 +689,8 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
                 }
             });
         if next != mode_idx {
-            state.settings.vad_mode = modes[next].to_string();
-            mark_settings_dirty(state);
+            settings.vad_mode = modes[next].to_string();
+            mark_settings_dirty(session);
         }
     });
 
@@ -698,15 +699,15 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
     group_card(ui, pal, &lt_i18n::t("group_silero_threshold"), |ui| {
         ui.horizontal(|ui| {
             ui.label(RichText::new(format!("{} ", lt_i18n::t("label_threshold"))).color(pal.text));
-            let mut v = state.settings.vad_threshold.clamp(0.0, 1.0);
+            let mut v = settings.vad_threshold.clamp(0.0, 1.0);
             let resp = ui.add(
                 egui::Slider::new(&mut v, 0.0..=1.0)
                     .step_by(0.05)
                     .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
             );
             if resp.changed() {
-                state.settings.vad_threshold = v;
-                mark_settings_dirty(state);
+                settings.vad_threshold = v;
+                mark_settings_dirty(session);
             }
         });
     });
@@ -715,22 +716,22 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
     group_card(ui, pal, &lt_i18n::t("group_energy_threshold"), |ui| {
         ui.horizontal(|ui| {
             ui.label(RichText::new(format!("{} ", lt_i18n::t("label_threshold"))).color(pal.text));
-            let mut v = state.settings.energy_threshold.clamp(0.001, 0.1);
+            let mut v = settings.energy_threshold.clamp(0.001, 0.1);
             let resp = ui.add(
                 egui::Slider::new(&mut v, 0.001..=0.1)
                     .step_by(0.001)
                     .custom_formatter(|v, _| format!("{:.0}\u{2030}", v * 1000.0)),
             );
             if resp.changed() {
-                state.settings.energy_threshold = v;
-                mark_settings_dirty(state);
+                settings.energy_threshold = v;
+                mark_settings_dirty(session);
             }
         });
     });
 
     // ── 时间参数（原版 timing_group：最短/最长语句、静音模式+时长、增量识别）──
     group_card(ui, pal, &lt_i18n::t("group_timing"), |ui| {
-        let mut min_v = state.settings.min_speech_duration;
+        let mut min_v = settings.min_speech_duration;
         if drag_secs(
             ui,
             "panel_min_speech",
@@ -739,10 +740,10 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
             0.1..=5.0,
             true,
         ) {
-            state.settings.min_speech_duration = min_v;
-            mark_settings_dirty(state);
+            settings.min_speech_duration = min_v;
+            mark_settings_dirty(session);
         }
-        let mut max_v = state.settings.max_speech_duration;
+        let mut max_v = settings.max_speech_duration;
         if drag_secs(
             ui,
             "panel_max_speech",
@@ -751,15 +752,15 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
             2.0..=30.0,
             true,
         ) {
-            state.settings.max_speech_duration = max_v;
-            mark_settings_dirty(state);
+            settings.max_speech_duration = max_v;
+            mark_settings_dirty(session);
         }
         // 静音模式：auto=时长控件禁用 + 原版 tooltip 解释（_on_silence_mode_changed）
         let modes = ["auto", "fixed"];
         let mode_labels = [lt_i18n::t("silence_auto"), lt_i18n::t("silence_fixed")];
         let sm_idx = modes
             .iter()
-            .position(|m| *m == state.settings.silence_mode)
+            .position(|m| *m == settings.silence_mode)
             .unwrap_or(0);
         let mut sm_next = sm_idx;
         ui.horizontal(|ui| {
@@ -777,11 +778,11 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
                 });
         });
         if sm_next != sm_idx {
-            state.settings.silence_mode = modes[sm_next].to_string();
-            mark_settings_dirty(state);
+            settings.silence_mode = modes[sm_next].to_string();
+            mark_settings_dirty(session);
         }
-        let fixed = state.settings.silence_mode == "fixed";
-        let mut sil_v = state.settings.silence_duration;
+        let fixed = settings.silence_mode == "fixed";
+        let mut sil_v = settings.silence_duration;
         let sil_changed = drag_secs(
             ui,
             "panel_silence_dur",
@@ -794,13 +795,13 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
             hint_line(ui, pal, &lt_i18n::t("silence_dur_disabled_tooltip"));
         }
         if sil_changed {
-            state.settings.silence_duration = sil_v;
-            mark_settings_dirty(state);
+            settings.silence_duration = sil_v;
+            mark_settings_dirty(session);
         }
 
         // 增量识别 + 间隔（原版 _incremental_asr_cb / _interim_interval_spin：
         // 变更即时发 Cmd::IncrementalAsr 热应用 + 300ms 防抖 ApplySettings 落盘）
-        let mut inc = state.settings.incremental_asr;
+        let mut inc = settings.incremental_asr;
         if ui
             .add(egui::Checkbox::new(
                 &mut inc,
@@ -808,14 +809,14 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
             ))
             .changed()
         {
-            state.settings.incremental_asr = inc;
-            state.send_cmd(lt_proto::Cmd::IncrementalAsr {
+            settings.incremental_asr = inc;
+            session.send_cmd(lt_proto::Cmd::IncrementalAsr {
                 enabled: inc,
-                interval: state.settings.interim_interval,
+                interval: settings.interim_interval,
             });
-            mark_settings_dirty(state);
+            mark_settings_dirty(session);
         }
-        let mut itv = state.settings.interim_interval;
+        let mut itv = settings.interim_interval;
         let itv_changed = drag_secs(
             ui,
             "panel_interim",
@@ -828,12 +829,12 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
             hint_line(ui, pal, &lt_i18n::t("interim_interval_disabled_tooltip"));
         }
         if itv_changed {
-            state.settings.interim_interval = itv;
-            state.send_cmd(lt_proto::Cmd::IncrementalAsr {
+            settings.interim_interval = itv;
+            session.send_cmd(lt_proto::Cmd::IncrementalAsr {
                 enabled: inc,
                 interval: itv,
             });
-            mark_settings_dirty(state);
+            mark_settings_dirty(session);
         }
     });
 
@@ -841,42 +842,42 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
     //     显示当前引擎模型缓存状态；未缓存 → 下载按钮走现有 StartDownload 管线。
     //     Rust 版四态：Idle(Missing/Cached) / Downloading(进度+日志) / Failed(分类+重试)）──
     group_card(ui, pal, &lt_i18n::t("group_model_cache"), |ui| {
-        let models_dir = lt_models::paths::models_dir(state.settings.models_dir.as_deref())
+        let models_dir = lt_models::paths::models_dir(settings.models_dir.as_deref())
             .unwrap_or_else(|_| std::env::temp_dir());
         // DL-6/F12：探测结果缓存 2s（探测键变化即失效），下载事件在 app.rs 侧
         // 失效——识别页每帧渲染不再递归扫盘
         let probe_key = format!(
             "{}|{}|{}",
-            state.settings.asr_engine,
-            state.settings.funasr_model,
-            state.settings.whisper_model_size
+            settings.asr_engine,
+            settings.funasr_model,
+            settings.whisper_model_size
         );
-        let status = match &state.panel.cache_probe {
+        let status = match &panel.state.cache_probe {
             Some((at, key, s)) if *key == probe_key && at.elapsed().as_millis() < 2_000 => *s,
             _ => {
                 let s = model_cache_status(
                     &models_dir,
-                    &state.settings.asr_engine,
-                    &state.settings.funasr_model,
-                    &state.settings.whisper_model_size,
+                    &settings.asr_engine,
+                    &settings.funasr_model,
+                    &settings.whisper_model_size,
                 );
-                state.panel.cache_probe = Some((std::time::Instant::now(), probe_key, s));
+                panel.state.cache_probe = Some((std::time::Instant::now(), probe_key, s));
                 s
             }
         };
         ui.horizontal(|ui| {
-            let model_display = if state.settings.asr_engine == "funasr" {
-                funasr_model_items()[funasr_index_for(&state.settings.funasr_model)]
+            let model_display = if settings.asr_engine == "funasr" {
+                funasr_model_items()[funasr_index_for(&settings.funasr_model)]
                     .display
                     .clone()
-            } else if state.settings.asr_engine == "qwen3" {
+            } else if settings.asr_engine == "qwen3" {
                 // WP-B：qwen3 显示名取注册表（缓存卡片/下载标题行）
                 lt_models::registry::qwen3_entry().display.to_string()
             } else {
-                whisper_tier_display_for(&state.settings.whisper_model_size)
+                whisper_tier_display_for(&settings.whisper_model_size)
             };
             ui.label(RichText::new(model_display).color(pal.text));
-            match &state.download {
+            match &panel.download {
                 // ── 下载进行中：按当前文件显示「文件名（k/n）」+ 精确字节进度
                 //    （DL-3：机器段驱动；total 未知 → 明确文案的日志模式）──
                 DownloadUiState::Downloading {
@@ -943,7 +944,7 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
                         )
                         .clicked()
                     {
-                        state.send_cmd(lt_proto::Cmd::CancelDownload);
+                        session.send_cmd(lt_proto::Cmd::CancelDownload);
                     }
                 }
                 // ── 下载已取消（DL-4/D-23）：保留日志 + 继续下载（断点续传）──
@@ -968,7 +969,7 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
                         )
                         .clicked()
                     {
-                        start_download(state);
+                        start_download(panel, session, settings);
                     }
                 }
                 // ── 下载失败：分类建议 + 原始错误 + 重试（P2-6）──
@@ -996,7 +997,7 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
                         )
                         .clicked()
                     {
-                        start_download(state);
+                        start_download(panel, session, settings);
                     }
                 }
                 // ── 空闲态：磁盘探测三态（原状 + 未缓存下载按钮）──
@@ -1029,7 +1030,7 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
                             )
                             .clicked()
                         {
-                            start_download(state);
+                            start_download(panel, session, settings);
                         }
                     }
                     CacheStatus::Unavailable => {
@@ -1070,9 +1071,9 @@ const VAD_PAGE_PATHS: [&str; 18] = [
 
 /// 识别页恢复默认：写回字段 + 逐条即时命令（ApplySettings 无法热应用
 /// 引擎/设备/语言/padding/增量，必须重发——N3 生效管道）
-fn restore_vad_page(state: &mut AppState) {
+fn restore_vad_page(settings: &mut Settings, session: &mut SessionView) {
     let def = lt_proto::Settings::default();
-    let s = &mut state.settings;
+    let s = &mut *settings;
     s.vad_mode = def.vad_mode.clone();
     s.vad_threshold = def.vad_threshold;
     s.energy_threshold = def.energy_threshold;
@@ -1092,42 +1093,42 @@ fn restore_vad_page(state: &mut AppState) {
     s.mic_device = def.mic_device.clone();
     s.asr_language = def.asr_language.clone();
     // 逐条下发即时命令（引擎→语言→设备→padding→增量）
-    super::send_switch_engine(state);
-    state.send_cmd(lt_proto::Cmd::SetAsrLanguage(
-        state.settings.asr_language.clone(),
+    super::send_switch_engine(settings, session);
+    session.send_cmd(lt_proto::Cmd::SetAsrLanguage(
+        settings.asr_language.clone(),
     ));
-    state.send_cmd(lt_proto::Cmd::SetAudioDevice(
+    session.send_cmd(lt_proto::Cmd::SetAudioDevice(
         lt_proto::AudioDeviceChoice::SystemDefault,
     ));
-    state.send_cmd(lt_proto::Cmd::SetMicDevice(lt_proto::MicDeviceChoice::Off));
-    state.send_cmd(lt_proto::Cmd::SetPadding {
+    session.send_cmd(lt_proto::Cmd::SetMicDevice(lt_proto::MicDeviceChoice::Off));
+    session.send_cmd(lt_proto::Cmd::SetPadding {
         engine: "funasr".into(),
-        secs: state.settings.sensevoice_pad_seconds,
+        secs: settings.sensevoice_pad_seconds,
     });
-    state.send_cmd(lt_proto::Cmd::SetPadding {
+    session.send_cmd(lt_proto::Cmd::SetPadding {
         engine: "whisper".into(),
-        secs: state.settings.whisper_pad_seconds,
+        secs: settings.whisper_pad_seconds,
     });
-    state.send_cmd(lt_proto::Cmd::IncrementalAsr {
-        enabled: state.settings.incremental_asr,
-        interval: state.settings.interim_interval,
+    session.send_cmd(lt_proto::Cmd::IncrementalAsr {
+        enabled: settings.incremental_asr,
+        interval: settings.interim_interval,
     });
-    mark_settings_dirty(state);
+    mark_settings_dirty(session);
 }
 
 /// 发起下载：写入 Downloading 状态（进度事件随后填充）并发送命令。
 /// 进行中忽略重复点击（P2-5 修复：不再触发并发下载线程）。
 /// 失败/取消态的日志带入新下载（上下文延续）。
-fn start_download(state: &mut AppState) {
-    if state.download.downloading() {
+fn start_download(panel: &mut PanelUi, session: &SessionView, settings: &Settings) {
+    if panel.download.downloading() {
         return;
     }
-    let mut log = match &state.download {
+    let mut log = match &panel.download {
         DownloadUiState::Failed { log, .. } | DownloadUiState::Cancelled { log } => log.clone(),
         _ => Vec::new(),
     };
     log.push(lt_i18n::t("download_starting").to_string());
-    state.download = DownloadUiState::Downloading {
+    panel.download = DownloadUiState::Downloading {
         file: String::new(),
         k: 0,
         n: 0,
@@ -1135,9 +1136,9 @@ fn start_download(state: &mut AppState) {
         total_bytes: 0,
         log,
     };
-    state.send_cmd(lt_proto::Cmd::StartDownload {
-        hub: state.settings.hub.clone(),
-        proxy: state.settings.download_proxy.clone(),
+    session.send_cmd(lt_proto::Cmd::StartDownload {
+        hub: settings.hub.clone(),
+        proxy: settings.download_proxy.clone(),
     });
 }
 
@@ -1201,30 +1202,30 @@ fn device_label(index: usize, devices: &[String], first_label: String) -> String
 }
 
 /// 扬声器选择 → 设置 + 即时命令（原版 collect 的 audio 分支 → settings_changed 应用）
-fn apply_audio_setting(state: &mut AppState, setting: Option<String>) {
-    state.settings.audio_device = setting.clone();
-    state.send_cmd(lt_proto::Cmd::SetAudioDevice(AudioDeviceChoice::from(
+fn apply_audio_setting(settings: &mut Settings, session: &SessionView, setting: Option<String>) {
+    settings.audio_device = setting.clone();
+    session.send_cmd(lt_proto::Cmd::SetAudioDevice(AudioDeviceChoice::from(
         setting,
     )));
 }
 
 /// 麦克风选择 → 设置 + 即时命令
-fn apply_mic_setting(state: &mut AppState, setting: Option<String>) {
-    state.settings.mic_device = setting.clone();
-    state.send_cmd(lt_proto::Cmd::SetMicDevice(MicDeviceChoice::from(setting)));
+fn apply_mic_setting(settings: &mut Settings, session: &SessionView, setting: Option<String>) {
+    settings.mic_device = setting.clone();
+    session.send_cmd(lt_proto::Cmd::SetMicDevice(MicDeviceChoice::from(setting)));
 }
 
 /// 引擎状态提示（原版 _refresh_engine_status 的 Rust 化简版）：
 /// 按当前引擎模型缓存判定 → 已缓存 = 可用；未缓存 = needs-model（识别页缓存组
 /// 可下载；mlt 等无条目模型同样落此文案，与既有 funasr 行为一致）
-fn engine_status(state: &AppState, engine: &str, pal: &Palette) -> (String, egui::Color32) {
-    let models_dir = lt_models::paths::models_dir(state.settings.models_dir.as_deref())
+fn engine_status(settings: &Settings, engine: &str, pal: &Palette) -> (String, egui::Color32) {
+    let models_dir = lt_models::paths::models_dir(settings.models_dir.as_deref())
         .unwrap_or_else(|_| std::env::temp_dir());
     match model_cache_status(
         &models_dir,
         engine,
-        &state.settings.funasr_model,
-        &state.settings.whisper_model_size,
+        &settings.funasr_model,
+        &settings.whisper_model_size,
     ) {
         CacheStatus::Cached(_) => (lt_i18n::t("engine_status_available"), pal.ok),
         _ => (lt_i18n::t("engine_status_needs_model"), pal.warn),
@@ -1261,22 +1262,22 @@ mod tests {
     /// Downloading 态重复点击被守卫忽略
     #[test]
     fn download_card_cancelled_then_restart_preserves_log() {
-        let mut state = crate::state::AppState::new(lt_proto::Settings::default());
+        let mut app = crate::state::AppUi::new(lt_proto::Settings::default());
         // 取消态（带取消前日志）→ 继续下载
-        state.download = DownloadUiState::Cancelled {
+        app.panel.download = DownloadUiState::Cancelled {
             log: vec!["[a/b] model.bin 1.0 KB / 2.0 KB".into()],
         };
-        start_download(&mut state);
-        match &state.download {
+        start_download(&mut app.panel, &app.session, &app.settings);
+        match &app.panel.download {
             DownloadUiState::Downloading { log, .. } => {
                 assert_eq!(log.len(), 2, "取消前日志 + download_starting");
             }
             other => panic!("{other:?}"),
         }
         // Downloading 中重复触发被忽略（不再新建状态）
-        let before = state.download.clone();
-        start_download(&mut state);
-        assert_eq!(state.download, before);
+        let before = app.panel.download.clone();
+        start_download(&mut app.panel, &app.session, &app.settings);
+        assert_eq!(app.panel.download, before);
     }
 
     fn dev(names: &[&str]) -> Vec<String> {

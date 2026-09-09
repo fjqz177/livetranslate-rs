@@ -12,7 +12,7 @@
 //! 空串=跟随字幕主字体）；颜色为 "#rrggbb" 文本 + 色块预览（rfd 无颜色对话框）。
 
 use super::{color_field, group_card, mark_settings_dirty, Palette};
-use crate::state::{move_line_down, move_line_up, AppState, LineEditState, ANIM_VALUES};
+use crate::state::{move_line_down, move_line_up, LineEditState, ModalUi, PanelUi, SessionView, Settings, UiContext, ANIM_VALUES};
 use egui::{RichText, Ui};
 use lt_proto::SubtitleLine;
 
@@ -106,11 +106,11 @@ pub fn combo_index(
 // ── UI ──
 
 /// 字幕页 UI 总入口
-pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
+pub fn page(ui: &mut Ui, panel: &mut PanelUi, session: &mut SessionView, settings: &mut Settings, modal: &mut ModalUi, ctx: &mut UiContext, pal: &Palette) {
     // N3/N4：字幕页偏离默认提示 + 恢复本页（SubtitleMode 整体 + 文字行两行默认；
     // 窗口位置 window_x/y 不纳入——样式页「重置窗口位置」单独承担）。
     // 确认文案复用原版孤儿键 subwin_reset_confirm（zh/en 均已有）。
-    let diffs = crate::panel_diff::diff_paths(&state.settings);
+    let diffs = crate::panel_diff::diff_paths(settings);
     let page_diffs: Vec<&str> = diffs
         .iter()
         .filter(|p| p.starts_with("subtitle_mode"))
@@ -119,9 +119,10 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
     if !page_diffs.is_empty() {
         super::reset_toolbar(ui, pal, page_diffs.len(), &page_diffs.join("、"), |_| {
             // D-33/H-5：确认改 egui 模态（原位 rfd 同步框阻塞事件循环线程）
-            state.request_confirm(
+            modal.request_confirm(
                 crate::state::ConfirmKind::ResetSubtitle,
                 false,
+                session.visible.get(&crate::state::WinId::Panel).copied().unwrap_or(true),
                 lt_i18n::t("reset_confirm_title"),
                 lt_i18n::t("subwin_reset_confirm"),
             );
@@ -131,7 +132,7 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
     // ── 基本（原版 subwin_basic 组）──
     group_card(ui, pal, &lt_i18n::t("subwin_basic"), |ui| {
         // 启用字幕窗（settings.subtitle_mode.enabled；联动字幕窗显隐）
-        let mut enabled = state.settings.subtitle_mode.enabled;
+        let mut enabled = settings.subtitle_mode.enabled;
         if ui
             .add(egui::Checkbox::new(
                 &mut enabled,
@@ -139,16 +140,16 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
             ))
             .changed()
         {
-            state.settings.subtitle_mode.enabled = enabled;
+            settings.subtitle_mode.enabled = enabled;
             // 原版 subtitle_settings_changed → app_shell 按开关显隐字幕窗
-            state.enqueue_action(
+            session.enqueue_action(
                 crate::state::WinId::Panel,
                 crate::state::WinAction::ToggleSubtitle,
             );
-            mark_settings_dirty(state);
+            mark_settings_dirty(session);
         }
         // 显示句数 1..=10（原版 _sentences_spin）
-        let mut v = state.settings.subtitle_mode.sentences.clamp(1, 10) as i32;
+        let mut v = settings.subtitle_mode.sentences.clamp(1, 10) as i32;
         if number_row(
             ui,
             "sub_sentences",
@@ -157,11 +158,11 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
             1..=10,
             "",
         ) {
-            state.settings.subtitle_mode.sentences = v as u32;
-            mark_settings_dirty(state);
+            settings.subtitle_mode.sentences = v as u32;
+            mark_settings_dirty(session);
         }
         // 窗口宽度 200..=3840 px（原版 _width_spin）
-        let mut v = state.settings.subtitle_mode.window_width.clamp(200, 3840) as i32;
+        let mut v = settings.subtitle_mode.window_width.clamp(200, 3840) as i32;
         if number_row(
             ui,
             "sub_width",
@@ -170,11 +171,11 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
             200..=3840,
             " px",
         ) {
-            state.settings.subtitle_mode.window_width = v as u32;
-            mark_settings_dirty(state);
+            settings.subtitle_mode.window_width = v as u32;
+            mark_settings_dirty(session);
         }
         // 行间距 0..=40 px
-        let mut v = state.settings.subtitle_mode.line_spacing.min(40) as i32;
+        let mut v = settings.subtitle_mode.line_spacing.min(40) as i32;
         if number_row(
             ui,
             "sub_spacing",
@@ -183,11 +184,11 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
             0..=40,
             " px",
         ) {
-            state.settings.subtitle_mode.line_spacing = v as u32;
-            mark_settings_dirty(state);
+            settings.subtitle_mode.line_spacing = v as u32;
+            mark_settings_dirty(session);
         }
         // 圆角 0..=30 px
-        let mut v = state.settings.subtitle_mode.border_radius.min(30) as i32;
+        let mut v = settings.subtitle_mode.border_radius.min(30) as i32;
         if number_row(
             ui,
             "sub_radius",
@@ -196,8 +197,8 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
             0..=30,
             " px",
         ) {
-            state.settings.subtitle_mode.border_radius = v as u32;
-            mark_settings_dirty(state);
+            settings.subtitle_mode.border_radius = v as u32;
+            mark_settings_dirty(session);
         }
         // 位置复位（D-36：仅复位字幕窗回 (100,100)；样式页"重置窗口位置"仍复位两窗）
         ui.horizontal(|ui| {
@@ -208,7 +209,7 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
                 )
                 .clicked()
             {
-                state.enqueue_action(
+                session.enqueue_action(
                     crate::state::WinId::Subtitle,
                     crate::state::WinAction::ResetSubtitlePos,
                 );
@@ -221,10 +222,10 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
     group_card(ui, pal, &lt_i18n::t("subwin_background"), |ui| {
         ui.horizontal(|ui| {
             ui.label(RichText::new(format!("{} ", lt_i18n::t("subwin_bg_color"))).color(pal.text));
-            let mut color = state.settings.subtitle_mode.bg_color.clone();
+            let mut color = settings.subtitle_mode.bg_color.clone();
             if color_field(ui, "sub_bg_color", &mut color) {
-                state.settings.subtitle_mode.bg_color = color;
-                mark_settings_dirty(state);
+                settings.subtitle_mode.bg_color = color;
+                mark_settings_dirty(session);
             }
         });
         ui.horizontal(|ui| {
@@ -232,7 +233,7 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
                 RichText::new(format!("{} ", lt_i18n::t("subwin_bg_opacity"))).color(pal.text),
             );
             let mut pct =
-                (f64::from(state.settings.subtitle_mode.bg_opacity) / 255.0 * 100.0).round() as i32;
+                (f64::from(settings.subtitle_mode.bg_opacity) / 255.0 * 100.0).round() as i32;
             let resp = ui
                 .add(
                     egui::Slider::new(&mut pct, 0..=100)
@@ -240,19 +241,19 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
                 )
                 .on_hover_text(lt_i18n::t("subwin_bg_opacity_hint"));
             if resp.changed() {
-                state.settings.subtitle_mode.bg_opacity =
+                settings.subtitle_mode.bg_opacity =
                     (f64::from(pct.clamp(0, 100)) / 100.0 * 255.0).round() as u32;
-                mark_settings_dirty(state);
+                mark_settings_dirty(session);
             }
         });
-        bg_image_row(ui, state);
+        bg_image_row(ui, settings, session);
     });
 
     // ── 自动隐藏与穿透（原版 auto_hide_timeout/hide_animation/hide_duration +
     //     click_through）──
     group_card(ui, pal, &lt_i18n::t("subwin_animation"), |ui| {
         // 超时 0..=120 秒（0=禁用）
-        let mut v = state.settings.subtitle_mode.auto_hide_timeout.min(120) as i32;
+        let mut v = settings.subtitle_mode.auto_hide_timeout.min(120) as i32;
         if number_row(
             ui,
             "sub_auto_hide",
@@ -261,8 +262,8 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
             0..=120,
             &format!(" {}", lt_i18n::t("subwin_auto_hide_sec")),
         ) {
-            state.settings.subtitle_mode.auto_hide_timeout = v.max(0) as u32;
-            mark_settings_dirty(state);
+            settings.subtitle_mode.auto_hide_timeout = v.max(0) as u32;
+            mark_settings_dirty(session);
         }
         // 隐藏动画（none/fade/slide_down 三项）
         let hide_anims = ["none", "fade", "slide_down"];
@@ -272,15 +273,14 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
             .collect();
         let idx = hide_anims
             .iter()
-            .position(|a| *a == state.settings.subtitle_mode.auto_hide_animation)
+            .position(|a| *a == settings.subtitle_mode.auto_hide_animation)
             .unwrap_or(1);
         if let Some(next) = combo_index(ui, "sub_hide_anim", idx, &labels, 160.0) {
-            state.settings.subtitle_mode.auto_hide_animation = hide_anims[next].to_string();
-            mark_settings_dirty(state);
+            settings.subtitle_mode.auto_hide_animation = hide_anims[next].to_string();
+            mark_settings_dirty(session);
         }
         // 时长 50..=3000 ms
-        let mut v = state
-            .settings
+        let mut v = settings
             .subtitle_mode
             .auto_hide_duration
             .clamp(50, 3000) as i32;
@@ -292,11 +292,11 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
             50..=3000,
             " ms",
         ) {
-            state.settings.subtitle_mode.auto_hide_duration = v as u32;
-            mark_settings_dirty(state);
+            settings.subtitle_mode.auto_hide_duration = v as u32;
+            mark_settings_dirty(session);
         }
         // 鼠标穿透（宿主 500ms 断言轮询按此开关续拍）
-        let mut ct = state.settings.subtitle_mode.click_through;
+        let mut ct = settings.subtitle_mode.click_through;
         if ui
             .add(egui::Checkbox::new(
                 &mut ct,
@@ -305,31 +305,39 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
             .on_hover_text(lt_i18n::t("subwin_click_through_hint"))
             .changed()
         {
-            state.settings.subtitle_mode.click_through = ct;
+            settings.subtitle_mode.click_through = ct;
             if ct
-                && *state
+                && *session
                     .visible
                     .get(&crate::state::WinId::Subtitle)
                     .unwrap_or(&false)
             {
-                state.schedule_subtitle_window_poll();
+                // W5：跨域排班直接落会话节拍表（原本墙页不持有 SubtitleUi 域）
+                session.schedule_tick(
+                    crate::state::WinId::Subtitle,
+                    crate::state::TickKind::ClickThrough,
+                    std::time::Instant::now()
+                        + std::time::Duration::from_millis(
+                            crate::state::SUBTITLE_POLL_MS,
+                        ),
+                );
             }
-            mark_settings_dirty(state);
+            mark_settings_dirty(session);
         }
     });
 
     // ── 文字行（原版 lines_group：列表 + 五按钮 + 双击编辑）──
     group_card(ui, pal, &lt_i18n::t("subwin_text_lines"), |ui| {
-        let count = state.settings.subtitle_mode.lines.len();
+        let count = settings.subtitle_mode.lines.len();
         let mut select: Option<usize> = None;
         let mut edit_row: Option<usize> = None;
         for i in 0..count {
-            let text = line_row_text(&state.settings.subtitle_mode.lines[i]);
+            let text = line_row_text(&settings.subtitle_mode.lines[i]);
             let resp = ui
                 .push_id(i, |ui| {
                     ui.add(
                         egui::Button::selectable(
-                            state.panel.line_selected == Some(i),
+                            panel.state.line_selected == Some(i),
                             RichText::new(&text).monospace().size(12.0),
                         )
                         .corner_radius(4.0)
@@ -345,7 +353,7 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
             }
         }
         if select.is_some() {
-            state.panel.line_selected = select;
+            panel.state.line_selected = select;
         }
 
         ui.add_space(4.0);
@@ -357,10 +365,10 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
                 )
                 .clicked()
             {
-                let idx = state.settings.subtitle_mode.lines.len();
-                state.panel.line_editor = Some(LineEditState::new_add(idx));
+                let idx = settings.subtitle_mode.lines.len();
+                panel.state.line_editor = Some(LineEditState::new_add(idx));
             }
-            let target = edit_row.or(state.panel.line_selected);
+            let target = edit_row.or(panel.state.line_selected);
             if ui
                 .add_enabled(
                     target.is_some(),
@@ -370,13 +378,13 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
                 .clicked()
             {
                 if let Some(i) = target {
-                    if i < state.settings.subtitle_mode.lines.len() {
-                        let line = state.settings.subtitle_mode.lines[i].clone();
-                        state.panel.line_editor = Some(LineEditState::new_edit(i, &line));
+                    if i < settings.subtitle_mode.lines.len() {
+                        let line = settings.subtitle_mode.lines[i].clone();
+                        panel.state.line_editor = Some(LineEditState::new_edit(i, &line));
                     }
                 }
             }
-            let can_remove = count > 1 && state.panel.line_selected.is_some();
+            let can_remove = count > 1 && panel.state.line_selected.is_some();
             if ui
                 .add_enabled(
                     can_remove,
@@ -385,42 +393,42 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
                 )
                 .clicked()
             {
-                if let Some(i) = state.panel.line_selected {
+                if let Some(i) = panel.state.line_selected {
                     if i < count && count > 1 {
-                        state.settings.subtitle_mode.lines.remove(i);
-                        state.panel.line_selected = None;
-                        mark_settings_dirty(state);
+                        settings.subtitle_mode.lines.remove(i);
+                        panel.state.line_selected = None;
+                        mark_settings_dirty(session);
                     }
                 }
             }
             // 上移/下移（原版 subwin_move_up/down；边界在 move_line_* 内判定）
             if ui
                 .add_enabled(
-                    state.panel.line_selected.is_some_and(|i| i > 0),
+                    panel.state.line_selected.is_some_and(|i| i > 0),
                     egui::Button::new(RichText::new(lt_i18n::t("subwin_move_up")).size(12.5))
                         .corner_radius(6.0),
                 )
                 .clicked()
             {
-                if let Some(i) = state.panel.line_selected {
-                    if move_line_up(&mut state.settings.subtitle_mode.lines, i) {
-                        state.panel.line_selected = Some(i - 1);
-                        mark_settings_dirty(state);
+                if let Some(i) = panel.state.line_selected {
+                    if move_line_up(&mut settings.subtitle_mode.lines, i) {
+                        panel.state.line_selected = Some(i - 1);
+                        mark_settings_dirty(session);
                     }
                 }
             }
             if ui
                 .add_enabled(
-                    state.panel.line_selected.is_some_and(|i| i + 1 < count),
+                    panel.state.line_selected.is_some_and(|i| i + 1 < count),
                     egui::Button::new(RichText::new(lt_i18n::t("subwin_move_down")).size(12.5))
                         .corner_radius(6.0),
                 )
                 .clicked()
             {
-                if let Some(i) = state.panel.line_selected {
-                    if move_line_down(&mut state.settings.subtitle_mode.lines, i) {
-                        state.panel.line_selected = Some(i + 1);
-                        mark_settings_dirty(state);
+                if let Some(i) = panel.state.line_selected {
+                    if move_line_down(&mut settings.subtitle_mode.lines, i) {
+                        panel.state.line_selected = Some(i + 1);
+                        mark_settings_dirty(session);
                     }
                 }
             }
@@ -430,17 +438,17 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
     ui.add_space(8.0);
 
     // ── LineEditDialog（egui::Window 居中模态区）──
-    render_line_editor(ui, state);
+    render_line_editor(ui, panel, session, settings, ctx);
 }
 
 /// 背景图片行（原版 _make_image_rows：路径 + 选择/清除）
-fn bg_image_row(ui: &mut Ui, state: &mut AppState) {
+fn bg_image_row(ui: &mut Ui, settings: &mut Settings, session: &mut SessionView) {
     ui.horizontal(|ui| {
         ui.label(
             RichText::new(format!("{} ", lt_i18n::t("subwin_bg_image")))
                 .color(ui.visuals().text_color()),
         );
-        let mut img = state.settings.subtitle_mode.bg_image.clone();
+        let mut img = settings.subtitle_mode.bg_image.clone();
         if ui
             .add(
                 egui::TextEdit::singleline(&mut img)
@@ -449,8 +457,8 @@ fn bg_image_row(ui: &mut Ui, state: &mut AppState) {
             )
             .changed()
         {
-            state.settings.subtitle_mode.bg_image = img.trim().to_string();
-            mark_settings_dirty(state);
+            settings.subtitle_mode.bg_image = img.trim().to_string();
+            mark_settings_dirty(session);
         }
         if ui
             .add(
@@ -464,8 +472,8 @@ fn bg_image_row(ui: &mut Ui, state: &mut AppState) {
                 .add_filter("Images", &["png", "webp", "jpg", "jpeg", "bmp"])
                 .pick_file()
             {
-                state.settings.subtitle_mode.bg_image = p.display().to_string();
-                mark_settings_dirty(state);
+                settings.subtitle_mode.bg_image = p.display().to_string();
+                mark_settings_dirty(session);
             }
         }
         if ui
@@ -475,8 +483,8 @@ fn bg_image_row(ui: &mut Ui, state: &mut AppState) {
             )
             .clicked()
         {
-            state.settings.subtitle_mode.bg_image.clear();
-            mark_settings_dirty(state);
+            settings.subtitle_mode.bg_image.clear();
+            mark_settings_dirty(session);
         }
     });
 }
@@ -512,18 +520,24 @@ fn number_row(
 }
 
 /// LineEditDialog 模态区（打开中每帧渲染）
-fn render_line_editor(ui: &mut Ui, state: &mut AppState) {
-    if state.panel.line_editor.is_none() {
+fn render_line_editor(
+    ui: &mut Ui,
+    panel: &mut PanelUi,
+    session: &mut SessionView,
+    settings: &mut Settings,
+    ctx: &mut UiContext,
+) {
+    if panel.state.line_editor.is_none() {
         return;
     }
     let mut open = true;
     let mut cancel = false;
     let mut accepted: Option<SubtitleLine> = None;
-    let master = state.settings.subtitle_font_family.clone();
+    let master = settings.subtitle_font_family.clone();
     {
         // panel.line_editor 与 fonts 是 AppState 不同字段，可并行借用
-        let (panel, fonts) = (&mut state.panel, &mut state.fonts);
-        let Some(ed) = panel.line_editor.as_mut() else {
+        let (p, fonts) = (&mut panel.state, &mut ctx.fonts);
+        let Some(ed) = p.line_editor.as_mut() else {
             return;
         };
         egui::Window::new(RichText::new(lt_i18n::t("subwin_edit_line")).strong())
@@ -550,20 +564,20 @@ fn render_line_editor(ui: &mut Ui, state: &mut AppState) {
             });
     }
     if let Some(line) = accepted {
-        let ed = state.panel.line_editor.take().expect("行编辑器打开中");
-        let lines = &mut state.settings.subtitle_mode.lines;
+        let ed = panel.state.line_editor.take().expect("行编辑器打开中");
+        let lines = &mut settings.subtitle_mode.lines;
         if ed.is_new {
             lines.push(line);
-            state.panel.line_selected = Some(lines.len() - 1);
+            panel.state.line_selected = Some(lines.len() - 1);
         } else if ed.index < lines.len() {
             lines[ed.index] = line;
-            state.panel.line_selected = Some(ed.index);
+            panel.state.line_selected = Some(ed.index);
         }
         // 行级字体键可能变更，字体链（命名族注册）同步重建
-        crate::fonts::apply_fonts(ui.ctx(), &state.settings, &mut state.fonts);
-        mark_settings_dirty(state);
+        crate::fonts::apply_fonts(ui.ctx(), settings, &mut ctx.fonts);
+        mark_settings_dirty(session);
     } else if !open || cancel {
-        state.panel.line_editor = None;
+        panel.state.line_editor = None;
     }
 }
 
@@ -814,21 +828,21 @@ mod tests {
     #[test]
     fn line_editor_modal_smoke_renders_headless() {
         let ctx = egui::Context::default();
-        let mut st = AppState::new(lt_proto::Settings::default());
-        st.panel.page = crate::state::PanelPage::Subtitle;
-        st.panel.line_editor = Some(LineEditState::new_edit(
+        let mut st = crate::state::AppUi::new(lt_proto::Settings::default());
+        st.panel.state.page = crate::state::PanelPage::Subtitle;
+        st.panel.state.line_editor = Some(LineEditState::new_edit(
             0,
             &st.settings.subtitle_mode.lines[0],
         ));
         for _ in 0..2 {
             let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
-                crate::windows::panel::panel_ui(ui, &mut st)
+                crate::windows::dispatch(crate::state::WinId::Panel, ui, &mut st)
             });
             assert!(!out.shapes.is_empty(), "行编辑器打开态应产出图元");
             out.textures_delta.clear();
         }
         assert!(
-            st.panel.line_editor.is_some(),
+            st.panel.state.line_editor.is_some(),
             "编辑器保持打开（状态未被意外消费）"
         );
     }

@@ -27,8 +27,8 @@
 //! - 行级 entry/exit 文本切换动画未做（默认 none，不在 M4.2 清单）。
 
 use crate::state::{
-    AppState, EaseAnim, Easing, SubtitleLineKey, SubtitleLineRender, SubtitleUiState, WinAction,
-    WinId,
+    EaseAnim, Easing, SessionView, Settings, SubtitleLineKey, SubtitleLineRender, SubtitleUi,
+    SubtitleUiState, UiContext, WinAction, WinId,
 };
 use crate::style::parse_color;
 use egui::{Align2, Color32, FontId, RichText, Sense, Stroke, Ui};
@@ -359,7 +359,13 @@ fn refresh_display(sub: &mut SubtitleUiState, lines: &[SubtitleLine]) {
 
 // ── 入口 ──
 
-pub fn subtitle_ui(ui: &mut Ui, state: &mut AppState) {
+pub fn subtitle_ui(
+    ui: &mut Ui,
+    subtitle: &mut SubtitleUi,
+    session: &mut SessionView,
+    settings: &mut Settings,
+    ctx: &mut UiContext,
+) {
     let now = Instant::now();
     let full = ui.available_rect_before_wrap();
 
@@ -376,10 +382,10 @@ pub fn subtitle_ui(ui: &mut Ui, state: &mut AppState) {
         reset_pos,
     ) = {
         // 借用拆分：不相交字段
-        let sm = &state.settings.subtitle_mode;
-        let sub = &mut state.subtitle;
-        let fonts = &state.fonts;
-        let master = &state.settings.subtitle_font_family;
+        let sm = &settings.subtitle_mode;
+        let sub = &mut subtitle.state;
+        let fonts = &ctx.fonts;
+        let master = &settings.subtitle_font_family;
 
         // 1) 行配置数量对齐（原版 apply_settings 重建语义）
         let enabled: Vec<&SubtitleLine> = sm.lines.iter().filter(|l| l.enabled).collect();
@@ -690,44 +696,48 @@ pub fn subtitle_ui(ui: &mut Ui, state: &mut AppState) {
 
     // 帧后动作
     if let Some(h) = height_cmd {
-        state.enqueue_action(WinId::Subtitle, WinAction::SetSubtitleHeight(h));
+        session.enqueue_action(WinId::Subtitle, WinAction::SetSubtitleHeight(h));
     }
     if height_settled {
-        state.enqueue_action(WinId::Subtitle, WinAction::ClampSubtitlePos);
+        session.enqueue_action(WinId::Subtitle, WinAction::ClampSubtitlePos);
     }
     if drag_started {
         // 宿主处理动作即 SetCapture + 记录抓握偏移 + 恒非穿透，
         // 随后每帧 process_actions 尾光标绝对跟踪（见 app.rs update_subtitle_drag）
-        state.enqueue_action(WinId::Subtitle, WinAction::SubtitleDragStart);
+        session.enqueue_action(WinId::Subtitle, WinAction::SubtitleDragStart);
     }
-    if drag_stopped && state.subtitle.dragging {
-        state.enqueue_action(WinId::Subtitle, WinAction::SubtitleDragEnd);
+    if drag_stopped && subtitle.state.dragging {
+        session.enqueue_action(WinId::Subtitle, WinAction::SubtitleDragEnd);
     }
     if through_toggle {
-        let ct = !state.settings.subtitle_mode.click_through;
-        state.settings.subtitle_mode.click_through = ct;
-        crate::windows::panel::mark_settings_dirty(state);
-        if ct && *state.visible.get(&WinId::Subtitle).unwrap_or(&false) {
-            state.schedule_subtitle_window_poll();
+        let ct = !settings.subtitle_mode.click_through;
+        settings.subtitle_mode.click_through = ct;
+        session.request_settings_apply();
+        if ct && *session.visible.get(&WinId::Subtitle).unwrap_or(&false) {
+            subtitle.schedule_window_poll(session);
         }
     }
     if lock_toggle {
-        state.subtitle.locked = !state.subtitle.locked;
+        subtitle.state.locked = !subtitle.state.locked;
     }
     if hide {
         // 与悬浮窗"字幕"按钮同路径：enabled 翻转 + ToggleSubtitle
-        state.settings.subtitle_mode.enabled = false;
+        settings.subtitle_mode.enabled = false;
         // R7（架构 2.0 W1）：与穿透路径同款登记面板防抖脏标记，enabled=false
         // 才会经 300ms PanelApply 节拍落盘（否则重启后字幕窗复活）
-        crate::windows::panel::mark_settings_dirty(state);
-        state.enqueue_action(WinId::Subtitle, WinAction::ToggleSubtitle);
+        session.request_settings_apply();
+        session.enqueue_action(WinId::Subtitle, WinAction::ToggleSubtitle);
     }
     if open_settings {
-        state.panel.page = crate::state::PanelPage::Subtitle;
-        state.enqueue_action(WinId::Panel, WinAction::ShowPanel);
+        // W5：跨域写意图化（原直写 panel.page 破坏窗口边界）——宿主
+        // process_actions 消费 OpenPanelPage：切页 + 显示面板
+        session.enqueue_action(
+            WinId::Panel,
+            WinAction::OpenPanelPage(crate::state::PanelPage::Subtitle),
+        );
     }
     if reset_pos {
-        state.enqueue_action(WinId::Subtitle, WinAction::ResetSubtitlePos);
+        session.enqueue_action(WinId::Subtitle, WinAction::ResetSubtitlePos);
     }
 }
 
@@ -1244,24 +1254,36 @@ mod tests {
     #[test]
     fn subtitle_ui_headless_smoke_with_toolbar() {
         let ctx = egui::Context::default();
-        let mut st = crate::state::AppState::new(lt_proto::Settings::default());
+        let mut st = crate::state::AppUi::new(lt_proto::Settings::default());
         st.settings.subtitle_mode.click_through = true;
         st.settings.subtitle_mode.enabled = true;
         // 悬停中（源于 Win32 轮询注入——穿透开启时 egui 收不到输入，状态由宿主写入）
-        st.subtitle.toolbar_hover = true;
-        st.subtitle.toolbar_anim = None;
+        st.subtitle.state.toolbar_hover = true;
+        st.subtitle.state.toolbar_anim = None;
         for _ in 0..2 {
             let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
-                crate::windows::subtitle::subtitle_ui(ui, &mut st)
+                crate::windows::subtitle::subtitle_ui(
+                    ui,
+                    &mut st.subtitle,
+                    &mut st.session,
+                    &mut st.settings,
+                    &mut st.ctx,
+                )
             });
             assert!(!out.shapes.is_empty(), "字幕窗（含顶条）应产出图元");
             out.textures_delta.clear();
         }
         // 隐藏态 + 锁定：不 panic、图元仍在（背景+文字）
-        st.subtitle.toolbar_hover = false;
-        st.subtitle.locked = true;
+        st.subtitle.state.toolbar_hover = false;
+        st.subtitle.state.locked = true;
         let out = ctx.run_ui(egui::RawInput::default(), |ui| {
-            crate::windows::subtitle::subtitle_ui(ui, &mut st)
+            crate::windows::subtitle::subtitle_ui(
+                ui,
+                &mut st.subtitle,
+                &mut st.session,
+                &mut st.settings,
+                &mut st.ctx,
+            )
         });
         assert!(!out.shapes.is_empty());
     }
@@ -1298,7 +1320,7 @@ mod tests {
     /// （模拟 process_actions 处理动作的置位时机）
     fn run_drag_frames(
         ctx: &egui::Context,
-        st: &mut crate::state::AppState,
+        st: &mut crate::state::AppUi,
         frames: Vec<Vec<egui::Event>>,
     ) -> Vec<(crate::state::WinId, crate::state::WinAction)> {
         let mut collected = Vec::new();
@@ -1306,14 +1328,20 @@ mod tests {
             let mut ri = egui::RawInput::default();
             ri.screen_rect = Some(sub_screen_rect());
             ri.events = events;
-            let mut out = ctx.run_ui(ri, |ui| crate::windows::subtitle::subtitle_ui(ui, st));
+            let mut out = ctx.run_ui(ri, |ui| crate::windows::subtitle::subtitle_ui(
+                ui,
+                &mut st.subtitle,
+                &mut st.session,
+                &mut st.settings,
+                &mut st.ctx,
+            ));
             out.textures_delta.clear();
-            let acts = st.drain_actions();
+            let acts = st.session.drain_actions();
             if acts.iter().any(|(w, a)| {
                 w == &crate::state::WinId::Subtitle
                     && a == &crate::state::WinAction::SubtitleDragStart
             }) {
-                st.subtitle.dragging = true; // 宿主处理 SubtitleDragStart
+                st.subtitle.state.dragging = true; // 宿主处理 SubtitleDragStart
             }
             collected.extend(acts);
         }
@@ -1324,9 +1352,9 @@ mod tests {
     #[test]
     fn subtitle_drag_strip_left_start_stop() {
         let ctx = egui::Context::default();
-        let mut st = crate::state::AppState::new(lt_proto::Settings::default());
+        let mut st = crate::state::AppUi::new(lt_proto::Settings::default());
         st.settings.subtitle_mode.enabled = true;
-        st.visible.insert(crate::state::WinId::Subtitle, true);
+        st.session.visible.insert(crate::state::WinId::Subtitle, true);
         let acts = run_drag_frames(
             &ctx,
             &mut st,
@@ -1347,9 +1375,9 @@ mod tests {
     #[test]
     fn subtitle_drag_body_middle_start_stop() {
         let ctx = egui::Context::default();
-        let mut st = crate::state::AppState::new(lt_proto::Settings::default());
+        let mut st = crate::state::AppUi::new(lt_proto::Settings::default());
         st.settings.subtitle_mode.enabled = true;
-        st.visible.insert(crate::state::WinId::Subtitle, true);
+        st.session.visible.insert(crate::state::WinId::Subtitle, true);
         let acts = run_drag_frames(
             &ctx,
             &mut st,
@@ -1371,10 +1399,10 @@ mod tests {
     #[test]
     fn subtitle_drag_locked_disables_both() {
         let ctx = egui::Context::default();
-        let mut st = crate::state::AppState::new(lt_proto::Settings::default());
+        let mut st = crate::state::AppUi::new(lt_proto::Settings::default());
         st.settings.subtitle_mode.enabled = true;
-        st.visible.insert(crate::state::WinId::Subtitle, true);
-        st.subtitle.locked = true;
+        st.session.visible.insert(crate::state::WinId::Subtitle, true);
+        st.subtitle.state.locked = true;
         let acts = run_drag_frames(
             &ctx,
             &mut st,
@@ -1385,10 +1413,10 @@ mod tests {
             !has(crate::state::WinAction::SubtitleDragStart),
             "锁定后顶条拖动应被禁止"
         );
-        let mut st2 = crate::state::AppState::new(lt_proto::Settings::default());
+        let mut st2 = crate::state::AppUi::new(lt_proto::Settings::default());
         st2.settings.subtitle_mode.enabled = true;
-        st2.visible.insert(crate::state::WinId::Subtitle, true);
-        st2.subtitle.locked = true;
+        st2.session.visible.insert(crate::state::WinId::Subtitle, true);
+        st2.subtitle.state.locked = true;
         let acts2 = run_drag_frames(
             &ctx,
             &mut st2,
@@ -1410,12 +1438,12 @@ mod tests {
     #[test]
     fn subtitle_hide_button_persists_enabled_false() {
         let ctx = egui::Context::default();
-        let mut st = crate::state::AppState::new(lt_proto::Settings::default());
+        let mut st = crate::state::AppUi::new(lt_proto::Settings::default());
         st.settings.subtitle_mode.enabled = true;
-        st.visible.insert(crate::state::WinId::Subtitle, true);
+        st.session.visible.insert(crate::state::WinId::Subtitle, true);
         // 悬停终态（宿主 Win32 轮询注入同款置位）：顶条按钮可命中
-        st.subtitle.toolbar_hover = true;
-        st.subtitle.toolbar_anim = None;
+        st.subtitle.state.toolbar_hover = true;
+        st.subtitle.state.toolbar_anim = None;
 
         // 关闭按钮 = 顶条右端第一颗（x ∈ [right-8-w, right-8]，w=文本宽+14 ≥ 14，
         // 取右缘内 16px 必在按钮内；y ∈ [top+2, top+16] 取 +9）
@@ -1441,9 +1469,15 @@ mod tests {
             let mut ri = egui::RawInput::default();
             ri.screen_rect = Some(screen);
             ri.events = events;
-            let mut out = ctx.run_ui(ri, |ui| crate::windows::subtitle::subtitle_ui(ui, &mut st));
+            let mut out = ctx.run_ui(ri, |ui| crate::windows::subtitle::subtitle_ui(
+                ui,
+                &mut st.subtitle,
+                &mut st.session,
+                &mut st.settings,
+                &mut st.ctx,
+            ));
             out.textures_delta.clear();
-            acts.extend(st.drain_actions());
+            acts.extend(st.session.drain_actions());
         }
 
         // 隐藏语义：enabled 翻 false + ToggleSubtitle 入队（悬浮窗"字幕"按钮同路径）
@@ -1452,12 +1486,19 @@ mod tests {
             acts.contains(&(crate::state::WinId::Subtitle, crate::state::WinAction::ToggleSubtitle)),
             "隐藏应入队 ToggleSubtitle"
         );
-        // R7 主张：脏标记已置位（与穿透路径对称）
+        // R7 主张（W5 意图化）：跨域请求置位会话意图；宿主消费（register_panel_apply
+        // 即 about_to_wait 的意图消费点）后落面板防抖——到期可消费且快照（即
+        // Cmd::ApplySettings 载荷）携带 enabled=false
         assert!(
-            st.panel.apply_due_at.is_some(),
-            "隐藏路径应登记面板设置脏标记（否则重启后字幕窗复活）"
+            st.session.settings_apply_pending,
+            "隐藏路径应登记设置变更意图（否则重启后字幕窗复活）"
         );
-        // 防抖到期可消费，且快照（即 Cmd::ApplySettings 载荷）携带 enabled=false
+        crate::state::register_panel_apply(
+            &mut st.panel,
+            &mut st.session,
+            std::time::Instant::now(),
+        );
+        assert!(st.panel.state.apply_due_at.is_some(), "宿主消费后应有到期时刻");
         let snap = st
             .take_due_panel_apply(
                 std::time::Instant::now() + std::time::Duration::from_millis(300),

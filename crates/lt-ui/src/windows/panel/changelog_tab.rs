@@ -9,7 +9,6 @@
 //! 分色绘制（简单词法扫描，不支持嵌套）；条目缩进/间距按原版视觉近似。
 
 use super::{group_card, Palette};
-use crate::state::AppState;
 use egui::{Color32, RichText, Ui};
 
 const ZH_MD: &str = include_str!("../../../../../assets/i18n/CHANGELOG_zh.md");
@@ -27,7 +26,7 @@ pub fn changelog_text(lang: &str) -> &'static str {
 /// 已知偏差：原版是 group 框内 QTextBrowser 自滚；此处直接流式排布、由
 /// 面板整页 ScrollArea 滚动——嵌套 ScrollArea 会叠加双层滚动条占位宽
 /// （6px×2）造成文本 wrap 宽度与可见宽度错位、行尾被裁（实机走查修复）。
-pub fn page(ui: &mut Ui, _state: &mut AppState, _pal: &Palette) {
+pub fn page(ui: &mut Ui, _pal: &Palette) {
     let text = changelog_text(&lt_i18n::get_lang());
     group_card(ui, _pal, &lt_i18n::t("group_changelog"), |ui| {
         // wrapped 行宽收 10px 安全量：ScrollArea 的 wrap 分配宽与 clip 缘存在

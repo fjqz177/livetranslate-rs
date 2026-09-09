@@ -10,7 +10,7 @@
 //! - 数据零新增：LogLine 事件流（logging.rs BroadcastLayer）本来就全量到达 UI。
 
 use super::Palette;
-use crate::state::{AppState, LogView, LogWindowState};
+use crate::state::{LogUi, LogView, LogWindowState};
 use crate::windows::log_jump_button;
 use egui::{Color32, RichText, ScrollArea, Ui};
 use std::time::{Duration, Instant};
@@ -28,21 +28,21 @@ fn level_color(level: u8, pal: &Palette) -> Color32 {
     }
 }
 
-pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
-    toolbar(ui, state);
+pub fn page(ui: &mut Ui, log: &mut LogUi, pal: &Palette) {
+    toolbar(ui, log);
     ui.add_space(4.0);
-    log_region(ui, state, pal);
+    log_region(ui, log, pal);
 }
 
 /// ── 工具行：本页不经过 panel 外层滚动区，故天然置顶 ──
-fn toolbar(ui: &mut Ui, state: &mut AppState) {
+fn toolbar(ui: &mut Ui, log: &mut LogUi) {
     ui.horizontal(|ui| {
         ui.add(egui::Checkbox::new(
-            &mut state.logwin.show_debug,
+            &mut log.logwin.show_debug,
             RichText::new(lt_i18n::t("show_debug")).size(12.0),
         ));
         ui.add(egui::Checkbox::new(
-            &mut state.logwin.auto_scroll,
+            &mut log.logwin.auto_scroll,
             RichText::new(lt_i18n::t("auto_scroll")).size(12.0),
         ));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -59,36 +59,35 @@ fn toolbar(ui: &mut Ui, state: &mut AppState) {
                 open_log_dir();
             }
             // 复制全部（当前可见行）；成功后短时切换为「已复制 N 行」
-            let flashing = state
-                .logwin
+            let flashing = log.logwin
                 .copy_at
                 .is_some_and(|t| t.elapsed() < COPY_FLASH);
-            let n_visible = state.logwin.visible_count();
+            let n_visible = log.logwin.visible_count();
             let copy_label = if flashing {
                 lt_i18n::t("log_copied").replace("{n}", &n_visible.to_string())
             } else {
                 lt_i18n::t("log_copy_all").to_string()
             };
             if ui.button(RichText::new(copy_label).size(12.0)).clicked() {
-                let mut text = state.logwin.visible_texts().join("\n");
+                let mut text = log.logwin.visible_texts().join("\n");
                 text.push('\n');
                 ui.ctx().copy_text(text);
-                state.logwin.copy_at = Some(Instant::now());
+                log.logwin.copy_at = Some(Instant::now());
             }
             // 清空（仅清空列表，磁盘日志文件不受影响）
             let clear = ui.button(RichText::new(lt_i18n::t("clear")).size(12.0));
             let clear = clear.on_hover_text(lt_i18n::t("clear_list_only"));
             if clear.clicked() {
-                state.logwin.clear();
+                log.logwin.clear();
             }
         });
     });
 }
 
 /// ── 日志区：占满剩余高度，全局唯一滚动条 ──
-fn log_region(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
-    let show_debug = state.logwin.show_debug;
-    let auto_scroll = state.logwin.auto_scroll;
+fn log_region(ui: &mut Ui, log: &mut LogUi, pal: &Palette) {
+    let show_debug = log.logwin.show_debug;
+    let auto_scroll = log.logwin.auto_scroll;
     egui::Frame::NONE.inner_margin(4.0).show(ui, |ui| {
         let out = ScrollArea::vertical()
             .auto_shrink([false, false])
@@ -96,7 +95,7 @@ fn log_region(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
             // 拖回底部重新跟随（egui stick_to_bottom 语义）
             .stick_to_bottom(auto_scroll)
             .show(ui, |ui| {
-                let lines = state.logwin.formatted();
+                let lines = log.logwin.formatted();
                 let mut any_visible = false;
                 for (text, level) in lines {
                     if !LogWindowState::level_visible(*level, show_debug) {
@@ -120,15 +119,15 @@ fn log_region(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
                 }
             });
         // 用户主动翻离底部且出现未读行：右下角「回到最新（+N）」浮钮
-        if state.logwin.advance_follow(
+        if log.logwin.advance_follow(
             out.state.offset.y,
             out.inner_rect.height(),
             out.content_size.y,
             LogView::Panel,
-        ) && log_jump_button(ui, state.logwin.new_since_bottom())
+        ) && log_jump_button(ui, log.logwin.new_since_bottom())
         {
             ui.scroll_to_cursor(Some(egui::Align::BOTTOM));
-            state.logwin.mark_at_bottom();
+            log.logwin.mark_at_bottom();
         }
     });
 }
@@ -194,11 +193,11 @@ mod tests {
     #[test]
     fn log_tab_leaves_no_tailing_content() {
         let ctx = egui::Context::default();
-        let mut st = AppState::new(lt_proto::Settings::default());
-        let render_once = |ctx: &egui::Context, st: &mut AppState| {
+        let mut st = crate::state::AppUi::new(lt_proto::Settings::default());
+        let render_once = |ctx: &egui::Context, st: &mut crate::state::AppUi| {
             let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
                 ui.set_max_size(egui::vec2(500.0, 600.0));
-                page(ui, st, &Palette::NATIVE);
+                page(ui, &mut st.log, &Palette::NATIVE);
                 let remaining = ui.available_height();
                 assert!(
                     remaining > -1.0,
@@ -210,7 +209,7 @@ mod tests {
         };
         // 满载（其中混有 DEBUG 行，覆盖渲染期过滤路径）
         for i in 0..80 {
-            st.logwin.push(LogLineEntry {
+            st.log.logwin.push(LogLineEntry {
                 time: "10:00:00".into(),
                 level: if i % 5 == 0 { 10 } else { 20 },
                 target: "t".into(),
@@ -220,7 +219,7 @@ mod tests {
         render_once(&ctx, &mut st);
         render_once(&ctx, &mut st);
         // 空态
-        st.logwin.clear();
+        st.log.logwin.clear();
         render_once(&ctx, &mut st);
     }
 
@@ -228,9 +227,9 @@ mod tests {
     #[test]
     fn log_tab_state_switches_render_stable() {
         let ctx = egui::Context::default();
-        let mut st = AppState::new(lt_proto::Settings::default());
+        let mut st = crate::state::AppUi::new(lt_proto::Settings::default());
         for i in 0..60 {
-            st.logwin.push(LogLineEntry {
+            st.log.logwin.push(LogLineEntry {
                 time: "10:00:00".into(),
                 level: 10,
                 target: "t".into(),
@@ -238,19 +237,19 @@ mod tests {
             });
         }
         for frame in 0..4 {
-            st.logwin.show_debug = frame % 2 == 0;
-            st.logwin.auto_scroll = frame % 2 == 0;
+            st.log.logwin.show_debug = frame % 2 == 0;
+            st.log.logwin.auto_scroll = frame % 2 == 0;
             let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
                 ui.set_max_size(egui::vec2(500.0, 600.0));
-                page(ui, &mut st, &Palette::NATIVE);
+                page(ui, &mut st.log, &Palette::NATIVE);
             });
             out.textures_delta.clear();
         }
         // 复制反馈：copy_at 失效期外仍渲染稳定
-        st.logwin.copy_at = Some(std::time::Instant::now());
+        st.log.logwin.copy_at = Some(std::time::Instant::now());
         let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
             ui.set_max_size(egui::vec2(500.0, 600.0));
-            page(ui, &mut st, &Palette::NATIVE);
+            page(ui, &mut st.log, &Palette::NATIVE);
         });
         out.textures_delta.clear();
     }

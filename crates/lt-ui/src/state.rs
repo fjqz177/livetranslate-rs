@@ -1,6 +1,8 @@
 //! UI 共享状态 —— 全部只被 UI 线程读写（事件经 UiMsg 进入，无锁竞争）。
 
-use lt_proto::{Cmd, Settings, SubtitleMode, UiMsg};
+use lt_proto::{Cmd, SubtitleMode, UiMsg};
+// Settings 为窗口模块共用类型（W5：域签名携带），从本模块公有导出
+pub use lt_proto::Settings;
 use std::time::{Duration, Instant};
 
 /// 窗口标识（4 个常驻窗口 + 启动流对话框 + Benchmark 工具窗）
@@ -161,6 +163,9 @@ pub enum WinAction {
     ResetPositions,
     /// 识别页页头"性能基准…"按钮（原版 BenchmarkDialog.exec()；宿主显示工具窗）
     ShowBenchmark,
+    /// 打开面板并切换到指定页（W5：字幕窗"打开设置"的跨域写意图化——
+    /// 原 subtitle.rs 直写 panel.page 的借用边界破坏改由宿主根消费）
+    OpenPanelPage(PanelPage),
 }
 
 /// 悬浮窗模式（原版 DragHandle._mode："full"/"compact"）
@@ -1531,19 +1536,36 @@ pub fn push_log_line(log: &mut Vec<String>, line: String) {
 }
 
 /// 全局 UI 状态。随里程碑逐步扩充（消息流/监视数据/统计……）。
-pub struct AppState {
-    pub settings: Settings,
+/// 只读共享视图（W5：AppUi 域拆分——内嵌可变性收敛于此）。
+/// i18n 为进程级静态全局（lt_i18n::set_lang），注册表显示信息为纯函数查询，
+/// 均无携带状态；本结构现仅字体系统（W-3）。
+pub struct UiContext {
+    /// 字体系统（W-3）：系统字体扫描列表 + 加载缓存 + 族名→FontFamily 解析表
+    pub fonts: crate::fonts::FontsState,
+}
+
+/// 会话级协调（W5：所有窗口共享的最小面——命令出口/动作队列/节拍表/
+/// 可见性只读快照；真值在宿主 WindowManager，本快照由宿主每帧 dispatch 前刷新）
+pub struct SessionView {
     /// 管道运行中（托盘"暂停/恢复"与悬浮窗启停按钮共用）
     pub running: bool,
-    /// 各窗口可见性（托盘与 CloseRequested 控制）
+    /// Worker 命令出口（宿主构造时注入；widget 代码经 send_cmd 直接发送）
+    pub cmd_tx: Option<std::sync::mpsc::Sender<Cmd>>,
+    /// 各窗口可见性只读快照（宿主每帧 dispatch 前 `clone_from` 真值表）
     pub visible: std::collections::HashMap<WinId, bool>,
-    /// 悬浮窗穿透/置顶/自动滚动/任务栏（托盘子菜单与 DragHandle 复选框三向同步）
-    pub ov_click_through: bool,
-    pub ov_topmost: bool,
-    pub ov_auto_scroll: bool,
-    pub ov_taskbar: bool,
-    /// 待处理的定时重绘
+    /// 管道启动失败原因（AppShell 直写；识别页顶部红字显示，用户可去日志页查细节）
+    pub pipeline_error: Option<String>,
+    /// UI 帧内请求的窗口动作（宿主在帧后消费；Drag/Resize/Hide/ShowPanel）
+    pub actions: Vec<(WinId, WinAction)>,
+    /// 待处理的定时重绘（宿主 about_to_wait 排空分派）
     pub ticks: Vec<Tick>,
+    /// 设置草稿变更意图（跨域：字幕窗/确认模态/面板页 → 宿主消费 → 面板
+    /// 300ms 防抖登记；W5 起 `mark_settings_dirty` 的意图化形态）
+    pub settings_apply_pending: bool,
+}
+
+/// 悬浮窗域（W5：monitor/messages/stats/overlay 伴生态/ov_* 复选/ASR 标签）
+pub struct OverlayUi {
     /// 监视条数据链（任务 1.6）
     pub monitor: MonitorData,
     /// 悬浮窗消息链（AddMessage 事件追加，上限 50 条、删最旧）
@@ -1551,251 +1573,175 @@ pub struct AppState {
     /// 翻译/用量统计（UpdateStats 事件更新）
     pub stats: OverlayStats,
     /// 悬浮窗 UI 伴生状态（模式/动画/节流/防抖）
-    pub overlay: OverlayUiState,
-    /// 字幕窗 UI 伴生状态（M4.2：句子队列/自动隐藏/高度动画/渲染缓存）
-    pub subtitle: SubtitleUiState,
-    /// 字幕窗首启拖动提示是否已弹（WP-1：原版 _subwin_notified 会话内一次性）
-    pub subtitle_hint_shown: bool,
-    /// UI 帧内请求的窗口动作（宿主在帧后消费；Drag/Resize/Hide/ShowPanel）
-    pub actions: Vec<(WinId, WinAction)>,
+    pub state: OverlayUiState,
+    /// 悬浮窗穿透/置顶/自动滚动/任务栏（托盘子菜单与 DragHandle 复选框三向同步）
+    pub ov_click_through: bool,
+    pub ov_topmost: bool,
+    pub ov_auto_scroll: bool,
+    pub ov_taskbar: bool,
+    /// ASR 设备标签（"SenseVoice Small" 等；不可用时 "ASR unavailable"；
+    /// 悬浮窗 MonitorBar device 段 + 托盘状态行共用）
+    pub asr_label: Option<String>,
     /// 右键"清空列表"请求（帧后消费）
     pub clear_request: bool,
-    /// 日志窗状态（M4.5）
-    pub logwin: LogWindowState,
+}
+
+/// 字幕窗域（W5）
+pub struct SubtitleUi {
+    /// 字幕窗 UI 伴生状态（M4.2：句子队列/自动隐藏/高度动画/渲染缓存）
+    pub state: SubtitleUiState,
+    /// 字幕窗首启拖动提示是否已弹（WP-1：原版 _subwin_notified 会话内一次性）
+    pub hint_shown: bool,
+}
+
+/// 控制面板域（W5：panel 伴生态 + 下载卡片 + 翻译页红字/测试连接）
+pub struct PanelUi {
     /// 控制面板 UI 伴生状态（M4.3：页栈/主题/设备缓存/设置防抖）
-    pub panel: PanelUiState,
-    /// ASR 设备标签（"SenseVoice Small" 等；不可用时 "ASR unavailable"）
-    pub asr_label: Option<String>,
+    pub state: PanelUiState,
     /// 模型下载运行态（识别页缓存卡片；DownloadProgress/Failed/Succeeded 事件驱动）
     pub download: DownloadUiState,
     /// 翻译装置不可用原因（TranslatorUnavailable 事件；翻译页状态行红字显示）
     pub translator_error: Option<String>,
     /// 翻译配置「测试连接」运行态（Cmd::TestTranslator 的 UI 侧）
     pub test_translator: TestTranslatorState,
-    /// 管道启动失败原因（AppShell 直写；识别页顶部红字显示，用户可去日志页查细节）
-    pub pipeline_error: Option<String>,
-    /// 启动流状态机（首启向导/缺模型下载/Ready）
-    pub startup: StartupFlow,
-    /// 模型加载对话框（_ModelLoadDialog）：Some(label)=显示中
-    pub load_dialog: Option<String>,
-    /// Worker 命令出口（宿主构造时注入；widget 代码经 send_cmd 直接发送）
-    pub cmd_tx: Option<std::sync::mpsc::Sender<Cmd>>,
-    /// UI → 事件环回出口（宿主构造时注入 EventLoopProxy 转发；后台线程经
-    /// send_event 回流 UiMsg——benchmark 窗的 on_line 日志流即走此通道）
-    pub event_tx: Option<std::sync::Arc<dyn Fn(UiMsg) + Send + Sync>>,
-    /// 性能基准输出行（W2 起经 `UiEvent::Bench(Line)` 事件回流追加；
-    /// 上限 500 行防内存膨胀；完成态由 Finished 事件复位）
-    pub bench_lines: Vec<String>,
-    /// 性能基准运行中（开始按钮禁用/文案切换；`Bench(Finished)` 到达即复位）
-    pub bench_running: bool,
-    /// 性能基准参与模型勾选（与 settings.models 对位；缺省全选）
-    pub bench_selected: Vec<bool>,
-    /// 性能基准源语言下拉索引（BENCH_SRC_LANGS）
-    pub bench_src: usize,
-    /// 性能基准目标语言下拉索引（BENCH_TGT_LANGS）
-    pub bench_tgt: usize,
-    /// 缺模型下载失败后点"关闭"：请求退出应用（原版 reject → main 返回退出）
-    pub quit_requested: bool,
-    /// 通用确认模态（D-33/H-3~H-5；None=关闭，同一时刻至多一个）
-    pub confirm: Option<ConfirmUi>,
-    /// sysinfo 实例与上次采样时刻（1s 节流）
-    sys: Option<sysinfo::System>,
-    sys_last: Option<Instant>,
-    /// 字体系统（W-3）：系统字体扫描列表 + 加载缓存 + 族名→FontFamily 解析表
-    pub fonts: crate::fonts::FontsState,
 }
 
-impl AppState {
-    /// 常规构造：无启动流（flow=Ready），主窗口按默认可见性
+/// 日志域（W5：日志窗与面板日志 tab 双视图共享，保持）
+pub struct LogUi {
+    /// 日志窗状态（M4.5）
+    pub logwin: LogWindowState,
+}
+
+/// 性能基准域（W5：独立工具窗 + 面板基准 tab 共用）
+pub struct BenchUi {
+    /// 性能基准输出行（W2 起经 `UiEvent::Bench(Line)` 事件回流追加；
+    /// 上限 500 行防内存膨胀；完成态由 Finished 事件复位）
+    pub lines: Vec<String>,
+    /// 性能基准运行中（开始按钮禁用/文案切换；`Bench(Finished)` 到达即复位）
+    pub running: bool,
+    /// 性能基准参与模型勾选（与 settings.models 对位；缺省全选）
+    pub selected: Vec<bool>,
+    /// 性能基准源语言下拉索引（BENCH_SRC_LANGS）
+    pub src: usize,
+    /// 性能基准目标语言下拉索引（BENCH_TGT_LANGS）
+    pub tgt: usize,
+    /// UI → 事件环回出口（宿主构造时注入 EventLoopProxy 转发；后台线程经
+    /// send_event 回流 UiMsg——benchmark 窗的 on_line 日志流即走此通道。
+    /// W5f 基准迁 orchestrator 后删除）
+    pub event_tx: Option<std::sync::Arc<dyn Fn(UiMsg) + Send + Sync>>,
+}
+
+/// 启动流域（W5：首启向导/缺模型下载/Ready + 模型加载对话框）
+pub struct StartupUi {
+    /// 启动流状态机（首启向导/缺模型下载/Ready）
+    pub flow: StartupFlow,
+    /// 模型加载对话框（_ModelLoadDialog）：Some(label)=显示中
+    pub load_dialog: Option<String>,
+}
+
+/// 模态域（W5：通用确认模态 + 退出请求）
+pub struct ModalUi {
+    /// 通用确认模态（D-33/H-3~H-5；None=关闭，同一时刻至多一个）
+    pub confirm: Option<ConfirmUi>,
+    /// 缺模型下载失败后点"关闭"：请求退出应用（原版 reject → main 返回退出）
+    pub quit_requested: bool,
+}
+
+/// UI 域根（W5：AppState 巨石按窗口归属拆分的域组合）。窗口模块经
+/// [`windows::dispatch`] 解构分发只拿本域 `&mut` + 共享 `&`——借用检查器
+/// 从此强制窗口边界（越界纯靠命名纪律的时代结束，R8）。
+pub struct AppUi {
+    /// 编辑/持久真值（DEC-4 单写者不变；300ms 防抖 ApplySettings 提交）
+    pub settings: Settings,
+    /// 只读共享：fonts（内嵌可变性收敛于此）
+    pub ctx: UiContext,
+    /// 会话级协调：running / cmd_tx / 可见性只读快照 / pipeline_error +
+    /// 动作队列 + 节拍表 + 设置变更意图
+    pub session: SessionView,
+    /// 悬浮窗域
+    pub overlay: OverlayUi,
+    /// 字幕窗域
+    pub subtitle: SubtitleUi,
+    /// 控制面板域
+    pub panel: PanelUi,
+    /// 日志域
+    pub log: LogUi,
+    /// 性能基准域
+    pub bench: BenchUi,
+    /// 启动流域
+    pub startup: StartupUi,
+    /// 模态域
+    pub modal: ModalUi,
+}
+
+impl AppUi {
+    /// 常规构造：无启动流（flow=Ready），主窗口默认可见性由宿主定。
     pub fn new(settings: Settings) -> Self {
         Self::with_startup(settings, StartupFlow::Ready)
     }
 
-    /// 指定初始启动流构造。对照原版 main()：启动流进行中（首启向导/缺模型下载）
-    /// 4 个主窗口初始全部不可见，仅 Setup 对话框可见，accept 之后才 reveal 主窗口。
+    /// 指定初始启动流构造。启动流进行中（首启向导/缺模型下载）4 个主窗口
+    /// 初始不可见的可见性表由宿主（MultiWindowApp::new）按本流初始化——
+    /// 可见性真值归宿主 WindowManager（W5b/R20），此处只保留域状态。
     pub fn with_startup(settings: Settings, flow: StartupFlow) -> Self {
-        let startup_pending = !matches!(flow, StartupFlow::Ready);
-        let mut visible = std::collections::HashMap::new();
-        visible.insert(WinId::Overlay, !startup_pending);
-        visible.insert(
-            WinId::Subtitle,
-            !startup_pending && settings.subtitle_mode.enabled,
-        );
-        // 原版启动只开悬浮窗；控制面板由悬浮窗"设置"/托盘打开（on_toggle_panel）。
-        // LIVETRANSLATE_SHOW_PANEL=1：开发/排障便利（实机截图走查用），默认关闭
-        let show_panel = std::env::var("LIVETRANSLATE_SHOW_PANEL")
-            .map(|v| !v.is_empty() && v != "0")
-            .unwrap_or(false);
-        visible.insert(WinId::Panel, !startup_pending && show_panel);
-        visible.insert(WinId::Log, false); // 原版：启动即建但隐藏
-                                           // Setup 对话框窗口：仅启动流进行中初始可见（运行期 load_dialog 单独控制）
-        visible.insert(WinId::Setup, startup_pending);
-        // Benchmark 工具窗：启动即建但隐藏（原版仅点识别页"性能基准…"时 exec）
-        visible.insert(WinId::Benchmark, false);
         Self {
             settings,
-            running: true,
-            visible,
-            // 原版默认：置顶√、自动滚动√、穿透×、任务栏×
-            ov_click_through: false,
-            ov_topmost: true,
-            ov_auto_scroll: true,
-            ov_taskbar: false,
-            ticks: Vec::new(),
-            monitor: MonitorData::default(),
-            messages: Vec::new(),
-            stats: OverlayStats::default(),
-            overlay: OverlayUiState::default(),
-            subtitle: SubtitleUiState::default(),
-            subtitle_hint_shown: false,
-            actions: Vec::new(),
-            clear_request: false,
-            logwin: LogWindowState::default(),
-            panel: PanelUiState::default(),
-            asr_label: None,
-            download: DownloadUiState::default(),
-            translator_error: None,
-            test_translator: TestTranslatorState::default(),
-            pipeline_error: None,
-            startup: flow,
-            load_dialog: None,
-            cmd_tx: None,
-            event_tx: None,
-            bench_lines: Vec::new(),
-            bench_running: false,
-            bench_selected: Vec::new(),
-            bench_src: 0,
-            bench_tgt: 0,
-            quit_requested: false,
-            confirm: None,
-            sys: None,
-            sys_last: None,
-            // 字体系统（W-3）：启动扫描系统字体列表，应用期按 Settings 热重建
-            fonts: crate::fonts::FontsState::new(),
+            ctx: UiContext {
+                // 字体系统（W-3）：启动扫描系统字体列表，应用期按 Settings 热重建
+                fonts: crate::fonts::FontsState::new(),
+            },
+            session: SessionView {
+                running: true,
+                cmd_tx: None,
+                visible: std::collections::HashMap::new(),
+                pipeline_error: None,
+                actions: Vec::new(),
+                ticks: Vec::new(),
+                settings_apply_pending: false,
+            },
+            overlay: OverlayUi {
+                monitor: MonitorData::default(),
+                messages: Vec::new(),
+                stats: OverlayStats::default(),
+                state: OverlayUiState::default(),
+                // 原版默认：置顶√、自动滚动√、穿透×、任务栏×
+                ov_click_through: false,
+                ov_topmost: true,
+                ov_auto_scroll: true,
+                ov_taskbar: false,
+                asr_label: None,
+                clear_request: false,
+            },
+            subtitle: SubtitleUi {
+                state: SubtitleUiState::default(),
+                hint_shown: false,
+            },
+            panel: PanelUi {
+                state: PanelUiState::default(),
+                download: DownloadUiState::default(),
+                translator_error: None,
+                test_translator: TestTranslatorState::default(),
+            },
+            log: LogUi {
+                logwin: LogWindowState::default(),
+            },
+            bench: BenchUi {
+                lines: Vec::new(),
+                running: false,
+                selected: Vec::new(),
+                src: 0,
+                tgt: 0,
+                event_tx: None,
+            },
+            startup: StartupUi {
+                flow,
+                load_dialog: None,
+            },
+            modal: ModalUi {
+                confirm: None,
+                quit_requested: false,
+            },
         }
-    }
-
-    /// 追加一条识别消息；超过 50 条删最旧（原版 _max_messages = 50）。
-    pub fn push_message(&mut self, msg: OverlayMessage) {
-        self.messages.push(msg);
-        if self.messages.len() > 50 {
-            self.messages.remove(0);
-        }
-    }
-
-    /// 按 id 从最新往回找消息索引（消息链短，线性即可）
-    fn find_message_mut(&mut self, id: u64) -> Option<&mut OverlayMessage> {
-        self.messages.iter_mut().rev().find(|m| m.id == id)
-    }
-
-    /// 流式译文增量（原版 update_streaming：50ms 节流）。
-    /// 只缓冲 + 安排 50ms 悬浮窗节拍；节拍触发时 [`Self::flush_streams`] 落盘到消息。
-    pub fn update_streaming(&mut self, id: u64, partial: String) {
-        self.overlay.pending_streams.insert(id, partial);
-        self.schedule_overlay_flush();
-    }
-
-    /// 若无待触发的 50ms 流式节拍则安排一个（原版 singleShot 50ms 语义）
-    fn schedule_overlay_flush(&mut self) {
-        let at = Instant::now() + Duration::from_millis(50);
-        let already = self.ticks.iter().any(|t| {
-            t.win == WinId::Overlay
-                && t.kind == TickKind::StreamFlush
-                && t.at <= at + Duration::from_millis(50)
-        });
-        if !already {
-            self.ticks.push(Tick {
-                at,
-                win: WinId::Overlay,
-                kind: TickKind::StreamFlush,
-            });
-        }
-    }
-
-    /// 节拍触发：把缓冲的流式文本写入消息并标记滚动/重绘
-    pub fn flush_streams(&mut self) {
-        if self.overlay.pending_streams.is_empty() {
-            return;
-        }
-        let pending = std::mem::take(&mut self.overlay.pending_streams);
-        for (id, text) in pending {
-            if let Some(m) = self.find_message_mut(id) {
-                m.translation = Some(text);
-                m.streaming = true;
-            }
-        }
-        self.overlay.scroll_pending = true;
-    }
-
-    /// 译文完成（原版 update_translation；空文本=同语言/无翻译，同样置 Some）
-    pub fn update_translation(&mut self, id: u64, text: String, tl_ms: f64) {
-        if let Some(m) = self.find_message_mut(id) {
-            m.translation = Some(text);
-            m.tl_ms = tl_ms;
-            m.streaming = false;
-        }
-        self.overlay.scroll_pending = true;
-    }
-
-    /// 统计快照更新（原版 update_stats）
-    pub fn update_stats(&mut self, stats: OverlayStats) {
-        self.stats = stats;
-    }
-
-    /// UI 帧内请求窗口动作（宿主帧后消费）
-    pub fn enqueue_action(&mut self, win: WinId, action: WinAction) {
-        self.actions.push((win, action));
-    }
-
-    /// 取走全部窗口动作
-    pub fn drain_actions(&mut self) -> Vec<(WinId, WinAction)> {
-        std::mem::take(&mut self.actions)
-    }
-
-    /// 打开确认模态（D-33/H-3~H-5）。已有模态打开则幂等忽略（单模态源防嵌套）。
-    /// `overlay_ok`：悬浮窗可作宿主（可见且非紧凑且高度充足，由调用方判定）；
-    /// 否则宿主=面板（调用方负责面板不可见时入队 ShowPanel/HidePanel 平衡）。
-    /// 标题/正文由调用方按 kind 装配（i18n 当前语言；Delete 系含动态参数）。
-    pub fn request_confirm(
-        &mut self,
-        kind: ConfirmKind,
-        overlay_ok: bool,
-        title: String,
-        msg: String,
-    ) -> bool {
-        if self.confirm.is_some() {
-            return false;
-        }
-        let host = if overlay_ok {
-            WinId::Overlay
-        } else {
-            WinId::Panel
-        };
-        let panel_shown_for_confirm =
-            host == WinId::Panel && !self.visible.get(&WinId::Panel).copied().unwrap_or(true);
-        self.confirm = Some(ConfirmUi {
-            host,
-            kind,
-            title,
-            msg,
-            panel_shown_for_confirm,
-        });
-        true
-    }
-
-    /// 关闭确认模态并返回原状态（渲染帧执行确定效果 / 取消恢复逻辑）
-    pub fn take_confirm(&mut self) -> Option<ConfirmUi> {
-        self.confirm.take()
-    }
-
-    /// 字幕窗拖动提示的一次性消费（原版 _subwin_notified：会话内只弹一次）。
-    /// 返回 true = 本次应弹（首次）；false = 已弹过。
-    pub fn take_subtitle_hint(&mut self) -> bool {
-        if self.subtitle_hint_shown {
-            return false;
-        }
-        self.subtitle_hint_shown = true;
-        true
     }
 
     /// 悬浮窗持久化几何 (x, y, w, h)（settings.overlay_* 四键齐备才生效）
@@ -1804,309 +1750,50 @@ impl AppState {
         Some((s.overlay_x?, s.overlay_y?, s.overlay_w?, s.overlay_h?))
     }
 
-    /// 位置/尺寸变更登记（原版 _schedule_pos_save：几何变化 → 500ms 防抖保存）
-    pub fn schedule_pos_save(&mut self, geo: (i32, i32, u32, u32)) {
-        if self.overlay.last_saved_geo == Some(geo) {
-            return;
-        }
-        self.overlay.pos_dirty_since = Some(Instant::now());
-        let at = Instant::now() + Duration::from_millis(500);
-        if !self
-            .ticks
-            .iter()
-            .any(|t| t.win == WinId::Overlay && t.kind == TickKind::PosSave)
-        {
-            self.ticks.push(Tick {
-                at,
-                win: WinId::Overlay,
-                kind: TickKind::PosSave,
-            });
-        }
-    }
-
-    /// 悬浮窗穿透轮询节拍（原版 _ct_timer 50ms；仅穿透开启时由宿主续拍）
-    pub fn schedule_click_through_tick(&mut self) {
-        let at = Instant::now() + Duration::from_millis(50);
-        if !self
-            .ticks
-            .iter()
-            .any(|t| t.win == WinId::Overlay && t.kind == TickKind::ClickThrough)
-        {
-            self.ticks.push(Tick {
-                at,
-                win: WinId::Overlay,
-                kind: TickKind::ClickThrough,
-            });
-        }
-    }
-
-    /// 字幕窗文本更新入口（原版 SubtitleWindow.update_text → _on_update_text；
-    /// 宿主由 UpdateTranslation 事件换算 original + {lang: translation}）。
-    /// pending 进队时安排 SubtitlePending 节拍；立即插入路径同步自动隐藏节拍。
-    pub fn subtitle_update_text(
-        &mut self,
-        original: String,
-        translations: std::collections::BTreeMap<String, String>,
-    ) {
-        let now = Instant::now();
-        if let Some(at) =
-            self.subtitle
-                .update_text(original, translations, &self.settings.subtitle_mode, now)
-        {
-            self.schedule_subtitle_tick(TickKind::SubtitlePending, at);
-        } else {
-            self.sync_subtitle_auto_hide_tick();
-        }
-    }
-
-    /// 字幕窗节拍安排（同窗同种去重：覆盖既有时刻）
-    pub fn schedule_subtitle_tick(&mut self, kind: TickKind, at: Instant) {
-        if let Some(t) = self
-            .ticks
-            .iter_mut()
-            .find(|t| t.win == WinId::Subtitle && t.kind == kind)
-        {
-            t.at = at;
-        } else {
-            self.ticks.push(Tick {
-                at,
-                win: WinId::Subtitle,
-                kind,
-            });
-        }
-    }
-
-    /// 依 auto_hide_deadline 同步自动隐藏节拍（None → 取消既有节拍）
-    pub fn sync_subtitle_auto_hide_tick(&mut self) {
-        match self.subtitle.auto_hide_deadline {
-            Some(at) => self.schedule_subtitle_tick(TickKind::SubtitleAutoHide, at),
-            None => self
-                .ticks
-                .retain(|t| !(t.win == WinId::Subtitle && t.kind == TickKind::SubtitleAutoHide)),
-        }
-    }
-
-    /// SubtitlePending 节拍：消费到点待插入（原版 timer.timeout → _insert_sentence）；
-    /// 返回是否实际插入（宿主据此重绘）。
-    pub fn subtitle_flush_pending(&mut self) -> bool {
-        let now = Instant::now();
-        if self
-            .subtitle
-            .flush_pending(&self.settings.subtitle_mode, now)
-        {
-            self.sync_subtitle_auto_hide_tick();
-            true
-        } else {
-            false
-        }
-    }
-
-    /// 字幕窗位置变更登记（原版 position_changed → 500ms 防抖保存；仅存 x/y）
-    pub fn schedule_subtitle_pos_save(&mut self, pos: (i32, i32)) {
-        if self.subtitle.last_saved_pos == Some(pos) {
-            return;
-        }
-        self.subtitle.pos_dirty_since = Some(Instant::now());
-        let at = Instant::now() + Duration::from_millis(500);
-        self.schedule_subtitle_tick(TickKind::PosSave, at);
-    }
-
-    /// 字幕窗 100ms 光标感知轮询节拍（D-36：分区穿透断言 + 顶条悬停工具的
-    /// 单一事实源；原版 _ct_timer 500ms。可见期间由宿主无需条件地续拍）
-    pub fn schedule_subtitle_window_poll(&mut self) {
-        let at = Instant::now() + Duration::from_millis(SUBTITLE_POLL_MS);
-        self.schedule_subtitle_tick(TickKind::ClickThrough, at);
-    }
-
-    /// 1s 节流的系统采样（进程 CPU/RSS，对照原版 psutil.Process）；
-    /// 在监视节拍触发时调用。CPU 占用需两次采样才有意义，首次为 0 属预期。
-    pub fn sample_system(&mut self) {
-        let now = Instant::now();
-        if !self.sys_last.map_or(true, |t| {
-            now.duration_since(t) >= std::time::Duration::from_secs(1)
-        }) {
-            return;
-        }
-        self.sys_last = Some(now);
-        let sys = self.sys.get_or_insert_with(sysinfo::System::new);
-        let pid = sysinfo::Pid::from_u32(std::process::id());
-        sys.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[pid]), true);
-        let m = &mut self.monitor;
-        if let Some(proc) = sys.process(pid) {
-            m.cpu = proc.cpu_usage();
-            m.ram_mb = proc.memory() as f32 / 1024.0 / 1024.0;
-        }
-    }
-
-    /// 音频监视 33ms 节拍（W2/D-67：快照格轮询——悬浮窗可见时持续续拍，
-    /// 不可见即停；与 1s 系统采样节拍并存）
-    pub fn schedule_audio_monitor_tick(&mut self) {
-        let at = Instant::now() + Duration::from_millis(33);
-        if let Some(t) = self.ticks.iter_mut().find(|t| t.kind == TickKind::AudioMonitor) {
-            t.at = at;
-        } else {
-            self.ticks.push(Tick {
-                at,
-                win: WinId::Overlay,
-                kind: TickKind::AudioMonitor,
-            });
-        }
-    }
-
-    /// 设置 1s 监视节拍（悬浮窗 MonitorBar）
-    pub fn schedule_monitor_tick(&mut self, win: WinId) {
-        let at = Instant::now() + Duration::from_secs(1);
-        if let Some(t) = self
-            .ticks
-            .iter_mut()
-            .find(|t| t.win == win && t.kind == TickKind::Monitor)
-        {
-            t.at = at;
-        } else {
-            self.ticks.push(Tick {
-                at,
-                win,
-                kind: TickKind::Monitor,
-            });
-        }
-    }
-
-    /// 安排一次 Setup 窗节拍（同窗去重：覆盖既有节拍时刻）。
-    /// 向导倒计时（1s/拍）与下载成功后的 500ms 收尾延迟共用。
-    pub fn schedule_setup_tick(&mut self, delay: Duration) {
-        let at = Instant::now() + delay;
-        if let Some(t) = self.ticks.iter_mut().find(|t| t.win == WinId::Setup) {
-            t.at = at;
-        } else {
-            self.ticks.push(Tick {
-                at,
-                win: WinId::Setup,
-                kind: TickKind::Setup,
-            });
-        }
-    }
-
-    /// 取消 Setup 节拍（下载开始即停倒计时定时器，等价原版 _auto_timer.stop()）
-    pub fn cancel_setup_tick(&mut self) {
-        self.ticks.retain(|t| t.win != WinId::Setup);
-    }
-
-    /// 面板设置变更登记（原版 _auto_save：控件改 draft 后重启 300ms 单发定时；
-    /// 300ms 内的连续变更不断顺延时刻 → 合并为一次 ApplySettings）。
-    /// 宿主在 [`TickKind::PanelApply`] 节拍触发时经 [`Self::take_due_panel_apply`] 发送。
-    pub fn schedule_panel_apply(&mut self) {
-        self.schedule_panel_apply_at(Instant::now());
-    }
-
-    /// [`Self::schedule_panel_apply`] 的可注入时钟版（测试用）
-    pub fn schedule_panel_apply_at(&mut self, now: Instant) {
-        self.panel.mark_dirty_at(now);
-        let at = PanelUiState::apply_deadline(now);
-        if let Some(t) = self
-            .ticks
-            .iter_mut()
-            .find(|t| t.win == WinId::Panel && t.kind == TickKind::PanelApply)
-        {
-            t.at = at;
-        } else {
-            self.ticks.push(Tick {
-                at,
-                win: WinId::Panel,
-                kind: TickKind::PanelApply,
-            });
-        }
-    }
-
     /// PanelApply 节拍到期：消费防抖并返回应整体重放的设置快照
     /// （原版 _do_auto_save → _apply_settings → settings_changed.emit(snapshot)）。
     /// 返回 None = 无脏标记（不该发生，防御语义）。
     pub fn take_due_panel_apply(&mut self, now: Instant) -> Option<Settings> {
-        if self.panel.take_apply_due(now) {
+        if self.panel.state.take_apply_due(now) {
             Some(self.settings.clone())
         } else {
             None
         }
     }
 
-    /// 翻译页 prompt 变更登记（原版 _prompt_debounce.start()：重启 600ms 单发定时）。
-    /// 到期由 [`TickKind::PromptApply`] 节拍消费（→ SwitchTranslator 重建翻译器）。
-    pub fn schedule_prompt_apply(&mut self) {
-        self.schedule_prompt_apply_at(Instant::now());
-    }
-
-    /// [`Self::schedule_prompt_apply`] 的可注入时钟版（测试用）
-    pub fn schedule_prompt_apply_at(&mut self, now: Instant) {
-        self.panel.prompt_apply_due = Some(now + Duration::from_millis(PROMPT_APPLY_DEBOUNCE_MS));
-        let at = now + Duration::from_millis(PROMPT_APPLY_DEBOUNCE_MS);
-        if let Some(t) = self
-            .ticks
-            .iter_mut()
-            .find(|t| t.win == WinId::Panel && t.kind == TickKind::PromptApply)
-        {
-            t.at = at;
-        } else {
-            self.ticks.push(Tick {
-                at,
-                win: WinId::Panel,
-                kind: TickKind::PromptApply,
-            });
-        }
-    }
-
-    /// PromptApply 节拍到期消费（600ms 内连续编辑合并为一次）
-    pub fn take_due_prompt_apply(&mut self, now: Instant) -> bool {
-        self.panel.take_prompt_apply_due(now)
-    }
-
-    /// 性能基准输出追加一行（上限 500 行，满删最旧）
-    pub fn push_bench_line(&mut self, line: String) {
-        self.bench_lines.push(line);
-        if self.bench_lines.len() > 500 {
-            self.bench_lines.remove(0);
-        }
-    }
-
-    /// UI → 事件环回（后台线程闭包持有 event_tx 的 Arc 克隆后调用）。
-    /// 未注入时丢弃并记 debug（与 send_cmd 同款防御）。
-    pub fn send_event(&self, msg: UiMsg) {
-        match &self.event_tx {
-            Some(f) => f(msg),
-            None => tracing::debug!("event_tx 未注入，事件被丢弃: {msg:?}"),
-        }
-    }
-
-    /// 若启动流需要节拍（向导倒计时 / 成功后 500ms 收尾延迟）则安排 Setup 节拍。
-    /// 倒计时按 1s 一拍；收尾延迟按 500ms。
-    pub fn kick_setup_tick(&mut self) {
-        if !crate::windows::setup::needs_setup_tick(self) {
-            return;
-        }
-        let idle_countdown = matches!(
-            &self.startup,
-            StartupFlow::Wizard(w) if w.phase == WizardPhase::Idle
-        );
-        let delay = if idle_countdown {
-            Duration::from_secs(1)
-        } else {
-            Duration::from_millis(500)
-        };
-        self.schedule_setup_tick(delay);
-    }
-
     /// 向导"开始下载"统一入口：倒计时归零自动触发与按钮点击共用（原版 _start_download）。
     /// 切 Downloading、停倒计时、按当前 hub/proxy 选择发 StartDownload；重复触发忽略。
     pub fn wizard_auto_start(&mut self) {
-        let (hub, proxy) = match &self.startup {
-            StartupFlow::Wizard(w) if !matches!(w.phase, WizardPhase::Downloading) => {
-                (w.hub_arg(), w.proxy_arg())
-            }
-            _ => return,
-        };
-        if let StartupFlow::Wizard(w) = &mut self.startup {
-            w.phase = WizardPhase::Downloading;
+        wizard_auto_start(&mut self.startup.flow, &mut self.session);
+    }
+}
+
+/// 向导"开始下载"统一入口（自由函数版：窗口模块与 AppUi 根共用）：倒计时归零
+/// 自动触发与按钮点击殊途同归——切 Downloading、停倒计时（原版 _auto_timer.stop()）、
+/// 发 StartDownload；重复触发忽略。
+pub fn wizard_auto_start(flow: &mut StartupFlow, session: &mut SessionView) {
+    let (hub, proxy) = match flow {
+        StartupFlow::Wizard(w) if !matches!(w.phase, WizardPhase::Downloading) => {
+            (w.hub_arg(), w.proxy_arg())
         }
-        self.cancel_setup_tick();
-        self.send_cmd(Cmd::StartDownload { hub, proxy });
+        _ => return,
+    };
+    if let StartupFlow::Wizard(w) = flow {
+        w.phase = WizardPhase::Downloading;
+    }
+    session.cancel_tick(WinId::Setup, TickKind::Setup);
+    session.send_cmd(Cmd::StartDownload { hub, proxy });
+}
+
+impl SessionView {
+    /// UI 帧内请求窗口动作（宿主帧后消费）
+    pub fn enqueue_action(&mut self, win: WinId, action: WinAction) {
+        self.actions.push((win, action));
+    }
+
+    /// 取走全部窗口动作
+    pub fn drain_actions(&mut self) -> Vec<(WinId, WinAction)> {
+        std::mem::take(&mut self.actions)
     }
 
     /// UI → 管道命令出口（cmd_tx 由宿主构造时注入）；发送失败仅记 debug 防打屏
@@ -2119,6 +1806,27 @@ impl AppState {
             }
             None => tracing::debug!("cmd_tx 未注入，命令被丢弃: {cmd:?}"),
         }
+    }
+
+    /// 登记节拍（同窗同种覆盖既有时刻：字幕/监视/Setup 等延迟语义）
+    pub fn schedule_tick(&mut self, win: WinId, kind: TickKind, at: Instant) {
+        if let Some(t) = self.ticks.iter_mut().find(|t| t.win == win && t.kind == kind) {
+            t.at = at;
+        } else {
+            self.ticks.push(Tick { at, win, kind });
+        }
+    }
+
+    /// 登记节拍（同窗同种已存在则不重复排班：穿透轮询/位置防抖等启动语义）
+    pub fn ensure_tick(&mut self, win: WinId, kind: TickKind, at: Instant) {
+        if !self.ticks.iter().any(|t| t.win == win && t.kind == kind) {
+            self.ticks.push(Tick { at, win, kind });
+        }
+    }
+
+    /// 取消指定节拍（自动隐藏取消等）
+    pub fn cancel_tick(&mut self, win: WinId, kind: TickKind) {
+        self.ticks.retain(|t| !(t.win == win && t.kind == kind));
     }
 
     /// 取走所有到期的节拍；返回需要处理的节拍（宿主按 kind 分派）
@@ -2140,6 +1848,289 @@ impl AppState {
     pub fn next_tick(&self) -> Option<Instant> {
         self.ticks.iter().map(|t| t.at).min()
     }
+
+    /// 设置草稿变更意图（跨域请求：字幕窗/确认模态/面板页 → 宿主消费）
+    pub fn request_settings_apply(&mut self) {
+        self.settings_apply_pending = true;
+    }
+
+    /// 宿主消费设置变更意图（返回 true = 应做面板 300ms 防抖登记）
+    pub fn take_settings_apply_pending(&mut self) -> bool {
+        std::mem::take(&mut self.settings_apply_pending)
+    }
+}
+
+impl OverlayUi {
+    /// 追加一条识别消息；超过 50 条删最旧（原版 _max_messages = 50）。
+    pub fn push_message(&mut self, msg: OverlayMessage) {
+        self.messages.push(msg);
+        if self.messages.len() > 50 {
+            self.messages.remove(0);
+        }
+    }
+
+    /// 按 id 从最新往回找消息索引（消息链短，线性即可）
+    fn find_message_mut(&mut self, id: u64) -> Option<&mut OverlayMessage> {
+        self.messages.iter_mut().rev().find(|m| m.id == id)
+    }
+
+    /// 流式译文增量（原版 update_streaming：50ms 节流）。
+    /// 只缓冲 + 安排 50ms 悬浮窗节拍；节拍触发时 [`Self::flush_streams`] 落盘到消息。
+    pub fn update_streaming(&mut self, session: &mut SessionView, id: u64, partial: String) {
+        self.state.pending_streams.insert(id, partial);
+        let at = Instant::now() + Duration::from_millis(50);
+        session.ensure_tick(WinId::Overlay, TickKind::StreamFlush, at);
+    }
+
+    /// 节拍触发：把缓冲的流式文本写入消息并标记滚动/重绘
+    pub fn flush_streams(&mut self) {
+        if self.state.pending_streams.is_empty() {
+            return;
+        }
+        let pending = std::mem::take(&mut self.state.pending_streams);
+        for (id, text) in pending {
+            if let Some(m) = self.find_message_mut(id) {
+                m.translation = Some(text);
+                m.streaming = true;
+            }
+        }
+        self.state.scroll_pending = true;
+    }
+
+    /// 译文完成（原版 update_translation；空文本=同语言/无翻译，同样置 Some）
+    pub fn update_translation(&mut self, id: u64, text: String, tl_ms: f64) {
+        if let Some(m) = self.find_message_mut(id) {
+            m.translation = Some(text);
+            m.tl_ms = tl_ms;
+            m.streaming = false;
+        }
+        self.state.scroll_pending = true;
+    }
+
+    /// 统计快照更新（原版 update_stats）
+    pub fn update_stats(&mut self, stats: OverlayStats) {
+        self.stats = stats;
+    }
+
+    /// 位置/尺寸变更登记（原版 _schedule_pos_save：几何变化 → 500ms 防抖保存）
+    pub fn schedule_pos_save(&mut self, session: &mut SessionView, geo: (i32, i32, u32, u32)) {
+        if self.state.last_saved_geo == Some(geo) {
+            return;
+        }
+        self.state.pos_dirty_since = Some(Instant::now());
+        let at = Instant::now() + Duration::from_millis(500);
+        session.ensure_tick(WinId::Overlay, TickKind::PosSave, at);
+    }
+
+    /// 悬浮窗穿透轮询节拍（原版 _ct_timer 50ms；仅穿透开启时由宿主续拍）
+    pub fn schedule_click_through_tick(&self, session: &mut SessionView) {
+        let at = Instant::now() + Duration::from_millis(50);
+        session.ensure_tick(WinId::Overlay, TickKind::ClickThrough, at);
+    }
+}
+
+impl SubtitleUi {
+    /// 字幕窗拖动提示的一次性消费（原版 _subwin_notified：会话内只弹一次）。
+    /// 返回 true = 本次应弹（首次）；false = 已弹过。
+    pub fn take_subtitle_hint(&mut self) -> bool {
+        if self.hint_shown {
+            return false;
+        }
+        self.hint_shown = true;
+        true
+    }
+
+    /// 字幕窗文本更新入口（原版 SubtitleWindow.update_text → _on_update_text；
+    /// 宿主由 UpdateTranslation 事件换算 original + {lang: translation}）。
+    /// pending 进队时安排 SubtitlePending 节拍；立即插入路径同步自动隐藏节拍。
+    pub fn update_text(
+        &mut self,
+        session: &mut SessionView,
+        settings: &Settings,
+        original: String,
+        translations: std::collections::BTreeMap<String, String>,
+    ) {
+        let now = Instant::now();
+        if let Some(at) = self.state.update_text(original, translations, &settings.subtitle_mode, now) {
+            self.schedule_tick(session, TickKind::SubtitlePending, at);
+        } else {
+            self.sync_auto_hide_tick(session);
+        }
+    }
+
+    /// 字幕窗节拍安排（同窗同种去重：覆盖既有时刻）
+    pub fn schedule_tick(&mut self, session: &mut SessionView, kind: TickKind, at: Instant) {
+        session.schedule_tick(WinId::Subtitle, kind, at);
+    }
+
+    /// 依 auto_hide_deadline 同步自动隐藏节拍（None → 取消既有节拍）
+    pub fn sync_auto_hide_tick(&mut self, session: &mut SessionView) {
+        match self.state.auto_hide_deadline {
+            Some(at) => self.schedule_tick(session, TickKind::SubtitleAutoHide, at),
+            None => session.cancel_tick(WinId::Subtitle, TickKind::SubtitleAutoHide),
+        }
+    }
+
+    /// SubtitlePending 节拍：消费到点待插入（原版 timer.timeout → _insert_sentence）；
+    /// 返回是否实际插入（宿主据此重绘）。
+    pub fn flush_pending(&mut self, session: &mut SessionView, settings: &Settings) -> bool {
+        let now = Instant::now();
+        if self.state.flush_pending(&settings.subtitle_mode, now) {
+            self.sync_auto_hide_tick(session);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// 字幕窗位置变更登记（原版 position_changed → 500ms 防抖保存；仅存 x/y）
+    pub fn schedule_pos_save(&mut self, session: &mut SessionView, pos: (i32, i32)) {
+        if self.state.last_saved_pos == Some(pos) {
+            return;
+        }
+        self.state.pos_dirty_since = Some(Instant::now());
+        let at = Instant::now() + Duration::from_millis(500);
+        self.schedule_tick(session, TickKind::PosSave, at);
+    }
+
+    /// 字幕窗 100ms 光标感知轮询节拍（D-36：分区穿透断言 + 顶条悬停工具的
+    /// 单一事实源；原版 _ct_timer 500ms。可见期间由宿主无需条件地续拍）
+    pub fn schedule_window_poll(&mut self, session: &mut SessionView) {
+        let at = Instant::now() + Duration::from_millis(SUBTITLE_POLL_MS);
+        self.schedule_tick(session, TickKind::ClickThrough, at);
+    }
+}
+
+impl ModalUi {
+    /// 打开确认模态（D-33/H-3~H-5）。已有模态打开则幂等忽略（单模态源防嵌套）。
+    /// `overlay_ok`：悬浮窗可作宿主（可见且非紧凑且高度充足，由调用方判定）；
+    /// `panel_visible`：面板当前可见（W5b 起真值在宿主，调用方传只读快照值）。
+    /// 否则宿主=面板（调用方负责面板不可见时入队 ShowPanel/HidePanel 平衡）。
+    /// 标题/正文由调用方按 kind 装配（i18n 当前语言；Delete 系含动态参数）。
+    pub fn request_confirm(
+        &mut self,
+        kind: ConfirmKind,
+        overlay_ok: bool,
+        panel_visible: bool,
+        title: String,
+        msg: String,
+    ) -> bool {
+        if self.confirm.is_some() {
+            return false;
+        }
+        let host = if overlay_ok {
+            WinId::Overlay
+        } else {
+            WinId::Panel
+        };
+        let panel_shown_for_confirm = host == WinId::Panel && !panel_visible;
+        self.confirm = Some(ConfirmUi {
+            host,
+            kind,
+            title,
+            msg,
+            panel_shown_for_confirm,
+        });
+        true
+    }
+
+    /// 关闭确认模态并返回原状态（渲染帧执行确定效果 / 取消恢复逻辑）
+    pub fn take_confirm(&mut self) -> Option<ConfirmUi> {
+        self.confirm.take()
+    }
+}
+
+impl StartupUi {
+    /// 安排一次 Setup 窗节拍（同窗去重：覆盖既有节拍时刻）。
+    /// 向导倒计时（1s/拍）与下载成功后的 500ms 收尾延迟共用。
+    pub fn schedule_tick(&mut self, session: &mut SessionView, delay: Duration) {
+        let at = Instant::now() + delay;
+        session.schedule_tick(WinId::Setup, TickKind::Setup, at);
+    }
+
+    /// 取消 Setup 节拍（下载开始即停倒计时定时器，等价原版 _auto_timer.stop()）
+    pub fn cancel_tick(&mut self, session: &mut SessionView) {
+        session.cancel_tick(WinId::Setup, TickKind::Setup);
+    }
+
+    /// 若启动流需要节拍（向导倒计时 / 成功后 500ms 收尾延迟）则安排 Setup 节拍。
+    /// 倒计时按 1s 一拍；收尾延迟按 500ms。
+    pub fn kick_tick(&mut self, session: &mut SessionView) {
+        if !crate::windows::setup::needs_setup_tick(&self.flow, &self.load_dialog) {
+            return;
+        }
+        let idle_countdown = matches!(
+            &self.flow,
+            StartupFlow::Wizard(w) if w.phase == WizardPhase::Idle
+        );
+        let delay = if idle_countdown {
+            Duration::from_secs(1)
+        } else {
+            Duration::from_millis(500)
+        };
+        self.schedule_tick(session, delay);
+    }
+}
+
+impl BenchUi {
+    /// 性能基准输出追加一行（上限 500 行，满删最旧）
+    pub fn push_line(&mut self, line: String) {
+        self.lines.push(line);
+        if self.lines.len() > 500 {
+            self.lines.remove(0);
+        }
+    }
+
+    /// UI → 事件环回（后台线程闭包持有 event_tx 的 Arc 克隆后调用；
+    /// W5f 基准迁 orchestrator 后随 event_tx 一并删除）。
+    /// 未注入时丢弃并记 debug（与 send_cmd 同款防御）。
+    pub fn send_event(&self, msg: UiMsg) {
+        match &self.event_tx {
+            Some(f) => f(msg),
+            None => tracing::debug!("event_tx 未注入，事件被丢弃: {msg:?}"),
+        }
+    }
+}
+
+/// 面板设置防抖登记（宿主消费 [`SessionView::take_settings_apply_pending`] 意图后
+/// 调用；原版 _auto_save：控件改 draft 后重启 300ms 单发定时，连续变更不断顺延）。
+/// `now` 可注入时钟（测试用）。
+pub fn register_panel_apply(
+    panel: &mut PanelUi,
+    session: &mut SessionView,
+    now: Instant,
+) {
+    panel.state.mark_dirty_at(now);
+    let at = PanelUiState::apply_deadline(now);
+    session.schedule_tick(WinId::Panel, TickKind::PanelApply, at);
+}
+
+/// 各窗口初始可见性表（W5b：真值归宿主 WindowManager——`MultiWindowApp::new`
+/// 调用本函数初始化；启动流进行中 4 个主窗口不可见，仅 Setup 对话框可见，
+/// accept 之后才 reveal 主窗口）。
+pub fn initial_visibility(
+    settings: &Settings,
+    flow: &StartupFlow,
+) -> std::collections::HashMap<WinId, bool> {
+    let startup_pending = !matches!(flow, StartupFlow::Ready);
+    let mut visible = std::collections::HashMap::new();
+    visible.insert(WinId::Overlay, !startup_pending);
+    visible.insert(
+        WinId::Subtitle,
+        !startup_pending && settings.subtitle_mode.enabled,
+    );
+    // 原版启动只开悬浮窗；控制面板由悬浮窗"设置"/托盘打开（on_toggle_panel）。
+    // LIVETRANSLATE_SHOW_PANEL=1：开发/排障便利（实机截图走查用），默认关闭
+    let show_panel = std::env::var("LIVETRANSLATE_SHOW_PANEL")
+        .map(|v| !v.is_empty() && v != "0")
+        .unwrap_or(false);
+    visible.insert(WinId::Panel, !startup_pending && show_panel);
+    visible.insert(WinId::Log, false); // 原版：启动即建但隐藏
+                                       // Setup 对话框窗口：仅启动流进行中初始可见（运行期 load_dialog 单独控制）
+    visible.insert(WinId::Setup, startup_pending);
+    // Benchmark 工具窗：启动即建但隐藏（原版仅点识别页"性能基准…"时 exec）
+    visible.insert(WinId::Benchmark, false);
+    visible
 }
 
 #[cfg(test)]
@@ -2149,12 +2140,12 @@ mod tests {
     /// WP-1：字幕窗拖动提示会话内一次性（原版 _subwin_notified 语义）
     #[test]
     fn subtitle_hint_once_per_session() {
-        let mut st = AppState::new(Settings::default());
-        assert!(st.take_subtitle_hint(), "首次应弹提示");
-        assert!(!st.take_subtitle_hint(), "会话内不重复弹");
+        let mut st = AppUi::new(Settings::default());
+        assert!(st.subtitle.take_subtitle_hint(), "首次应弹提示");
+        assert!(!st.subtitle.take_subtitle_hint(), "会话内不重复弹");
         // 独立实例互不影响
-        let mut st2 = AppState::new(Settings::default());
-        assert!(st2.take_subtitle_hint());
+        let mut st2 = AppUi::new(Settings::default());
+        assert!(st2.subtitle.take_subtitle_hint());
     }
 
     /// D-36：顶条悬停状态机——淡入/淡出动画、reduce_motion 瞬时落位、重复幂等
@@ -2191,85 +2182,92 @@ mod tests {
     /// D-33/H-3：确认模态——打开/幂等/宿主选择/取消恢复标记（单模态源防嵌套）
     #[test]
     fn confirm_modal_request_idempotent_and_host_choice() {
-        let mut st = AppState::new(Settings::default());
+        let mut st = AppUi::new(Settings::default());
         // 默认启动流 Ready：面板可见性取 show_panel 环境（测试无该变量 → 隐藏）
-        st.visible.insert(WinId::Panel, false);
-        st.visible.insert(WinId::Overlay, true);
+        st.session.visible.insert(WinId::Panel, false);
+        st.session.visible.insert(WinId::Overlay, true);
+        let panel_visible =
+            |st: &AppUi| st.session.visible.get(&WinId::Panel).copied().unwrap_or(true);
 
         // 悬浮窗可宿主 → Overlay，无 panel 标记
-        assert!(st.request_confirm(
+        assert!(st.modal.request_confirm(
             ConfirmKind::Quit,
             true,
+            panel_visible(&st),
             lt_i18n::t("quit_confirm_title"),
             lt_i18n::t("quit_confirm_msg"),
         ));
-        let c = st.confirm.as_ref().unwrap();
+        let c = st.modal.confirm.as_ref().unwrap();
         assert_eq!(c.host, WinId::Overlay);
         assert_eq!(c.kind, ConfirmKind::Quit);
         assert!(!c.panel_shown_for_confirm);
 
         // 已开 → 幂等忽略（不叠加/不换 kind）
-        assert!(!st.request_confirm(
+        assert!(!st.modal.request_confirm(
             ConfirmKind::Clear,
             true,
+            panel_visible(&st),
             lt_i18n::t("clear_confirm_title"),
             lt_i18n::t("clear_confirm_msg"),
         ));
-        assert_eq!(st.confirm.as_ref().unwrap().kind, ConfirmKind::Quit);
+        assert_eq!(st.modal.confirm.as_ref().unwrap().kind, ConfirmKind::Quit);
 
         // 取消 → 取走
-        let taken = st.take_confirm().expect("应取走模态");
-        assert!(st.confirm.is_none());
+        let taken = st.modal.take_confirm().expect("应取走模态");
+        assert!(st.modal.confirm.is_none());
         assert_eq!(taken.kind, ConfirmKind::Quit);
 
         // 悬浮窗不可宿主（隐藏/紧凑）→ Panel + 临时显示标记
-        assert!(st.request_confirm(
+        assert!(st.modal.request_confirm(
             ConfirmKind::Quit,
             false,
+            panel_visible(&st),
             lt_i18n::t("quit_confirm_title"),
             lt_i18n::t("quit_confirm_msg"),
         ));
-        let c = st.confirm.as_ref().unwrap();
+        let c = st.modal.confirm.as_ref().unwrap();
         assert_eq!(c.host, WinId::Panel);
         assert!(c.panel_shown_for_confirm, "面板原本隐藏应标记临时显示");
 
         // 面板已可见 → 取消不触发回藏（无临时标记）
-        let _ = st.take_confirm();
-        st.visible.insert(WinId::Panel, true);
-        assert!(st.request_confirm(
+        let _ = st.modal.take_confirm();
+        st.session.visible.insert(WinId::Panel, true);
+        assert!(st.modal.request_confirm(
             ConfirmKind::ResetSubtitle,
             false,
+            panel_visible(&st),
             lt_i18n::t("reset_confirm_title"),
             lt_i18n::t("subwin_reset_confirm"),
         ));
-        assert!(!st.confirm.as_ref().unwrap().panel_shown_for_confirm);
-        let _ = st.take_confirm();
+        assert!(!st.modal.confirm.as_ref().unwrap().panel_shown_for_confirm);
+        let _ = st.modal.take_confirm();
     }
 
     /// D-33/H-3：Quit 确认 → quit_requested（宿主 about_to_wait 收敛路径不变）
     #[test]
     fn confirm_quit_sets_quit_requested() {
-        let mut st = AppState::new(Settings::default());
-        assert!(!st.quit_requested);
-        st.request_confirm(
+        let mut st = AppUi::new(Settings::default());
+        assert!(!st.modal.quit_requested);
+        st.modal.request_confirm(
             ConfirmKind::Quit,
+            false,
             false,
             lt_i18n::t("quit_confirm_title"),
             lt_i18n::t("quit_confirm_msg"),
         );
-        let _ = st.take_confirm();
+        let _ = st.modal.take_confirm();
         // 渲染层确定按钮 → 置 quit_requested（与确认框分离的纯状态断言：
         // 直接模拟 apply 的结果——渲染层唯一副作用是 quit_requested）
-        st.quit_requested = true;
-        assert!(st.quit_requested);
+        st.modal.quit_requested = true;
+        assert!(st.modal.quit_requested);
     }
 
     /// DL-3：apply_progress 整体覆盖（精确字节），文件切换自然归零；
     /// 非 Downloading 态忽略晚到事件
     #[test]
     fn apply_progress_overwrites_and_ignores_non_downloading() {
-        let mut st = AppState::new(Settings::default());
-        st.download = DownloadUiState::Downloading {
+        let mut st = AppUi::new(Settings::default());
+        st.panel.download = DownloadUiState::Downloading {
             file: "model.int8.onnx".into(),
             k: 1,
             n: 2,
@@ -2278,9 +2276,9 @@ mod tests {
             log: vec![],
         };
         // 第二个文件开始：进度随新文件归零（机器段为权威值）
-        st.download
+        st.panel.download
             .apply_progress("tokens.txt".into(), 2, 2, 1_048_576, 2_097_152);
-        match &st.download {
+        match &st.panel.download {
             DownloadUiState::Downloading {
                 file,
                 k,
@@ -2296,9 +2294,9 @@ mod tests {
             other => panic!("{other:?}"),
         }
         // 成功回 Idle 后的晚到事件不生效
-        st.download = DownloadUiState::Idle;
-        st.download.apply_progress("x".into(), 1, 1, 1, 1);
-        assert_eq!(st.download, DownloadUiState::Idle);
+        st.panel.download = DownloadUiState::Idle;
+        st.panel.download.apply_progress("x".into(), 1, 1, 1, 1);
+        assert_eq!(st.panel.download, DownloadUiState::Idle);
     }
 
     fn msg(id: u64) -> OverlayMessage {
@@ -2316,56 +2314,56 @@ mod tests {
 
     #[test]
     fn messages_cap_at_50_keep_newest() {
-        let mut st = AppState::new(Settings::default());
+        let mut st = AppUi::new(Settings::default());
         for i in 1..=55u64 {
-            st.push_message(msg(i));
+            st.overlay.push_message(msg(i));
         }
         // 上限 50 条，保留的是最新的 50 条（首条 id 应为第 6 条）
-        assert_eq!(st.messages.len(), 50);
-        assert_eq!(st.messages[0].id, 6);
-        assert_eq!(st.messages.last().unwrap().id, 55);
+        assert_eq!(st.overlay.messages.len(), 50);
+        assert_eq!(st.overlay.messages[0].id, 6);
+        assert_eq!(st.overlay.messages.last().unwrap().id, 55);
     }
 
     #[test]
     fn translation_updates_target_latest_message_with_id() {
-        let mut st = AppState::new(Settings::default());
+        let mut st = AppUi::new(Settings::default());
         // 同 id 消息出现两次（现实中不发生，防御语义：取最新）
-        st.push_message(msg(1));
-        st.push_message(msg(2));
+        st.overlay.push_message(msg(1));
+        st.overlay.push_message(msg(2));
 
         // 流式只入缓冲，50ms 节拍 flush 后才落消息（并置 streaming 标志）
-        st.update_streaming(2, "partial".into());
-        assert_eq!(st.messages.last().unwrap().translation, None);
-        st.flush_streams();
+        st.overlay.update_streaming(&mut st.session, 2, "partial".into());
+        assert_eq!(st.overlay.messages.last().unwrap().translation, None);
+        st.overlay.flush_streams();
         assert_eq!(
-            st.messages.last().unwrap().translation.as_deref(),
+            st.overlay.messages.last().unwrap().translation.as_deref(),
             Some("partial")
         );
-        assert!(st.messages.last().unwrap().streaming);
-        assert_eq!(st.messages.last().unwrap().tl_ms, 0.0);
+        assert!(st.overlay.messages.last().unwrap().streaming);
+        assert_eq!(st.overlay.messages.last().unwrap().tl_ms, 0.0);
 
-        st.update_translation(2, "done".into(), 320.0);
-        let m = st.messages.last().unwrap();
+        st.overlay.update_translation(2, "done".into(), 320.0);
+        let m = st.overlay.messages.last().unwrap();
         assert_eq!(m.translation.as_deref(), Some("done"));
         assert_eq!(m.tl_ms, 320.0);
         assert!(!m.streaming);
 
         // 不存在的 id：无害 no-op
-        st.update_translation(999, "ghost".into(), 1.0);
-        assert!(st.messages.iter().all(|m| m.id != 999));
+        st.overlay.update_translation(999, "ghost".into(), 1.0);
+        assert!(st.overlay.messages.iter().all(|m| m.id != 999));
 
         // 淘汰边界：id=1 已被挤出 50 条窗口（仅 2 条时不适用，直接验证 id=1 更新）
-        st.update_translation(1, "first".into(), 5.0);
-        assert_eq!(st.messages[0].translation.as_deref(), Some("first"));
+        st.overlay.update_translation(1, "first".into(), 5.0);
+        assert_eq!(st.overlay.messages[0].translation.as_deref(), Some("first"));
     }
 
     #[test]
     fn same_language_empty_translation_still_marked() {
-        let mut st = AppState::new(Settings::default());
-        st.push_message(msg(7));
+        let mut st = AppUi::new(Settings::default());
+        st.overlay.push_message(msg(7));
         // 同语言回空译文：translation=Some("")，消息标记完成
-        st.update_translation(7, String::new(), 0.0);
-        let m = st.messages.last().unwrap();
+        st.overlay.update_translation(7, String::new(), 0.0);
+        let m = st.overlay.messages.last().unwrap();
         assert_eq!(m.translation.as_deref(), Some(""));
     }
 
@@ -2578,16 +2576,16 @@ mod tests {
 
     #[test]
     fn stats_snapshot_replaces_wholesale() {
-        let mut st = AppState::new(Settings::default());
-        st.update_stats(OverlayStats {
+        let mut st = AppUi::new(Settings::default());
+        st.overlay.update_stats(OverlayStats {
             asr_n: 10,
             tl_n: 8,
             prompt_tokens: 1000,
             completion_tokens: 500,
             cost: 0.002,
         });
-        assert_eq!(st.stats.asr_n, 10);
-        assert_eq!(st.stats.cost, 0.002);
+        assert_eq!(st.overlay.stats.asr_n, 10);
+        assert_eq!(st.overlay.stats.cost, 0.002);
     }
 
     #[test]
@@ -2643,18 +2641,18 @@ mod tests {
         w.hub_index = 1;
         w.proxy_index = 0;
         let (tx, rx) = std::sync::mpsc::channel();
-        let mut st = AppState::with_startup(Settings::default(), StartupFlow::Wizard(w));
-        st.cmd_tx = Some(tx);
-        st.schedule_setup_tick(Duration::from_secs(1));
+        let mut st = AppUi::with_startup(Settings::default(), StartupFlow::Wizard(w));
+        st.session.cmd_tx = Some(tx);
+        st.startup.schedule_tick(&mut st.session, Duration::from_secs(1));
 
         st.wizard_auto_start();
 
-        let StartupFlow::Wizard(w) = &st.startup else {
+        let StartupFlow::Wizard(w) = &st.startup.flow else {
             panic!("应仍处于向导流");
         };
         assert_eq!(w.phase, WizardPhase::Downloading);
         // 下载开始即停倒计时定时器（原版 _auto_timer.stop()）
-        assert!(st.ticks.iter().all(|t| t.win != WinId::Setup));
+        assert!(st.session.ticks.iter().all(|t| t.win != WinId::Setup));
         match rx.try_recv() {
             Ok(Cmd::StartDownload { hub, proxy }) => {
                 assert_eq!(hub, "hf");
@@ -2667,14 +2665,18 @@ mod tests {
         assert!(rx.try_recv().is_err());
     }
 
+    /// W5b：初始可见性表（宿主 MultiWindowApp 调 `initial_visibility` 初始化）
     #[test]
-    fn with_startup_hides_main_windows_when_pending() {
+    fn initial_visibility_hides_main_windows_when_pending() {
         // 首启向导：4 个主窗口初始全部不可见，仅 Setup 可见
-        let st = AppState::with_startup(Settings::default(), startup_flow(true, vec![]));
+        let visible = initial_visibility(
+            &Settings::default(),
+            &startup_flow(true, vec![]),
+        );
         for id in [WinId::Overlay, WinId::Subtitle, WinId::Panel, WinId::Log] {
-            assert!(!*st.visible.get(&id).unwrap(), "{id:?} 应隐藏");
+            assert!(!*visible.get(&id).unwrap(), "{id:?} 应隐藏");
         }
-        assert!(*st.visible.get(&WinId::Setup).unwrap());
+        assert!(*visible.get(&WinId::Setup).unwrap());
 
         // 缺模型下载：同样全隐藏；names 为逗号连接的显示名
         let flow = startup_flow(false, vec!["Silero VAD".into(), "SenseVoice Small".into()]);
@@ -2682,15 +2684,20 @@ mod tests {
             panic!("应为缺模型下载流");
         };
         assert_eq!(names, "Silero VAD, SenseVoice Small");
-        let st = AppState::with_startup(Settings::default(), flow);
-        assert!(!*st.visible.get(&WinId::Overlay).unwrap());
-        assert!(*st.visible.get(&WinId::Setup).unwrap());
+        let visible = initial_visibility(&Settings::default(), &flow);
+        assert!(!*visible.get(&WinId::Overlay).unwrap());
+        assert!(*visible.get(&WinId::Setup).unwrap());
 
         // Ready：维持现有默认（Log 仍隐藏），Setup 不可见
-        let st = AppState::new(Settings::default());
-        assert!(*st.visible.get(&WinId::Overlay).unwrap());
-        assert!(!*st.visible.get(&WinId::Setup).unwrap());
-        assert!(!*st.visible.get(&WinId::Log).unwrap());
+        let visible = initial_visibility(&Settings::default(), &StartupFlow::Ready);
+        assert!(*visible.get(&WinId::Overlay).unwrap());
+        assert!(!*visible.get(&WinId::Setup).unwrap());
+        assert!(!*visible.get(&WinId::Log).unwrap());
+        // 字幕窗随 settings.subtitle_mode.enabled（原版启动即建但隐藏）
+        let mut s = Settings::default();
+        s.subtitle_mode.enabled = false;
+        let visible = initial_visibility(&s, &StartupFlow::Ready);
+        assert!(!*visible.get(&WinId::Subtitle).unwrap());
     }
 
     // ── 面板（M4.3）：页序 / 防抖 / 页键 ──
@@ -2726,21 +2733,21 @@ mod tests {
     /// 面板默认值：首页 VAD/ASR（原版第一个 addTab）、无设备缓存
     #[test]
     fn panel_state_defaults_match_original_chrome() {
-        let st = AppState::new(Settings::default());
-        assert_eq!(st.panel.page, PanelPage::VadAsr);
-        assert!(st.panel.devices.is_none());
-        assert!(st.panel.apply_due_at.is_none());
+        let st = AppUi::new(Settings::default());
+        assert_eq!(st.panel.state.page, PanelPage::VadAsr);
+        assert!(st.panel.state.devices.is_none());
+        assert!(st.panel.state.apply_due_at.is_none());
     }
 
     /// 防抖：登记后 300ms 到期触发一次；到期前不触发
     #[test]
     fn panel_apply_debounce_fires_once_after_300ms() {
-        let mut st = AppState::new(Settings::default());
+        let mut st = AppUi::new(Settings::default());
         st.settings.vad_threshold = 0.35;
         let t0 = Instant::now();
-        st.schedule_panel_apply_at(t0);
+        register_panel_apply(&mut st.panel, &mut st.session, t0);
         // 到期前：无快照
-        assert!(!st.panel.take_apply_due(t0 + Duration::from_millis(299)));
+        assert!(!st.panel.state.take_apply_due(t0 + Duration::from_millis(299)));
         // 到期：返回当前设置快照
         let snap = st
             .take_due_panel_apply(t0 + Duration::from_millis(300))
@@ -2751,27 +2758,27 @@ mod tests {
             .take_due_panel_apply(t0 + Duration::from_millis(600))
             .is_none());
         // 节拍已无未到期项（消费时 tick 已被 drain；此处防御：deadline 标记已清）
-        assert_eq!(st.panel.apply_due_at, None);
+        assert_eq!(st.panel.state.apply_due_at, None);
     }
 
     /// 防抖合并：300ms 内连续登记 → 只保留一个节拍且时刻顺延（原版 singleShot restart）
     #[test]
     fn panel_apply_debounce_merges_bursts() {
-        let mut st = AppState::new(Settings::default());
+        let mut st = AppUi::new(Settings::default());
         let t0 = Instant::now();
-        st.schedule_panel_apply_at(t0);
-        st.schedule_panel_apply_at(t0 + Duration::from_millis(100));
-        st.schedule_panel_apply_at(t0 + Duration::from_millis(200));
+        register_panel_apply(&mut st.panel, &mut st.session, t0);
+        register_panel_apply(&mut st.panel, &mut st.session, t0 + Duration::from_millis(100));
+        register_panel_apply(&mut st.panel, &mut st.session, t0 + Duration::from_millis(200));
         // 仅一个 PanelApply 节拍，deadline = 最后一次登记 + 300ms
         let ticks: Vec<_> = st
-            .ticks
+            .session.ticks
             .iter()
             .filter(|t| t.win == WinId::Panel && t.kind == TickKind::PanelApply)
             .collect();
         assert_eq!(ticks.len(), 1, "300ms 内连发应合并为单节拍");
         assert_eq!(ticks[0].at, t0 + Duration::from_millis(500));
         // 合并后仍只发一次（draft 最终值即快照）
-        assert!(!st.panel.take_apply_due(t0 + Duration::from_millis(400)));
+        assert!(!st.panel.state.take_apply_due(t0 + Duration::from_millis(400)));
         assert!(st
             .take_due_panel_apply(t0 + Duration::from_millis(500))
             .is_some());
@@ -2980,12 +2987,12 @@ mod tests {
     /// prompt 600ms 防抖：登记/合并/消费与 PanelApply 互不干扰
     #[test]
     fn prompt_apply_debounce_independent() {
-        let mut st = AppState::new(Settings::default());
+        let mut st = AppUi::new(Settings::default());
         let t0 = Instant::now();
-        st.schedule_prompt_apply_at(t0);
-        st.schedule_prompt_apply_at(t0 + Duration::from_millis(200));
+        crate::windows::panel::schedule_prompt_apply(&mut st.panel, &mut st.session, t0);
+        crate::windows::panel::schedule_prompt_apply(&mut st.panel, &mut st.session, t0 + Duration::from_millis(200));
         let ticks: Vec<_> = st
-            .ticks
+            .session.ticks
             .iter()
             .filter(|t| t.kind == TickKind::PromptApply)
             .collect();
@@ -2995,15 +3002,15 @@ mod tests {
             t0 + Duration::from_millis(800),
             "deadline = 末次登记 + 600ms"
         );
-        assert!(!st.take_due_prompt_apply(t0 + Duration::from_millis(799)));
-        assert!(st.take_due_prompt_apply(t0 + Duration::from_millis(800)));
+        assert!(!st.panel.state.take_prompt_apply_due(t0 + Duration::from_millis(799)));
+        assert!(st.panel.state.take_prompt_apply_due(t0 + Duration::from_millis(800)));
         assert!(
-            !st.take_due_prompt_apply(t0 + Duration::from_millis(800)),
+            !st.panel.state.take_prompt_apply_due(t0 + Duration::from_millis(800)),
             "单发语义"
         );
         // 面板 300ms 防抖独立存在
         assert!(
-            st.panel.apply_due_at.is_none(),
+            st.panel.state.apply_due_at.is_none(),
             "prompt 登记不应触发 ApplySettings"
         );
     }
@@ -3011,29 +3018,31 @@ mod tests {
     /// bench 行上限 500 删最旧（对齐 push_log_line 语义）
     #[test]
     fn bench_lines_cap_at_500() {
-        let mut st = AppState::new(Settings::default());
+        let mut st = AppUi::new(Settings::default());
         for i in 0..520 {
-            st.push_bench_line(format!("line {i}"));
+            st.bench.push_line(format!("line {i}"));
         }
-        assert_eq!(st.bench_lines.len(), 500);
-        assert_eq!(st.bench_lines[0], "line 20");
-        assert_eq!(st.bench_lines.last().unwrap(), "line 519");
+        assert_eq!(st.bench.lines.len(), 500);
+        assert_eq!(st.bench.lines[0], "line 20");
+        assert_eq!(st.bench.lines.last().unwrap(), "line 519");
     }
 
     /// W2/D-67：音频监视节拍排班（33ms 拍、重复调用去重；悬浮窗可见才续拍
     /// 的语义在 app.rs about_to_wait 消费）
     #[test]
     fn audio_monitor_tick_scheduling() {
-        let mut st = AppState::new(Settings::default());
-        st.schedule_audio_monitor_tick();
-        st.schedule_audio_monitor_tick();
+        let mut st = AppUi::new(Settings::default());
+        let at = Instant::now() + Duration::from_millis(33);
+        st.session.schedule_tick(WinId::Overlay, TickKind::AudioMonitor, at);
+        st.session.schedule_tick(WinId::Overlay, TickKind::AudioMonitor, at);
         let n = st
+            .session
             .ticks
             .iter()
             .filter(|t| t.kind == TickKind::AudioMonitor)
             .count();
         assert_eq!(n, 1, "同拍去重");
-        assert!(st.next_tick().is_some(), "应有待触发节拍");
+        assert!(st.session.next_tick().is_some(), "应有待触发节拍");
     }
 
     /// thinking_style 存储值 ↔ 下拉索引（未知/None 回退 auto）
