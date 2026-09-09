@@ -2694,6 +2694,7 @@ name = "lt-asr"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "lt-models",
  "lt-proto",
  "ort",
  "serde",
@@ -2725,6 +2726,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "lt-download"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "lt-models",
+ "lt-proto",
+ "reqwest",
+ "sha2",
+ "tracing",
+]
+
+[[package]]
 name = "lt-i18n"
 version = "0.1.0"
 dependencies = [
@@ -2740,10 +2753,8 @@ dependencies = [
  "anyhow",
  "dirs",
  "lt-proto",
- "reqwest",
  "serde",
  "serde_json",
- "sha2",
  "tracing",
 ]
 
@@ -2757,6 +2768,7 @@ dependencies = [
  "crossbeam-channel",
  "lt-asr",
  "lt-audio",
+ "lt-download",
  "lt-models",
  "lt-proto",
  "lt-translate",

@@ -220,7 +220,6 @@ mod tests {
 #[cfg(test)]
 mod probe_real_qwen3_tmp {
     use super::*;
-    use crate::engines::probe_models_root;
     use std::time::Instant;
 
     /// 线性插值重采样（验收探针专用；test_wavs 混有 44.1kHz，
@@ -245,9 +244,11 @@ mod probe_real_qwen3_tmp {
     #[test]
     #[ignore = "真实模型加载（941MB 包）+ test_wavs 转写；WP-B S0/引擎级验收用"]
     fn probe_real_qwen3_transcribe() {
-        let md = probe_models_root().join(
-            "huggingface/hub/models--csukuangfj2--sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25/snapshots/main",
-        );
+        let md = lt_models::paths::models_dir(None)
+            .expect("models_dir 解析失败")
+            .join(
+                "huggingface/hub/models--csukuangfj2--sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25/snapshots/main",
+            );
         if !md.is_dir() {
             println!(
                 "跳过（模型未缓存；设 LIVETRANSLATE_CONFIG_DIR 指向含 models 的配置目录）: {}",

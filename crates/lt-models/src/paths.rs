@@ -30,14 +30,11 @@ pub fn models_dir(custom: Option<&std::path::Path>) -> anyhow::Result<PathBuf> {
 }
 
 /// HF 缓存根（布局兼容原版：huggingface/hub/models--org--name/...）
-pub fn hf_cache_root(models_dir: &std::path::Path) -> PathBuf {
-    models_dir.join("huggingface").join("hub")
-}
+/// W6 起拼装单一事实源在 lt_proto::layout（下载器与探测共用）
+pub use lt_proto::layout::hf_cache_root;
 
 /// ModelScope 缓存根
-pub fn ms_cache_root(models_dir: &std::path::Path) -> PathBuf {
-    models_dir.join("modelscope")
-}
+pub use lt_proto::layout::ms_cache_root;
 
 /// 转写输出目录
 pub fn transcripts_dir() -> anyhow::Result<PathBuf> {

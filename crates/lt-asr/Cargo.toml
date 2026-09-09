@@ -21,3 +21,6 @@ windows = { workspace = true }
 [dev-dependencies]
 # 仅 coexist.rs 示例（R-4 共存验证件）使用；生产依赖不链接 ort
 ort = { workspace = true }
+# W6：引擎验收探针路径经 lt_models::paths::models_dir 派生（删 probe_models_root
+# 私有副本，方案 §5 W6-1；仅 --ignored 探针测试使用，与方案图 dev-dep 边一致）
+lt-models = { workspace = true }

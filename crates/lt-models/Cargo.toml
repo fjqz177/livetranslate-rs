@@ -4,12 +4,11 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+# 零网络依赖（W6：下载域分家至 lt-download，与方案 §3.1 白名单一致——
+# lt-models | proto：Settings/注册表/paths/cache 探测，无 reqwest/sha2）
 lt-proto = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 dirs = { workspace = true }
-reqwest = { workspace = true }
-# AH-5/H8 下载内容校验（finalize 前 sha256；纯 Rust）
-sha2 = { workspace = true }

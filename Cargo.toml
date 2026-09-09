@@ -8,6 +8,7 @@ members = [
     "crates/lt-asr",
     "crates/lt-translate",
     "crates/lt-orchestrator",
+    "crates/lt-download",
     "crates/lt-ui",
     "crates/lt-app",
 ]
@@ -25,6 +26,7 @@ lt-audio = { path = "crates/lt-audio" }
 lt-asr = { path = "crates/lt-asr" }
 lt-translate = { path = "crates/lt-translate" }
 lt-orchestrator = { path = "crates/lt-orchestrator" }
+lt-download = { path = "crates/lt-download" }
 lt-ui = { path = "crates/lt-ui" }
 
 # ── 同步（W2/W4 设置+监视快照格；读者全为同步线程、写者 <1Hz）──

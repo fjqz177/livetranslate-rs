@@ -3,7 +3,7 @@
 //! 用法：`cargo run -p lt-models --example model_pull -- [model_key]`
 //! 默认 sensevoice-small（MS hub 优先）。完成后打印快照目录。
 
-use lt_models::download::{Downloader, Hub, ProxyMode};
+use lt_download::{Downloader, Hub, ProxyMode};
 use lt_models::registry;
 use std::sync::atomic::AtomicBool;
 
@@ -37,15 +37,15 @@ fn main() -> anyhow::Result<()> {
     drop(tx);
     for ev in rx.try_iter() {
         match ev {
-            lt_models::download::DownloadEvent::Progress {
+            lt_download::DownloadEvent::Progress {
                 file, done, total, ..
             } => {
                 let t = total.map(|x| x.to_string()).unwrap_or_else(|| "?".into());
                 println!("  {file}: {done}/{t}");
             }
-            lt_models::download::DownloadEvent::Log(m) => println!("  {m}"),
-            lt_models::download::DownloadEvent::FileDone { file, .. } => println!("完成: {file}"),
-            lt_models::download::DownloadEvent::Done { .. } => {}
+            lt_download::DownloadEvent::Log(m) => println!("  {m}"),
+            lt_download::DownloadEvent::FileDone { file, .. } => println!("完成: {file}"),
+            lt_download::DownloadEvent::Done { .. } => {}
         }
     }
     println!("快照目录: {}", dir.display());

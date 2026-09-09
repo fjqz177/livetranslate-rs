@@ -1,6 +1,6 @@
-// lt-models: 模型注册表 / 缓存探测 / 双 hub 下载器 / 设置持久化
+// lt-models: 模型注册表 / 缓存探测 / 设置持久化
+// （下载器 W6 已分家至 lt-download——本 crate 零网络依赖，无 reqwest/sha2）
 pub mod cache;
-pub mod download;
 pub mod paths;
 pub mod registry;
 pub mod settings_io;

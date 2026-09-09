@@ -8,6 +8,7 @@ edition.workspace = true
 # —— 禁依赖 lt-ui/winit；文案经 Msg 注入（不依赖 lt-i18n），见 pipeline.rs
 lt-proto = { workspace = true }
 lt-models = { workspace = true }
+lt-download = { workspace = true }
 lt-audio = { workspace = true }
 lt-asr = { workspace = true }
 lt-translate = { workspace = true }

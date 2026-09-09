@@ -1,0 +1,21 @@
+[package]
+name = "lt-download"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+# 下载器（架构 2.0 W6 自 lt-models 分家，方案 §3.1：lt-download 独立——
+# lt-models 瘦身不再依赖 reqwest/sha2）。失败分类契约在 lt-proto
+# （DownloadFailKind 原样透传 UiEvent::DownloadFailed），Hub/磁盘布局在
+# lt-proto::layout（下载写入与缓存探测单一事实源，AH-6/H10）。
+lt-proto = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+reqwest = { workspace = true }
+# AH-5/H8 下载内容校验（finalize 前 sha256；纯 Rust）
+sha2 = { workspace = true }
+
+[dev-dependencies]
+# 仅集成测试探针（probe_nano_tmp 顺迁 registry 派生下载清单）使用：
+# registry 仍在 lt-models，探针按 PH-1 走 paths::models_dir 派生。
+lt-models = { workspace = true }

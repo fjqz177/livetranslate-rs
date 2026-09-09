@@ -3,7 +3,7 @@
 //! 运行：`cargo run -p lt-models --example download_check`
 //! 验证 URL 方案、Content-Range 解析与落盘布局在真实 CDN 上成立。
 
-use lt_models::download::{DownloadEvent, Downloader, Hub, ProxyMode};
+use lt_download::{DownloadEvent, Downloader, Hub, ProxyMode};
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::channel;
 

@@ -1,6 +1,6 @@
 //! 下载器集成测试：本地 mock HTTP 服务器覆盖续传/回退/重试全场景（无外部网络依赖）。
 
-use lt_models::download::{DownloadEvent, Downloader, Hub, ProxyMode};
+use lt_download::{DownloadEvent, Downloader, Hub, ProxyMode};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};

@@ -9,7 +9,7 @@
 //! 下载全量工作在会话线程内完成）。
 
 use lt_models::cache::MissingModel;
-use lt_models::download::{
+use lt_download::{
     hf_endpoint_for, hub_chain, DlError, DownloadEvent, Downloader, Hub, ProxyMode,
 };
 use lt_proto::{

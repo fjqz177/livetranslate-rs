@@ -1679,7 +1679,7 @@ mod tests {
     fn sparse_manifest(models_dir: &std::path::Path, entry: &registry::ModelEntry) {
         let snap = lt_models::cache::hf_style_snapshot(
             models_dir,
-            lt_models::download::Hub::Hf,
+            lt_download::Hub::Hf,
             entry.hf.expect("条目须有 HF 源"),
             "main",
         );

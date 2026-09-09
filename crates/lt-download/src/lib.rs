@@ -1,7 +1,7 @@
 //! 双 hub 模型下载器（PLAN §2.10；原版 hf-hub/modelscope SDK 的自控替代，M-01；
-//! DL-2 改造见 docs/archive/download-overhaul.md）。
+//! DL-2 改造见 docs/archive/download-overhaul.md；架构 2.0 W6 自 lt-models 分家）。
 //!
-//! - 布局自控（写入与 [`crate::cache`] 探测共用同一约定）：
+//! - 布局自控（与 lt-models 缓存探测共用 lt_proto::layout 单一事实源）：
 //!   MS → `modelscope/models/{org}--{name}/snapshots/master/{path}`
 //!   HF → `huggingface/hub/models--{org}--{name}/snapshots/main/{path}`
 //! - 断点续传：先写 `{file}.incomplete`（带 Range 续传），完成 sync + rename；
@@ -20,6 +20,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::time::Duration;
+
+/// 下载目标 hub（W6 上移 lt-proto：布局拼装与下载器两 crate 共用）
+pub use lt_proto::Hub;
 
 /// 下载源尝试链（DL-5，落地 D-21「所选 hub 优先，缺失回落另一 hub」）：
 /// 所选 hub 居首；always_hf 模型恒 HF 居首——D-21 后 always_hf 语义 =
@@ -60,13 +63,6 @@ pub fn hf_endpoint_for(selected: Hub) -> &'static str {
         Hub::Hf => HF_OFFICIAL_ENDPOINT,
         Hub::Ms => HF_MIRROR_ENDPOINT,
     }
-}
-
-/// 下载目标 hub
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Hub {
-    Ms,
-    Hf,
 }
 
 /// 代理三模式（语义对齐原版 proxy="none" 绕系统代理，E-03）
@@ -208,8 +204,8 @@ impl Downloader {
     /// 下载完成后快照目录（不发起网络请求）
     pub fn snapshot_dir(&self, hub: Hub, repo: &str) -> PathBuf {
         match hub {
-            Hub::Ms => crate::cache::hf_style_snapshot(&self.models_dir, hub, repo, "master"),
-            Hub::Hf => crate::cache::hf_style_snapshot(&self.models_dir, hub, repo, "main"),
+            Hub::Ms => lt_proto::layout::hf_style_snapshot(&self.models_dir, hub, repo, "master"),
+            Hub::Hf => lt_proto::layout::hf_style_snapshot(&self.models_dir, hub, repo, "main"),
         }
     }
 
@@ -782,9 +778,12 @@ mod tests {
             s.ends_with("huggingface/hub/models--ggml-org--whisper-tiny/snapshots/main"),
             "{s}"
         );
-        // 与 cache 探测互通：目录创建后 ms_model_path 应命中同一处
+        // 与缓存探测互通：目录创建后 ms_model_path 应命中同一处
         std::fs::create_dir_all(&ms).unwrap();
-        assert_eq!(crate::cache::ms_model_path(&dir, "iic/SenseVoiceSmall"), ms);
+        assert_eq!(
+            lt_models::cache::ms_model_path(&dir, "iic/SenseVoiceSmall"),
+            ms
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -823,7 +822,7 @@ mod probe_nano_tmp {
     const NANO_REPO: &str = "csukuangfj/sherpa-onnx-funasr-nano-int8-2025-12-30";
     /// 探针清单从注册表派生（AH-5：sha256 全量登记，下载时顺带内容校验）
     fn nano_specs() -> Vec<FileSpec<'static>> {
-        let e = crate::registry::FUNASR_NANO.clone();
+        let e = lt_models::registry::FUNASR_NANO.clone();
         e.files
             .iter()
             .copied()
@@ -837,7 +836,7 @@ mod probe_nano_tmp {
     #[ignore = "真实网络下载 ~1GB（hf-mirror，写真实缓存）；WP-A 演练/测速用"]
     fn probe_nano_download_via_hf_mirror() {
         // docs/path-hygiene.md PH-1：路径走 paths 派生（env 可重定向，默认真实缓存）
-        let md = crate::paths::models_dir(None).expect("models_dir 解析失败");
+        let md = lt_models::paths::models_dir(None).expect("models_dir 解析失败");
         let dl = Downloader::new(&md, ProxyMode::None).with_hf_endpoint("https://hf-mirror.com");
         let cancel = Arc::new(AtomicBool::new(false));
         let (tx, rx) = std::sync::mpsc::channel();
@@ -888,7 +887,7 @@ mod probe_nano_tmp {
         let files: Vec<&str> = nano_specs().iter().map(|(f, _, _)| *f).collect();
         let mins: Vec<u64> = nano_specs().iter().map(|(_, m, _)| *m).collect();
         assert!(
-            crate::cache::dir_has_manifest(&snapshot, &files, &mins),
+            lt_models::cache::dir_has_manifest(&snapshot, &files, &mins),
             "manifest 完整性复核失败"
         );
         let total: u64 = files

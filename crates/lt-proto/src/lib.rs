@@ -1,6 +1,7 @@
 // lt-proto: 全工程共享的数据契约（settings / 事件 / ASR 结果）
 pub mod asr_result;
 pub mod events;
+pub mod layout;
 pub mod settings;
 
 /// 契约结构版本（架构 2.0 W2，§3.3）：repo 卫生标记——结构性变更
@@ -20,4 +21,5 @@ pub use events::{
     DownloadEvent, DownloadFailKind, DownloadPhase, ExportFileMode, MicDeviceChoice, MonitorSample,
     QueueId, ThreadDied, ThreadRole, UiEvent, UiMsg,
 };
+pub use layout::Hub;
 pub use settings::{normalize_language, ModelConfig, Settings, Style, SubtitleLine, SubtitleMode};

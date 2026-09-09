@@ -5,44 +5,25 @@
 //! - HF snapshot 取"字典序最后"且**含完整 manifest**（E-10 沿革）
 //! - 双 hub 或语义（MS 或 HF 任一缓存即命中，避免重复下载）
 
-use crate::paths::{hf_cache_root, ms_cache_root};
+use crate::paths::ms_cache_root;
 use crate::registry::{self, ModelEntry};
 use std::path::{Path, PathBuf};
 
-/// HF repo 缓存目录（`huggingface/hub/models--{org}--{name}`）——目录名拼装
-/// 的单一来源：数据页扫描/缓存卡路径一律经此构造，手写 format 串会漂移
-/// （AH-6/H10；qwen3 曾因漏改数据页扫描而应用内不可见）
-pub fn hf_repo_dir(models_dir: &Path, repo: &str) -> PathBuf {
-    let (org, name) = repo.split_once('/').unwrap_or((repo, ""));
-    hf_cache_root(models_dir).join(format!("models--{org}--{name}"))
-}
+/// HF repo 缓存目录（`models--{org}--{name}`）——目录名拼装的单一来源：
+/// 数据页扫描/缓存卡路径一律经此构造，手写 format 串会漂移
+/// （AH-6/H10；qwen3 曾因漏改数据页扫描而应用内不可见）。
+/// W6 起定义在 lt_proto::layout（下载器与探测共用同一事实源）。
+pub use lt_proto::layout::hf_repo_dir;
+
+/// 下载器写入布局（与探测同一约定）：
+/// HF → `huggingface/hub/models--{org}--{name}/snapshots/{rev}`，
+/// MS → `modelscope/models/{org}--{name}/snapshots/{rev}`
+pub use lt_proto::layout::hf_style_snapshot;
 
 /// HF repo 缓存根下某 repo 的 snapshots 目录
 fn hf_snapshots(models_dir: &Path, repo: &str) -> Option<PathBuf> {
     let p = hf_repo_dir(models_dir, repo).join("snapshots");
     p.is_dir().then_some(p)
-}
-
-/// 下载器写入布局（与探测同一约定）：
-/// HF → `huggingface/hub/models--{org}--{name}/snapshots/{rev}`，
-/// MS → `modelscope/models/{org}--{name}/snapshots/{rev}`
-pub fn hf_style_snapshot(
-    models_dir: &Path,
-    hub: crate::download::Hub,
-    repo: &str,
-    rev: &str,
-) -> PathBuf {
-    match hub {
-        crate::download::Hub::Hf => hf_repo_dir(models_dir, repo).join("snapshots").join(rev),
-        crate::download::Hub::Ms => {
-            let (org, name) = repo.split_once('/').unwrap_or((repo, ""));
-            ms_cache_root(models_dir)
-                .join("models")
-                .join(format!("{org}--{name}"))
-                .join("snapshots")
-                .join(rev)
-        }
-    }
 }
 
 /// manifest 完整性：目录内注册表清单逐文件「存在 + len ≥ 下限」。
@@ -299,6 +280,7 @@ pub fn local_model_dir(models_dir: &Path, entry: &ModelEntry) -> Option<PathBuf>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::paths::hf_cache_root;
     use std::fs;
 
     fn tmpdir(name: &str) -> PathBuf {

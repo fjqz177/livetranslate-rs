@@ -310,20 +310,21 @@ mod tests {
 #[cfg(test)]
 mod probe_real_sensevoice_tmp {
     use super::*;
-    use crate::engines::probe_models_root;
     use std::path::PathBuf;
     use std::time::Instant;
 
     /// D-30 探针用 SenseVoice 快照（ModelScope 布局）
     fn snapshot() -> PathBuf {
-        probe_models_root().join(
+        let md = lt_models::paths::models_dir(None).expect("models_dir 解析失败");
+        md.join(
             "modelscope/models/pengzhendong--sherpa-onnx-sense-voice-zh-en-ja-ko-yue/snapshots/master",
         )
     }
 
     /// 跨引擎借用 nano 仓的 test_wavs（验收时预置于 nano 快照旁）
     fn nano_test_wavs() -> PathBuf {
-        probe_models_root().join(
+        let md = lt_models::paths::models_dir(None).expect("models_dir 解析失败");
+        md.join(
             "huggingface/hub/models--csukuangfj--sherpa-onnx-funasr-nano-int8-2025-12-30/snapshots/main/test_wavs",
         )
     }
