@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 async-openai = { workspace = true }
+lt-proto = { workspace = true }
 reqwest = { workspace = true }
 tokio = { workspace = true }
 futures = { version = "0.3", default-features = false, features = ["std"] }

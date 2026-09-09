@@ -2,6 +2,7 @@
 pub mod asr_result;
 pub mod events;
 pub mod layout;
+pub mod prompts;
 pub mod settings;
 
 /// 契约结构版本（架构 2.0 W2，§3.3）：repo 卫生标记——结构性变更
@@ -23,7 +24,8 @@ pub use events::{
     QueueId, ThreadDied, ThreadRole, UiEvent, UiMsg,
 };
 pub use layout::Hub;
+pub use prompts::{DEFAULT_PROMPT, PROMPT_PRESETS};
 pub use settings::{
-    normalize_language, ASR_ENGINES, EngineKey, ModelConfig, ProxyMode, Settings, Style,
-    SubtitleLine, SubtitleMode,
+    normalize_language, ASR_ENGINES, EngineKey, ModelConfig, OVERRIDE_KEYS, ProxyMode, Settings,
+    Style, SubtitleLine, SubtitleMode, THINKING_STYLES,
 };

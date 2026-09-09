@@ -15,7 +15,8 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-# ── §3.1 白名单（源 = docs/architecture-v2.md §3.1 白名单表；lt-app 允许九库全部） ──
+# ── §3.1 白名单（源 = docs/architecture-v2.md §3.1 白名单表 + E3/ADR-10 修订；
+#    lt-app 允许十库全部） ──
 $Whitelist = [ordered]@{
     'lt-proto'       = @()
     'lt-i18n'        = @()
@@ -23,9 +24,9 @@ $Whitelist = [ordered]@{
     'lt-download'    = @('lt-proto')
     'lt-audio'       = @('lt-models')
     'lt-asr'         = @('lt-proto')          # lt-models 仅 dev-dep（探针共享，W6）
-    'lt-translate'   = @()
+    'lt-translate'   = @('lt-proto')          # E3：翻译域常量上移 proto（ADR-10）
     'lt-orchestrator'= @('lt-proto', 'lt-models', 'lt-download', 'lt-audio', 'lt-asr', 'lt-translate')
-    'lt-ui'          = @('lt-proto', 'lt-i18n', 'lt-models', 'lt-translate')
+    'lt-ui'          = @('lt-proto', 'lt-i18n', 'lt-models')   # E3：纯投影 crate（ADR-10，常量边裁除）
     'lt-app'         = @('lt-proto', 'lt-i18n', 'lt-models', 'lt-download', 'lt-audio',
                          'lt-asr', 'lt-translate', 'lt-orchestrator', 'lt-ui')
 }
@@ -34,6 +35,7 @@ $Whitelist = [ordered]@{
 $DevExtra = [ordered]@{
     'lt-asr'       = @('lt-models')   # 探针共享 probe_models_root（PH-1）
     'lt-download'  = @('lt-models')   # 下载集成测试（真实缓存路径语义）
+    'lt-orchestrator' = @('serde_json') # E2：覆盖率测试 serde 键集（ADR-13①；非内部边不受限，登记以示明） 
 }
 
 # ── 解析 Cargo.toml 某段的内部依赖名（格式兼容 `lt-x = {...}` 与 `lt-x.workspace = true`） ──

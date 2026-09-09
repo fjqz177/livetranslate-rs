@@ -332,6 +332,23 @@ impl Settings {
     }
 }
 
+/// thinking_style 合法值域（E3/ADR-10：自 lt-translate 上移——本清单是
+/// [`ModelConfig.thinking_style`] 字段的值域，与 ASR_ENGINES 同类归 settings；
+/// lt-translate 的解析逻辑与 lt-ui 的下拉项两侧同源引用）
+pub const THINKING_STYLES: [&str; 6] = ["auto", "deepseek", "qwen", "vllm", "openai", "off"];
+
+/// 可覆写的采样参数键（E3/ADR-10：自 lt-translate 上移——本清单是
+/// [`ModelConfig.overrides`] 的键域单一事实源：lt-translate 构造期按此
+/// 剔除 null 键，lt-ui 编辑对话框按此渲染行）
+pub const OVERRIDE_KEYS: [&str; 6] = [
+    "temperature",
+    "top_p",
+    "max_tokens",
+    "frequency_penalty",
+    "presence_penalty",
+    "seed",
+];
+
 /// 翻译模型配置 —— 序列化形状与原版 ModelEditDialog.get_data() 逐键一致。
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(default, rename_all = "snake_case")]

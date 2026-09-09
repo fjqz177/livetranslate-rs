@@ -21,6 +21,9 @@ use serde_json::{json, Map, Value};
 
 use crate::error::TranslateError;
 use crate::thinking::{resolve_thinking_style, thinking_disable_body};
+// E3/ADR-10：提示词/覆写键上移 lt-proto 契约层（与 lt-ui 同源——原 UI 依赖
+// 整个本 crate 仅为取常量的边已裁除）
+use lt_proto::{DEFAULT_PROMPT, OVERRIDE_KEYS};
 
 /// crate 内共享 tokio 运行时（所有 Translator 复用；worker=2，纯 I/O 负载）
 static RUNTIME: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
@@ -74,79 +77,6 @@ pub(crate) fn lang_display(code: &str) -> &str {
         .find(|(k, _)| *k == code)
         .map_or(code, |(_, v)| v)
 }
-
-pub const DEFAULT_PROMPT: &str =
-    "You are a real-time subtitle translator. Translate {source_lang} into {target_lang}.\n\
-Rules:\n\
-- Output ONLY one single best translation, nothing else.\n\
-- Never include alternatives, parenthetical options, annotations, or explanations.\n\
-- Keep proper nouns, names, and brand names untranslated.\n\
-- Translate repeated expressions concisely, not mechanically word-for-word.\n\
-- Keep subtitles fluent and natural; avoid overly literal or stiff phrasing.\n\
-- Auto-correct likely ASR errors based on context and common sense.";
-
-/// prompt 预设（key 与原版 PROMPT_PRESETS 一致；value 含 {source_lang}/{target_lang} 占位）
-pub const PROMPT_PRESETS: &[(&str, &str)] = &[
-    (
-        "daily",
-        "You are a real-time subtitle translator for casual conversation. \
-         Translate {source_lang} into {target_lang}.\n\
-         Rules:\n\
-         - Output ONLY one single best translation, nothing else.\n\
-         - Never include alternatives, parenthetical options, annotations, or explanations.\n\
-         - Keep proper nouns, names, and brand names untranslated.\n\
-         - Use natural, casual, everyday language. Keep it conversational and concise.\n\
-         - Auto-correct likely ASR errors based on context and common sense.",
-    ),
-    (
-        "esports",
-        "You are a real-time subtitle translator for esports/gaming live streams. \
-         Translate {source_lang} into {target_lang}.\n\
-         Rules:\n\
-         - Output ONLY one single best translation, nothing else.\n\
-         - Never include alternatives, parenthetical options, annotations, or explanations.\n\
-         - Keep player names (IGN), team names, game terms, and brand names untranslated.\n\
-         - Use energetic, concise language appropriate for competitive gaming commentary.\n\
-         - Auto-correct likely ASR errors based on context and common sense.",
-    ),
-    (
-        "anime",
-        "You are a real-time subtitle translator for anime, movies, and TV shows. \
-         Translate {source_lang} into {target_lang}.\n\
-         Rules:\n\
-         - Output ONLY one single best translation, nothing else.\n\
-         - Never include alternatives, parenthetical options, annotations, or explanations.\n\
-         - Keep character names, place names, and cultural terms untranslated.\n\
-         - Use natural, expressive language that matches the tone and emotion of the dialogue.\n\
-         - Auto-correct likely ASR errors based on context and common sense.",
-    ),
-    (
-        "webid",
-        "You are a real-time subtitle translator for an online identity-verification \
-         (WebID / video KYC) call. Translate {source_lang} into {target_lang}.\n\
-         Rules:\n\
-         - Output ONLY one single best translation, nothing else.\n\
-         - Never include alternatives, parenthetical options, annotations, or explanations.\n\
-         - Context: a verification agent and a customer on a video call inspect ID documents \
-         (passport, ID card). Words about reading or seeing refer to the document or the camera \
-         image, NOT literacy — e.g. 'I can't read it' means the text/photo is unclear, not that \
-         the person is illiterate.\n\
-         - Render camera/document instructions naturally (hold it up, tilt it, move closer, \
-         lighting, focus, read the number aloud, turn it over).\n\
-         - Keep names, document numbers, and verification codes exactly as spoken.\n\
-         - Auto-correct likely ASR errors based on this verification context.",
-    ),
-];
-
-/// 可覆盖的采样参数键（对照原版 _OVERRIDE_KEYS；值为 null 的键在构造期剔除）
-pub const OVERRIDE_KEYS: [&str; 6] = [
-    "temperature",
-    "top_p",
-    "max_tokens",
-    "frequency_penalty",
-    "presence_penalty",
-    "seed",
-];
 
 /// Translator 构造参数（默认值 = 原版签名默认值）
 #[derive(Debug, Clone)]

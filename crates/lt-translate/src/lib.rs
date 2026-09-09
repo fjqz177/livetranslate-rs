@@ -13,10 +13,9 @@ pub mod translator;
 
 pub use error::TranslateError;
 pub(crate) use translator::runtime;
-pub use translator::{
-    check_repetition, make_openai_client, TranslateStream, Translator, TranslatorParams,
-    DEFAULT_PROMPT, PROMPT_PRESETS,
-};
+// E3/ADR-10：DEFAULT_PROMPT/PROMPT_PRESETS 已上移 lt-proto（lt-ui 直引 proto，
+// 本 crate 的 re-export 随翻译页常量依赖边裁除而撤下）
+pub use translator::{check_repetition, make_openai_client, TranslateStream, Translator, TranslatorParams};
 
 /// 累计费用（原版 _compute_cost）：(pt*输入单价 + ct*输出单价) / 1M，
 /// 单价为 0 时不计费返回 0。

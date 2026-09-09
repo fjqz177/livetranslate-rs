@@ -11,7 +11,9 @@
 
 use serde_json::{json, Value};
 
-pub const THINKING_STYLES: [&str; 6] = ["auto", "deepseek", "qwen", "vllm", "openai", "off"];
+// E3/ADR-10：值域清单上移 lt-proto（ModelConfig.thinking_style 字段域，
+// 与 lt-ui 下拉项同源——原 state.rs 逐字拷贝的镜像已删）
+use lt_proto::THINKING_STYLES;
 
 const NESTED_THINKING_MODELS: [&str; 2] = ["deepseek", "glm"];
 const NESTED_THINKING_ENDPOINTS: [&str; 4] = ["deepseek", "volces", "api.z.ai", "bigmodel"];

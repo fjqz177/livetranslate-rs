@@ -5,7 +5,7 @@
 //!
 //! 数据流（W5f/R22）：本窗只做**编排请求**——点开始 → `Cmd::RunBench`
 //! （模型快照/语言/超时/prompt 类型化载荷）→ 编排域 Supervisor 一次性线程
-//! 跑 `lt_translate::bench::run_benchmark` → 输出经事件动脉 `UiEvent::Bench`
+//! 跑 lt-translate crate 的 run_benchmark → 输出经事件动脉 `UiEvent::Bench`
 //! 回流，UI 在 app.rs 的 Bench 分支追加行/复位运行态并弹完成提示（W2 起
 //! 不借道日志总线，无完成哨兵；event_tx 后台旁路随本波删除）。
 
@@ -28,7 +28,7 @@ pub const LOG_FG: Color32 = Color32::from_rgb(0xcd, 0xd6, 0xf4);
 /// 再按显示名填充 {source_lang}/{target_lang} 占位）
 pub fn bench_prompt(settings_prompt: &str, src: &str, tgt: &str) -> String {
     let template = if settings_prompt.trim().is_empty() {
-        lt_translate::DEFAULT_PROMPT
+        lt_proto::DEFAULT_PROMPT
     } else {
         settings_prompt
     };
@@ -193,7 +193,7 @@ mod tests {
     fn bench_prompt_fills_display_names() {
         assert_eq!(
             bench_prompt("", "ja", "zh"),
-            lt_translate::DEFAULT_PROMPT
+            lt_proto::DEFAULT_PROMPT
                 .replace("{source_lang}", "Japanese")
                 .replace("{target_lang}", "Chinese")
         );

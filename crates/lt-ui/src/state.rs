@@ -795,25 +795,11 @@ pub const PANEL_APPLY_DEBOUNCE_MS: u64 = 300;
 /// 翻译页 system_prompt 防抖时长（原版 translation_tab._prompt_debounce 600ms）
 pub const PROMPT_APPLY_DEBOUNCE_MS: u64 = 600;
 
-/// ModelEditDialog 高级参数覆写行的键序（原版 _adv_rows 的插入序）。
-/// 非「镜像」：overrides 经 BTreeMap 透传（lt-translate 侧无键枚举，F5），
-/// 本清单是 UI 编辑对话框的呈现面——新增可编辑覆写键即在此追加
-pub const OVERRIDE_KEYS: [&str; 6] = [
-    "temperature",
-    "top_p",
-    "max_tokens",
-    "frequency_penalty",
-    "presence_penalty",
-    "seed",
-];
-
-/// thinking_style 下拉项（lt_translate::thinking::THINKING_STYLES 的 UI 镜像；
-/// 显示名走 i18n thinking_style_* 键）
-pub const THINKING_STYLE_VALUES: [&str; 6] = ["auto", "deepseek", "qwen", "vllm", "openai", "off"];
-
-/// thinking_style 存储值 → 下拉索引（未知值回退 auto=0）
+/// thinking_style 存储值 → 下拉索引（未知值回退 auto=0）。
+/// E3/ADR-10：下拉项清单 = `lt_proto::THINKING_STYLES` 单一事实源——
+/// 本地逐字拷贝镜像（漂移隐患）随本波删除
 pub fn thinking_style_index(v: Option<&str>) -> usize {
-    v.and_then(|s| THINKING_STYLE_VALUES.iter().position(|k| *k == s))
+    v.and_then(|s| lt_proto::THINKING_STYLES.iter().position(|k| *k == s))
         .unwrap_or(0)
 }
 
@@ -864,7 +850,7 @@ pub struct ModelEditState {
     /// $ / 1M tokens（原版 QDoubleSpinBox 0-999 两位小数，0 = "—"）
     pub input_price: f64,
     pub output_price: f64,
-    /// 六行 checkbox+value（键序 = [`OVERRIDE_KEYS`]）
+    /// 六行 checkbox+value（键序 = `lt_proto::OVERRIDE_KEYS`，单一事实源）
     pub overrides: [OverrideRow; 6],
     /// extra_body JSON 文本（空 = 不设置；非法 = 禁止确定）
     pub extra_body_text: String,
@@ -926,7 +912,7 @@ impl ModelEditState {
             st.proxy_url = cfg.proxy.clone();
         }
         if let Some(map) = &cfg.overrides {
-            for (i, key) in OVERRIDE_KEYS.iter().enumerate() {
+            for (i, key) in lt_proto::OVERRIDE_KEYS.iter().enumerate() {
                 if let Some(v) = map.get(*key).filter(|v| !v.is_null()) {
                     let num = v.as_f64().unwrap_or(0.0);
                     st.overrides[i] = OverrideRow {
@@ -964,7 +950,7 @@ impl ModelEditState {
         let extra_body = self.parse_extra_body()?;
         let mut overrides: std::collections::BTreeMap<String, serde_json::Value> =
             std::collections::BTreeMap::new();
-        for (i, key) in OVERRIDE_KEYS.iter().enumerate() {
+        for (i, key) in lt_proto::OVERRIDE_KEYS.iter().enumerate() {
             let row = self.overrides[i];
             if row.enabled {
                 let v = if matches!(*key, "max_tokens" | "seed") {
@@ -983,7 +969,7 @@ impl ModelEditState {
             model: self.model.trim().to_string(),
             proxy: self.proxy_arg(),
             no_system_role: self.no_system_role,
-            thinking_style: match THINKING_STYLE_VALUES[self.thinking_index] {
+            thinking_style: match lt_proto::THINKING_STYLES[self.thinking_index] {
                 "auto" => None,
                 v => Some(v.to_string()),
             },
@@ -3120,6 +3106,6 @@ mod tests {
         assert_eq!(thinking_style_index(Some("auto")), 0);
         assert_eq!(thinking_style_index(Some("off")), 5);
         assert_eq!(thinking_style_index(Some("bogus")), 0);
-        assert_eq!(super::THINKING_STYLE_VALUES.len(), 6);
+        assert_eq!(lt_proto::THINKING_STYLES.len(), 6);
     }
 }

@@ -12,7 +12,6 @@ lt-i18n = { workspace = true }
 lt-models = { workspace = true }
 # 翻译页 prompt 预设 + 性能基准独立窗（bench 执行已下沉：
 # Cmd::RunBench → UiEvent::Bench 回流；本 crate 仅保留 prompt 常量与纯函数）
-lt-translate = { workspace = true }
 serde_json = { workspace = true }
 egui = { workspace = true }
 arc-swap = { workspace = true }

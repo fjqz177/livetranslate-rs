@@ -6,7 +6,7 @@
 //!
 //! 与原版的差异：
 //! - `no_think` 复选由 `thinking_style` 下拉承载（settings 契约经 legacy 迁移，
-//!   lt_translate::thinking::THINKING_STYLES 同款六值）；
+//!   lt_proto::THINKING_STYLES 同款六值（E3 单一事实源））；
 //! - `json_schema_mode` 复选不做（lt-proto 契约无该键，不得私改）；
 //! - 编辑确定 = 写回 models 行 + 防抖 ApplySettings（落盘）；
 //!   编辑/选中活动模型另发即时命令 Cmd::SwitchTranslator（shell 已路由）；
@@ -14,12 +14,12 @@
 //!   （原版仅做越界钳制，行前移会错位指向别的模型——有意修正）。
 
 use super::{group_card, hint_line, mark_settings_dirty, Palette, schedule_prompt_apply};
-use crate::state::{ModalUi, ModelEditState, PanelUi, SessionView, Settings, TestTranslatorState, THINKING_STYLE_VALUES};
+use crate::state::{ModalUi, ModelEditState, PanelUi, SessionView, Settings, TestTranslatorState};
 use egui::{RichText, Ui};
 use lt_proto::ModelConfig;
 
 /// prompt 预设下拉 i18n 键（daily/esports/anime/webid/custom；顺序同
-/// lt_translate::PROMPT_PRESETS，末位 custom）
+/// lt_proto::PROMPT_PRESETS，末位 custom）
 pub const PROMPT_PRESET_KEYS: [&str; 5] = [
     "prompt_daily",
     "prompt_esports",
@@ -75,10 +75,10 @@ pub fn model_row_text(index: usize, active: usize, m: &ModelConfig) -> String {
 /// 空/DEFAULT_PROMPT → daily(0)；其余 → custom(4)）
 pub fn prompt_preset_index(text: &str) -> usize {
     let t = text.trim();
-    if t.is_empty() || t == lt_translate::DEFAULT_PROMPT.trim() {
+    if t.is_empty() || t == lt_proto::DEFAULT_PROMPT.trim() {
         return 0;
     }
-    for (i, (_, body)) in lt_translate::PROMPT_PRESETS.iter().enumerate() {
+    for (i, (_, body)) in lt_proto::PROMPT_PRESETS.iter().enumerate() {
         if t == body.trim() {
             return i;
         }
@@ -357,7 +357,7 @@ pub fn page(ui: &mut Ui, panel: &mut PanelUi, session: &mut SessionView, setting
         });
         if next != cur && next < 4 {
             // 原版 _on_prompt_preset_changed：写入预设文本并立即应用
-            settings.system_prompt = lt_translate::PROMPT_PRESETS[next].1.to_string();
+            settings.system_prompt = lt_proto::PROMPT_PRESETS[next].1.to_string();
             schedule_prompt_apply(panel, session, std::time::Instant::now());
             mark_settings_dirty(session);
         }
@@ -365,7 +365,7 @@ pub fn page(ui: &mut Ui, panel: &mut PanelUi, session: &mut SessionView, setting
         // 多行编辑（Consolas 等宽；变更 → 600ms 防抖 SwitchTranslator + 300ms 落盘）
         let resp = ui.add(
             egui::TextEdit::multiline(&mut settings.system_prompt)
-                .hint_text(lt_translate::DEFAULT_PROMPT)
+                .hint_text(lt_proto::DEFAULT_PROMPT)
                 .desired_width(f32::INFINITY)
                 .min_size(egui::vec2(0.0, 88.0))
                 .font(egui::TextStyle::Monospace),
@@ -552,7 +552,7 @@ fn editor_fields(ui: &mut Ui, ed: &mut ModelEditState, pal: &Palette) {
 
             // thinking_style 下拉（原版 no_think 复选的后继形态）
             ui.label(lt_i18n::t("label_thinking_style"));
-            let styles = THINKING_STYLE_VALUES
+            let styles = lt_proto::THINKING_STYLES
                 .iter()
                 .map(|v| lt_i18n::t(&format!("thinking_style_{v}")))
                 .collect::<Vec<_>>();
@@ -869,15 +869,15 @@ mod tests {
     #[test]
     fn prompt_preset_index_mapping() {
         assert_eq!(prompt_preset_index(""), 0, "空 = DEFAULT_PROMPT → daily");
-        assert_eq!(prompt_preset_index(lt_translate::DEFAULT_PROMPT), 0);
-        for (i, (_, body)) in lt_translate::PROMPT_PRESETS.iter().enumerate() {
+        assert_eq!(prompt_preset_index(lt_proto::DEFAULT_PROMPT), 0);
+        for (i, (_, body)) in lt_proto::PROMPT_PRESETS.iter().enumerate() {
             assert_eq!(prompt_preset_index(body), i, "预设 {i} 应精确匹配");
             // 原版按 trim 比较
             assert_eq!(prompt_preset_index(&format!("  {body}\n")), i);
         }
         assert_eq!(prompt_preset_index("You are a pirate."), 4, "其余 → custom");
         assert_eq!(PROMPT_PRESET_KEYS.len(), 5);
-        assert_eq!(lt_translate::PROMPT_PRESETS.len(), 4);
+        assert_eq!(lt_proto::PROMPT_PRESETS.len(), 4);
     }
 
     /// 删除模型：单行守卫 + active 钳制 + 行前移修正
