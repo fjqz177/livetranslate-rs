@@ -568,14 +568,24 @@ impl MultiWindowApp {
             } else {
                 hw.window.set_visible(false);
                 // 拖动中隐藏：立即收尾手工捕获（否则鼠标输入被吞在隐藏窗，
-                // 主界面/其他窗失灵；D-37 拖动与显隐并发兜底）
-                if id == WinId::Subtitle && self.app_state.subtitle.state.dragging {
+                // 主界面/其他窗失灵；D-37/W5 拖动与显隐并发兜底——字幕窗与
+                // 悬浮窗同款）
+                #[cfg(windows)]
+                let dragged = (id == WinId::Subtitle && self.app_state.subtitle.state.dragging)
+                    || (id == WinId::Overlay && self.app_state.overlay.state.dragging);
+                if dragged {
                     #[cfg(windows)]
                     unsafe {
                         let _ = ::windows::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture();
                     };
-                    self.app_state.subtitle.state.dragging = false;
-                    self.app_state.subtitle.state.drag_grab = None;
+                    if id == WinId::Subtitle {
+                        self.app_state.subtitle.state.dragging = false;
+                        self.app_state.subtitle.state.drag_grab = None;
+                    }
+                    if id == WinId::Overlay {
+                        self.app_state.overlay.state.dragging = false;
+                        self.app_state.overlay.state.drag_grab = None;
+                    }
                 }
             }
         }
@@ -1255,8 +1265,48 @@ impl MultiWindowApp {
             let Some(hw) = self.find(win) else { continue };
             let window = hw.window.clone();
             match action {
-                WinAction::Drag => {
-                    let _ = window.drag_window();
+                // W5/D-71：弃 winit drag_window（标题栏模态循环 + 哑 WM_MOUSEMOVE
+                // 取消；LAYERED/TRANSPARENT 轮询窗实测 0 位移/挂死，见 AGENTS 大坑
+                // 17；且中键下循环不启动）。改原版 Qt 语义：SetCapture + 光标绝对
+                // 跟踪 set_outer_position（process_actions 尾 update_overlay_drag
+                // 每帧推进，任意按键可用）——与字幕窗 D-37 同法。
+                WinAction::OverlayDragStart => {
+                    #[cfg(windows)]
+                    {
+                        let grab = Self::hwnd_of(&window).and_then(|hwnd| {
+                            let mut pt = ::windows::Win32::Foundation::POINT::default();
+                            if unsafe {
+                                ::windows::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut pt)
+                            }
+                            .is_err()
+                            {
+                                return None;
+                            }
+                            let pos = window.outer_position().ok()?;
+                            unsafe {
+                                let _ = ::windows::Win32::UI::Input::KeyboardAndMouse::SetCapture(
+                                    hwnd,
+                                );
+                            };
+                            Some((pt.x - pos.x, pt.y - pos.y))
+                        });
+                        self.app_state.overlay.state.drag_grab = grab;
+                    }
+                    self.app_state.overlay.state.dragging = true;
+                    // 拖动期间恒非穿透（穿透轮询见 poll_click_through 的 dragging 豁免）
+                    Self::set_window_transparent(&window, false);
+                    if self.app_state.overlay.state.drag_grab.is_none() {
+                        // 抓握记录失败（GetCursorPos/窗位异常）：立即收尾，不悬空拖动态
+                        self.app_state.overlay.state.dragging = false;
+                    }
+                }
+                WinAction::OverlayDragEnd => {
+                    #[cfg(windows)]
+                    unsafe {
+                        let _ = ::windows::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture();
+                    }
+                    self.app_state.overlay.state.dragging = false;
+                    self.app_state.overlay.state.drag_grab = None;
                 }
                 WinAction::ResizeSouthEast => {
                     let _ = window.drag_resize_window(ResizeDirection::SouthEast);
@@ -1494,10 +1544,13 @@ impl MultiWindowApp {
                 self.enqueue_height(target);
             }
         }
-        // D-37：字幕窗拖动进行中每帧推进（光标绝对跟踪；帧由捕获的鼠标移动
-        // 事件持续供给——request_redraw → run_frame 回环）
+        // D-37/W5：字幕窗/悬浮窗拖动进行中每帧推进（光标绝对跟踪；帧由捕获
+        // 的鼠标移动事件持续供给——request_redraw → run_frame 回环）
         if self.app_state.subtitle.state.dragging {
             self.update_subtitle_drag();
+        }
+        if self.app_state.overlay.state.dragging {
+            self.update_overlay_drag();
         }
     }
 
@@ -1714,6 +1767,13 @@ impl MultiWindowApp {
             Self::set_window_transparent(&window, false);
             return;
         }
+        // W5/D-71：拖动进行中恒非穿透（光标随时出窗——光标判定会把
+        // TRANSPARENT 重新挂上，打断 SetCapture 供给的输入链；豁免直到
+        // OverlayDragEnd 收尾；与字幕窗 D-37 同规则）
+        if self.app_state.overlay.state.dragging {
+            Self::set_window_transparent(&window, false);
+            return;
+        }
         let Ok(win_pos) = window.outer_position() else {
             return;
         };
@@ -1850,9 +1910,37 @@ impl MultiWindowApp {
             ));
     }
 
+    /// 悬浮窗拖动每帧推进（W5/D-71）：光标绝对跟踪 set_outer_position——
+    /// 原版 mouseMoveEvent `move(globalPos - _drag_pos)` 语义；SetCapture 下
+    /// 光标出窗后输入仍达，拖动不中断（与字幕窗 D-37 同法）。
+    #[cfg(windows)]
+    fn update_overlay_drag(&mut self) {
+        use ::windows::Win32::Foundation::POINT;
+        use ::windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+        let Some(hw) = self.find(WinId::Overlay) else {
+            return;
+        };
+        let Some((gx, gy)) = self.app_state.overlay.state.drag_grab else {
+            return;
+        };
+        let mut pt = POINT::default();
+        if unsafe { GetCursorPos(&mut pt) }.is_err() {
+            return;
+        }
+        hw.window
+            .set_outer_position(winit::dpi::PhysicalPosition::new(
+                (pt.x - gx) as f64,
+                (pt.y - gy) as f64,
+            ));
+    }
+
     /// 非 Windows 兜底（无 Win32 捕获；拖动不移动，保持既有无拖动行为）
     #[cfg(not(windows))]
     fn update_subtitle_drag(&mut self) {}
+
+    /// 非 Windows 兜底（无 Win32 捕获）
+    #[cfg(not(windows))]
+    fn update_overlay_drag(&mut self) {}
 
     /// 导出请求（W5/R19）：空检查后发 `Cmd::PickExportFile` ——rfd 保存框
     /// 移出事件循环线程（编排域 Supervisor 一次性线程弹框；原版 export_messages

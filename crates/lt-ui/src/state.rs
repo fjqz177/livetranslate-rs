@@ -127,8 +127,12 @@ pub struct OverlayStats {
 /// UI → 宿主的窗口动作（egui 无窗口句柄；由 UI 帧入队、宿主在帧后执行）
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum WinAction {
-    /// 标题栏拖动（winit drag_window）
-    Drag,
+    /// 悬浮窗拖动开始（W5/D-71：弃 winit drag_window——标题栏模态循环 +
+    /// 哑 WM_MOUSEMOVE 取消（大坑 17），与字幕窗 D-37 同法：宿主 SetCapture +
+    /// 记录抓握偏移 + 恒非穿透）
+    OverlayDragStart,
+    /// 悬浮窗拖动结束（宿主 = ReleaseCapture；落点防抖经既有 Moved 路径）
+    OverlayDragEnd,
     /// 右下角尺寸手柄拖动（winit drag_resize_window）
     ResizeSouthEast,
     /// 隐藏窗口（悬浮窗"隐藏"按钮，等价 tray OVERLAY_TOGGLE 的反向）
@@ -775,6 +779,12 @@ pub struct OverlayUiState {
     /// 待执行的导出（右键菜单；W5 起经 `Cmd::PickExportFile` 走编排域弹框，
     /// 保存路径经 `UiEvent::ExportSave` 回执后写文件）
     pub export_request: Option<lt_proto::ExportFileMode>,
+    /// 拖动进行中（W5/D-71：宿主维护；穿透轮询据此豁免——拖动期间窗恒
+    /// 非穿透，SetCapture 持续供给鼠标输入；D-37 字幕窗同法）
+    pub dragging: bool,
+    /// 抓握偏移（物理 px：拖起时刻 = 光标 − 窗左上；宿主 GetCursorPos 绝对
+    /// 跟踪基准，原版 mousePressEvent 记录的 _drag_pos 对位）
+    pub drag_grab: Option<(i32, i32)>,
 }
 
 // ── 控制面板（M4.3 第一批，对照原版 ui/panel/panel.py + _chrome.py）──

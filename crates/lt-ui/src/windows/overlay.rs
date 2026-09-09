@@ -156,11 +156,15 @@ fn row1(ui: &mut Ui, overlay: &mut OverlayUi, session: &mut SessionView, setting
             FontId::monospace(pt(9)),
             BTN_TEXT,
         );
-        if ui
-            .interact(drag_rect, ui.id().with("ov_drag"), Sense::click_and_drag())
-            .drag_started()
-        {
-            session.enqueue_action(WinId::Overlay, WinAction::Drag);
+        // W5/D-71：弃 winit drag_window（标题栏模态循环在 LAYERED+TRANSPARENT
+        // 轮询窗上 0 位移/挂死）——egui 报起止，宿主 SetCapture 绝对跟踪
+        //（任意按键可用；D-37 字幕窗同法）
+        let drag_resp = ui.interact(drag_rect, ui.id().with("ov_drag"), Sense::click_and_drag());
+        if drag_resp.drag_started() {
+            session.enqueue_action(WinId::Overlay, WinAction::OverlayDragStart);
+        }
+        if drag_resp.drag_stopped() && overlay.state.dragging {
+            session.enqueue_action(WinId::Overlay, WinAction::OverlayDragEnd);
         }
 
         // 隐藏（原版 hide_btn：隐藏悬浮窗，托盘"显示悬浮窗"可恢复 + 首次气泡提示）
@@ -913,5 +917,79 @@ mod tests {
         let mut s = base;
         s.mic_device = Some("Mic X".into());
         assert!(mic_bar_active(&s), "具名设备 = 启用");
+    }
+
+    /// W5/D-71：头部拖动起止入队（宿主 SetCapture 绝对跟踪的唯一输入面——
+    /// egui 报 drag_started/drag_stopped，动作队列见 WinAction::OverlayDragStart/End）
+    #[test]
+    fn overlay_drag_start_stop_enqueued() {
+        let ctx = egui::Context::default();
+        let mut st = crate::state::AppUi::new(lt_proto::Settings::default());
+        let mut acts: Vec<(crate::state::WinId, crate::state::WinAction)> = Vec::new();
+        let run_frame = |ctx: &egui::Context, st: &mut crate::state::AppUi, evs: Vec<egui::Event>| {
+            let mut ri = egui::RawInput::default();
+            ri.screen_rect = Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(620.0, 500.0),
+            ));
+            ri.events = evs;
+            let mut out = ctx.run_ui(ri, |ui| {
+                crate::windows::overlay::overlay_ui(
+                    ui,
+                    &mut st.overlay,
+                    &mut st.session,
+                    &mut st.settings,
+                    &mut st.modal,
+                    &mut st.ctx,
+                )
+            });
+            out.textures_delta.clear();
+        };
+        // 注册帧（布局收敛）→ 光标到位 → 按住 → 移动（拖拽判定）→ 释放
+        let start = egui::pos2(60.0, 12.0); // 头部行内（拖动区）
+        for evs in [
+            vec![],
+            vec![egui::Event::PointerMoved(start)],
+            vec![egui::Event::PointerButton {
+                pos: start,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::default(),
+            }],
+            vec![egui::Event::PointerMoved(start + egui::vec2(24.0, 8.0))],
+            vec![egui::Event::PointerButton {
+                pos: start + egui::vec2(24.0, 8.0),
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::default(),
+            }],
+        ] {
+            run_frame(&ctx, &mut st, evs);
+            acts.extend(st.session.drain_actions());
+            // 宿主语义：收到 OverlayDragStart 后置拖动态（process_actions 置位时机）
+            if acts.iter().any(|(w, a)| {
+                *w == crate::state::WinId::Overlay
+                    && *a == crate::state::WinAction::OverlayDragStart
+            }) {
+                st.overlay.state.dragging = true;
+            }
+            if acts.iter().any(|(w, a)| {
+                *w == crate::state::WinId::Overlay
+                    && *a == crate::state::WinAction::OverlayDragEnd
+            }) {
+                st.overlay.state.dragging = false;
+            }
+        }
+        let has = |a: crate::state::WinAction| {
+            acts.iter().any(|(w, x)| *w == crate::state::WinId::Overlay && *x == a)
+        };
+        assert!(
+            has(crate::state::WinAction::OverlayDragStart),
+            "头部按住并移动应入队 OverlayDragStart"
+        );
+        assert!(
+            has(crate::state::WinAction::OverlayDragEnd),
+            "释放应入队 OverlayDragEnd"
+        );
     }
 }
