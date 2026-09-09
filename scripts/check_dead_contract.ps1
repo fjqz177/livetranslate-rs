@@ -24,14 +24,16 @@ $ErrorActionPreference = 'Stop'
 # 预留白名单（Enum.Variant）——增删须与 docs/architecture-v2-improvements.md §3 ADR-13 同步
 $ReservedWhitelist = @(
     'DownloadPhase.Start',
-    'DownloadPhase.Integrity'
+    'DownloadPhase.Integrity',
+    'UiEvent.ModelLoadDone'   # D-78 向导保留面：加载对话框关窗契约（实际关窗由
+                              # AsrDevice/AsrUnavailable 边沿代偿）；向导接线时激活
 )
 
 # 已定性合法单边形态（WARN 常驻项，2026-09-09 校准确认——不必逐次复核）：
 #   AppCommand.OverlayToggle —— 生产经 from_menu_id 字符串映射（proto 内单点），
 #     变体名只出现在消费端；同型的 Pause/ShowPanel/Quit 因托盘/悬浮窗双生产点≥2
-#   ThreadRole.LogBridge / ThreadRole.ArteryBridge —— 角色仅出生点按名（死亡
-#     事件携带值不携带名），监督器按 Policy 泛型处理
+#   ThreadRole.LogBridge / ThreadRole.ArteryBridge / ThreadRole.AudioBridge ——
+#     角色仅出生点按名（死亡事件携带值不携带名），监督器按 Policy 泛型处理
 # 新增同类单边形态时在此登记，其余 WARN 仍需人工定性
 
 # 扫描面：lt-proto 契约枚举所在文件（events/layout/asr_result；settings.rs 的
@@ -58,7 +60,7 @@ foreach ($pf in $protoFiles) {
     if (-not (Test-Path $pf)) { Write-Error "契约文件缺失: $pf" }
     $inEnum = $false
     $enumName = ''
-    foreach ($ln in (Get-Content $pf)) {
+    foreach ($ln in (Get-Content $pf -Encoding UTF8)) {
         if (-not $inEnum) {
             if ($ln -match '^\s*pub enum (\w+)') {
                 $inEnum = $true

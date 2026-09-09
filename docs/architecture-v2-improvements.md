@@ -261,6 +261,7 @@ ADR-11 裁决后，本波由「删除」改为「**留空间的具象化**」：
 | UX 三期 | 保存失败 UI 流/错误译文样式 | 缓，后续开发时考虑 |
 | whisper sha256 | 其余五档完整性校验值补齐 | **a 案：有网时段安排补齐**（届时提醒用户在真机跑一次登记脚本；AH-5 链路收尾） |
 | D-81 | E6 死契约清理 | **删除 `EngineError::WorkerExited`（全仓零构造零消费）与 `Cmd::SetTimeout`（零生产者，超时走 ApplySettings 重放）**；`Cmd::CancelBench` 零生产者为真功能缺口——W5f 取消链缺 UI 按钮，E6 补接线（基准窗运行中显示"取消基准"）；PROTO_VERSION=5。守卫校准发现的合法单边形态（`AppCommand.OverlayToggle` 经 from_menu_id 生产、`ThreadRole.LogBridge/ArteryBridge` 仅出生点命名）确认豁免 |
+| D-81 附 | E4 交付后复审修复 | **INV4 补封**：Backoff 到期重生循环缺 stopping 复查——停机落在「死亡已判定、等待退避」窗口（handle=None）时 monitor 会在 begin_shutdown 后补生且该线程永不 join（回归测试 `backoff_pending_respawn_cancelled_by_shutdown`）；死契约守卫解析段补 `-Encoding UTF8`（变体覆盖 47→93，新发现 `UiEvent.ModelLoadDone` 消费端孤悬——D-78 向导保留面白名单编目，实际关窗由 AsrDevice/AsrUnavailable 代偿）；453→454 测 |
 | 3~7 | D-79 改型 / E3 白名单 / D-80 Backoff / 死契约守卫严格度 / 写入点方向 | **全部按推荐案通过**（2026-09-09 二轮裁决）：③ D-79 执行；④ E3 白名单变更通过；⑤ D-80 接受、参数默认（500ms/30s/8 次/60s，动脉桥 Always）；⑥ A 硬 gate；⑦ A 案（后台写入点唯一） |
 
 ---

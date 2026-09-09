@@ -189,7 +189,14 @@ impl Supervisor {
             std::thread::sleep(Duration::from_millis(500));
             let mut entries = self.entries.lock().unwrap();
             // Backoff 到期重生：handle=None 且 next_eligible 到期的条目补生
-            //（死亡处理只置 next_eligible，重生在此统一进行）
+            //（死亡处理只置 next_eligible，重生在此统一进行）。
+            // INV4（E4 复审补封）：本循环位于 loop-top stopping 检查之后——
+            // 停机若恰落在「死亡已判定、等待退避」窗口（handle=None）内，
+            // 此处不得补生，否则 join_all 已按 None 跳过的条目会漏出一条
+            // 永不 join 的活线程
+            if self.stopping.load(Ordering::SeqCst) {
+                return;
+            }
             for e in entries.iter_mut() {
                 if e.handle.is_none() {
                     if let Policy::Backoff { .. } = e.policy {
@@ -656,6 +663,65 @@ mod tests {
         assert!(
             born.load(Ordering::SeqCst) >= 3,
             "健康窗清零应阻止放弃（否则 give_up_after=1 在第 2 次死亡后弃管）"
+        );
+        sup.join_all();
+    }
+
+    /// E4 复审修复（INV4 补封回归）：Backoff 等待重生窗口内停机 → 到期不得
+    /// 补生（修复前本测试失败：next_eligible 到期后 monitor 在停机期把线程
+    /// 拉起，且该线程在 join_all 的 None 句柄之外永不 join）
+    #[test]
+    fn backoff_pending_respawn_cancelled_by_shutdown() {
+        let (sup, _rx) = setup();
+        let born = Arc::new(AtomicUsize::new(0));
+        let born2 = born.clone();
+        sup.spawn(
+            ThreadRole::Capture,
+            "test-backoff-shutdown",
+            Policy::Backoff {
+                base_ms: 300,
+                max_ms: 1_000,
+                give_up_after: 5,
+                reset_after_ms: 60_000,
+            },
+            move || {
+                let born = born2.clone();
+                Box::new(move || {
+                    born.fetch_add(1, Ordering::SeqCst);
+                    panic!("出生即炸（停机窗口测试注入）");
+                })
+            },
+        );
+        // 等进入「死亡已判定、等待退避」窗口（handle=None）
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            let waiting = sup
+                .entries
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|e| e.name == "test-backoff-shutdown" && e.handle.is_none());
+            if waiting || std::time::Instant::now() > deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            sup.entries
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|e| e.handle.is_none()),
+            "应进入退避等待窗口"
+        );
+        sup.begin_shutdown();
+        let born_at_shutdown = born.load(Ordering::SeqCst);
+        // 越过 next_eligible（base 300ms）+ monitor 节拍裕量
+        std::thread::sleep(Duration::from_millis(1200));
+        assert_eq!(
+            born.load(Ordering::SeqCst),
+            born_at_shutdown,
+            "停机后不得补生（INV4）"
         );
         sup.join_all();
     }
