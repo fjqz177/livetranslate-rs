@@ -34,7 +34,7 @@ use lt_pipeline::{
 use crate::supervisor::{proxy_sink, Policy, Supervisor};
 use lt_proto::{AudioRole, CaptureEvent, ThreadRole, UiEvent, UiMsg};
 use lt_translate::Translator;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use winit::event_loop::EventLoopProxy;
@@ -53,10 +53,16 @@ const TL_QUEUE_CAP: usize = 64;
 /// 定宽任务池（等价原版 _tl_executor：任务排队、固定 worker 消费）。
 /// 架构 2.0 W1 改造：①队列有界满丢最旧（复用 BoundedDropQueue，ADR-2）；
 /// ②worker 经 Supervisor 出生（INV3——修复现状 handle 丢弃、panic 永死）；
-/// ③shutdown 置停止标志后由 Supervisor::join_all 真正 join（修复从不 join）
+/// ③shutdown 置停止标志后由 Supervisor::join_all 真正 join（修复从不 join）；
+/// ④Drop 自动停机（W1 泄漏修复：ReplaceRig/TestTranslator 替换或丢弃旧 rig 时
+/// 旧池 worker 必须退出——若无人置 stopped，worker 仅凭 500ms 空转循环永不结束
+/// （BoundedDropQueue 无信道关闭语义），旧池线程将永久泄漏并阻断
+/// Pipeline::stop 的 join_all）
 struct JobPool {
     queue: Arc<BoundedDropQueue<Box<dyn FnOnce() + Send>>>,
     stopped: Arc<AtomicBool>,
+    /// 存活 worker 计数（RAII 增减）：泄漏回归测试的观测面，W2 水位事件扩展面
+    alive_workers: Arc<AtomicUsize>,
 }
 
 impl JobPool {
@@ -66,13 +72,19 @@ impl JobPool {
             "tl-job",
         ));
         let stopped = Arc::new(AtomicBool::new(false));
+        let alive_workers = Arc::new(AtomicUsize::new(0));
         for i in 0..workers {
             let queue = queue.clone();
             let stopped = stopped.clone();
+            let alive_workers = alive_workers.clone();
             sup.spawn(ThreadRole::TlWorker, format!("lt-tl-{i}"), Policy::Always, move || {
                 let queue = queue.clone();
                 let stopped = stopped.clone();
+                let alive_workers = alive_workers.clone();
                 Box::new(move || {
+                    alive_workers.fetch_add(1, Ordering::Relaxed);
+                    // RAII 减计数：panic 路径同样归零（线程死亡即不存活）
+                    let _alive = WorkerAliveGuard(alive_workers);
                     // 停止标志置位后 worker 在 ≤500ms 内退出，由 join_all 回收；
                     // panic 由监督器重生（干净循环状态，INV5）
                     while !stopped.load(Ordering::Relaxed) {
@@ -84,7 +96,7 @@ impl JobPool {
                 })
             });
         }
-        Self { queue, stopped }
+        Self { queue, stopped, alive_workers }
     }
 
     /// 提交翻译任务：队列满时丢最旧（R15①/D-64）。停止后仍可能有在途提交
@@ -98,6 +110,28 @@ impl JobPool {
     /// （translate 自带超时兜底，在跑任务自然结束）
     fn shutdown(&self) {
         self.stopped.store(true, Ordering::Relaxed);
+    }
+
+    /// 存活 worker 数（泄漏回归测试观测面）
+    fn alive_worker_count(&self) -> usize {
+        self.alive_workers.load(Ordering::Relaxed)
+    }
+}
+
+/// Drop 自动停机（W1 泄漏修复）：rig 被替换/丢弃时池子一停，worker 在 ≤500ms
+/// 节拍内退出——不置标志则 pop_timeout 空转永不结束（BoundedDropQueue 无
+/// 信道关闭语义），被替换的池子将永久泄漏并阻断 Pipeline::stop 的 join_all。
+impl Drop for JobPool {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
+/// worker 退出计数句柄（RAII）：闭包入口 +1，任何出口（含 panic）−1
+struct WorkerAliveGuard(Arc<AtomicUsize>);
+impl Drop for WorkerAliveGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
     }
 }
 
@@ -315,14 +349,19 @@ impl Drop for StartGuard {
             return;
         }
         tracing::warn!("Pipeline::start 半初始化失败，回滚已启动的线程与音频后端");
+        // INV4：stopping 先置位（禁 respawn），再发各线程停止信号
+        self.sup.begin_shutdown();
         self.stop.store(true, Ordering::Relaxed);
         if let Some(tl) = &self.tl {
             tl.shutdown();
         }
-        self.sup.join_all();
+        // 先停音频后端：wasapi 线程退出 → AudioStatus 通道断开 → 音频状态转发
+        // 线程（Never 策略，以 rx 迭代结束为退出条件）才有机会收尾；顺序反了
+        // join_all 会永久阻塞在该线程上（W1 守卫自身死锁修复）
         if let Some(b) = self.backend.as_mut() {
             b.stop();
         }
+        self.sup.join_all();
     }
 }
 
@@ -764,8 +803,11 @@ impl Pipeline {
     }
 
     pub fn stop(&mut self) {
-        // INV4 停机序：stop 标志 → 音频后端 → 翻译池停止 → 监督器置 stopping
-        // 并 join 全部受监督线程（capture/ASR/翻译 worker/音频状态转发/monitor）
+        // INV4 停机序：监督器 stopping 先置位——必须在一切线程停止信号之前，
+        // 否则 monitor 500ms 节拍可能把正被关闭的线程重新拉起（竞态洞封堵）；
+        // 随后 stop 标志 → 音频后端 → 翻译池停止 → join 全部受监督线程
+        // （capture/ASR/翻译 worker/音频状态转发/monitor）
+        self.sup.begin_shutdown();
         self.stop.store(true, Ordering::Relaxed);
         self.backend.stop();
         if let Some(tl) = &self.tl {
@@ -1133,7 +1175,7 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
             (registry::SENSEVOICE_SMALL.clone(), false)
         };
         if fell_back {
-            let reason = if settings.funasr_model == "funasr-mlt-nano-2512" {
+            let reason = if registry::funasr_key_is_ghost(&settings.funasr_model) {
                 "mlt 无上游 ONNX 转换，待上游产出（D-14）"
             } else {
                 "非法模型键"
@@ -1816,6 +1858,15 @@ mod tests {
         Supervisor::new(|_| {})
     }
 
+    /// 轮询等待（W1 泄漏回归专用）：worker 出生/退出均异步，条件 3s 内应成立
+    fn wait_for(cond: impl Fn() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !cond() {
+            assert!(Instant::now() < deadline, "等待条件超时（3s）");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
     #[test]
     fn tl_rig_builds_from_default_settings() {
         let settings = lt_proto::Settings::default();
@@ -1864,6 +1915,44 @@ mod tests {
         });
         std::thread::sleep(Duration::from_millis(200));
         assert_eq!(ran.load(Ordering::Relaxed), 0);
+    }
+
+    /// W1 泄漏回归（ReplaceRig 路径）：旧 rig 被替换 Drop 后，旧池 8 个 worker
+    /// 必须在 ≤500ms 节拍内全部退出——否则它们永驻 Supervisor entries，
+    /// Pipeline::stop 的 join_all 永久挂起（应用退出即僵尸进程）。
+    #[test]
+    fn replaced_rig_workers_shutdown_on_drop() {
+        let sup = test_sup();
+        let settings = lt_proto::Settings::default();
+        let rig = TlRig::from_settings(&settings, &sup).unwrap().unwrap();
+        let old_alive = rig.pool.alive_workers.clone();
+        wait_for(|| old_alive.load(Ordering::Relaxed) == TL_POOL_WORKERS);
+        // 模拟 ReplaceRig 的替换语义（route_translator_switch：
+        // `*tl = Some(Arc::new(rig))`——旧 rig 被 Drop，无人显式关机）
+        let replacement = TlRig::from_settings(&settings, &sup).unwrap().unwrap();
+        wait_for(|| replacement.pool.alive_worker_count() == TL_POOL_WORKERS);
+        drop(rig);
+        // 旧池经 JobPool::Drop 自动停机：3s 内应归零（500ms pop_timeout 节拍）
+        wait_for(|| old_alive.load(Ordering::Relaxed) == 0);
+        // 收尾：新池停机 + join 全部（含已退出的旧 worker，即刻返回不挂起）
+        replacement.pool.shutdown();
+        sup.join_all();
+    }
+
+    /// W1 泄漏回归（TestTranslator 路径）：临时 rig 被任务闭包 move 后，任务
+    /// 执行完毕闭包 Drop → rig Drop → 池子 Drop，worker 同样必须全部退出
+    /// （曾做到每次「测试连接」泄漏 8 个线程并阻断退出）。
+    #[test]
+    fn test_rig_dropped_with_job_shuts_down_pool() {
+        let sup = test_sup();
+        let settings = lt_proto::Settings::default();
+        let rig = TlRig::from_settings(&settings, &sup).unwrap().unwrap();
+        let alive = rig.pool.alive_workers.clone();
+        wait_for(|| alive.load(Ordering::Relaxed) == TL_POOL_WORKERS);
+        // 等价于任务闭包 Drop 时 rig 的丢弃语义
+        drop(rig);
+        wait_for(|| alive.load(Ordering::Relaxed) == 0);
+        sup.join_all();
     }
 
     // ── reject_segment：三层过滤（对照原版 _process_segment） ──

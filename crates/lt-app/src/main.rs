@@ -79,7 +79,10 @@ fn main() -> anyhow::Result<()> {
     let mut shell = shell::AppShell::new(app, proxy, Some(initial_settings.clone()));
 
     let result = event_loop.run_app(&mut shell);
-    // 收尾序：桥停止标志 → shell（stop 管道 + save settings）→ 监督器 join
+    // 收尾序（INV4）：监督器 stopping 先置位（禁 respawn——必须在一切线程停止
+    // 信号之前，否则 monitor 节拍可能把正被关闭的桥复位重拉）→ 桥停止标志 →
+    // shell（stop 管道 + save settings）→ 监督器 join
+    app_sup.begin_shutdown();
     bridge_stop.store(true, std::sync::atomic::Ordering::SeqCst);
     shell.shutdown();
     app_sup.join_all();

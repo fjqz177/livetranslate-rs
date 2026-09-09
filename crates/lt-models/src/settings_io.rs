@@ -8,10 +8,27 @@ use lt_proto::Settings;
 /// 不再无痕留在原地等下次 save 覆盖（R17）：原地改名为
 /// `settings.json.corrupt-<unix_secs>` 隔离留证；改名失败（如被占用）保留原文件
 /// 仅记日志。两种情况都按"文件不存在"处理返回 None。
+/// R17 补全（D-75）：settings.json 缺失但 `.bak` 在位时自动恢复——`save` 的
+/// 原子链在「现档→bak」与「tmp→现档」之间崩溃会留下该中间态，自动恢复旧档
+/// 免于静默回默认值；代价：手动删除 settings.json 的重置意图同样被 .bak 复活，
+/// 崩溃自愈优先（取舍登记于 docs/architecture-v2.md §3.7 D-75）。
 pub fn load() -> anyhow::Result<Option<Settings>> {
     let path = settings_file()?;
     if !path.exists() {
-        return Ok(None);
+        // R17/D-75：崩溃中间态自愈。目录占位等异常状态不算 .bak（is_file 判据），
+        // 不能恢复时按无配置处理并记日志
+        let bak = path.with_extension("json.bak");
+        if bak.is_file() {
+            if let Err(e) = std::fs::rename(&bak, &path) {
+                tracing::warn!(
+                    "settings.json 缺失，从保存备份恢复失败（文件可能被占用），按无配置处理: {e}"
+                );
+                return Ok(None);
+            }
+            tracing::warn!("settings.json 缺失，已从保存备份 .bak 自动恢复旧配置");
+        } else {
+            return Ok(None);
+        }
     }
     let raw = std::fs::read_to_string(&path)?;
     let v: serde_json::Value = match serde_json::from_str(&raw) {
@@ -219,6 +236,28 @@ mod tests {
         assert!(bak.exists(), "恢复失败后 .bak 应保留");
         assert_eq!(std::fs::read_to_string(&bak).unwrap(), old);
         assert!(!path.is_file(), "目录占位不应被新档顶替");
+    }
+
+    /// R17/D-75：保存中途崩溃的中间态（settings.json 缺失 + .bak 在位）→
+    /// load 自动恢复旧档，不再静默回默认值；.bak 被改名消耗不复存在。
+    #[test]
+    fn load_auto_restores_from_bak_when_settings_missing() {
+        let _g = crate::ENV_LOCK.lock().unwrap();
+        let dir =
+            std::env::temp_dir().join(format!("lt_settings_bak_restore_{}", std::process::id()));
+        std::env::set_var("LIVETRANSLATE_CONFIG_DIR", &dir);
+        let _cleanup = scopeguard(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = settings_file().unwrap();
+        let bak = path.with_extension("json.bak");
+        // 旧档留在 .bak，settings.json 不复存在（崩溃中间态）
+        std::fs::write(&bak, r#"{ "target_language": "ja" }"#).unwrap();
+        assert!(!path.exists());
+
+        let back = load().unwrap().expect("应自动恢复 .bak 中的旧配置");
+        assert_eq!(back.target_language, "ja");
+        assert!(path.is_file(), "恢复后 settings.json 应就位");
+        assert!(!bak.exists(), "恢复后 .bak 应被改名消耗");
     }
 
     // 简易 RAII 清理（避免引入 scopeguard 依赖）

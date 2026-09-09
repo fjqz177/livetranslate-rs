@@ -246,6 +246,15 @@ pub fn funasr_entry(key: &str) -> Option<ModelEntry> {
     }
 }
 
+/// D-14 幽灵值判定（R25 归一单点）：键在合法值域（FUNASR_MODELS）内却无注册表
+/// 条目——当前唯一在案幽灵值 = funasr-mlt-nano-2512（无上游 ONNX 转换，运行时
+/// 统一回退 sensevoice-small）。值域成员/表项/幽灵三者的裁决收敛于此与
+/// `funasr_entry`：`every_funasr_key_has_entry_or_is_the_documented_ghost`
+/// 防线保证新键入值域必有表项（幽灵例外仅此一案）。
+pub fn funasr_key_is_ghost(key: &str) -> bool {
+    lt_proto::settings::FUNASR_MODELS.contains(&key) && funasr_entry(key).is_none()
+}
+
 /// whisper 条目（size 为合法档位时）
 pub fn whisper_entry_for(size: &str) -> Option<ModelEntry> {
     WHISPER_ENTRIES.iter().find(|e| e.key == size).cloned()
@@ -342,6 +351,10 @@ mod tests {
             }
         }
         assert_eq!(FUNASR_KEYS, lt_proto::settings::FUNASR_MODELS, "键表镜像漂移");
+        // R25 归一后的幽灵判定单点行为锁
+        assert!(funasr_key_is_ghost(GHOST), "mlt 应判定为幽灵值");
+        assert!(!funasr_key_is_ghost("sensevoice-small"));
+        assert!(!funasr_key_is_ghost("bogus"), "值域外键不是幽灵，是非法键");
     }
 
     #[test]

@@ -59,8 +59,9 @@ pub enum UiEvent {
     /// 恢复前不重发；Recovered 只在转好瞬间发一次
     Capture(CaptureEvent),
     /// 被监督线程死亡（架构 2.0 W1/R1：线程 panic 不再黑洞；restarted =
-    /// 监督器已按策略重启。W1 仅覆盖 capture/ASR/翻译池/bench/日志桥，
-    /// 枚举面随波次扩充——加法豁免）
+    /// 监督器已按策略重启。W1 实际覆盖 capture/ASR/翻译池/音频状态转发/日志桥
+    /// ——bench 仍在 lt-translate 内裸 spawn（依赖方向所限，监督器暂不可及），
+    /// 剩余枚举面随波次扩充——加法豁免）
     ThreadDied(ThreadDied),
     /// 日志行（tracing broadcast → 日志窗/下载框）
     LogLine {
@@ -117,6 +118,8 @@ pub enum ThreadRole {
     Capture,
     AsrMain,
     TlWorker,
+    /// W2 预留：lt-translate bench 事件面——当前仍在 lt-translate 内裸 spawn，
+    /// lt-app 监督器暂不可及；转入 orchestrator 后按方案线程表转 Never 接管
     Bench,
     LogBridge,
     /// wasapi 可用性边沿事件 → UiEvent::Capture 的转发线程（W1/R4）

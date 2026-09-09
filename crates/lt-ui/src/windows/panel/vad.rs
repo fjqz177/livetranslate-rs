@@ -62,31 +62,36 @@ pub struct FunasrModelItem {
     pub enabled: bool,
 }
 
-/// 模型表（顺序 = lt_proto::FUNASR_MODELS；显示名取 lt_models 注册表 display）
+/// 模型表：键列表 = lt_proto::FUNASR_MODELS 单源；可用性/显示名 = 注册表推导
+/// （R25 归一：值域陈述只留 lt-proto 一处 + registry 表项裁决，UI 不再手写
+/// 第三份键表——键表漂移只剩注册表镜像测试一道防线即可钉住）
 pub fn funasr_model_items() -> Vec<FunasrModelItem> {
     let exp = lt_i18n::t("model_experimental");
-    vec![
-        FunasrModelItem {
-            key: "sensevoice-small",
-            display: lt_models::registry::funasr_entry("sensevoice-small")
-                .map(|e| e.display.to_string())
-                .unwrap_or_else(|| "SenseVoice Small".into()),
-            enabled: true,
-        },
-        FunasrModelItem {
-            key: "funasr-nano-2512",
-            display: lt_models::registry::funasr_entry("funasr-nano-2512")
-                .map(|e| format!("{}{exp}", e.display))
-                .unwrap_or_else(|| format!("funasr-nano-2512{exp}")),
-            enabled: true,
-        },
-        // D-14：上游未发布 ONNX 转换，运行时回退 sensevoice-small → 灰显不可选
-        FunasrModelItem {
-            key: "funasr-mlt-nano-2512",
-            display: "Fun-ASR-MLT-Nano".into(),
-            enabled: false,
-        },
-    ]
+    lt_proto::settings::FUNASR_MODELS
+        .into_iter()
+        .map(|key| match lt_models::registry::funasr_entry(key) {
+            Some(e) => {
+                // 实验性标注为 UI 侧语义（能力未定，默认放行但显式提示）
+                let display = if key == "funasr-nano-2512" {
+                    format!("{}{exp}", e.display)
+                } else {
+                    e.display.to_string()
+                };
+                FunasrModelItem {
+                    key,
+                    display,
+                    enabled: true,
+                }
+            }
+            None => FunasrModelItem {
+                // 值域幽灵（D-14 唯一在案 mlt；`funasr_key_is_ghost` 防线测试保证
+                // 此分支只可能是 mlt）：无注册表条目 → 灰显不可选
+                key,
+                display: "Fun-ASR-MLT-Nano".into(),
+                enabled: false,
+            },
+        })
+        .collect()
 }
 
 /// settings.funasr_model → 下拉索引（非法值回退 sensevoice-small，对齐 sanitize）
