@@ -2796,6 +2796,7 @@ version = "0.1.0"
 dependencies = [
  "async-openai",
  "futures",
+ "lt-proto",
  "parking_lot",
  "reqwest",
  "serde",
@@ -2820,7 +2821,6 @@ dependencies = [
  "lt-i18n",
  "lt-models",
  "lt-proto",
- "lt-translate",
  "muda",
  "parking_lot",
  "pollster 1.0.1",
