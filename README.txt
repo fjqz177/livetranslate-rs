@@ -34,4 +34,12 @@ Rust 原生实时音频翻译：实时捕获系统声音（可选叠加麦克风
   · 翻译空白/报错 → 模型页「测试连接」；超时可在字幕页调大。
   · 隐藏后去哪找 → 托盘图标（左键显示悬浮窗，右键菜单）。
 
+卸载
+  1. 删除 livetranslate.exe 所在目录；
+  2. 删除数据目录 C:\Users\<你>\.config\livetranslate\
+     （若改过 models_dir，模型缓存在自定路径，一并删除）；
+  3. 删除开始菜单快捷方式：
+     %APPDATA%\Microsoft\Windows\Start Menu\Programs\LiveTranslate.lnk。
+  彻底重置（保留程序）：仅删数据目录下的 settings.json 即可。
+
 完整说明见项目 README.md；许可信息见 LICENSE 与 NOTICES.md。

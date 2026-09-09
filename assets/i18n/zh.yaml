@@ -193,6 +193,7 @@ cache_select_hint: "点击模型可选中，点击空白处取消；选中后可
 btn_delete_all_exit: "删除全部并退出"
 scanning: "扫描中..."
 no_cached_models: "未找到缓存模型"
+cache_scan_scope_hint: "清理仅覆盖上述注册表内模型；游离文件（如 jfk.wav 样例）不在扫描与删除范围，如有需要请手动清理。"
 cache_total: "总计: {size}  ({count} 项)"
 dialog_delete_title: "删除全部模型并退出"
 dialog_delete_msg: >-

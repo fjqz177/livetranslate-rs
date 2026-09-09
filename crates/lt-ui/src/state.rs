@@ -1525,7 +1525,10 @@ impl WizardState {
     }
 }
 
-/// 启动流状态机（替代原版 main() 里的模态对话框序列：SetupWizardDialog / ModelDownloadDialog）
+/// 启动流状态机（替代原版 main() 里的模态对话框序列：SetupWizardDialog / ModelDownloadDialog）。
+/// **D-78 保留待开发面**：当前 Ready 恒真（Wizard/DownloadMissing 零生产者），
+/// 接线点与现状地图见 docs/architecture-v2-improvements.md §5.4——后续首启
+/// 引导开发在此状态机上继续，勿删变体。
 #[derive(Debug, Clone)]
 pub enum StartupFlow {
     /// 首启向导（settings 文件不存在）

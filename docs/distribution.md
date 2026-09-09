@@ -26,8 +26,8 @@
 
 ## 2. 已锁定基线（不因本计划重开）
 
-- 单 exe（release ~59MB）：内嵌 onnxruntime.dll（启动解压 `<config>/ort/` + `ORT_DYLIB_PATH`）、silero_vad.onnx（VAD 零下载）、三族字体 brotli（解压 ~100ms，机器无关）。
-- Windows 10 x64、纯 CPU、静态 CRT（无 VC 运行库依赖）；仅 Windows 实装。
+- 单 exe（release ~75.6MB，打包 zip ~35.6MB）：内嵌 onnxruntime.dll（启动解压 `<config>/ort/` + `ORT_DYLIB_PATH`）、silero_vad.onnx（内存直载，VAD 零下载）、三族字体 brotli（解压 ~100ms，机器无关）。
+- Windows 10/11 x64、纯 CPU；**分发前置 = Microsoft VC++ 2015-2022 x64 Redist**（C3 裁决 2026-09-09：exe 导入表实锤依赖 VCRUNTIME140/140_1，解压出的 onnxruntime.dll 另需 MSVCP140/140_1；本行旧断言「静态 CRT 无 VC 依赖」有误已勘正——用户装 Redist 即全覆盖，不随包分发系统组件）；仅 Windows 实装。
 - 配置目录 = 字面 `~/.config/livetranslate`（非 %APPDATA%；`LIVETRANSLATE_CONFIG_DIR` 覆写）；子目录 `settings.json` / `models/` / `transcripts/` / `logs/` / `ort/`；`models_dir` 键可重定向模型缓存。
 - 单实例命名互斥体（`main.rs:67-95`）；日志落盘 `logs/livetrans_{时间戳}.log`（DEBUG，按次滚动）+ 应用内日志窗。
 - settings 原子写（tmp+rename）、300ms 防抖、`from_value_compatible` 兼容导入原版 `user_settings.json` 键名。
@@ -88,7 +88,7 @@
 
 **⑤ 升级**：换新 exe 即完成（配置/模型/日志/转写全在 `~/.config/livetranslate`，与 exe 位置解耦）；`from_value_compatible` 保证旧 settings 兼容。阶段二后由检查更新按钮承接告知（D-20）。
 
-**⑥ 卸载/重置**：删 exe + 删 `~/.config/livetranslate` 即彻底清除；重置 = 仅删该目录下 `settings.json`。
+**⑥ 卸载/重置**：删 exe + 删 `~/.config/livetranslate` + 删开始菜单快捷方式（`%APPDATA%\Microsoft\Windows\Start Menu\Programs\LiveTranslate.lnk`——Toast 通知 AUMID 注册载体，C4 补记）即彻底清除；若改过 `models_dir`，模型缓存在自定路径需一并删除。重置 = 仅删该目录下 `settings.json`。
 
 ## 6. 风险与预案
 

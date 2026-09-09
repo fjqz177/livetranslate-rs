@@ -193,6 +193,7 @@ cache_select_hint: "Click a model to select it; click empty space to deselect. S
 btn_delete_all_exit: "Delete All && Exit"
 scanning: "Scanning..."
 no_cached_models: "No cached models found"
+cache_scan_scope_hint: "Cleanup covers registry-known models only; stray files (e.g. the jfk.wav sample) are not scanned or deleted — remove them manually if needed."
 cache_total: "Total: {size}  ({count} items)"
 dialog_delete_title: "Delete All Models & Exit"
 dialog_delete_msg: >-

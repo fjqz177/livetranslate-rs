@@ -6,6 +6,14 @@
 //! 三者共用 WinId::Setup 常规窗口，按 AppState.load_dialog / AppState.startup 分派。
 //! 定时不在这里做：倒计时与 500ms 收尾延迟由宿主 about_to_wait 的 Setup 节拍驱动，
 //! 本模块只提供 [`needs_setup_tick`] 供宿主判断是否需要节拍。
+//!
+//! **D-78（2026-09-09 用户裁决）：本模块及 StartupFlow/WizardState/WinId::Setup
+//! 全套为「保留待开发面」**——当前未接线（StartupFlow::Wizard/DownloadMissing
+//! 零生产者，Setup 窗创建即隐藏），后续将在此继续开发首启引导。现状地图与三处
+//! 接线点（initial_visibility 门 / Setup show 分支 / DownloadSucceeded→
+//! start_pipeline 链）见 docs/architecture-v2-improvements.md §5.4；
+//! WD-6 首启轻引导横幅的接口预留（设置键/UI 挂点/触发语义）亦登记在该节。
+//! `Cmd::Stop`（向导关闭→退出）因本保留裁决而合法存续，勿删。
 
 use crate::state::{ModalUi, SessionView, StartupFlow, StartupUi, WizardPhase};
 use egui::{Color32, RichText, Ui};

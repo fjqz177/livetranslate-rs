@@ -224,6 +224,8 @@ pub fn page(ui: &mut Ui, panel: &mut PanelUi, session: &mut SessionView, setting
             }
             hint_line(ui, pal, &lt_i18n::t("cache_select_hint"));
         });
+        // C7：扫描范围诚实提示——仅注册表内模型，游离文件不在删除面
+        hint_line(ui, pal, &lt_i18n::t("cache_scan_scope_hint"));
     });
 
     ui.add_space(8.0);

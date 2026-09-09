@@ -339,6 +339,23 @@ C:\Users\<u>\.config\livetranslate\            ← config_dir() paths.rs:9-17；
 | C11 | LIBCLANG_PATH 可移植性 | 固化本机绝对路径（§1.2）= clone 非零配置 | 文档化（CONTRIBUTING），可选改探测式/相对路径；顺带评估 rust-toolchain.toml 锁版 | 开发体验 |
 | C12 | AGENTS「5 个 ignored」滞后 | 实测 6 个（§2.2） | 更新计数 | 纯文档 |
 
+### §8.1 裁决记录（2026-09-09，用户逐项裁决；执行落地见 architecture-v2-improvements.md E5）
+
+| # | 裁决 | 落地 |
+|---|---|---|
+| C1 | **无限积累，不清理**（用户裁决：日志属排障证据，自动删除越权） | 关闭，不施工 |
+| C2 | **无限积累，不清理**（用户裁决：转写文本属用户数据） | 关闭，不施工 |
+| C3 | **A：文档承认 VC Redist 前置**（用户理由：装 Redist 对用户只有好处；重复分发微软系统级组件多此一举） | distribution.md §2 + README.txt 运行前提（README 于 WD-3 已先行写明） |
+| C4 | 采纳 | distribution.md ⑥卸载 + README.txt 卸载节（lnk + models_dir 补齐） |
+| C5 | 采纳 | AGENTS 构建段措辞勘正 |
+| C6 | 采纳 | README.txt 数据位置节已含 models_dir 说明（WD-3 先行落地） |
+| C7 | 采纳（提示行方案） | 数据页「清理仅覆盖注册表内模型」提示 + i18n 双语键（E5） |
+| C8 | **已被后续工作解决**（W1/R11① fatal_early MessageBoxW，早于本裁决） | 关闭 |
+| C9 | **不处理**（D-75 `.bak` 自愈链已兜底崩溃中间态；ReplaceFileW 收益不抵风险） | 关闭 |
+| C10 | 采纳 | distribution.md §2 数字刷新（59MB→75.6MB/zip 35.6MB） |
+| C11 | **已被后续工作解决**（uv 钉版 libclang + cargo [env] relative，96ac36a） | 关闭 |
+| C12 | **已被后续工作解决**（AGENTS 基线行已随波次更新至 7 ignored） | 关闭 |
+
 ---
 
 ## §9 证据方法与局限
