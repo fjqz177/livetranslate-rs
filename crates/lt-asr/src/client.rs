@@ -59,7 +59,7 @@ pub struct AsrWorkerClient {
 }
 
 impl AsrWorkerClient {
-    /// 以当前 exe + `--asr-worker <config-json>` 启动 worker（生产路径）
+    /// 以当前 exe + `--asr-worker` 启动 worker（生产路径；配置 stdin 首行，R28/D-76）
     pub fn spawn(config: WorkerConfig) -> Result<Self, AsrClientError> {
         let exe = std::env::current_exe()
             .map_err(|e| AsrClientError::Status(format!("无法定位当前 exe: {e}")))?;
@@ -74,8 +74,9 @@ impl AsrWorkerClient {
         let cfg_json = serde_json::to_string(&config)
             .map_err(|e| AsrClientError::Status(format!("配置序列化失败: {e}")))?;
         let mut cmd = Command::new(program);
+        // R28/D-76：argv 仅旗标，配置经 stdin 首行——任务管理器命令行
+        // 不再明文暴露模型路径（模型目录可能是用户隐私）
         cmd.arg("--asr-worker")
-            .arg(&cfg_json)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped()); // E-07：worker 输出重定向到日志，绝不弹控制台
@@ -114,7 +115,16 @@ impl AsrWorkerClient {
             .spawn(move || reader_loop(stdout, tx))
             .ok();
 
-        let stdin = FrameWriter::new(child.stdin.take().expect("stdin piped"));
+        // 配置首行（\n 结尾）先于一切帧写入；worker 侧 BufReader 读首行后
+        // 以同一 BufReader 进入帧循环（预读缓冲不丢字节）
+        let mut cfg_stdin = child.stdin.take().expect("stdin piped");
+        use std::io::Write as _;
+        cfg_stdin
+            .write_all(cfg_json.as_bytes())
+            .and_then(|_| cfg_stdin.write_all(b"\n"))
+            .and_then(|_| cfg_stdin.flush())
+            .map_err(|e| AsrClientError::Status(format!("配置写入 stdin 失败: {e}")))?;
+        let stdin = FrameWriter::new(cfg_stdin);
         tracing::info!("ASR worker 已启动 pid={}", child.id());
         Ok(Self {
             child,

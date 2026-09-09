@@ -91,12 +91,15 @@ fn echo_factory(cfg: &WorkerConfig) -> anyhow::Result<EchoEngine> {
 
 
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
-    let Some(cfg_pos) = args.iter().position(|a| a == "--asr-worker") else {
+    // R28/D-76：argv 仅旗标，配置经 stdin 首行（与生产 worker 一致）
+    if !std::env::args().any(|a| a == "--asr-worker") {
         eprintln!("缺少 --asr-worker 参数");
         std::process::exit(2);
-    };
-    let config: WorkerConfig = serde_json::from_str(&args[cfg_pos + 1]).expect("配置解析");
+    }
+    let mut stdin = std::io::BufReader::new(std::io::stdin().lock());
+    let mut cfg_line = String::new();
+    std::io::BufRead::read_line(&mut stdin, &mut cfg_line).expect("读取配置行");
+    let config: WorkerConfig = serde_json::from_str(cfg_line.trim()).expect("配置解析");
 
     let WorkerOptions::Echo(echo) = &config.options else {
         eprintln!("fake worker: 应带 WorkerOptions::Echo");
@@ -120,7 +123,7 @@ fn main() {
     }
 
     if let Err(e) = lt_asr::worker::run(
-        std::io::stdin().lock(),
+        stdin,
         std::io::stdout().lock(),
         config,
         echo_factory,

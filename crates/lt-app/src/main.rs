@@ -19,9 +19,10 @@ mod shell;
 use lt_proto::{Cmd, UiMsg};
 
 fn main() -> anyhow::Result<()> {
-    // worker 子进程入口：--asr-worker <config-json>（sensevoice + whisper + nano）
-    if let Some(cfg) = std::env::args().skip_while(|a| a != "--asr-worker").nth(1) {
-        return asr_worker_entry(&cfg);
+    // worker 子进程入口：--asr-worker（配置经 stdin 首行，R28/D-76——
+    // argv 仅旗标，命令行不再明文暴露模型路径）
+    if std::env::args().any(|a| a == "--asr-worker") {
+        return asr_worker_entry();
     }
 
     // ── R1/D-62：panic hook 最早安装（先于一切可失败步骤；hook 落 crash
@@ -165,16 +166,21 @@ fn ensure_single_instance() -> anyhow::Result<()> {
 }
 
 /// worker 子进程主循环：SenseVoice / Whisper（M5.1）/ Fun-ASR-Nano（WP-A）/ Qwen3-ASR（WP-B）
-fn asr_worker_entry(cfg_json: &str) -> anyhow::Result<()> {
+fn asr_worker_entry() -> anyhow::Result<()> {
     // AH-7/H14：worker 分支在主进程 logging::init 之前 return，引擎里的
     // tracing 此前是无 subscriber 的 no-op（日志黑洞）。初始化写 stderr 的
     // 轻量订阅者——父进程 drain_stderr 捕获后以 debug(target:"asr_worker")
     // 回流日志窗（INFO 级足够：引擎加载/就绪信息，避免 debug 洪泛）
     init_worker_logging();
-    let config: lt_asr::WorkerConfig = serde_json::from_str(cfg_json)?;
+    // R28/D-76：stdin 首行 = 配置 JSON；BufReader 预读缓冲不丢字节，
+    // 帧循环从剩余字节继续
+    let mut stdin = std::io::BufReader::new(std::io::stdin().lock());
+    let mut cfg_line = String::new();
+    std::io::BufRead::read_line(&mut stdin, &mut cfg_line)?;
+    let config: lt_asr::WorkerConfig = serde_json::from_str(cfg_line.trim())?;
     match config.engine.as_str() {
         "sensevoice" => lt_asr::worker::run(
-            std::io::stdin().lock(),
+            stdin,
             std::io::stdout().lock(),
             config,
             move |cfg| {
@@ -188,7 +194,7 @@ fn asr_worker_entry(cfg_json: &str) -> anyhow::Result<()> {
         ),
         "nano" => {
             lt_asr::worker::run(
-                std::io::stdin().lock(),
+                stdin,
                 std::io::stdout().lock(),
                 config,
                 move |cfg| {
@@ -204,7 +210,7 @@ fn asr_worker_entry(cfg_json: &str) -> anyhow::Result<()> {
         }
         "qwen3" => {
             lt_asr::worker::run(
-                std::io::stdin().lock(),
+                stdin,
                 std::io::stdout().lock(),
                 config,
                 move |cfg| {
@@ -218,7 +224,7 @@ fn asr_worker_entry(cfg_json: &str) -> anyhow::Result<()> {
             )
         }
         "whisper" => lt_asr::worker::run(
-            std::io::stdin().lock(),
+            stdin,
             std::io::stdout().lock(),
             config,
             move |cfg| lt_asr::WhisperEngine::from_config(cfg).map_err(|e| anyhow::anyhow!("{e}")),

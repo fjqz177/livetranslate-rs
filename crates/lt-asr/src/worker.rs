@@ -7,7 +7,7 @@
 
 use crate::engine::AsrEngine;
 use crate::frame::{FrameReader, FrameWriter, ReadyInfo, ReqKind, Request, Response};
-use std::io::{Read, Write};
+use std::io::{BufRead, Read, Write};
 use std::path::PathBuf;
 
 /// 引擎工厂：由装配层注入（M2.3 SenseVoice / M5 whisper / 测试 echo）
@@ -60,8 +60,12 @@ pub struct EchoOptions {
 }
 
 /// worker 主循环。`stdin/stdout` 为管道；返回即退出进程。
+/// R28/D-76：配置经 stdin **首行**（`\n` 结尾 JSON）传递——argv 仅旗标，
+/// 任务管理器命令行不暴露模型路径。首行由**调用方**读取（fake worker 在
+/// 进循环前需读注入参数做 ready 前退出决策），随后把同一 `BufRead`
+/// （预读缓冲不丢字节，帧循环从剩余字节继续）与解析出的 config 传入。
 pub fn run<E: AsrEngine + 'static>(
-    mut stdin: impl Read,
+    mut stdin: impl BufRead,
     mut stdout: impl Write,
     config: WorkerConfig,
     factory: EngineFactory<E>,
