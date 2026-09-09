@@ -412,6 +412,7 @@ WinId::Overlay => { let AppUi { overlay, session, settings, modal, .. } = app;
 | D-73 | W6 | 二次启动激活已有窗口（WD-5） | 实机 |
 | D-74 | W4（§5 施工卡提前于 §3.7 表 W6 档） | 同语言免翻译比较归一化（`zh` vs `zh-CN`；pipeline.rs:1473 现为裸字符串比较）——仅在目标语言侧归一（TlView 派生点），ASR 检出侧保持原样（归一它是新行为，超出本号登记面；R21 档位/源侧归一仍 W6） | 归一单测（已合入：lt-proto `normalize_language` + `tl_view_normalizes_target_language`） |
 | D-75 | W1（缺陷修复） | settings.json 缺失但 `.bak` 在位时 load 自动恢复旧配置——save 原子链「现档→bak→tmp→现档」的崩溃中间态自愈，不再静默回默认值（R17 补全）；代价：手动删除 settings.json 的重置意图同样被 .bak 复活，崩溃自愈优先 | 单测 |
+| D-76 | W6 | R28 worker 配置改 stdin 首行传递——任务管理器命令行不再含模型路径（当前 argv JSON 明文暴露）；skip_while(nth(1)) 旗标解析同步收紧为仅旗标 | 人工（任务管理器命令行）+ fake worker 同步测试 |
 
 ---
 
