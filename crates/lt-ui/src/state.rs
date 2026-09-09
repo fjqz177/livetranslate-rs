@@ -1349,6 +1349,22 @@ pub enum TestTranslatorState {
     },
 }
 
+/// 音频设备枚举状态（W5/R13 下沉后：`Cmd::RefreshDevices` → `UiEvent::Devices`
+/// 回执的异步三态——W5 收口 P1 修「回执前每帧重发」：Idle→Probe 只发一次，
+/// 在途期间不再叠发；Probe 的渲染面 = 空列表（与旧 None 同观感，回执
+/// 通常百毫秒内到达））
+#[derive(Debug, Clone, Default, PartialEq)]
+pub enum DevicesState {
+    /// 从未请求（识别页首次进入 → 发一次探测命令）
+    #[default]
+    Idle,
+    /// 探测命令已在途（首入/刷新已发；回执前不重复发出）
+    Probe,
+    /// 枚举结果回执缓存（含失败空表——枚举失败也以 Ready 空表收敛，避免
+    /// 卡在 Probe 反复重发；用户可点"刷新"重试）
+    Ready(lt_proto::DeviceList),
+}
+
 /// 控制面板 UI 伴生状态（全部仅 UI 线程触达；对照 ControlPanel 的面板局部字段）
 #[derive(Default)]
 pub struct PanelUiState {
@@ -1362,10 +1378,10 @@ pub struct PanelUiState {
     pub reduce_motion: bool,
     /// 开机自启当前态（None=未探测；Windows 注册表 Run 键为事实源，见 panel::autostart）
     pub autostart: Option<bool>,
-    /// 设备枚举缓存（None=未枚举；识别页首次显示或点"刷新"时重建）
-    /// 音频设备枚举缓存（W5/R13：`UiEvent::Devices` 事件载荷——
-    /// 帧内 COM 枚举已下线，首入/刷新发 `Cmd::RefreshDevices`）
-    pub devices: Option<lt_proto::DeviceList>,
+    /// 设备枚举状态（W5/R13：`UiEvent::Devices` 事件载荷——帧内 COM 枚举已
+    /// 下线，首入/刷新经 [`Self::request_devices_if_idle`]/
+    /// [`Self::request_devices_refresh`] 发命令；回执落地 [`DevicesState::Ready`]）
+    pub devices: DevicesState,
     /// 模型缓存探测缓存（DL-6/F12：识别页每帧渲染不再扫盘——2s TTL，
     /// 探测键（engine|model）变化或下载事件到达时失效）
     pub cache_probe: Option<(
@@ -1409,6 +1425,24 @@ impl PanelUiState {
                 true
             }
             _ => false,
+        }
+    }
+
+    /// 识别页首入：Idle → Probe 只发一次探测命令（W5 收口 P1——回执前每帧
+    /// 重发会造成探测线程洪泛 + ThreadDied 批报；Probe/Ready 态不重复发出）
+    pub fn request_devices_if_idle(&mut self, session: &mut SessionView) {
+        if matches!(self.devices, DevicesState::Idle) {
+            self.devices = DevicesState::Probe;
+            session.send_cmd(lt_proto::Cmd::RefreshDevices);
+        }
+    }
+
+    /// "刷新"按钮：置 Probe 并发出（在途时幂等跳过——连点只叠一次探测；
+    /// Ready 态重刷 = 显式换新枚举）
+    pub fn request_devices_refresh(&mut self, session: &mut SessionView) {
+        if !matches!(self.devices, DevicesState::Probe) {
+            self.devices = DevicesState::Probe;
+            session.send_cmd(lt_proto::Cmd::RefreshDevices);
         }
     }
 
@@ -2720,13 +2754,46 @@ mod tests {
         }
     }
 
-    /// 面板默认值：首页 VAD/ASR（原版第一个 addTab）、无设备缓存
+    /// 面板默认值：首页 VAD/ASR（原版第一个 addTab）、无设备枚举请求
     #[test]
     fn panel_state_defaults_match_original_chrome() {
         let st = AppUi::new(Settings::default());
         assert_eq!(st.panel.state.page, PanelPage::VadAsr);
-        assert!(st.panel.state.devices.is_none());
+        assert!(matches!(st.panel.state.devices, DevicesState::Idle));
         assert!(st.panel.state.apply_due_at.is_none());
+    }
+
+    /// W5 收口（P1）：设备枚举首入守卫——Idle→Probe 只发一次命令；
+    /// Probe 在途任意帧再调不重发；Ready 后不重发（刷新按钮显式走
+    /// request_devices_refresh 才换新枚举）
+    #[test]
+    fn devices_probe_sends_once_until_reply() {
+        let mut st = AppUi::new(Settings::default());
+        let (tx, rx) = std::sync::mpsc::channel();
+        st.session.cmd_tx = Some(tx);
+        let cmd = |st: &mut AppUi| {
+            st.panel.state.request_devices_if_idle(&mut st.session);
+            st.session
+                .cmd_tx
+                .as_ref()
+                .map(|_| rx.try_iter().count())
+                .unwrap_or(0)
+        };
+        // 首帧：发送 1 条（Idle→Probe）
+        assert_eq!(cmd(&mut st), 1, "首入应发一次 RefreshDevices");
+        assert!(matches!(st.panel.state.devices, DevicesState::Probe));
+        // 回执前连续帧：0 条（在途不再叠发）
+        for _ in 0..10 {
+            assert_eq!(cmd(&mut st), 0, "Probe 在途不得重复发送");
+        }
+        // 回执：Probe→Ready；再帧 0 条
+        st.panel.state.devices = DevicesState::Ready(lt_proto::DeviceList::default());
+        assert_eq!(cmd(&mut st), 0, "Ready 态不自动重发");
+        // 刷新按钮：Ready→Probe 再发一条；在途幂等
+        st.panel.state.request_devices_refresh(&mut st.session);
+        assert_eq!(cmd(&mut st), 1, "显式刷新应发一条");
+        st.panel.state.request_devices_refresh(&mut st.session);
+        assert_eq!(cmd(&mut st), 0, "刷新在途幂等");
     }
 
     /// 防抖：登记后 300ms 到期触发一次；到期前不触发

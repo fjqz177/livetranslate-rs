@@ -124,7 +124,8 @@ impl Supervisor {
             }
             std::thread::sleep(Duration::from_millis(500));
             let mut entries = self.entries.lock().unwrap();
-            for e in entries.iter_mut() {
+            let mut reap = Vec::new();
+            for (i, e) in entries.iter_mut().enumerate() {
                 let Some(h) = e.handle.as_mut() else { continue };
                 if !h.is_finished() {
                     continue;
@@ -135,31 +136,51 @@ impl Supervisor {
                 if self.stopping.load(Ordering::SeqCst) {
                     continue;
                 }
+                if e.policy == Policy::Never {
+                    // W5 收口（P1）：一次性线程（设备探测/文件对话框/基准）的
+                    // 正常退出是设计内收尾——旧语义把每次操作都误报为
+                    // ThreadDied 错误行（"未停机即退出（异常）"）。panic 仍
+                    // 上报，正常退出静默收割（tracing::debug 保留可观测性）。
+                    if panicked {
+                        (self.sink)(ThreadDied {
+                            role: e.role,
+                            detail: format!("{} panic（详情见 crash 文件与日志）", e.name),
+                            restarted: false,
+                        });
+                    } else {
+                        tracing::debug!("{} 正常退出（Never 策略静默收割）", e.name);
+                    }
+                    reap.push(i);
+                    continue;
+                }
+                // Policy::Always：非停机退出 = 上一线程死亡（任何原因）→ 上报 + 重生
                 let detail = if panicked {
                     format!("{} panic（详情见 crash 文件与日志）", e.name)
                 } else {
                     format!("{} 未停机即退出（异常）", e.name)
                 };
-                let restart = e.policy == Policy::Always;
                 (self.sink)(ThreadDied {
                     role: e.role,
                     detail,
-                    restarted: restart,
+                    restarted: true,
                 });
-                if restart {
-                    let run = (e.factory)();
-                    match std::thread::Builder::new().name(e.name.clone()).spawn(run) {
-                        Ok(h) => e.handle = Some(h),
-                        Err(err) => {
-                            tracing::error!("{} 重生失败: {err}", e.name);
-                            (self.sink)(ThreadDied {
-                                role: e.role,
-                                detail: format!("{} 重生失败: {err}", e.name),
-                                restarted: false,
-                            });
-                        }
+                let run = (e.factory)();
+                match std::thread::Builder::new().name(e.name.clone()).spawn(run) {
+                    Ok(h) => e.handle = Some(h),
+                    Err(err) => {
+                        tracing::error!("{} 重生失败: {err}", e.name);
+                        (self.sink)(ThreadDied {
+                            role: e.role,
+                            detail: format!("{} 重生失败: {err}", e.name),
+                            restarted: false,
+                        });
                     }
                 }
+            }
+            // 死条目收割（重生的 handle 已复位；已死未重生的移除——长期运行
+            // 不积累空条目；一次性线程每次探测/弹框都有进出）
+            for i in reap.into_iter().rev() {
+                entries.remove(i);
             }
         }
     }
@@ -238,6 +259,29 @@ mod tests {
         assert!(!d.restarted);
         std::thread::sleep(Duration::from_millis(800));
         assert!(rx.try_recv().is_err(), "Never 不得重生再上报");
+        sup.join_all();
+    }
+
+    /// W5 收口（P1）：Never 一次性线程**正常退出**——设计内收尾，不报
+    /// ThreadDied（旧语义把每次设备探测/文件对话框/基准收尾误报为日志
+    /// 错误行），死条目收割不积累
+    #[test]
+    fn never_policy_normal_exit_silent_and_reaped() {
+        let (sup, rx) = setup();
+        sup.spawn(ThreadRole::DeviceProbe, "test-oneshot", Policy::Never, || {
+            Box::new(|| {})
+        });
+        sup.spawn(ThreadRole::FileDialog, "test-oneshot-2", Policy::Never, || {
+            Box::new(|| {})
+        });
+        // 等 monitor 两轮心跳（500ms/轮）+ 收割
+        std::thread::sleep(Duration::from_millis(1200));
+        assert!(rx.try_recv().is_err(), "正常退出不得上报 ThreadDied");
+        assert_eq!(
+            sup.entries.lock().unwrap().len(),
+            0,
+            "死条目应收割（正常退出无一重生）"
+        );
         sup.join_all();
     }
 

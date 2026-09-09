@@ -41,6 +41,9 @@ pub struct AppShell {
     sup: std::sync::Arc<Supervisor>,
     /// 在途基准取消标志（W5f：Cmd::CancelBench 置位；RunBench 新会话重置）
     bench_cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// 基准在途标志（W5 收口 P3：RunBench 防重入——UI 侧 bench.running 之外的
+    /// 纵深防御；基准线程退出（含 panic unwind）经 [`BenchActiveGuard`] 复位）
+    bench_active: std::sync::Arc<std::sync::atomic::AtomicBool>,
     pipeline: Option<Pipeline>,
     started: bool,
 }
@@ -75,6 +78,7 @@ impl AppShell {
             download,
             sup,
             bench_cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            bench_active: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             pipeline: None,
             started: false,
         };
@@ -343,7 +347,9 @@ impl AppShell {
 
     /// 性能基准一次性线程（W5/R22）：ModelConfig → BenchModel 转换在此
     /// （随迁自 lt-ui——UI 侧不再直持 lt-translate 基准执行）；取消经
-    /// `bench_cancel` 在模型边界轮询
+    /// `bench_cancel` 在模型边界轮询。防重入（W5 收口 P3）：标准在途时
+    /// 拒绝新会话（UI 侧 bench.running 之外的纵深防御——连发命令不再叠
+    /// 线程）；拒绝时旧基准的取消标志不受影响。
     fn start_bench(
         &mut self,
         models: Vec<lt_proto::ModelConfig>,
@@ -352,11 +358,16 @@ impl AppShell {
         timeout: u32,
         prompt: String,
     ) {
+        if self.bench_active.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            tracing::warn!("基准已在途，忽略重复 RunBench（模型边界截停协议不叠加）");
+            return;
+        }
         self.bench_cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let bench_models: Vec<lt_translate::bench::BenchModel> =
             models.iter().map(to_bench_model).collect();
         let artery = self.artery.clone();
         let cancel = self.bench_cancel.clone();
+        let bench_active = self.bench_active.clone();
         self.sup.spawn(ThreadRole::Bench, "lt-bench", Policy::Never, move || {
             // factory 为 Fn（死亡可重生）：每次构造干净的运行闭包（INV5）
             let artery = artery.clone();
@@ -365,7 +376,10 @@ impl AppShell {
             let tgt = tgt.clone();
             let prompt = prompt.clone();
             let cancel = cancel.clone();
+            let bench_active = bench_active.clone();
             Box::new(move || {
+                // 任何退出路径（含 panic unwind——监督器上报）都复位在途标志
+                let _guard = BenchActiveGuard(bench_active);
                 lt_translate::bench::run_benchmark(
                     bench_models,
                     &src,
@@ -493,6 +507,17 @@ impl ApplicationHandler<UiMsg> for AppShell {
 }
 
 // ── W5 下沉三路：探索/弹框/基准的纯函数助手（shell 侧；UI 不再直持） ──
+
+/// 基准在途标志复位守卫（W5 收口 P3）：RunBench 防线关闭于任何退出路径——
+/// 正常收尾与 panic unwind（监督器同时上报）都复位 `bench_active`，杜绝
+/// 「线程死了标志卡 true → 后续 RunBench 被永久拒绝」
+struct BenchActiveGuard(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl Drop for BenchActiveGuard {
+    fn drop(&mut self) {
+        self.0.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
 
 /// 文件对话框形态（导出=保存框 + txt 过滤器；背景图=打开框 + 图片过滤器）
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

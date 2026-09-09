@@ -317,10 +317,9 @@ pub fn page(ui: &mut Ui, panel: &mut PanelUi, session: &mut SessionView, setting
     let is_funasr = engine == "funasr";
 
     // 设备枚举（W5/R13）：首入请求一次——枚举线上移到编排域 Supervisor
-    // 一次性线程（帧内不再阻塞 COM），结果经 UiEvent::Devices 回执缓存
-    if panel.state.devices.is_none() {
-        session.send_cmd(lt_proto::Cmd::RefreshDevices);
-    }
+    // 一次性线程（帧内不再阻塞 COM），结果经 UiEvent::Devices 回执缓存；
+    // Idle→Probe 只发一次（W5 收口 P1：在途不再每帧重发）
+    panel.state.request_devices_if_idle(session);
 
     // ── ASR 引擎（原版 asr_group）──
     group_card(ui, pal, &lt_i18n::t("group_asr_engine"), |ui| {
@@ -568,7 +567,12 @@ pub fn page(ui: &mut Ui, panel: &mut PanelUi, session: &mut SessionView, setting
 
     // ── 设备组（原版 asr_group 的 audio/mic 行 + 刷新按钮；Rust 版独立成卡）──
     group_card(ui, pal, &lt_i18n::t("group_devices"), |ui| {
-        let devices = panel.state.devices.clone().unwrap_or_default();
+        // Idle/Probe = 空列表（下拉仅"禁用/系统默认"两项——与旧 None 同观感，
+        // 回执通常百毫秒内到达；Ready 取缓存）
+        let devices = match &panel.state.devices {
+            crate::state::DevicesState::Ready(d) => d.clone(),
+            _ => lt_proto::DeviceList::default(),
+        };
         let outputs = devices.outputs.clone();
         let inputs = devices.inputs.clone();
 
@@ -609,7 +613,8 @@ pub fn page(ui: &mut Ui, panel: &mut PanelUi, session: &mut SessionView, setting
                 )
                 .clicked()
             {
-                session.send_cmd(lt_proto::Cmd::RefreshDevices);
+                // 刷新按钮：Probe 置位（在途幂等）——不再每击必发
+                panel.state.request_devices_refresh(session);
             }
         });
 

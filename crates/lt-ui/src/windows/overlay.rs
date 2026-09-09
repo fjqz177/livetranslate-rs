@@ -927,11 +927,13 @@ mod tests {
         let mut st = crate::state::AppUi::new(lt_proto::Settings::default());
         let mut acts: Vec<(crate::state::WinId, crate::state::WinAction)> = Vec::new();
         let run_frame = |ctx: &egui::Context, st: &mut crate::state::AppUi, evs: Vec<egui::Event>| {
-            let mut ri = egui::RawInput::default();
-            ri.screen_rect = Some(egui::Rect::from_min_size(
-                egui::Pos2::ZERO,
-                egui::vec2(620.0, 500.0),
-            ));
+            let mut ri = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(620.0, 500.0),
+                )),
+                ..Default::default()
+            };
             ri.events = evs;
             let mut out = ctx.run_ui(ri, |ui| {
                 crate::windows::overlay::overlay_ui(

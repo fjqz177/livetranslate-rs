@@ -404,9 +404,12 @@ where
                 .partial_cmp(&b.avg_ttft)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
-        // W5：取消说明行（非模型失败——Cmd::CancelBench 触发了模型边界截停）
+        // W5：取消说明行（非模型失败——Cmd::CancelBench 触发了模型边界截停；
+        // 与其余基准输出行同风格：工具输出行保持英文，i18n 只覆盖 UI chrome）
         if cancel.load(std::sync::atomic::Ordering::Relaxed) {
-            on_event(BenchOutput::Line("  已取消（模型边界截停，在途模型以超时收敛）".into()));
+            on_event(BenchOutput::Line(
+                "  Cancelled at model boundary (in-flight models converge by timeout)".into(),
+            ));
         }
         on_event(BenchOutput::Line(format!("\n{}", "=".repeat(60))));
         on_event(BenchOutput::Line("Ranking by Avg TTFT:".into()));
@@ -468,7 +471,7 @@ mod tests {
         let mut saw_finished = false;
         while let Ok(out) = rx.recv_timeout(std::time::Duration::from_secs(3)) {
             match out {
-                BenchOutput::Line(l) if l.contains("已取消") => saw_cancel_line = true,
+                BenchOutput::Line(l) if l.contains("Cancelled") => saw_cancel_line = true,
                 BenchOutput::Finished { ok, .. } => {
                     saw_finished = true;
                     assert!(!ok, "取消后 Finished 必须 ok=false");

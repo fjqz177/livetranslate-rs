@@ -1208,9 +1208,11 @@ impl MultiWindowApp {
                 // ── 模型加载结束：关闭加载框（仅 load_dialog 显示中才动作）──
                 lt_proto::UiEvent::ModelLoadDone { .. } => self.close_load_dialog(),
                 // ── 音频设备枚举回执（W5/R13）：`Cmd::RefreshDevices` 的响应——
-                // 面板识别页设备缓存替换为事件载荷（帧内 COM 枚举已下线）──
+                // 面板识别页设备缓存替换为事件载荷（帧内 COM 枚举已下线）；
+                // 空表也落 Ready（收敛在途态，避免 Probe 重发）──
                 lt_proto::UiEvent::Devices(list) => {
-                    self.app_state.panel.state.devices = Some(list);
+                    self.app_state.panel.state.devices =
+                        crate::state::DevicesState::Ready(list);
                     self.redraw(WinId::Panel);
                 }
                 // ── 导出保存路径回执（W5/R19）：rfd 对话框在编排域一次性线程
@@ -2037,7 +2039,7 @@ impl MultiWindowApp {
     /// 在监视节拍触发时调用。CPU 占用需两次采样才有意义，首次为 0 属预期。
     fn sample_system(&mut self) {
         let now = Instant::now();
-        if !self.sys_last.map_or(true, |t| {
+        if !self.sys_last.is_none_or(|t| {
             now.duration_since(t) >= std::time::Duration::from_secs(1)
         }) {
             return;
