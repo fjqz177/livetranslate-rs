@@ -45,6 +45,9 @@ pub enum Status {
 
 const POLL_STEP: Duration = Duration::from_millis(200);
 
+/// 音频采样率（与 lt-audio TARGET_RATE 一致；lt-asr 不依赖 lt-audio，本地常量）
+const RATE_SAMPLES_PER_SEC: u64 = 16000;
+
 pub struct AsrWorkerClient {
     child: Child,
     stdin: FrameWriter<std::process::ChildStdin>,
@@ -197,11 +200,25 @@ impl AsrWorkerClient {
         audio: &[f32],
         word_timestamps: bool,
     ) -> Result<AsrResult, AsrClientError> {
-        let resp = self.request(
-            ReqKind::Transcribe { word_timestamps },
-            audio,
-            self.request_timeout,
-        )?;
+        self.transcribe_with_profile(audio, word_timestamps, None)
+    }
+
+    /// R6：按段长动态超时——`base + per_audio * 段长秒`（None = 旧 60s
+    /// 恒定兜底）。慢引擎（qwen3 本机 RTF≈0.28）合法长段不再烧穿三振。
+    pub fn transcribe_with_profile(
+        &mut self,
+        audio: &[f32],
+        word_timestamps: bool,
+        profile: Option<(f64, f64)>, // (base_secs, per_audio_secs)
+    ) -> Result<AsrResult, AsrClientError> {
+        let timeout = match profile {
+            Some((base, per_audio)) => {
+                let secs = audio.len() as f64 / RATE_SAMPLES_PER_SEC as f64;
+                Duration::from_secs_f64(base + per_audio * secs)
+            }
+            None => self.request_timeout,
+        };
+        let resp = self.request(ReqKind::Transcribe { word_timestamps }, audio, timeout)?;
         match resp.kind {
             crate::frame::RespKind::Result(r) => Ok(r),
             _ => Err(AsrClientError::Status("transcribe 响应类型异常".into())),

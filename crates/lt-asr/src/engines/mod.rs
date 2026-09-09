@@ -4,6 +4,7 @@
 //! （nano 与 qwen3 同为 LLM 解码系，LID 启发式与标签清理语义一致）。
 
 pub mod nano;
+pub mod profile;
 pub mod qwen3;
 pub mod whisper;
 

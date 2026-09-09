@@ -31,6 +31,10 @@ pub struct AsrEffectiveSettings {
     pub language: String,
     pub sensevoice_pad: f32,
     pub whisper_pad: f32,
+    /// R6 引擎档案超时：`base + per_audio * 段长(秒)` 上限（60s 兜底语义
+    /// 即 base=60、per_audio=0）。慢引擎（qwen3 本机 RTF≈0.28）长段合法慢未必烧穿三振。
+    pub transcribe_base_secs: f64,
+    pub transcribe_per_audio_secs: f64,
 }
 
 /// 管理层错误（unavailable = 需要用户干预/换引擎；其余为单次失败）
@@ -230,7 +234,11 @@ impl AsrManager {
             .client
             .as_mut()
             .unwrap()
-            .transcribe(audio, word_timestamps);
+            .transcribe_with_profile(
+                audio,
+                word_timestamps,
+                Some((eff.transcribe_base_secs, eff.transcribe_per_audio_secs)),
+            );
         match result {
             Ok(res) => {
                 self.error_count = 0;

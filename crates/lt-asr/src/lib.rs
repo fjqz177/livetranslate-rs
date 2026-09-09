@@ -13,6 +13,7 @@ pub mod worker;
 pub use client::{AsrClientError, AsrWorkerClient, Status};
 pub use engine::AsrEngine;
 pub use engines::nano::NanoEngine;
+pub use engines::profile::transcribe_timeout_profile as engine_timeout_profile;
 pub use engines::qwen3::Qwen3AsrEngine;
 pub use engines::whisper::WhisperEngine;
 pub use frame::{ErrorInfo, ReadyInfo, ReqKind, Request, RespKind, Response};

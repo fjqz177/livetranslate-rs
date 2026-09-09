@@ -12,6 +12,8 @@ fn eff() -> AsrEffectiveSettings {
         language: "auto".into(),
         sensevoice_pad: 0.5,
         whisper_pad: 0.5,
+        transcribe_base_secs: 60.0,
+        transcribe_per_audio_secs: 0.0,
     }
 }
 
@@ -20,6 +22,8 @@ fn eff_with(language: &str, sensevoice_pad: f32, whisper_pad: f32) -> AsrEffecti
         language: language.into(),
         sensevoice_pad,
         whisper_pad,
+        transcribe_base_secs: 60.0,
+        transcribe_per_audio_secs: 0.0,
     }
 }
 

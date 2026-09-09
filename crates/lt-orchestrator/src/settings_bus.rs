@@ -92,10 +92,15 @@ fn derive(raw: &Settings, version: u64) -> EffectiveSettings {
     EffectiveSettings {
         raw: Arc::new(raw.clone()),
         vad: clamp_vad_for_engine(&raw.asr_engine, vad_from_settings(raw)),
-        asr_lang: lt_asr::AsrEffectiveSettings {
-            language: raw.asr_language.clone(),
-            sensevoice_pad: raw.sensevoice_pad_seconds,
-            whisper_pad: raw.whisper_pad_seconds,
+        asr_lang: {
+            let (t_base, t_per) = lt_asr::engine_timeout_profile(&raw.asr_engine);
+            lt_asr::AsrEffectiveSettings {
+                language: raw.asr_language.clone(),
+                sensevoice_pad: raw.sensevoice_pad_seconds,
+                whisper_pad: raw.whisper_pad_seconds,
+                transcribe_base_secs: t_base,
+                transcribe_per_audio_secs: t_per,
+            }
         },
         tl: TlView {
             target_language: lt_proto::normalize_language(&raw.target_language),
