@@ -15,6 +15,9 @@ pub struct AppShell {
     pub ui: lt_ui::MultiWindowApp,
     /// 事件动脉（全后台→UI 事件出口；UiMsg::Cmd 回环仍走 proxy——W4 收敛）
     artery: crate::artery::EventSink,
+    /// 音频监视快照格（W2：capture 写侧句柄——传给 Pipeline，UI 读侧句柄
+    /// 已在 MultiWindowApp）
+    monitor_cell: std::sync::Arc<arc_swap::ArcSwap<lt_proto::MonitorSample>>,
     pipeline: Option<Pipeline>,
     started: bool,
 }
@@ -24,11 +27,13 @@ impl AppShell {
     pub fn new(
         ui: lt_ui::MultiWindowApp,
         artery: crate::artery::EventSink,
+        monitor_cell: std::sync::Arc<arc_swap::ArcSwap<lt_proto::MonitorSample>>,
         start_settings: Option<Settings>,
     ) -> Self {
         let mut shell = Self {
             ui,
             artery,
+            monitor_cell,
             pipeline: None,
             started: false,
         };
@@ -43,7 +48,7 @@ impl AppShell {
             return;
         }
         self.started = true;
-        match Pipeline::start(&settings, self.artery.clone()) {
+        match Pipeline::start(&settings, self.artery.clone(), &self.monitor_cell) {
             Ok(p) => self.pipeline = Some(p),
             Err(e) => {
                 // P0-3：装配失败必须让用户看见——面板识别页顶部红字（数据

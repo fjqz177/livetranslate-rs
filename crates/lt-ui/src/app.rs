@@ -21,7 +21,8 @@ use crate::windows::subtitle::{
 };
 use egui::{Context, ViewportId};
 use egui_wgpu::winit::Painter;
-use lt_proto::{UiEvent, UiMsg};
+use arc_swap::ArcSwap;
+use lt_proto::{MonitorSample, UiEvent, UiMsg};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use winit::application::ApplicationHandler;
@@ -54,6 +55,11 @@ pub struct MultiWindowApp {
     proxy: EventLoopProxy<UiMsg>,
     /// 托盘首次隐藏悬浮窗已弹过气泡（原版 _hide_notified）
     overlay_hide_notified: bool,
+    /// 音频监视快照格（W2/D-67）：capture 写 ArcSwap，本层 ~33ms 节拍读格
+    /// 重绘——替代 UpdateMonitor 逐事件唤醒；Option 为启动前/无管道占位
+    monitor_cell: Option<Arc<ArcSwap<MonitorSample>>>,
+    /// 已读快照序号（免每拍重绘：格 seq 未变即跳过）
+    monitor_seq: u64,
 }
 
 impl MultiWindowApp {
@@ -63,6 +69,7 @@ impl MultiWindowApp {
         mut app_state: AppState,
         event_loop: &EventLoop<UiMsg>,
         cmd_tx: Option<std::sync::mpsc::Sender<lt_proto::Cmd>>,
+        monitor_cell: Option<Arc<ArcSwap<MonitorSample>>>,
     ) -> anyhow::Result<Self> {
         app_state.cmd_tx = cmd_tx;
         let ctx = Context::default();
@@ -93,6 +100,8 @@ impl MultiWindowApp {
             tray: None,
             proxy,
             overlay_hide_notified: false,
+            monitor_cell,
+            monitor_seq: 0,
         })
     }
 
@@ -150,6 +159,11 @@ impl MultiWindowApp {
         self.tray = Some(tray::build(Arc::new(sender))?);
         self.sync_tray_checks();
         self.apply_overlay_flags();
+        // W2/D-67：悬浮窗可见即起音频监视节拍（快照格轮询起点；此后
+        // 每条 33ms 拍读格、不可见即停）
+        if self.app_state.visible.get(&WinId::Overlay).copied().unwrap_or(false) {
+            self.app_state.schedule_audio_monitor_tick();
+        }
         // D-36：窗口创建后的 Z 序定型（创建序 = 悬浮窗先 → 字幕窗后，后建偏上——
         // 此处把字幕窗压回悬浮窗之下；运行期显示路径由 set_visible 再维护）
         #[cfg(windows)]
@@ -553,6 +567,10 @@ impl MultiWindowApp {
             }
         }
         self.app_state.visible.insert(id, vis);
+        // W2/D-67：悬浮窗可见即起（或沿用既有）音频监视节拍
+        if id == WinId::Overlay && vis {
+            self.app_state.schedule_audio_monitor_tick();
+        }
         // D-36 Z 序维护：字幕窗恒压悬浮窗之下、悬浮窗恒置顶（topmost 带内相对序），
         // 主界面永远可点可读；仅显示路径触发（隐藏无需维护）
         if vis {
@@ -815,16 +833,6 @@ impl MultiWindowApp {
     /// 单条业务事件分发（on_msg 的 Event 臂；Events 批量逐一复用）
     fn on_event(&mut self, _event_loop: &ActiveEventLoop, e: UiEvent) {
         match e {
-                // 监视条数据（capture 线程每 chunk 一条 → 节流重绘）
-                lt_proto::UiEvent::UpdateMonitor { rms, vad, mic_rms } => {
-                    let m = &mut self.app_state.monitor;
-                    m.rms = rms;
-                    m.vad = vad;
-                    m.mic_rms = mic_rms;
-                    if let Some(hw) = self.find_mut(WinId::Overlay) {
-                        hw.window.request_redraw();
-                    }
-                }
                 // 新识别消息 → 追加到悬浮窗消息链并重绘
                 lt_proto::UiEvent::AddMessage {
                     id,
@@ -1998,6 +2006,24 @@ impl ApplicationHandler<UiMsg> for MultiWindowApp {
                     self.app_state.sample_system();
                     self.app_state.schedule_monitor_tick(WinId::Overlay);
                     self.redraw(WinId::Overlay);
+                }
+                // W2/D-67：音频监视快照格（~33ms 读格，seq 变了才重绘；
+                // 悬浮窗不可见即停排班——无事件驱动时的唯一数据通路）
+                TickKind::AudioMonitor => {
+                    if let Some(cell) = &self.monitor_cell {
+                        let snap = cell.load_full();
+                        if snap.seq != self.monitor_seq {
+                            self.monitor_seq = snap.seq;
+                            let m = &mut self.app_state.monitor;
+                            m.rms = snap.rms;
+                            m.vad = snap.vad;
+                            m.mic_rms = snap.mic_rms;
+                            self.redraw(WinId::Overlay);
+                        }
+                    }
+                    if self.app_state.visible.get(&WinId::Overlay).copied().unwrap_or(false) {
+                        self.app_state.schedule_audio_monitor_tick();
+                    }
                 }
                 TickKind::StreamFlush => {
                     self.app_state.flush_streams();

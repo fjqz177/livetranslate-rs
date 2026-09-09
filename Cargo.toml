@@ -25,6 +25,9 @@ lt-asr = { path = "crates/lt-asr" }
 lt-translate = { path = "crates/lt-translate" }
 lt-ui = { path = "crates/lt-ui" }
 
+# ── 同步（W2/W4 设置+监视快照格；读者全为同步线程、写者 <1Hz）──
+arc-swap = "1"
+
 # ── GUI ──
 egui = "0.36"
 egui-winit = "0.36"

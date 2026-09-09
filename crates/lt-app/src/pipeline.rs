@@ -38,6 +38,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use crate::artery::EventSink;
+use arc_swap::ArcSwap;
+use lt_proto::MonitorSample;
 
 /// 段队列容量（对齐原版 _asr_queue maxsize=16，满丢最旧）
 const SEGMENT_QUEUE_CAP: usize = 16;
@@ -478,6 +480,7 @@ impl Pipeline {
     pub fn start(
         settings: &lt_proto::Settings,
         sink: EventSink,
+        monitor_cell: &Arc<ArcSwap<MonitorSample>>,
     ) -> anyhow::Result<Self> {
         // ── 转录写盘（原版 self._transcript + auto_save_transcript）──
         Self::transcript_handle().set_enabled(settings.auto_save_transcript);
@@ -540,11 +543,15 @@ impl Pipeline {
         let interim = Arc::new(InterimControl::default());
         // 启动即按持久化设置就位（原版 _incremental_enabled/_interim_interval 随启动初始化）
         interim.set(settings.incremental_asr, settings.interim_interval);
+        // W2/D-67：音频监视快照格——capture 每 chunk 写；UI 以 ~33ms 节拍读格
+        // 重绘（替代 UpdateMonitor 逐事件直发：31/s 唤醒泛洪归零，R23）
+        let monitor_seq = Arc::new(AtomicU64::new(0));
         {
             let stop = stop.clone();
             let paused = paused.clone();
             let segment_queue = segment_queue.clone();
-            let sink = sink.clone();
+            let monitor_cell = monitor_cell.clone();
+            let monitor_seq = monitor_seq.clone();
             let vad_update_capture = vad_update.clone();
             let vad = vad.clone();
             let interim = interim.clone();
@@ -555,7 +562,8 @@ impl Pipeline {
                 let stop = stop.clone();
                 let paused = paused.clone();
                 let segment_queue = segment_queue.clone();
-                let sink = sink.clone();
+                let monitor_cell = monitor_cell.clone();
+                let monitor_seq = monitor_seq.clone();
                 let vad_update_capture = vad_update_capture.clone();
                 let vad = vad.clone();
                 let interim = interim.clone();
@@ -563,17 +571,19 @@ impl Pipeline {
                 let chunk_queue = chunk_queue.clone();
                 Box::new(move || {
                     chunk_queue.clear();
-                    // 原版 _capture_loop：monitor 直接跨线程信号（此处经事件动脉推 UI，
+                    // 原版 _capture_loop：monitor 直接跨线程信号（此处写监视快照格，
                     // vad 转换为 UI 侧 f32），段直接塞 _asr_queue 等价队列（满丢旧）
                     let mut loop_ = CaptureLoop {
                         chunk_rx: chunk_queue,
                         segment_tx: segment_queue,
                         monitor: move |rms, vad, mic_rms| {
-                            let _ = sink.push(UiEvent::UpdateMonitor {
+                            let seq = monitor_seq.fetch_add(1, Ordering::Relaxed) + 1;
+                            monitor_cell.store(Arc::new(MonitorSample {
                                 rms,
                                 vad: vad as f32,
                                 mic_rms,
-                            });
+                                seq,
+                            }));
                         },
                         paused,
                         vad_update: vad_update_capture,

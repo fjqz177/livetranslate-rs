@@ -19,6 +19,7 @@ lt-asr = { workspace = true }
 lt-pipeline = { workspace = true }
 lt-translate = { workspace = true }
 crossbeam-channel = { workspace = true }
+arc-swap = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }

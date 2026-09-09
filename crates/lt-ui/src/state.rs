@@ -58,6 +58,9 @@ pub struct Tick {
 pub enum TickKind {
     /// 1s 系统采样（悬浮窗 MonitorBar）
     Monitor,
+    /// ~33ms 音频监视快照格轮询（W2/D-67：capture 写 ArcSwap、UI 节拍读格——
+    /// 替代 UpdateMonitor 逐事件唤醒；仅悬浮窗可见时排班）
+    AudioMonitor,
     /// 50ms 流式译文节流刷新
     StreamFlush,
     /// 500ms 位置/尺寸持久化防抖
@@ -77,7 +80,8 @@ pub enum TickKind {
     PromptApply,
 }
 
-/// 监视条数据：音频侧来自 UpdateMonitor 事件（每 chunk），系统侧 1s 节流采样。
+/// 监视条数据：音频侧来自 Monitor 快照格（W2：UI 以 ~33ms 节拍读格——与
+/// 系统侧 1s 节流采样同格）；R2 前为逐 chunk UpdateMonitor 事件。
 /// CPU/RAM 为**进程自身**指标（原版 psutil.Process：cpu_percent + RSS MB）。
 #[derive(Debug, Clone, Copy, Default)]
 pub struct MonitorData {
@@ -1934,6 +1938,21 @@ impl AppState {
         }
     }
 
+    /// 音频监视 33ms 节拍（W2/D-67：快照格轮询——悬浮窗可见时持续续拍，
+    /// 不可见即停；与 1s 系统采样节拍并存）
+    pub fn schedule_audio_monitor_tick(&mut self) {
+        let at = Instant::now() + Duration::from_millis(33);
+        if let Some(t) = self.ticks.iter_mut().find(|t| t.kind == TickKind::AudioMonitor) {
+            t.at = at;
+        } else {
+            self.ticks.push(Tick {
+                at,
+                win: WinId::Overlay,
+                kind: TickKind::AudioMonitor,
+            });
+        }
+    }
+
     /// 设置 1s 监视节拍（悬浮窗 MonitorBar）
     pub fn schedule_monitor_tick(&mut self, win: WinId) {
         let at = Instant::now() + Duration::from_secs(1);
@@ -2999,6 +3018,22 @@ mod tests {
         assert_eq!(st.bench_lines.len(), 500);
         assert_eq!(st.bench_lines[0], "line 20");
         assert_eq!(st.bench_lines.last().unwrap(), "line 519");
+    }
+
+    /// W2/D-67：音频监视节拍排班（33ms 拍、重复调用去重；悬浮窗可见才续拍
+    /// 的语义在 app.rs about_to_wait 消费）
+    #[test]
+    fn audio_monitor_tick_scheduling() {
+        let mut st = AppState::new(Settings::default());
+        st.schedule_audio_monitor_tick();
+        st.schedule_audio_monitor_tick();
+        let n = st
+            .ticks
+            .iter()
+            .filter(|t| t.kind == TickKind::AudioMonitor)
+            .count();
+        assert_eq!(n, 1, "同拍去重");
+        assert!(st.next_tick().is_some(), "应有待触发节拍");
     }
 
     /// thinking_style 存储值 ↔ 下拉索引（未知/None 回退 auto）

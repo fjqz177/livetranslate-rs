@@ -59,10 +59,14 @@ fn main() -> anyhow::Result<()> {
 
     let event_loop = winit::event_loop::EventLoop::<UiMsg>::with_user_event().build()?;
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<Cmd>();
+    // W2/D-67：音频监视快照格（capture 写、UI 33ms 节拍读；跨管道生命周期）
+    let monitor_cell: std::sync::Arc<arc_swap::ArcSwap<lt_proto::MonitorSample>> =
+        std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(lt_proto::MonitorSample::default()));
     let mut app = lt_ui::MultiWindowApp::new(
         lt_ui::AppState::new(initial_settings.clone()),
         &event_loop,
         Some(cmd_tx),
+        Some(monitor_cell.clone()),
     )?;
     app.kick_ticks();
 
@@ -81,7 +85,7 @@ fn main() -> anyhow::Result<()> {
     // 引擎/档位现场重算（运行中切换后下载的才是所选模型，M5.1）。
     backend::spawn(cmd_rx, proxy.clone(), artery.clone(), false, initial_settings.clone());
 
-    let mut shell = shell::AppShell::new(app, artery, Some(initial_settings.clone()));
+    let mut shell = shell::AppShell::new(app, artery, monitor_cell, Some(initial_settings.clone()));
 
     let result = event_loop.run_app(&mut shell);
     // 收尾序（INV4）：监督器 stopping 先置位（禁 respawn——必须在一切线程停止

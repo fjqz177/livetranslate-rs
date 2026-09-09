@@ -37,12 +37,9 @@ pub enum UiEvent {
     UpdateTranslation { id: u64, text: String, tl_ms: f64 },
     /// 流式译文增量（update_streaming_signal；UI 侧 50ms 节流）
     UpdateStreaming { id: u64, partial: String },
-    /// 音频监视（update_monitor_signal：rms / vad 置信度 / 可选 mic_rms）
-    UpdateMonitor {
-        rms: f32,
-        vad: f32,
-        mic_rms: Option<f32>,
-    },
+    /// 音频监视（W2 起走快照格 `MonitorSample`：capture 写 ArcSwap，UI 以
+    /// ~33ms 节拍读格重绘——替代逐 chunk 事件的 31/s 唤醒，D-67/R23；
+    /// update_monitor_signal 语义等价，契约侧从「事件」变为「格」）
     /// 统计（update_stats_signal）
     UpdateStats {
         asr_n: u64,
@@ -237,7 +234,7 @@ pub enum QueueId {
 }
 
 /// 音频监视快照（W2 快照格：capture 线程写 ArcSwap，UI 以 ~33ms 节拍读格
-/// 重绘——替代每 chunk 一条 `UpdateMonitor` 事件的逐条唤醒）
+/// 重绘——替代每 chunk 一条 监视事件 的逐条唤醒；D-67 视觉等价）
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct MonitorSample {
     pub rms: f32,
