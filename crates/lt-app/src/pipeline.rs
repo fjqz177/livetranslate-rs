@@ -31,13 +31,13 @@ use lt_pipeline::{
     AudioBackend, BoundedDropQueue, CaptureLoop, InterimControl, SegmentSource, VadProcessor,
     VadSettings,
 };
-use crate::supervisor::{proxy_sink, Policy, Supervisor};
-use lt_proto::{AudioRole, CaptureEvent, ThreadRole, UiEvent, UiMsg};
+use crate::supervisor::{artery_sink, Policy, Supervisor};
+use lt_proto::{AudioRole, CaptureEvent, QueueId, ThreadRole, UiEvent};
 use lt_translate::Translator;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use winit::event_loop::EventLoopProxy;
+use crate::artery::EventSink;
 
 /// 段队列容量（对齐原版 _asr_queue maxsize=16，满丢最旧）
 const SEGMENT_QUEUE_CAP: usize = 16;
@@ -61,12 +61,16 @@ const TL_QUEUE_CAP: usize = 64;
 struct JobPool {
     queue: Arc<BoundedDropQueue<Box<dyn FnOnce() + Send>>>,
     stopped: Arc<AtomicBool>,
-    /// 存活 worker 计数（RAII 增减）：泄漏回归测试的观测面，W2 水位事件扩展面
+    /// 存活 worker 计数（RAII 增减）：泄漏回归测试的观测面
     alive_workers: Arc<AtomicUsize>,
+    /// R15② 水位事件出口（W2：慢 LLM 积压从"仅日志 warn"升级为类型化事件）
+    sink: EventSink,
+    /// 已上报丢弃计数（与队列丢弃告警同节奏，≥200 条报一次，防洪泛）
+    reported: AtomicU64,
 }
 
 impl JobPool {
-    fn new(workers: usize, sup: &Supervisor) -> Self {
+    fn new(workers: usize, sup: &Supervisor, sink: EventSink) -> Self {
         let queue = Arc::new(BoundedDropQueue::<Box<dyn FnOnce() + Send>>::new(
             TL_QUEUE_CAP,
             "tl-job",
@@ -96,14 +100,31 @@ impl JobPool {
                 })
             });
         }
-        Self { queue, stopped, alive_workers }
+        Self {
+            queue,
+            stopped,
+            alive_workers,
+            sink,
+            reported: AtomicU64::new(0),
+        }
     }
 
     /// 提交翻译任务：队列满时丢最旧（R15①/D-64）。停止后仍可能有在途提交
     /// ——worker 已退出不再消费，任务滞留队列随 Pipeline 释放（与原
-    /// 「停止后排队的任务直接丢弃」语义一致）
+    /// 「停止后排队的任务直接丢弃」语义一致）。
+    /// R15②：丢弃达上报节拍（≥200 条）即发 [`UiEvent::QueuePressure`]——
+    /// 与 BoundedDropQueue 告警节奏同源的类型化水位信号
     fn submit(&self, job: impl FnOnce() + Send + 'static) {
         self.queue.push(Box::new(job));
+        let dropped = self.queue.dropped_count();
+        let reported = self.reported.load(Ordering::Relaxed);
+        if dropped >= 200 && dropped - reported >= 200 {
+            self.reported.store(dropped, Ordering::Relaxed);
+            self.sink.push(UiEvent::QueuePressure {
+                queue: QueueId::Translation,
+                dropped_total: dropped,
+            });
+        }
     }
 
     /// 停止接收并丢弃排队任务；worker 退出后由 Supervisor::join_all 回收
@@ -189,11 +210,15 @@ struct TlRig {
 impl TlRig {
     /// 按设置构建；models 为空/active_model 越界 → Ok(None)（不翻译，仅 ASR）；
     /// 配置无效（URL 格式错等）→ Err(原因)（必须让用户可见，见 TranslatorUnavailable）
-    fn from_settings(settings: &lt_proto::Settings, sup: &Supervisor) -> Result<Option<Self>, String> {
+    fn from_settings(
+        settings: &lt_proto::Settings,
+        sup: &Supervisor,
+        sink: EventSink,
+    ) -> Result<Option<Self>, String> {
         let Some(mc) = settings.models.get(settings.active_model) else {
             return Ok(None);
         };
-        Self::from_model_config(mc, settings, sup)
+        Self::from_model_config(mc, settings, sup, sink)
     }
 
     /// 按指定模型配置构建（运行时切换用；构建失败返回 Err——UI 收到
@@ -202,6 +227,7 @@ impl TlRig {
         mc: &lt_proto::ModelConfig,
         settings: &lt_proto::Settings,
         sup: &Supervisor,
+        sink: EventSink,
     ) -> Result<Option<Self>, String> {
         let params = lt_translate::TranslatorParams {
             api_base: mc.api_base.clone(),
@@ -238,7 +264,7 @@ impl TlRig {
         Ok(Some(Self {
             translator,
             stats,
-            pool: JobPool::new(TL_POOL_WORKERS, sup),
+            pool: JobPool::new(TL_POOL_WORKERS, sup, sink),
             transcript: Pipeline::transcript_handle(),
         }))
     }
@@ -247,7 +273,7 @@ impl TlRig {
     /// 同语言不进此函数（ASR 线程直接回空译文，见 run_asr_thread）
     fn submit_translation(
         &self,
-        proxy: &EventLoopProxy<UiMsg>,
+        sink: &EventSink,
         id: u64,
         text: String,
         source_lang: String,
@@ -255,17 +281,17 @@ impl TlRig {
         let translator = self.translator.clone();
         let stats = self.stats.clone();
         let transcript = self.transcript.clone();
-        let proxy = proxy.clone();
+        let sink = sink.clone();
         self.pool.submit(move || {
             let t0 = Instant::now();
             let mut translated: Option<String> = None;
             for item in translator.translate_iter(&text, &source_lang) {
                 match item {
                     Ok(partial) => {
-                        let _ = proxy.send_event(UiMsg::Event(UiEvent::UpdateStreaming {
+                        let _ = sink.push(UiEvent::UpdateStreaming {
                             id,
                             partial: partial.clone(),
-                        }));
+                        });
                         translated = Some(partial);
                     }
                     Err(lt_translate::TranslateError::Repetition(_)) => {
@@ -273,11 +299,11 @@ impl TlRig {
                             "Repetition loop detected, model may not support structured output well"
                         );
                         transcript.finalize_no_translation(id);
-                        let _ = proxy.send_event(UiMsg::Event(UiEvent::UpdateTranslation {
+                        let _ = sink.push(UiEvent::UpdateTranslation {
                             id,
                             text: lt_i18n::t("error_repetition"),
                             tl_ms: 0.0,
-                        }));
+                        });
                         return;
                     }
                     Err(e) => {
@@ -287,11 +313,11 @@ impl TlRig {
                             tracing::error!("Translate error: {e}");
                         }
                         transcript.finalize_no_translation(id);
-                        let _ = proxy.send_event(UiMsg::Event(UiEvent::UpdateTranslation {
+                        let _ = sink.push(UiEvent::UpdateTranslation {
                             id,
                             text: e.ui_text(),
                             tl_ms: 0.0,
-                        }));
+                        });
                         return;
                     }
                 }
@@ -304,12 +330,12 @@ impl TlRig {
             stats.prompt_tokens.fetch_add(pt, Ordering::Relaxed);
             stats.completion_tokens.fetch_add(ct, Ordering::Relaxed);
             tracing::info!("Translate ({tl_ms:.0}ms): {translated}");
-            let _ = proxy.send_event(UiMsg::Event(UiEvent::UpdateTranslation {
+            let _ = sink.push(UiEvent::UpdateTranslation {
                 id,
                 text: translated.clone(),
                 tl_ms,
-            }));
-            let _ = proxy.send_event(UiMsg::Event(stats.snapshot_event()));
+            });
+            let _ = sink.push(stats.snapshot_event());
             if translated.is_empty() {
                 transcript.finalize_no_translation(id);
             } else {
@@ -451,13 +477,13 @@ impl Pipeline {
     /// 按设置启动整条管道；模型未缓存时不阻断 UI（发 AsrUnavailable）
     pub fn start(
         settings: &lt_proto::Settings,
-        proxy: EventLoopProxy<UiMsg>,
+        sink: EventSink,
     ) -> anyhow::Result<Self> {
         // ── 转录写盘（原版 self._transcript + auto_save_transcript）──
         Self::transcript_handle().set_enabled(settings.auto_save_transcript);
 
         // ── 线程监督器（架构 2.0 W1/INV3：管道线程唯一出生点）──
-        let sup = Supervisor::new(proxy_sink(&proxy));
+        let sup = Supervisor::new(artery_sink(sink.clone()));
 
         let stop = Arc::new(AtomicBool::new(false));
         let paused = Arc::new(AtomicBool::new(false));
@@ -518,7 +544,7 @@ impl Pipeline {
             let stop = stop.clone();
             let paused = paused.clone();
             let segment_queue = segment_queue.clone();
-            let proxy = proxy.clone();
+            let sink = sink.clone();
             let vad_update_capture = vad_update.clone();
             let vad = vad.clone();
             let interim = interim.clone();
@@ -529,7 +555,7 @@ impl Pipeline {
                 let stop = stop.clone();
                 let paused = paused.clone();
                 let segment_queue = segment_queue.clone();
-                let proxy = proxy.clone();
+                let sink = sink.clone();
                 let vad_update_capture = vad_update_capture.clone();
                 let vad = vad.clone();
                 let interim = interim.clone();
@@ -537,17 +563,17 @@ impl Pipeline {
                 let chunk_queue = chunk_queue.clone();
                 Box::new(move || {
                     chunk_queue.clear();
-                    // 原版 _capture_loop：monitor 直接跨线程信号（此处经 proxy 发 UI 事件，
+                    // 原版 _capture_loop：monitor 直接跨线程信号（此处经事件动脉推 UI，
                     // vad 转换为 UI 侧 f32），段直接塞 _asr_queue 等价队列（满丢旧）
                     let mut loop_ = CaptureLoop {
                         chunk_rx: chunk_queue,
                         segment_tx: segment_queue,
                         monitor: move |rms, vad, mic_rms| {
-                            let _ = proxy.send_event(UiMsg::Event(UiEvent::UpdateMonitor {
+                            let _ = sink.push(UiEvent::UpdateMonitor {
                                 rms,
                                 vad: vad as f32,
                                 mic_rms,
-                            }));
+                            });
                         },
                         paused,
                         vad_update: vad_update_capture,
@@ -562,12 +588,12 @@ impl Pipeline {
 
         // ── 翻译装置（M3）：models 非空即构建；配置无效必须让用户可见
         //（TranslatorUnavailable → 面板翻译页状态行 + 悬浮窗译文占位）──
-        let tl = match TlRig::from_settings(settings, &sup) {
+        let tl = match TlRig::from_settings(settings, &sup, sink.clone()) {
             Ok(t) => t.map(Arc::new),
             Err(reason) => {
-                let _ = proxy.send_event(UiMsg::Event(UiEvent::TranslatorUnavailable {
+                let _ = sink.push(UiEvent::TranslatorUnavailable {
                     reason: reason.clone(),
-                }));
+                });
                 tracing::error!("翻译装置不可用: {reason}");
                 None
             }
@@ -578,7 +604,7 @@ impl Pipeline {
 
         // ── 音频可用性转发线程（R4/D-62）：wasapi 边沿事件 → UiEvent::Capture ──
         {
-            let proxy = proxy.clone();
+            let sink = sink.clone();
             // rx 不可克隆：装单槽 cell，重生工厂取空即空转退出（Never 策略）
             let rx_cell = Arc::new(Mutex::new(Some(audio_status_rx)));
             sup.spawn(
@@ -586,7 +612,7 @@ impl Pipeline {
                 "lt-audio-status",
                 Policy::Never,
                 move || {
-                    let proxy = proxy.clone();
+                    let sink = sink.clone();
                     let rx_cell = rx_cell.clone();
                     Box::new(move || {
                         // INV6：先绑定再离开锁
@@ -613,7 +639,7 @@ impl Pipeline {
                                     CaptureEvent::Recovered { role: AudioRole::Mic }
                                 }
                             };
-                            let _ = proxy.send_event(UiMsg::Event(UiEvent::Capture(ev)));
+                            let _ = sink.push(UiEvent::Capture(ev));
                         }
                     })
                 },
@@ -623,7 +649,7 @@ impl Pipeline {
         // ── ASR 线程：Manager 独占 + 段处理 ──
         {
             let stop = stop.clone();
-            let proxy = proxy.clone();
+            let sink = sink.clone();
             let segment_queue = segment_queue.clone();
             let settings = settings.clone();
             let pending = pending.clone();
@@ -635,7 +661,7 @@ impl Pipeline {
             // INV3：经监督器出生；panic 重生 = 待命/装配路径干净重启（INV5）
             sup.spawn(ThreadRole::AsrMain, "lt-asr-main", Policy::Always, move || {
                 let stop = stop.clone();
-                let proxy = proxy.clone();
+                let sink = sink.clone();
                 let segment_queue = segment_queue.clone();
                 let settings = settings.clone();
                 let pending = pending.clone();
@@ -653,7 +679,7 @@ impl Pipeline {
                             interim,
                             pending,
                             stop,
-                            proxy,
+                            sink,
                             tl_switch,
                             sup,
                         },
@@ -1002,7 +1028,7 @@ struct AsrThreadCtx {
     interim: Arc<InterimControl>,
     pending: lt_asr::AsrPendingHandle,
     stop: Arc<AtomicBool>,
-    proxy: EventLoopProxy<UiMsg>,
+    sink: EventSink,
     tl_switch: crossbeam_channel::Receiver<TlSwitch>,
     /// 线程监督器句柄（ReplaceRig 重建翻译池用）
     sup: Arc<Supervisor>,
@@ -1027,13 +1053,13 @@ fn route_translator_switch(
     tl: &mut Option<Arc<TlRig>>,
     target_language: &mut String,
     runtime: &mut AsrRuntime,
-    proxy: &EventLoopProxy<UiMsg>,
+    sink: &EventSink,
     settings: &lt_proto::Settings,
     sup: &Supervisor,
 ) -> Option<TlSwitch> {
     match sw {
         TlSwitch::ReplaceRig { config, settings } => {
-            match TlRig::from_model_config(&config, &settings, sup) {
+            match TlRig::from_model_config(&config, &settings, sup, sink.clone()) {
                 Ok(Some(rig)) => {
                     tracing::info!("翻译器已切换: {} ({})", config.name, config.model);
                     *tl = Some(Arc::new(rig));
@@ -1043,7 +1069,7 @@ fn route_translator_switch(
                 }
                 Err(reason) => {
                     let _ =
-                        proxy.send_event(UiMsg::Event(UiEvent::TranslatorUnavailable { reason }));
+                        sink.push(UiEvent::TranslatorUnavailable { reason });
                 }
             }
             None
@@ -1078,9 +1104,9 @@ fn route_translator_switch(
             // 构建临时装置（不切换活动翻译器），发一次最简请求回执 UI
             let mut test_settings = settings.clone();
             test_settings.target_language = target_language.clone();
-            match TlRig::from_model_config(&config, &test_settings, sup) {
+            match TlRig::from_model_config(&config, &test_settings, sup, sink.clone()) {
                 Ok(Some(rig)) => {
-                    let proxy = proxy.clone();
+                    let sink = sink.clone();
                     let name = name.clone();
                     rig.pool.submit(move || {
                         let t0 = Instant::now();
@@ -1096,29 +1122,29 @@ fn route_translator_switch(
                                 t0.elapsed().as_millis() as u64,
                             ),
                         };
-                        let _ = proxy.send_event(UiMsg::Event(UiEvent::TestTranslatorResult {
+                        let _ = sink.push(UiEvent::TestTranslatorResult {
                             name,
                             ok,
                             error: err,
                             ms,
-                        }));
+                        });
                     });
                 }
                 Ok(None) => {
-                    let _ = proxy.send_event(UiMsg::Event(UiEvent::TestTranslatorResult {
+                    let _ = sink.push(UiEvent::TestTranslatorResult {
                         name,
                         ok: false,
                         error: Some(lt_i18n::t("test_translator_no_config").into()),
                         ms: 0,
-                    }));
+                    });
                 }
                 Err(reason) => {
-                    let _ = proxy.send_event(UiMsg::Event(UiEvent::TestTranslatorResult {
+                    let _ = sink.push(UiEvent::TestTranslatorResult {
                         name,
                         ok: false,
                         error: Some(reason),
                         ms: 0,
-                    }));
+                    });
                 }
             }
             None
@@ -1135,7 +1161,7 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
         interim,
         pending,
         stop,
-        proxy,
+        sink,
         tl_switch,
         sup,
     } = ctx;
@@ -1157,7 +1183,7 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
     let models_dir = match lt_models::paths::models_dir(settings.models_dir.as_deref()) {
         Ok(d) => Some(d),
         Err(e) => {
-            let _ = proxy.send_event(UiMsg::Event(UiEvent::AsrUnavailable));
+            let _ = sink.push(UiEvent::AsrUnavailable);
             tracing::error!("模型目录不可用，ASR 进入待命（可经切换引擎唤醒重试）: {e}");
             None
         }
@@ -1195,7 +1221,7 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
             runtime.whisper_pad,
         );
         if worker.is_none() {
-            let _ = proxy.send_event(UiMsg::Event(UiEvent::AsrUnavailable));
+            let _ = sink.push(UiEvent::AsrUnavailable);
             tracing::warn!("ASR 模型未缓存（{entry:?}），进入待命态（AH-1）");
         }
     }
@@ -1216,7 +1242,7 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
                 &mut tl,
                 &mut target_language,
                 &mut runtime,
-                &proxy,
+                &sink,
                 settings,
                 &sup,
             )
@@ -1227,7 +1253,7 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
             // R3/D-61：每次唤醒尝试重解析 models_dir（目录恢复后即可唤醒）
             let Ok(models_dir) = lt_models::paths::models_dir(settings.models_dir.as_deref())
             else {
-                let _ = proxy.send_event(UiMsg::Event(UiEvent::AsrUnavailable));
+                let _ = sink.push(UiEvent::AsrUnavailable);
                 tracing::warn!("待命唤醒尝试：模型目录仍不可用，继续待命");
                 continue;
             };
@@ -1245,7 +1271,7 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
                     worker = Some((config, display));
                 }
                 None => {
-                    let _ = proxy.send_event(UiMsg::Event(UiEvent::AsrUnavailable));
+                    let _ = sink.push(UiEvent::AsrUnavailable);
                     tracing::warn!("待命中切换目标仍未缓存: {engine}/{model_key}，继续待命");
                 }
             }
@@ -1265,13 +1291,13 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
     // 沿发一次事件，识别恢复（transcribe Ok / AsrDevice 发出）时复位
     let mut asr_unavailable_notified = false;
     // 模型加载对话框（原版 _ModelLoadDialog：装载期模态；AsrDevice/AsrUnavailable 关闭）
-    let _ = proxy.send_event(UiMsg::Event(UiEvent::ModelLoadStart(display.clone())));
+    let _ = sink.push(UiEvent::ModelLoadStart(display.clone()));
     if let Err(e) = manager.ensure_started(&config) {
         asr_unavailable_notified = true;
-        let _ = proxy.send_event(UiMsg::Event(UiEvent::AsrUnavailable));
+        let _ = sink.push(UiEvent::AsrUnavailable);
         tracing::error!("ASR worker 启动失败: {e}");
     } else {
-        let _ = proxy.send_event(UiMsg::Event(UiEvent::AsrDevice(format!("{display} [cpu]"))));
+        let _ = sink.push(UiEvent::AsrDevice(format!("{display} [cpu]")));
     }
 
     while !stop.load(Ordering::Relaxed) {
@@ -1292,7 +1318,7 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
                     &mut tl,
                     &mut target_language,
                     &mut runtime,
-                    &proxy,
+                    &sink,
                     settings,
                     &sup,
                 ) {
@@ -1301,7 +1327,7 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
                     let Ok(models_dir) =
                         lt_models::paths::models_dir(settings.models_dir.as_deref())
                     else {
-                        let _ = proxy.send_event(UiMsg::Event(UiEvent::AsrUnavailable));
+                        let _ = sink.push(UiEvent::AsrUnavailable);
                         tracing::warn!("引擎切换尝试：模型目录不可用，跳过本轮");
                         continue;
                     };
@@ -1317,21 +1343,20 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
                         runtime.whisper_pad,
                     ) {
                         Some((config, display)) => {
-                            let _ = proxy
-                                .send_event(UiMsg::Event(UiEvent::ModelLoadStart(display.clone())));
+                            let _ = sink.push(UiEvent::ModelLoadStart(display.clone()));
                             if let Err(e) = manager.ensure_started(&config) {
                                 // 回滚后旧 worker 仍在工作：恢复旧标签而非
                                 // 发 AsrUnavailable（避免状态与行为矛盾，P0-4）
-                                let _ = proxy.send_event(UiMsg::Event(UiEvent::AsrDevice(
+                                let _ = sink.push(UiEvent::AsrDevice(
                                     format!("{} [cpu]", current_display),
-                                )));
+                                ));
                                 tracing::error!("引擎切换失败（已回滚）: {e}");
                             } else {
                                 current_display = display.clone();
                                 asr_unavailable_notified = false;
-                                let _ = proxy.send_event(UiMsg::Event(UiEvent::AsrDevice(
+                                let _ = sink.push(UiEvent::AsrDevice(
                                     format!("{display} [cpu]"),
-                                )));
+                                ));
                                 // AH-3：切换后增量会话状态复位——旧引擎的
                                 // committed_tail/active 对新引擎输出无意义，且
                                 // 切换后首个收尾段经 commit_interim_final 绕过
@@ -1360,10 +1385,10 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
                             // 未缓存/未知档：旧引擎继续运行——不发
                             // AsrUnavailable（P0-4），恢复标签并落日志；
                             // 面板侧缓存卡片「未缓存 + 下载按钮」给出下一步
-                            let _ = proxy.send_event(UiMsg::Event(UiEvent::AsrDevice(format!(
+                            let _ = sink.push(UiEvent::AsrDevice(format!(
                                 "{} [cpu]",
                                 current_display
-                            ))));
+                            )));
                             let model_key =
                                 engine_model_key(&engine, &funasr_model, &whisper_model_size);
                             tracing::warn!(
@@ -1387,7 +1412,7 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
                     &runtime.asr_language,
                     &target_language,
                     tl.as_deref(),
-                    &proxy,
+                    &sink,
                 );
                 let samples = { vad.lock().unwrap().speech_samples() };
                 interim
@@ -1412,7 +1437,7 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
                                 &runtime.asr_language,
                                 &target_language,
                                 tl.as_deref(),
-                                &proxy,
+                                &sink,
                                 &result.text,
                                 &result.language,
                                 asr_ms,
@@ -1449,7 +1474,7 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
                                 &runtime.asr_language,
                                 &target_language,
                                 tl.as_deref(),
-                                &proxy,
+                                &sink,
                                 &result.text,
                                 &result.language,
                                 asr_ms,
@@ -1460,7 +1485,7 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
                         tracing::warn!("ASR 段识别失败: {e}");
                         if e.unavailable() && !asr_unavailable_notified {
                             asr_unavailable_notified = true;
-                            let _ = proxy.send_event(UiMsg::Event(UiEvent::AsrUnavailable));
+                            let _ = sink.push(UiEvent::AsrUnavailable);
                         }
                     }
                 }
@@ -1502,7 +1527,7 @@ fn run_interim_pass(
     asr_language: &str,
     target_language: &str,
     tl: Option<&TlRig>,
-    proxy: &EventLoopProxy<UiMsg>,
+    sink: &EventSink,
 ) -> bool {
     // ① 锁内 peek，立即解锁（原版 with self._vad_lock: peek_buffer）；
     // 代际随行（AH-4/D-27）——识别期间 VAD 可能被 capture 线程收段/切分
@@ -1564,7 +1589,7 @@ fn run_interim_pass(
             asr_language,
             target_language,
             tl,
-            proxy,
+            sink,
             &text,
             &result.language,
             asr_ms,
@@ -1607,7 +1632,7 @@ fn commit_interim_final(
     asr_language: &str,
     target_language: &str,
     tl: Option<&TlRig>,
-    proxy: &EventLoopProxy<UiMsg>,
+    sink: &EventSink,
     raw_text: &str,
     lang: &str,
     asr_ms: f64,
@@ -1629,7 +1654,7 @@ fn commit_interim_final(
         asr_language,
         target_language,
         tl,
-        proxy,
+        sink,
         &text,
         lang,
         asr_ms,
@@ -1645,7 +1670,7 @@ fn commit_text(
     asr_language: &str,
     target_language: &str,
     tl: Option<&TlRig>,
-    proxy: &EventLoopProxy<UiMsg>,
+    sink: &EventSink,
     text: &str,
     lang: &str,
     asr_ms: f64,
@@ -1667,23 +1692,23 @@ fn commit_text(
     }
     let timestamp = chrono::Local::now().format("%H:%M:%S").to_string();
     let id = uuid::Uuid::new_v4().as_u128() as u64;
-    let _ = proxy.send_event(UiMsg::Event(UiEvent::AddMessage {
+    let _ = sink.push(UiEvent::AddMessage {
         id,
         timestamp: timestamp.clone(),
         original: original_text.to_string(),
         lang: lang.to_string(),
         asr_ms,
-    }));
+    });
 
     // ── 翻译分流（原版 _process_segment_text 尾部；字幕窗 extra_langs 随 M4 接入）──
     let Some(rig) = tl else {
         // 翻译装置未就绪（配置无效已被 TranslatorUnavailable 提醒）：译文行立即
         // 给出明确占位，不停留在永久的「翻译中...」——P0-2
-        let _ = proxy.send_event(UiMsg::Event(UiEvent::UpdateTranslation {
+        let _ = sink.push(UiEvent::UpdateTranslation {
             id,
             text: lt_i18n::t("translator_unavailable_placeholder"),
             tl_ms: 0.0,
-        }));
+        });
         return;
     };
     rig.stats.asr_count.fetch_add(1, Ordering::Relaxed);
@@ -1691,20 +1716,21 @@ fn commit_text(
     if lang == target_language {
         tracing::info!("Same language ({lang}), no translation");
         rig.transcript.finalize_no_translation(id);
-        let _ = proxy.send_event(UiMsg::Event(UiEvent::UpdateTranslation {
+        let _ = sink.push(UiEvent::UpdateTranslation {
             id,
             text: String::new(),
             tl_ms: 0.0,
-        }));
-        let _ = proxy.send_event(UiMsg::Event(rig.stats.snapshot_event()));
+        });
+        let _ = sink.push(rig.stats.snapshot_event());
     } else {
-        rig.submit_translation(proxy, id, original_text.to_string(), lang.to_string());
+        rig.submit_translation(sink, id, original_text.to_string(), lang.to_string());
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::artery::EventArtery;
 
     // ── build_worker_config：funasr 按 entry.key 分派（WP-A）──
 
@@ -1871,7 +1897,7 @@ mod tests {
     fn tl_rig_builds_from_default_settings() {
         let settings = lt_proto::Settings::default();
         let sup = test_sup();
-        let rig = TlRig::from_settings(&settings, &sup)
+        let rig = TlRig::from_settings(&settings, &sup, EventArtery::new())
             .expect("默认设置不应报配置错误")
             .expect("默认 settings 带一个默认模型，应能构建");
         // 目标语言来自全局设置而非模型配置
@@ -1887,7 +1913,7 @@ mod tests {
         let mut settings = lt_proto::Settings::default();
         settings.active_model = 99;
         let sup = test_sup();
-        assert!(TlRig::from_settings(&settings, &sup).unwrap().is_none());
+        assert!(TlRig::from_settings(&settings, &sup, EventArtery::new()).unwrap().is_none());
         sup.join_all();
     }
 
@@ -1896,7 +1922,7 @@ mod tests {
         let mut settings = lt_proto::Settings::default();
         settings.models.clear();
         let sup = test_sup();
-        assert!(TlRig::from_settings(&settings, &sup).unwrap().is_none());
+        assert!(TlRig::from_settings(&settings, &sup, EventArtery::new()).unwrap().is_none());
         sup.join_all();
     }
 
@@ -1904,7 +1930,7 @@ mod tests {
     fn job_pool_drops_jobs_after_shutdown() {
         use std::sync::atomic::AtomicU64;
         let sup = test_sup();
-        let pool = JobPool::new(2, &sup);
+        let pool = JobPool::new(2, &sup, EventArtery::new());
         pool.shutdown();
         sup.join_all();
         // shutdown 之后的提交不执行（submit 侧短路 + worker 侧双重检查）
@@ -1924,12 +1950,12 @@ mod tests {
     fn replaced_rig_workers_shutdown_on_drop() {
         let sup = test_sup();
         let settings = lt_proto::Settings::default();
-        let rig = TlRig::from_settings(&settings, &sup).unwrap().unwrap();
+        let rig = TlRig::from_settings(&settings, &sup, EventArtery::new()).unwrap().unwrap();
         let old_alive = rig.pool.alive_workers.clone();
         wait_for(|| old_alive.load(Ordering::Relaxed) == TL_POOL_WORKERS);
         // 模拟 ReplaceRig 的替换语义（route_translator_switch：
         // `*tl = Some(Arc::new(rig))`——旧 rig 被 Drop，无人显式关机）
-        let replacement = TlRig::from_settings(&settings, &sup).unwrap().unwrap();
+        let replacement = TlRig::from_settings(&settings, &sup, EventArtery::new()).unwrap().unwrap();
         wait_for(|| replacement.pool.alive_worker_count() == TL_POOL_WORKERS);
         drop(rig);
         // 旧池经 JobPool::Drop 自动停机：3s 内应归零（500ms pop_timeout 节拍）
@@ -1946,7 +1972,7 @@ mod tests {
     fn test_rig_dropped_with_job_shuts_down_pool() {
         let sup = test_sup();
         let settings = lt_proto::Settings::default();
-        let rig = TlRig::from_settings(&settings, &sup).unwrap().unwrap();
+        let rig = TlRig::from_settings(&settings, &sup, EventArtery::new()).unwrap().unwrap();
         let alive = rig.pool.alive_workers.clone();
         wait_for(|| alive.load(Ordering::Relaxed) == TL_POOL_WORKERS);
         // 等价于任务闭包 Drop 时 rig 的丢弃语义

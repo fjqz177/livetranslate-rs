@@ -271,12 +271,15 @@ pub enum ThreadRole {
     Capture,
     AsrMain,
     TlWorker,
-    /// W2 预留：lt-translate bench 事件面——当前仍在 lt-translate 内裸 spawn，
-    /// lt-app 监督器暂不可及；转入 orchestrator 后按方案线程表转 Never 接管
+    /// W2 预留（当前仍在 lt-translate 内裸 spawn，lt-app 监督器暂不可及；
+    /// 转入 orchestrator 后按方案线程表转 Never 接管）
     Bench,
     LogBridge,
     /// wasapi 可用性边沿事件 → UiEvent::Capture 的转发线程（W1/R4）
     AudioBridge,
+    /// 事件动脉桥线程（W2：动脉 → `UiMsg::Events` 批量投递；INV1 白名单
+    /// "proxy 生产者仅动脉桥"的对位身份）
+    ArteryBridge,
 }
 
 /// 被监督线程死亡事件载荷（R1）

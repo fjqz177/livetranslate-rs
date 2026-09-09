@@ -124,28 +124,27 @@ fn lag_report_due() -> bool {
 }
 
 /// 常驻日志桥接线程（交接卡缺口 #4）：启动即订阅广播 hub，全程把 LogLine
-/// 事件转发到 UI（原版 LogWindow handler 常驻 root logger 的等价物）。
+/// 事件推入事件动脉（W2：不再逐条直发 proxy——日志风暴的唤醒合并由动脉
+/// 批量上限承担，R23）。
 /// 架构 2.0 W1（INV3）：经监督器出生——死亡可见 + Always 重生（工厂克隆同
 /// 一 Receiver，重生从中断处继续）。hub 静态存活不会 Closed，故线程退出
-/// 条件 = main 停机序置位的 `stop` 标志（50ms 轮询，W2 事件动脉整体替换）
+/// 条件 = main 停机序置位的 `stop` 标志（50ms 轮询）
 pub fn spawn_bridge(
     sup: &crate::supervisor::Supervisor,
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    proxy: winit::event_loop::EventLoopProxy<lt_proto::UiMsg>,
+    artery: std::sync::Arc<crate::artery::EventArtery>,
 ) {
     sup.spawn(ThreadRole::LogBridge, "lt-logbridge", Policy::Always, move || {
         // Receiver 不可克隆：重生时重新订阅（广播 hub 全量重放语义由 Lagged 兜底）
         let mut rx = subscribe();
         let stop = stop.clone();
-        let proxy = proxy.clone();
+        let artery = artery.clone();
         Box::new(move || loop {
             if stop.load(Ordering::Relaxed) {
                 return;
             }
             match rx.try_recv() {
-                Ok(ev) => {
-                    let _ = proxy.send_event(lt_proto::UiMsg::Event(ev));
-                }
+                Ok(ev) => artery.push(ev),
                 Err(tokio::sync::broadcast::error::TryRecvError::Lagged(n)) => {
                     LAG_PENDING.fetch_add(n as u64, Ordering::Relaxed);
                     if lag_report_due() {

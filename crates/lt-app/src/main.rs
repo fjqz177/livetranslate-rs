@@ -11,6 +11,7 @@
 // lt-asr/src/client.rs E-07，与子系统无关）。
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod artery;
 mod backend;
 mod logging;
 mod panic_hook;
@@ -66,17 +67,21 @@ fn main() -> anyhow::Result<()> {
     app.kick_ticks();
 
     let proxy = event_loop.create_proxy();
-    // 常驻日志桥接：广播 hub → LogLine 事件（日志窗数据源）。
+    // ── 事件动脉（W2/INV1：后台 → UI 事件的唯一通路；满丢最旧 cap 4096）──
+    let artery = artery::EventArtery::new();
+    let app_sup = supervisor::Supervisor::new(supervisor::artery_sink(artery.clone()));
+    // 常驻日志桥接：广播 hub → 动脉（日志窗数据源）。
     // W1 起经监督器出生（死亡可见 + 重生）；stop 标志由 main 在停机序置位
-    let app_sup = supervisor::Supervisor::new(supervisor::proxy_sink(&proxy));
     let bridge_stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    logging::spawn_bridge(&app_sup, bridge_stop.clone(), proxy.clone());
+    logging::spawn_bridge(&app_sup, bridge_stop.clone(), artery.clone());
+    // 动脉桥线程（W2：UiMsg::Events 批量投递；Always 重生）
+    artery.spawn_bridge(&app_sup, proxy.clone(), bridge_stop.clone());
     // 后台命令线程：下载编排（识别页/面板触发）+ 下载期日志转发。
     // 下载目标不在此快照：backend 维护 settings 镜像，StartDownload 时按当前
     // 引擎/档位现场重算（运行中切换后下载的才是所选模型，M5.1）。
-    backend::spawn(cmd_rx, proxy.clone(), false, initial_settings.clone());
+    backend::spawn(cmd_rx, proxy.clone(), artery.clone(), false, initial_settings.clone());
 
-    let mut shell = shell::AppShell::new(app, proxy, Some(initial_settings.clone()));
+    let mut shell = shell::AppShell::new(app, artery, Some(initial_settings.clone()));
 
     let result = event_loop.run_app(&mut shell);
     // 收尾序（INV4）：监督器 stopping 先置位（禁 respawn——必须在一切线程停止

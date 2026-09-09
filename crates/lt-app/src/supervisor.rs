@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use lt_proto::{ThreadDied, ThreadRole, UiEvent, UiMsg};
+use lt_proto::{ThreadDied, ThreadRole, UiEvent};
 
 /// 重启策略（W1：Always=死即重生；Never=一次性线程，死亡仅上报）
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -165,13 +165,11 @@ impl Supervisor {
     }
 }
 
-/// 生产死亡出口：UiEvent::ThreadDied 经 proxy 回流 UI
-pub fn proxy_sink(
-    proxy: &winit::event_loop::EventLoopProxy<UiMsg>,
-) -> impl Fn(ThreadDied) + Send + Sync + 'static {
-    let proxy = proxy.clone();
+/// 生产死亡出口：UiEvent::ThreadDied 经事件动脉回流 UI（W2：与全部后台
+/// 事件同路——INV1 回流通路唯一；sink.push 非阻塞，monitor 线程安全）
+pub fn artery_sink(sink: Arc<crate::artery::EventArtery>) -> impl Fn(ThreadDied) + Send + Sync + 'static {
     move |d: ThreadDied| {
-        let _ = proxy.send_event(UiMsg::Event(UiEvent::ThreadDied(d)));
+        sink.push(UiEvent::ThreadDied(d));
     }
 }
 

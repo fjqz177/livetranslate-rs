@@ -44,6 +44,7 @@ struct DownloadSession {
 pub fn spawn(
     cmd_rx: Receiver<Cmd>,
     proxy: EventLoopProxy<UiMsg>,
+    artery: Arc<crate::artery::EventArtery>,
     first_launch: bool,
     settings: Settings,
 ) {
@@ -64,12 +65,12 @@ pub fn spawn(
                         }
                         if session.is_some() {
                             tracing::warn!("已有下载会话在途，忽略重复 StartDownload");
-                            line(&proxy, "已有下载进行中，请等待完成或取消后重试");
+                            line(&artery, "已有下载进行中，请等待完成或取消后重试");
                             continue;
                         }
                         let missing = current_missing(&settings);
                         session = Some(start_session(
-                            &proxy,
+                            &artery,
                             first_launch,
                             &settings,
                             missing,
@@ -81,7 +82,7 @@ pub fn spawn(
                         Some(s) if !s.handle.is_finished() => {
                             s.cancel.store(true, Ordering::Relaxed);
                             tracing::info!("已请求取消下载");
-                            line(&proxy, "正在取消下载（进度已保留）…");
+                            line(&artery, "正在取消下载（进度已保留）…");
                         }
                         _ => tracing::debug!("无在途下载，忽略 CancelDownload"),
                     },
@@ -145,7 +146,7 @@ fn proxy_mode_from(s: &str) -> ProxyMode {
 /// 起下载会话线程（DL-4）：backend 命令线程立即返回继续收命令，
 /// 下载全程（worker + 事件泵）在会话线程内完成。
 fn start_session(
-    proxy: &EventLoopProxy<UiMsg>,
+    artery: &Arc<crate::artery::EventArtery>,
     first_launch: bool,
     settings: &Settings,
     missing: Vec<MissingModel>,
@@ -153,7 +154,7 @@ fn start_session(
     proxy_s: &str,
 ) -> DownloadSession {
     let cancel = Arc::new(AtomicBool::new(false));
-    let session_proxy = proxy.clone();
+    let session_artery = artery.clone();
     let session_settings = settings.clone();
     let session_hub = hub_s.to_string();
     let session_proxy_s = proxy_s.to_string();
@@ -162,7 +163,7 @@ fn start_session(
         .name("lt-download-session".into())
         .spawn(move || {
             run_download(
-                &session_proxy,
+                &session_artery,
                 first_launch,
                 &session_settings,
                 &missing,
@@ -176,7 +177,7 @@ fn start_session(
 }
 
 fn run_download(
-    proxy: &EventLoopProxy<UiMsg>,
+    artery: &Arc<crate::artery::EventArtery>,
     first_launch: bool,
     settings: &Settings,
     missing: &[MissingModel],
@@ -188,21 +189,21 @@ fn run_download(
     let models_dir = match lt_models::paths::models_dir(settings.models_dir.as_deref()) {
         Ok(d) => d,
         Err(e) => {
-            fail(proxy, DownloadFailKind::Disk, &format!("模型目录不可用: {e:#}"));
+            fail(artery, DownloadFailKind::Disk, &format!("模型目录不可用: {e:#}"));
             return;
         }
     };
     // 首启目标固定 sensevoice-small（原版向导：silero + sensevoice-small；
     // silero 内嵌（D-5）→ 保留步骤展示但秒完成）
     let targets: Vec<MissingModel> = if first_launch {
-        line(proxy, "Silero VAD 已内嵌，跳过下载");
+        line(artery, "Silero VAD 已内嵌，跳过下载");
         lt_models::cache::missing_models(&models_dir, "funasr", "sensevoice-small", "")
     } else {
         missing.to_vec()
     };
     if targets.is_empty() {
         // 已就绪（重试幂等）：直接成功收尾
-        succeed(proxy, first_launch, settings, hub_s, proxy_s);
+        succeed(artery, first_launch, settings, hub_s, proxy_s);
         return;
     }
 
@@ -212,7 +213,7 @@ fn run_download(
     if let Some(free) = free_disk_bytes(&models_dir) {
         if free < need {
             fail(
-                proxy,
+                artery,
                 DownloadFailKind::Disk,
                 &format!(
                     "磁盘剩余空间不足：本模型约需 {}，当前仅剩 {}（可改 models_dir 或清理磁盘）",
@@ -261,7 +262,7 @@ fn run_download(
     // 不再经本会话泵二次转发（单通道，无重复）。
     loop {
         match rx.try_recv() {
-            Ok(ev) => emit_download_event(proxy, &ev),
+            Ok(ev) => emit_download_event(artery, &ev),
             Err(TryRecvError::Empty) => {}
             Err(TryRecvError::Disconnected) => break,
         }
@@ -273,22 +274,22 @@ fn run_download(
     // 收尾先排空事件通道再下结论（DL-6/F9：尾部 FileDone/Done 不再丢；
     // worker 已退出 → tx 已 drop，排空必然收敛）
     while let Ok(ev) = rx.try_recv() {
-        emit_download_event(proxy, &ev);
+        emit_download_event(artery, &ev);
     }
     match worker.join().expect("下载线程不 panic") {
-        Ok(()) => succeed(proxy, first_launch, settings, hub_s, proxy_s),
+        Ok(()) => succeed(artery, first_launch, settings, hub_s, proxy_s),
         Err((name, e)) => {
             let cancelled = e
                 .downcast_ref::<DlError>()
                 .is_some_and(|d| d.kind == DownloadFailKind::Cancelled);
             if cancelled {
                 tracing::info!("模型下载已被用户取消: {name}");
-                let _ = proxy.send_event(UiMsg::Event(UiEvent::DownloadCancelled));
+                artery.push(UiEvent::DownloadCancelled);
             } else {
                 let dl = e.downcast_ref::<DlError>();
                 match dl {
-                    Some(d) => fail(proxy, d.kind, &format!("{name}: {}", d.message())),
-                    None => fail(proxy, DownloadFailKind::Other, &format!("{name}: {e:#}")),
+                    Some(d) => fail(artery, d.kind, &format!("{name}: {}", d.message())),
+                    None => fail(artery, DownloadFailKind::Other, &format!("{name}: {e:#}")),
                 }
             }
         }
@@ -338,7 +339,7 @@ fn current_missing(settings: &Settings) -> Vec<MissingModel> {
 /// → 重发 SwitchEngine → persist；启动流 = app.rs 收成功事件后发
 /// Cmd::PersistSettings。旧实现在这里用可能过期的镜像写盘并回踩 UI 状态（F6）。
 fn succeed(
-    proxy: &EventLoopProxy<UiMsg>,
+    artery: &Arc<crate::artery::EventArtery>,
     first_launch: bool,
     settings: &Settings,
     hub_s: &str,
@@ -363,34 +364,34 @@ fn succeed(
     } else {
         settings.clone()
     };
-    let _ = proxy.send_event(UiMsg::Event(UiEvent::DownloadSucceeded {
+    artery.push(UiEvent::DownloadSucceeded {
         settings: Box::new(final_settings),
-    }));
+    });
 }
 
-fn fail(proxy: &EventLoopProxy<UiMsg>, kind: DownloadFailKind, msg: &str) {
+fn fail(artery: &Arc<crate::artery::EventArtery>, kind: DownloadFailKind, msg: &str) {
     // 失败必须进日志（日志 tab/日志窗双通道），否则运行时下载失败无处可查
     tracing::error!("模型下载失败: {msg}");
-    let _ = proxy.send_event(UiMsg::Event(UiEvent::DownloadFailed {
+    artery.push(UiEvent::DownloadFailed {
         kind,
         message: msg.to_string(),
-    }));
+    });
 }
 
-fn line(proxy: &EventLoopProxy<UiMsg>, s: &str) {
+fn line(artery: &Arc<crate::artery::EventArtery>, s: &str) {
     // 下载人读行：target="download" 专用日志流（UI 侧分流进下载框/卡片
-    // 日志 + 日志窗）。机器控制流不再骑日志总线（INV9，W2）
-    let _ = proxy.send_event(UiMsg::Event(UiEvent::LogLine {
+    // 日志 + 日志窗）。机器控制流不再骑日志总线（INV9，W2）——经动脉投递
+    artery.push(UiEvent::LogLine {
         level: 20,
         target: "download".into(),
         msg: s.to_string(),
-    }));
+    });
 }
 
 /// Downloader 事件 → 类型化 UiEvent（W2，替代 format_event 的 `\t` 机器段）：
 /// Progress → `UiEvent::Download`（UI 驱动进度条 + 同格式人读行）；
 /// FileDone/Done/Log → 人读行（`LogLine[download]`）。
-fn emit_download_event(proxy: &EventLoopProxy<UiMsg>, ev: &DownloadEvent) {
+fn emit_download_event(artery: &Arc<crate::artery::EventArtery>, ev: &DownloadEvent) {
     match ev {
         DownloadEvent::Progress {
             repo,
@@ -400,7 +401,7 @@ fn emit_download_event(proxy: &EventLoopProxy<UiMsg>, ev: &DownloadEvent) {
             done,
             total,
         } => {
-            let _ = proxy.send_event(UiMsg::Event(UiEvent::Download(ProtoDownload {
+            artery.push(UiEvent::Download(ProtoDownload {
                 repo: repo.clone(),
                 file: file.clone(),
                 index: *k as u32,
@@ -408,11 +409,15 @@ fn emit_download_event(proxy: &EventLoopProxy<UiMsg>, ev: &DownloadEvent) {
                 done: *done,
                 total: *total,
                 phase: DownloadPhase::Progress,
-            })));
+            }));
         }
-        DownloadEvent::FileDone { repo, file } => line(proxy, &format!("[{repo}] {file} 下载完成")),
-        DownloadEvent::Done { repo, dir } => line(proxy, &format!("[{repo}] 快照就绪: {}", dir.display())),
-        DownloadEvent::Log(s) => line(proxy, s),
+        DownloadEvent::FileDone { repo, file } => {
+            line(artery, &format!("[{repo}] {file} 下载完成"))
+        }
+        DownloadEvent::Done { repo, dir } => {
+            line(artery, &format!("[{repo}] 快照就绪: {}", dir.display()))
+        }
+        DownloadEvent::Log(s) => line(artery, s),
     }
 }
 

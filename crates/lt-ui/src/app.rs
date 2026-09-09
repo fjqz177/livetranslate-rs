@@ -1119,6 +1119,17 @@ impl MultiWindowApp {
                         }
                     }
                 },
+                // ── 有界队列水位（R15②：翻译池丢最旧段——日志窗可见告警；
+                // 队列原语内部已按同节奏落 tracing warn，此事件保证类型化
+                // 信号存在，W5 起的呈现深化钩子）──
+                lt_proto::UiEvent::QueuePressure { queue, dropped_total } => {
+                    let text = format!(
+                        "{}（{queue:?}，累计丢弃 {dropped_total}）",
+                        lt_i18n::t("queue_pressure")
+                            .replace("{dropped}", &dropped_total.to_string())
+                    );
+                    self.push_log_line(30, "queue", &text);
+                }
                 // ── 音频采集可用性（架构 2.0 W1/R4/D-62）：日志窗可见告警。
                 // 事件本身边沿触发（Unavailable 转坏一次/Recovered 转好一次），
                 // 语义对齐 AsrUnavailable；面板设备卡片深化呈现随 W5 ──

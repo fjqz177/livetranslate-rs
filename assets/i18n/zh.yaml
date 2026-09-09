@@ -457,6 +457,7 @@ benchmark_pending_m44: "性能基准窗口随 M4.4 里程碑接入。"
 group_bench_models: "参与测试的模型"
 bench_done_title: "性能基准完成"
 bench_done_msg: "全部所选模型测试完成。"
+queue_pressure: "翻译队列积压，已丢弃 {dropped} 条最旧待译段（建议放慢语速或检查翻译服务）。"
 # Rust 版新增（识别页引擎/模型/缓存：engine_display_* 缺键回退注册表显示名）
 engine_display_funasr: "FunASR (SenseVoice)"
 engine_display_whisper: "Whisper (faster-whisper)"

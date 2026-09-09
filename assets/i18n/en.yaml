@@ -455,6 +455,7 @@ benchmark_pending_m44: "The benchmark window lands with milestone M4.4."
 group_bench_models: "Models under test"
 bench_done_title: "Benchmark finished"
 bench_done_msg: "All selected models have been tested."
+queue_pressure: "Translation queue backlog: {dropped} oldest pending segments dropped (slow down speech or check the translation service)."
 # Rust additions (recognition page engine/model/cache: engine_display_* fallback to registry display names)
 engine_display_funasr: "FunASR (SenseVoice)"
 engine_display_whisper: "Whisper (faster-whisper)"

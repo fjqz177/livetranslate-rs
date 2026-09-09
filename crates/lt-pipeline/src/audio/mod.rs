@@ -152,6 +152,8 @@ pub fn pad_bucket(audio: &[f32], quantum: usize) -> Vec<f32> {
 /// 有界队列：满时丢最旧（对齐原版 audio_queue maxsize=100 的
 /// `get_nowait(); put_nowait()` 语义）；支持带超时的阻塞取出。
 /// 丢弃带确定性节奏告警（AH-7/H11：装载期/峰值丢段此前完全不可诊断）。
+/// W2 起为全仓通用原语（音频队列/段队列/翻译任务池/事件动脉复用），
+/// 文案不再限"音频"。
 pub struct BoundedDropQueue<T> {
     inner: Mutex<VecDeque<T>>,
     cv: Condvar,
@@ -177,11 +179,16 @@ impl<T> BoundedDropQueue<T> {
         let n = self.dropped.fetch_add(1, Ordering::Relaxed) + 1;
         if n == 1 || n % 200 == 0 {
             tracing::warn!(
-                "音频队列[{}]已满，丢弃最旧腾位（累计丢弃 {n}，容量 {}）",
+                "有界队列[{}]已满，丢弃最旧腾位（累计丢弃 {n}，容量 {}）",
                 self.name,
                 self.cap
             );
         }
+    }
+
+    /// 累计丢弃数（W2：水位事件上报源——仲裁"是否丢了"用原子差，免加锁）
+    pub fn dropped_count(&self) -> u64 {
+        self.dropped.load(Ordering::Relaxed)
     }
 
     /// 满时丢弃最旧一条再入队（与原版 put_nowait 失败路径一致）
@@ -396,6 +403,7 @@ mod tests {
             q.push(i);
         }
         assert_eq!(q.len(), 3);
+        assert_eq!(q.dropped_count(), 2, "满丢最旧计数（W2 水位事件源）");
         assert_eq!(q.pop_timeout(Duration::from_millis(1)), Some(2));
         assert_eq!(q.pop_timeout(Duration::from_millis(1)), Some(3));
         assert_eq!(q.pop_timeout(Duration::from_millis(1)), Some(4));

@@ -9,11 +9,12 @@ use crate::pipeline::{transcript_shared, Pipeline};
 use lt_proto::{Cmd, Settings, UiEvent, UiMsg};
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
-use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
+use winit::event_loop::ActiveEventLoop;
 
 pub struct AppShell {
     pub ui: lt_ui::MultiWindowApp,
-    proxy: EventLoopProxy<UiMsg>,
+    /// 事件动脉（全后台→UI 事件出口；UiMsg::Cmd 回环仍走 proxy——W4 收敛）
+    artery: crate::artery::EventSink,
     pipeline: Option<Pipeline>,
     started: bool,
 }
@@ -22,12 +23,12 @@ impl AppShell {
     /// `start_settings` 为 Some（启动即就绪）时立即启动管道。
     pub fn new(
         ui: lt_ui::MultiWindowApp,
-        proxy: EventLoopProxy<UiMsg>,
+        artery: crate::artery::EventSink,
         start_settings: Option<Settings>,
     ) -> Self {
         let mut shell = Self {
             ui,
-            proxy,
+            artery,
             pipeline: None,
             started: false,
         };
@@ -42,7 +43,7 @@ impl AppShell {
             return;
         }
         self.started = true;
-        match Pipeline::start(&settings, self.proxy.clone()) {
+        match Pipeline::start(&settings, self.artery.clone()) {
             Ok(p) => self.pipeline = Some(p),
             Err(e) => {
                 // P0-3：装配失败必须让用户看见——面板识别页顶部红字（数据
@@ -242,6 +243,29 @@ impl AppShell {
             tracing::error!("设置保存失败: {e:#}");
         }
     }
+
+    /// 单条业务事件分发（用户事件 → 编排 → UI；与 Events 批量共用）
+    fn dispatch_event(&mut self, event_loop: &ActiveEventLoop, event: UiEvent) {
+        // 编排先于 UI：下载成功 → 管道启动（UI 转场由 MultiWindowApp 处理）
+        if let UiEvent::DownloadSucceeded { settings } = &event {
+            if !self.started {
+                self.start_pipeline((**settings).clone());
+            } else {
+                // 运行时下载完成（原版 _download_whisper accept 后 _auto_save →
+                // 引擎切换）：以当前设置重发引擎切换，worker 用刚下载的模型装配，
+                // 同时解除未缓存切换时的 AsrUnavailable 待命态
+                let s = self.ui.app_state.settings.clone();
+                self.handle_cmd(Cmd::SwitchEngine {
+                    engine: s.asr_engine,
+                    funasr_model: s.funasr_model,
+                    whisper_model_size: s.whisper_model_size,
+                    hub: s.hub,
+                    language: s.asr_language,
+                });
+            }
+        }
+        self.ui.user_event(event_loop, UiMsg::Event(event));
+    }
 }
 
 impl ApplicationHandler<UiMsg> for AppShell {
@@ -259,29 +283,19 @@ impl ApplicationHandler<UiMsg> for AppShell {
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UiMsg) {
-        // 编排先于 UI：下载成功 → 管道启动（UI 转场由 MultiWindowApp 处理）
-        if let UiMsg::Event(UiEvent::DownloadSucceeded { settings }) = &event {
-            if !self.started {
-                self.start_pipeline((**settings).clone());
-            } else {
-                // 运行时下载完成（原版 _download_whisper accept 后 _auto_save →
-                // 引擎切换）：以当前设置重发引擎切换，worker 用刚下载的模型装配，
-                // 同时解除未缓存切换时的 AsrUnavailable 待命态
-                let s = self.ui.app_state.settings.clone();
-                self.handle_cmd(Cmd::SwitchEngine {
-                    engine: s.asr_engine,
-                    funasr_model: s.funasr_model,
-                    whisper_model_size: s.whisper_model_size,
-                    hub: s.hub,
-                    language: s.asr_language,
-                });
+        match event {
+            // 事件动脉批量变体（W2）：逐条分发（事件序 = 动脉 FIFO，
+            // 同生产者保序，INV8——批次切分不破坏序）
+            UiMsg::Events(events) => {
+                for ev in events {
+                    self.dispatch_event(event_loop, ev);
+                }
             }
+            // UI 回流的管道域命令（backend 不持有 Pipeline，经 proxy 回环至此）
+            UiMsg::Cmd(cmd) => self.handle_cmd(cmd),
+            // Event/AppCommand 原样转 UI
+            msg => self.ui.user_event(event_loop, msg),
         }
-        // UI 回流的管道域命令（backend 不持有 Pipeline，经 proxy 回环至此）
-        if let UiMsg::Cmd(cmd) = &event {
-            self.handle_cmd(cmd.clone());
-        }
-        self.ui.user_event(event_loop, event);
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
