@@ -4,7 +4,7 @@
 - **证据基线**：commit `314644b`（评审基线）+ `4d7d84f`（评审报告 `docs/architecture-review.md`）；405 测 = 398 常规 + 7 ignored
 - **取证方法**：评审报告（6 只读子代理七维度 + 主线程交叉验证）之上，本方案另派 4 路专项取证——①lt-app 装配层全测绘 ②lt-ui 窗口巨石全测绘 ③契约/设置镜像/字符串旁路精确定性 ④外部选型调研（arc-swap / winit 事件模型 / panic 监督 / 单实例激活 / 依赖治理 / channel 生态 / CI runner 现状，来源见 §8.3）。主线程另通读 `crates/lt-app/src/main.rs` 全文与根 `Cargo.toml` 复核。
 - **效力**：阶段二活跃施工依据（本目录，非归档）。各波次（§5）为独立工作包，可按裁决调整顺序与取舍；契约变更本身仍随波次落地。**本文档先行独立 `docs(arch)` 提交，先于一切实现提交**（docs 提交时机纪律）。
-- **状态**：方案定稿 v1.1（2026-09-09 二次严审修订：补硬约束 INV1~INV12、线程清单 v2、停机协议〔封堵停机-respawn 竞态设计洞〕、TlSwitch 七臂收敛三臂、lt-backend 线程退役决策、行为偏差登记表 D-60+、ADR 备选记录、波次依赖与回滚语义）。**W0（a677559）/W1（a829ad0+1ab4f97）/W2（5907c52+6362661+a525aa9）/W3（编排域独立+拓扑勘正）/W4（设置总线）已合入**；剩余 W5~W7 按 §5 顺序施工，波次内行号以当时实测为准。
+- **状态**：方案定稿 v1.1（2026-09-09 二次严审修订：补硬约束 INV1~INV12、线程清单 v2、停机协议〔封堵停机-respawn 竞态设计洞〕、TlSwitch 七臂收敛三臂、lt-backend 线程退役决策、行为偏差登记表 D-60+、ADR 备选记录、波次依赖与回滚语义）。**W0（a677559）/W1（a829ad0+1ab4f97）/W2（5907c52+6362661+a525aa9）/W3（编排域独立+拓扑勘正）/W4（设置总线）/W5（lt-ui 解放）已合入**——W5 施工实记见 §3.4 各节注（AppUi 拆分以实测为准：SessionView 增 actions/ticks/settings_apply_pending；`visible` 真值表落宿主 MultiWindowApp 字段（非独立 WindowManager 类型）——窗口帧经 `session.visible` 快照；bench 取消经 `CancelBench`+模型边界截停（run_benchmark 增取消标志）；设备/基准/文件对话框三路经 app 侧 Supervisor（`app_sup`）一次性线程（Policy::Never）；rfd 依赖随迁 lt-app）；剩余 W6~W7 按 §5 顺序施工，波次内行号以当时实测为准。
 
 ---
 
@@ -401,7 +401,7 @@ WinId::Overlay => { let AppUi { overlay, session, settings, modal, .. } = app;
 | D-68 | W2 | 下载卡片/托盘/悬浮窗菜单命令类型化（用户无感，仅架构面） | 行为回归 |
 | D-69 | W4 | qwen3 钳制不再写穿用户设置（R18） | 回归测试（已合入：settings_bus `clamp_is_overlay_never_write_through`——切离 qwen3 立即恢复全值，raw 永不变） |
 | D-70 | W4 | 控制面五跳→两跳（用户无感；**引擎切换延迟至静默间隙的语义保留不变**，见 §7） | 既有行为（已合入：lt-backend 退役、`UiMsg::Cmd` 删除、PROTO_VERSION=3） |
-| D-71 | W5 | 悬浮窗拖动手工化（R22，D-37 同法） | 拖动探针 + 实机 |
+| D-71 | W5 | 悬浮窗拖动手工化（R22，D-37 同法） | 拖动探针（已合入：overlay_drag_start_stop_enqueued headless 序列）+ 实机走查（待用户） |
 | D-72 | W6 | 设备切换清段队列 + VAD 复位（R31） | 拼接错位回归 |
 | D-73 | W6 | 二次启动激活已有窗口（WD-5） | 实机 |
 | D-74 | W4（§5 施工卡提前于 §3.7 表 W6 档） | 同语言免翻译比较归一化（`zh` vs `zh-CN`；pipeline.rs:1473 现为裸字符串比较）——仅在目标语言侧归一（TlView 派生点），ASR 检出侧保持原样（归一它是新行为，超出本号登记面；R21 档位/源侧归一仍 W6） | 归一单测（已合入：lt-proto `normalize_language` + `tl_view_normalizes_target_language`） |
