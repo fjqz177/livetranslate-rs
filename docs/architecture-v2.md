@@ -173,7 +173,12 @@ impl Supervisor {
 
 **表外补充（W1 实证勘正）**：wasapi 读环线程（`lt-audio`，wasapi_win.rs `WasapiBackend::start`）在 lt-pipeline crate 内部裸出生——监督器（lt-app/orchestrator）在依赖方向上位，不可及；其可观测性由 R4 `AudioStatus` 边沿事件（W1 已接入，经 AudioBridge 转发线程转 `UiEvent::Capture`）承接，停机随 backend.stop 内 join。该线程是否随 W3 改名迁移纳入 orchestrator 监督为 W3 决议点，§6.2 spawn grep 白名单届时同步修订。另：`ThreadRole::Bench` 为 W2 预留变体——bench 线程仍在 lt-translate 内裸 spawn（lt-ui 直调 lt-translate，监督器同样不可及），转入 orchestrator 后按本表转 Never 接管。
 
-**Supervisor 自身边界与停机协议**：①monitor 线程死亡不自动重生（监督者自举无解，接受）——hook crash 文件兜底可见性，monitor 循环零 unwrap 零阻塞调用把死亡概率压到最低；②**停机竞态封堵（INV4）**：`Supervisor::stopping`（AtomicBool）先于一切线程停止信号置位，monitor 判定 respawn 前必须复查 stopping——panic 恰好发生在置位瞬间时，宁可漏一次 respawn 不可多一次；③**重启语义（INV5）**：factory 必须构造干净初态，capture/asr 重生一律会话复位，ASR 重生固定走待命态入口（等价 AH-1 路径），不得从主循环中段恢复。
+**Supervisor 自身边界与停机协议**：①monitor 线程死亡不自动重生（监督者自举无解，接受）——hook crash 文件兜底可见性，monitor 循环零 unwrap 零阻塞调用把死亡概率压到最低；②**停机竞态封堵（INV4）**：`Supervisor::stopping`（AtomicBool）先于一切线程停止信号置位，monitor 判定 respawn 前必须复查 stopping——panic 恰好发生在置位瞬间时，宁可漏一次 respawn 不可多一次；③**重启语义（INV5）**：factory 必须构造干净初态，capture/asr 重生一律会话复位，ASR 重生固定走待命态入口（等价 AH-1 路径），不得从主循环中段恢复。E1 延伸：`Supervisor::spawn` 出生口自身在 stopping 置位后拒绝（非 monitor respawn 面的封堵）。
+
+**施工实记（E1~E4 波 / 2026-09-09，详见 docs/architecture-v2-improvements.md）**：
+- **D-80 Backoff 实装**：`Policy::Backoff`（`backoff()` 预设 = 500ms 起步指数翻倍 / 30s 封顶 / 8 连败放弃并告警 / 60s 健康存活清零连败计数）——capture/ASR/翻译池/日志桥四类常驻线程迁移；**动脉桥保持 Always**（UI 活性本身死透 = 界面全死，其循环体仅 pop/send/take 无 panic 源）。
+- **监督器为双实例（ADR-8 勘正，本表单表系简化记法）**：app 侧实例（lt-app main：动脉桥/日志桥/设备探测/基准/文件框/下载会话）与管道侧实例（`Pipeline::start` 内建：capture/ASR/tl/AudioBridge）各带 monitor，边界 = 线程出生域与生命周期域（管道线程随 Pipeline 生灭、app 线程随进程生灭）——合并需引入分组实体，裁定不值。
+- **`ThreadRole` 枚举勘正**：无 `Tray`/`Singleton` 变体——托盘线程为 lt-ui 白名单裸 spawn（依赖方向不可达监督器；死亡**仅 crash 文件可见**，非本表 W1 时所记"ThreadDied 可见"）；单实例为 message-only 窗方案（**无线程**，实现优于原表设计的 Supervisor(Never) 线程）。
 
 **panic hook 实现约束**（W1）：①hook 内零 unwrap、分配最小化（allocator 中毒时仍须存活）；②线程安全（多线程同时 panic：tracing 层自身线程安全 + crash 文件经 `OnceLock<Mutex<File>>`）；③知晓**双 panic = 直接 abort** 语义（hook 自身 panic 即进程终止，故 ① 是硬规则）；④**禁止 MessageBoxW/任何模态**——hook 可能运行在 winit 线程上（INV11；alacritty hook 弹窗做法不可效仿，§8.3-3）；⑤crash 文件固定 `~/.config/livetranslate/logs/crash-<ts>.log`，tracing 未初始化时也必须可写。
 
@@ -391,6 +396,8 @@ WinId::Overlay => { let AppUi { overlay, session, settings, modal, .. } = app;
 **版本策略：全部锁定不动。** reqwest 全仓单版本 0.13.1（async-openai 0.41 未引入重复 HTTP 栈，Cargo.lock 实证）；tokio 单版本 1.53.1；egui 0.36 系/winit 0.30.13/tray-icon 0.24 与大坑清单强耦合，升级=§7 非目标；uuid 为真依赖（pipeline.rs:1451 消息 ID、lt-asr/client.rs:235/284 请求 ID、lt-pipeline/transcript.rs:205 会话 ID），非死依赖；其余 24 个工作区外部依赖逐个核实均有真实使用，零死依赖。结论：**本方案对外部依赖面零侵入——仅增 1 个轻量 crate（arc-swap），不引入任何框架/异步运行时/新 Win32 特性面。**
 
 ### 3.7 行为偏差登记表（INV12 载体，预占 D-60+）
+
+> **E 波续编登记（2026-09-09）**：D-78 向导子系统保留并定位为待开发面 / D-79 `Cmd::StartDownload` 载荷改型 `Hub`/`ProxyMode`（PROTO_VERSION=4）/ D-80 常驻线程 Backoff——登记详情与论证见 **docs/architecture-v2-improvements.md §6**。
 
 结构波次禁止夹带行为变化；下表是本方案**全部**用户可见行为变化的事先登记——合入对应波次时以实际 D 号落决策史并过验收，未登记的行为变化一律不得合入：
 

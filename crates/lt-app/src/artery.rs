@@ -29,6 +29,9 @@ pub fn spawn_bridge(
     sup.spawn(
         lt_proto::ThreadRole::ArteryBridge,
         "lt-artery-bridge",
+        // E4/D-80：唯一保持 Always 的常驻线程——UI 活性本身死透 = 界面全死，
+        // 宁可无限重生；其循环体仅 pop/send/take 三个无 panic 源操作
+        //（capture/ASR/翻译池/日志桥已迁 Policy::backoff() 指数退避 + 超限放弃）
         lt_orchestrator::Policy::Always,
         move || {
             let arte = arte.clone();

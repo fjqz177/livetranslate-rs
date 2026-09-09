@@ -87,7 +87,7 @@ pub fn spawn_bridge(
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
     artery: std::sync::Arc<EventArtery>,
 ) {
-    sup.spawn(ThreadRole::LogBridge, "lt-logbridge", Policy::Always, move || {
+    sup.spawn(ThreadRole::LogBridge, "lt-logbridge", Policy::backoff(), move || {
         // Receiver 不可克隆：重生时重新订阅（广播 hub 全量重放语义由 Lagged 兜底）
         let mut rx = subscribe();
         let stop = stop.clone();

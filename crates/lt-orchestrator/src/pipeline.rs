@@ -87,7 +87,7 @@ impl JobPool {
             let queue = queue.clone();
             let stopped = stopped.clone();
             let alive_workers = alive_workers.clone();
-            sup.spawn(ThreadRole::TlWorker, format!("lt-tl-{i}"), Policy::Always, move || {
+            sup.spawn(ThreadRole::TlWorker, format!("lt-tl-{i}"), Policy::backoff(), move || {
                 let queue = queue.clone();
                 let stopped = stopped.clone();
                 let alive_workers = alive_workers.clone();
@@ -580,7 +580,7 @@ impl Pipeline {
             let mode = vad_settings.mode.clone();
             // INV3/INV5：经监督器出生；panic 重生 = 工厂重建干净循环状态
             //（消费前清 chunk 陈旧积压——宕机期间音频已满丢旧轮转，续读=句中撕裂）
-            sup.spawn(ThreadRole::Capture, "lt-capture", Policy::Always, move || {
+            sup.spawn(ThreadRole::Capture, "lt-capture", Policy::backoff(), move || {
                 let stop = stop.clone();
                 let paused = paused.clone();
                 let segment_queue = segment_queue.clone();
@@ -693,7 +693,7 @@ impl Pipeline {
             let msg_asr = msg.clone();
             let transcript_asr = transcript.clone();
             // INV3：经监督器出生；panic 重生 = 待命/装配路径干净重启（INV5）
-            sup.spawn(ThreadRole::AsrMain, "lt-asr-main", Policy::Always, move || {
+            sup.spawn(ThreadRole::AsrMain, "lt-asr-main", Policy::backoff(), move || {
                 let stop = stop.clone();
                 let sink = sink.clone();
                 let segment_queue = segment_queue.clone();

@@ -16,15 +16,49 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use lt_proto::{ThreadDied, ThreadRole, UiEvent};
 
-/// 重启策略（W1：Always=死即重生；Never=一次性线程，死亡仅上报）
+/// 重启策略（W1：Always=死即重生；Never=一次性线程，死亡仅上报；
+/// E4/D-80 增 Backoff=指数退避重生，兑现方案 §3.2.1 原设计）
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Policy {
     Never,
     Always,
+    /// 指数退避重生：死亡后延迟 `min(base << (n-1), max)` 再重生；连续
+    /// `give_up_after` 次异常退出即放弃并告警（`ThreadDied{restarted:false}`，
+    /// 不再静默）；健康存活满 `reset_after_ms` 清零连败计数（偶发 panic
+    /// 不积累）。防"确定性 panic 线程以 500ms 周期无限重生"的崩溃风暴
+    /// （方案 §3.2.1：Backoff 超限 → 放弃重启 + 告警事件）
+    Backoff {
+        base_ms: u64,
+        max_ms: u64,
+        give_up_after: u32,
+        reset_after_ms: u64,
+    },
+}
+
+impl Policy {
+    /// 常驻线程默认退避（capture/ASR/翻译池/日志桥，E4/D-80）：0.5s 起步
+    /// 翻倍至 30s 封顶，8 连败（累计尝试窗约 91s）后放弃。
+    /// **动脉桥保持 Always**——UI 活性本身死透 = 界面全死，宁可无限重生；
+    /// 其循环体仅 pop/send/take 三个无 panic 源操作，风暴风险可控。
+    pub const fn backoff() -> Self {
+        Self::Backoff {
+            base_ms: 500,
+            max_ms: 30_000,
+            give_up_after: 8,
+            reset_after_ms: 60_000,
+        }
+    }
+}
+
+/// Backoff 延迟计算（纯函数便于单测）：`min(base << (n-1), max)`；
+/// 移位钳 16 位 + saturating_mul 防 u64 溢出
+fn backoff_delay_ms(base_ms: u64, max_ms: u64, consecutive: u32) -> u64 {
+    let exp = consecutive.saturating_sub(1).min(16);
+    base_ms.saturating_mul(1u64 << exp).min(max_ms)
 }
 
 struct Entry {
@@ -35,6 +69,12 @@ struct Entry {
     /// 重启工厂：每次 spawn 重新构造运行闭包（须捕获全部共享态的克隆，
     /// INV5：构造干净初态）
     factory: Box<dyn Fn() -> Box<dyn FnOnce() + Send + 'static> + Send>,
+    /// Backoff：当前连败计数（健康窗清零，见 [`Policy::backoff`]）
+    consecutive: u32,
+    /// Backoff：下次重生到期时刻（死亡后置位；handle=None 等待期间）
+    next_eligible: Option<Instant>,
+    /// 最近一次出生时刻（健康窗判定基准）
+    last_born: Instant,
 }
 
 /// 死亡上报出口（生产 = proxy 发 UiEvent::ThreadDied；测试 = 通道收集）
@@ -96,6 +136,9 @@ impl Supervisor {
             handle: Some(handle),
             policy,
             factory: Box::new(factory),
+            consecutive: 0,
+            next_eligible: None,
+            last_born: Instant::now(),
         });
     }
 
@@ -145,10 +188,37 @@ impl Supervisor {
             }
             std::thread::sleep(Duration::from_millis(500));
             let mut entries = self.entries.lock().unwrap();
+            // Backoff 到期重生：handle=None 且 next_eligible 到期的条目补生
+            //（死亡处理只置 next_eligible，重生在此统一进行）
+            for e in entries.iter_mut() {
+                if e.handle.is_none() {
+                    if let Policy::Backoff { .. } = e.policy {
+                        if e.next_eligible.is_some_and(|at| Instant::now() >= at) {
+                            match std::thread::Builder::new()
+                                .name(e.name.clone())
+                                .spawn((e.factory)())
+                            {
+                                Ok(h) => {
+                                    e.handle = Some(h);
+                                    e.last_born = Instant::now();
+                                }
+                                Err(err) => tracing::error!("{} 退避重生失败: {err}", e.name),
+                            }
+                        }
+                    }
+                }
+            }
             let mut reap = Vec::new();
             for (i, e) in entries.iter_mut().enumerate() {
                 let Some(h) = e.handle.as_mut() else { continue };
                 if !h.is_finished() {
+                    // Backoff 健康窗：存活满 reset_after 即清零连败计数
+                    //（偶发 panic 不积累——见 Policy::backoff）
+                    if let Policy::Backoff { reset_after_ms, .. } = e.policy {
+                        if e.last_born.elapsed() >= Duration::from_millis(reset_after_ms) {
+                            e.consecutive = 0;
+                        }
+                    }
                     continue;
                 }
                 let h = e.handle.take().expect("is_finished 已判定存在句柄");
@@ -174,28 +244,66 @@ impl Supervisor {
                     reap.push(i);
                     continue;
                 }
-                // Policy::Always：非停机退出 = 上一线程死亡（任何原因）→ 上报 + 重生
+                // Policy::Always / Backoff：非停机退出 = 上一线程死亡（任何原因）
                 let detail = if panicked {
                     format!("{} panic（详情见 crash 文件与日志）", e.name)
                 } else {
                     format!("{} 未停机即退出（异常）", e.name)
                 };
-                (self.sink)(ThreadDied {
-                    role: e.role,
-                    detail,
-                    restarted: true,
-                });
-                let run = (e.factory)();
-                match std::thread::Builder::new().name(e.name.clone()).spawn(run) {
-                    Ok(h) => e.handle = Some(h),
-                    Err(err) => {
-                        tracing::error!("{} 重生失败: {err}", e.name);
+                match e.policy {
+                    Policy::Always => {
                         (self.sink)(ThreadDied {
                             role: e.role,
-                            detail: format!("{} 重生失败: {err}", e.name),
-                            restarted: false,
+                            detail,
+                            restarted: true,
                         });
+                        let run = (e.factory)();
+                        match std::thread::Builder::new().name(e.name.clone()).spawn(run) {
+                            Ok(h) => {
+                                e.handle = Some(h);
+                                e.last_born = Instant::now();
+                            }
+                            Err(err) => {
+                                tracing::error!("{} 重生失败: {err}", e.name);
+                                (self.sink)(ThreadDied {
+                                    role: e.role,
+                                    detail: format!("{} 重生失败: {err}", e.name),
+                                    restarted: false,
+                                });
+                            }
+                        }
                     }
+                    Policy::Backoff {
+                        base_ms,
+                        max_ms,
+                        give_up_after,
+                        ..
+                    } => {
+                        e.consecutive = e.consecutive.saturating_add(1);
+                        if e.consecutive > give_up_after {
+                            // 方案 §3.2.1 兑现：超限放弃 + 告警事件（不再静默）
+                            (self.sink)(ThreadDied {
+                                role: e.role,
+                                detail: format!(
+                                    "{} 连续 {} 次异常退出，已放弃重启（backoff 超限；详情见 crash 文件与日志）",
+                                    e.name, e.consecutive
+                                ),
+                                restarted: false,
+                            });
+                            reap.push(i);
+                            continue;
+                        }
+                        let delay_ms = backoff_delay_ms(base_ms, max_ms, e.consecutive);
+                        e.next_eligible = Some(Instant::now() + Duration::from_millis(delay_ms));
+                        tracing::warn!(
+                            "{} 异常退出（第 {} 次），{}ms 后退避重生",
+                            e.name,
+                            e.consecutive,
+                            delay_ms
+                        );
+                        // handle 保持 None：条目留在表内等待到期重生循环补生
+                    }
+                    Policy::Never => unreachable!("Never 分支已在上方处理"),
                 }
             }
             // 死条目收割（重生的 handle 已复位；已死未重生的移除——长期运行
@@ -218,6 +326,8 @@ pub fn artery_sink(sink: Arc<crate::event_artery::EventArtery>) -> impl Fn(Threa
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicUsize;
+    use std::time::Instant;
     use std::sync::mpsc;
 
     fn setup() -> (Arc<Supervisor>, mpsc::Receiver<ThreadDied>) {
@@ -390,6 +500,163 @@ mod tests {
         );
         // 从未出生的名字恒为"已结束"（可开新会话）
         assert!(sup.is_thread_finished("never-existed"));
+        sup.join_all();
+    }
+
+    /// E4/D-80：Backoff 延迟计算纯函数——指数翻倍 + max 封顶
+    #[test]
+    fn backoff_delay_caps_at_max() {
+        assert_eq!(backoff_delay_ms(500, 30_000, 1), 500);
+        assert_eq!(backoff_delay_ms(500, 30_000, 2), 1_000);
+        assert_eq!(backoff_delay_ms(500, 30_000, 3), 2_000);
+        assert_eq!(
+            backoff_delay_ms(500, 30_000, 7),
+            30_000,
+            "32_000 → 封顶 30_000"
+        );
+        assert_eq!(backoff_delay_ms(500, 30_000, 8), 30_000);
+        assert_eq!(backoff_delay_ms(100, 300, 5), 300, "1_600 → 封顶 300");
+        assert_eq!(
+            backoff_delay_ms(0, 30_000, 8),
+            0,
+            "base=0 退化立即重生（saturating 不 panic）"
+        );
+    }
+
+    /// E4/D-80：Backoff 首次重生前至少等待 base（指数退避生效）
+    #[test]
+    fn backoff_respects_delay() {
+        let (sup, _rx) = setup();
+        let births: Arc<Mutex<Vec<Instant>>> = Arc::new(Mutex::new(Vec::new()));
+        let stop = Arc::new(AtomicBool::new(false));
+        let b2 = births.clone();
+        let s2 = stop.clone();
+        sup.spawn(
+            ThreadRole::Capture,
+            "test-backoff-delay",
+            Policy::Backoff {
+                base_ms: 500,
+                max_ms: 5_000,
+                give_up_after: 8,
+                reset_after_ms: 60_000,
+            },
+            move || {
+                let births = b2.clone();
+                let stop = s2.clone();
+                Box::new(move || {
+                    births.lock().unwrap().push(Instant::now());
+                    if births.lock().unwrap().len() == 1 {
+                        panic!("首次出生即炸（backoff 延迟测试注入）");
+                    }
+                    while !stop.load(Ordering::SeqCst) {
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                })
+            },
+        );
+        std::thread::sleep(Duration::from_millis(1600));
+        let births = births.lock().unwrap();
+        assert!(births.len() >= 2, "退避后应重生");
+        let gap = (births[1] - births[0]).as_millis() as u64;
+        assert!(
+            gap >= 450,
+            "重生间隔 {gap}ms 应 ≥ base 500ms（调度容差 50ms）"
+        );
+        stop.store(true, Ordering::SeqCst);
+        sup.join_all();
+    }
+
+    /// E4/D-80：连续异常退出超限 → 放弃重生 + 告警事件（restarted=false）
+    #[test]
+    fn backoff_gives_up_and_reports() {
+        let (sup, rx) = setup();
+        let born = Arc::new(AtomicUsize::new(0));
+        let born2 = born.clone();
+        sup.spawn(
+            ThreadRole::TlWorker,
+            "test-backoff-giveup",
+            Policy::Backoff {
+                base_ms: 100,
+                max_ms: 400,
+                give_up_after: 2,
+                reset_after_ms: 60_000,
+            },
+            move || {
+                let born = born2.clone();
+                Box::new(move || {
+                    born.fetch_add(1, Ordering::SeqCst);
+                    panic!("出生即炸（give-up 测试注入）");
+                })
+            },
+        );
+        // 3 次出生（退避 100/200ms）+ 放弃判定，留 monitor 节拍裕量
+        let deadline = std::time::Instant::now() + Duration::from_secs(6);
+        while born.load(Ordering::SeqCst) < 3 && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        std::thread::sleep(Duration::from_millis(1500));
+        assert_eq!(
+            born.load(Ordering::SeqCst),
+            3,
+            "give_up_after=2 应恰重生 2 次（共 3 次出生）"
+        );
+        // 放弃事件到达（前两次死亡事件 restarted=true，逐条等目标事件）
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        let mut got = false;
+        while std::time::Instant::now() < deadline {
+            match rx.try_recv() {
+                Ok(d) => {
+                    if !d.restarted && d.detail.contains("放弃") {
+                        got = true;
+                        break;
+                    }
+                }
+                Err(_) => std::thread::sleep(Duration::from_millis(20)),
+            }
+        }
+        assert!(got, "应收到放弃重启的 ThreadDied");
+        std::thread::sleep(Duration::from_millis(800));
+        assert_eq!(born.load(Ordering::SeqCst), 3, "放弃后不得再重生");
+        sup.join_all();
+    }
+
+    /// E4/D-80：健康存活满 reset_after 清零连败计数——偶发 panic 不积累
+    ///（give_up_after=1 场景：若清零失效，第 2 次死亡即弃管、第 3 次出生不发生）
+    #[test]
+    fn backoff_resets_after_healthy_run() {
+        let (sup, _rx) = setup();
+        let born = Arc::new(AtomicUsize::new(0));
+        let born2 = born.clone();
+        sup.spawn(
+            ThreadRole::AsrMain,
+            "test-backoff-reset",
+            Policy::Backoff {
+                base_ms: 100,
+                max_ms: 400,
+                give_up_after: 1,
+                reset_after_ms: 300,
+            },
+            move || {
+                let born = born2.clone();
+                Box::new(move || {
+                    let n = born.fetch_add(1, Ordering::SeqCst) + 1;
+                    if n == 1 {
+                        panic!("首次出生即炸（reset 测试注入）");
+                    }
+                    // 第 2 次：健康存活 900ms（跨越多个 monitor 节拍，确保
+                    // 健康窗清零在退出前生效）后正常退出
+                    std::thread::sleep(Duration::from_millis(900));
+                })
+            },
+        );
+        let deadline = std::time::Instant::now() + Duration::from_secs(8);
+        while born.load(Ordering::SeqCst) < 3 && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            born.load(Ordering::SeqCst) >= 3,
+            "健康窗清零应阻止放弃（否则 give_up_after=1 在第 2 次死亡后弃管）"
+        );
         sup.join_all();
     }
 }
