@@ -90,12 +90,15 @@ impl WhisperEngine {
 
     /// worker 工厂：从 WorkerConfig.options 解析 model_path（装配层约定）
     pub fn from_config(cfg: &WorkerConfig) -> Result<Self, EngineError> {
-        let model_path = cfg
-            .options
-            .get("model_path")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| EngineError::Load("options 缺少 model_path".into()))?;
-        Self::load(Path::new(model_path), cfg.pad_seconds, &cfg.language)
+        let model_path = match &cfg.options {
+            crate::worker::WorkerOptions::ModelPath(p) => p,
+            other => {
+                return Err(EngineError::Load(format!(
+                    "options 应带 ModelPath，实际 {other:?}"
+                )))
+            }
+        };
+        Self::load(model_path, cfg.pad_seconds, &cfg.language)
     }
 
     /// lang_id → ISO 码（whisper.cpp 静态表；检测不到回退 "auto"）
@@ -247,20 +250,19 @@ mod tests {
     fn from_config_requires_model_path_option() {
         let cfg = WorkerConfig {
             engine: "whisper".into(),
-            display_name: "Whisper tiny".into(),
             language: "auto".into(),
             pad_seconds: Some(0.5),
-            options: serde_json::json!({}),
+            options: crate::worker::WorkerOptions::ModelPath(
+                std::path::PathBuf::from("m.bin"),
+            ),
         };
         let err = WhisperEngine::from_config(&cfg);
         assert!(matches!(err, Err(EngineError::Load(_))));
         // model_path 指向不存在文件 → Load 错误（不 panic；合成路径 temp 派生，PH-2）
         let cfg = WorkerConfig {
-            options: serde_json::json!({
-                "model_path": std::env::temp_dir()
-                    .join("lt_no_such_ggml-tiny-q5_1.bin")
-                    .to_string_lossy()
-            }),
+            options: crate::worker::WorkerOptions::ModelPath(
+                std::env::temp_dir().join("lt_no_such_ggml-tiny-q5_1.bin"),
+            ),
             ..cfg
         };
         let err = WhisperEngine::from_config(&cfg);

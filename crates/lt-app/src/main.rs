@@ -178,13 +178,11 @@ fn asr_worker_entry(cfg_json: &str) -> anyhow::Result<()> {
             std::io::stdout().lock(),
             config,
             move |cfg| {
-                let dir = cfg
-                    .options
-                    .get("model_dir")
-                    .and_then(|v| v.as_str())
-                    .map(std::path::PathBuf::from)
-                    .ok_or_else(|| anyhow::anyhow!("缺少 model_dir"))?;
-                lt_asr::sensevoice::SenseVoiceEngine::load(&dir, cfg.pad_seconds, &cfg.language)
+                let dir = match &cfg.options {
+                    lt_asr::WorkerOptions::ModelDir(d) => d,
+                    other => anyhow::bail!("sensevoice 应带 ModelDir，实际 {other:?}"),
+                };
+                lt_asr::sensevoice::SenseVoiceEngine::load(dir, cfg.pad_seconds, &cfg.language)
                     .map_err(|e| anyhow::anyhow!("{e}"))
             },
         ),
@@ -194,14 +192,12 @@ fn asr_worker_entry(cfg_json: &str) -> anyhow::Result<()> {
                 std::io::stdout().lock(),
                 config,
                 move |cfg| {
-                    let dir = cfg
-                        .options
-                        .get("model_dir")
-                        .and_then(|v| v.as_str())
-                        .map(std::path::PathBuf::from)
-                        .ok_or_else(|| anyhow::anyhow!("缺少 model_dir"))?;
+                    let dir = match &cfg.options {
+                        lt_asr::WorkerOptions::ModelDir(d) => d,
+                        other => anyhow::bail!("nano 应带 ModelDir，实际 {other:?}"),
+                    };
                     // nano 无 padding 语义（pad_seconds 恒 None），语言为创建期参数
-                    lt_asr::NanoEngine::load(&dir, &cfg.language)
+                    lt_asr::NanoEngine::load(dir, &cfg.language)
                         .map_err(|e| anyhow::anyhow!("{e}"))
                 },
             )
@@ -212,14 +208,12 @@ fn asr_worker_entry(cfg_json: &str) -> anyhow::Result<()> {
                 std::io::stdout().lock(),
                 config,
                 move |cfg| {
-                    let dir = cfg
-                        .options
-                        .get("model_dir")
-                        .and_then(|v| v.as_str())
-                        .map(std::path::PathBuf::from)
-                        .ok_or_else(|| anyhow::anyhow!("缺少 model_dir"))?;
+                    let dir = match &cfg.options {
+                        lt_asr::WorkerOptions::ModelDir(d) => d,
+                        other => anyhow::bail!("qwen3 应带 ModelDir，实际 {other:?}"),
+                    };
                     // qwen3 无 padding/语言参数（pad_seconds 恒 None，纯 auto-LID）
-                    lt_asr::Qwen3AsrEngine::load(&dir).map_err(|e| anyhow::anyhow!("{e}"))
+                    lt_asr::Qwen3AsrEngine::load(dir).map_err(|e| anyhow::anyhow!("{e}"))
                 },
             )
         }

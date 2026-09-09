@@ -13,7 +13,7 @@
 //!   （引擎只在请求内拿到控制权，间隙死亡必须由旁观线程制造，H2 回归用例依赖）。
 
 use lt_asr::engine::AsrEngine;
-use lt_asr::worker::WorkerConfig;
+use lt_asr::worker::{EchoOptions, WorkerConfig, WorkerOptions};
 use lt_proto::{AsrResult, EngineError};
 
 /// echo 引擎：返回固定文本 + 样本长度
@@ -26,13 +26,13 @@ struct EchoEngine {
 }
 
 impl EchoEngine {
-    fn from_options(options: &serde_json::Value) -> Self {
+    fn from_options(options: &EchoOptions) -> Self {
         Self {
-            hang_ms: opt_u64(options, "hang_ms"),
-            crash_on_transcribe: opt_bool(options, "crash_on_transcribe"),
-            crash_on_set_language: opt_bool(options, "crash_on_set_language"),
-            fail_transcribe: opt_bool(options, "fail_transcribe"),
-            fail_set_language: opt_bool(options, "fail_set_language"),
+            hang_ms: options.hang_ms,
+            crash_on_transcribe: options.crash_on_transcribe,
+            crash_on_set_language: options.crash_on_set_language,
+            fail_transcribe: options.fail_transcribe,
+            fail_set_language: options.fail_set_language,
         }
     }
 }
@@ -80,26 +80,15 @@ impl AsrEngine for EchoEngine {
 
 /// 引擎工厂（EngineFactory = fn 指针）：装载失败走真实 error(recoverable=false) 路径
 fn echo_factory(cfg: &WorkerConfig) -> anyhow::Result<EchoEngine> {
-    if opt_bool(&cfg.options, "fail_load") {
+    let WorkerOptions::Echo(echo) = &cfg.options else {
+        anyhow::bail!("fake worker 应带 WorkerOptions::Echo");
+    };
+    if echo.fail_load {
         anyhow::bail!("注入的装载失败（fail_load）");
     }
-    Ok(EchoEngine::from_options(&cfg.options))
+    Ok(EchoEngine::from_options(echo))
 }
 
-fn opt_bool(options: &serde_json::Value, key: &str) -> bool {
-    options
-        .get("fake")
-        .and_then(|f| f.get(key))
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false)
-}
-fn opt_u64(options: &serde_json::Value, key: &str) -> u64 {
-    options
-        .get("fake")
-        .and_then(|f| f.get(key))
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0)
-}
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -109,12 +98,16 @@ fn main() {
     };
     let config: WorkerConfig = serde_json::from_str(&args[cfg_pos + 1]).expect("配置解析");
 
-    if opt_bool(&config.options, "crash_on_ready") {
+    let WorkerOptions::Echo(echo) = &config.options else {
+        eprintln!("fake worker: 应带 WorkerOptions::Echo");
+        std::process::exit(2);
+    };
+    if echo.crash_on_ready {
         // 不发 ready 直接消失（测试 ready 超时/退出路径）
         eprintln!("fake worker: ready 前退出");
         std::process::exit(3);
     }
-    let exit_after_ms = opt_u64(&config.options, "exit_after_ms");
+    let exit_after_ms = echo.exit_after_ms;
     if exit_after_ms > 0 {
         std::thread::Builder::new()
             .name("fake-exit".into())

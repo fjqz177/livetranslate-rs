@@ -37,11 +37,12 @@ pub struct Request {
     pub kind: ReqKind,
 }
 
-/// ready 载荷（对应原版 ready payload：engine/display_name）
+/// ready 载荷（对应原版 ready payload：engine 标识）
+/// W6：display_name 移出（Manager 侧标签表——显示名是装配层知识，
+/// 父子进程经 Wire 传递属多余复制；原版字段保留语义即引擎名）
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ReadyInfo {
     pub engine: String,
-    pub display_name: String,
 }
 
 /// 错误载荷（recoverable 语义：加载失败=不可恢复；单命令错误=可恢复）
@@ -370,7 +371,6 @@ mod tests {
     fn ready_and_error_shapes() {
         let ready = Response::ready(ReadyInfo {
             engine: "sensevoice".into(),
-            display_name: "SenseVoice Small".into(),
         });
         let js = serde_json::to_value(&ready).unwrap();
         assert_eq!(js["id"], serde_json::Value::Null);

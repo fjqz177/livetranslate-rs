@@ -166,9 +166,8 @@ impl AsrWorkerClient {
             crate::frame::RespKind::Ready(info) => {
                 self.status = Status::Ready;
                 tracing::info!(
-                    "ASR worker ready pid={} {} ({})",
+                    "ASR worker ready pid={} {}",
                     self.child.id(),
-                    info.display_name,
                     info.engine
                 );
                 Ok(info)

@@ -8,6 +8,7 @@
 use crate::engine::AsrEngine;
 use crate::frame::{FrameReader, FrameWriter, ReadyInfo, ReqKind, Request, Response};
 use std::io::{Read, Write};
+use std::path::PathBuf;
 
 /// 引擎工厂：由装配层注入（M2.3 SenseVoice / M5 whisper / 测试 echo）
 pub type EngineFactory<E> = fn(&WorkerConfig) -> anyhow::Result<E>;
@@ -17,13 +18,45 @@ pub type EngineFactory<E> = fn(&WorkerConfig) -> anyhow::Result<E>;
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct WorkerConfig {
     pub engine: String,
-    pub display_name: String,
     pub language: String,
     #[serde(default)]
     pub pad_seconds: Option<f32>,
-    /// 引擎自定义参数（模型路径等，装配层解释）
+    /// 引擎自定义参数（W6 类型化：装配层构造、worker 工厂解释；替代
+    /// serde_json::Value——无 schema 字符串载荷是契约走私同类病灶）
+    pub options: WorkerOptions,
+}
+
+/// 引擎参数（W6 类型化，替代 `serde_json::Value`）。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum WorkerOptions {
+    /// 模型快照目录（funasr sensevoice/nano 与 qwen3 共用；语言/段长
+    /// 经 WorkerConfig 平级字段传递，不混入引擎参数）
+    ModelDir(PathBuf),
+    /// whisper：本地 GGML 模型文件（builtin 档缓存解析或自定义本地路径）
+    ModelPath(PathBuf),
+    /// 测试假 worker 行为注入（fake_asr_worker 专用；全字段默认关/0）
+    Echo(EchoOptions),
+}
+
+/// fake worker 注入参数（AH-9：行为注入覆盖崩溃/失败/挂死/间隙死亡场景）
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct EchoOptions {
     #[serde(default)]
-    pub options: serde_json::Value,
+    pub crash_on_ready: bool,
+    #[serde(default)]
+    pub crash_on_transcribe: bool,
+    #[serde(default)]
+    pub crash_on_set_language: bool,
+    #[serde(default)]
+    pub fail_load: bool,
+    #[serde(default)]
+    pub fail_transcribe: bool,
+    #[serde(default)]
+    pub fail_set_language: bool,
+    #[serde(default)]
+    pub hang_ms: u64,
+    #[serde(default)]
+    pub exit_after_ms: u64,
 }
 
 /// worker 主循环。`stdin/stdout` 为管道；返回即退出进程。
@@ -49,7 +82,6 @@ pub fn run<E: AsrEngine + 'static>(
     };
     writer.write_response(&Response::ready(ReadyInfo {
         engine: config.engine.clone(),
-        display_name: config.display_name.clone(),
     }))?;
 
     let mut engine = Some(engine);

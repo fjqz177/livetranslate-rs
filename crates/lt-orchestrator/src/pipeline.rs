@@ -918,10 +918,9 @@ fn build_worker_config(
             Some((
                 WorkerConfig {
                     engine: engine.into(),
-                    display_name: entry.display.into(),
                     language: language.to_string(),
                     pad_seconds: pad,
-                    options: serde_json::json!({ "model_dir": model_dir.to_string_lossy() }),
+                    options: lt_asr::WorkerOptions::ModelDir(model_dir.to_path_buf()),
                 },
                 entry.display.into(),
             ))
@@ -933,10 +932,9 @@ fn build_worker_config(
             Some((
                 WorkerConfig {
                     engine: "whisper".into(),
-                    display_name: display.clone(),
                     language: language.to_string(),
                     pad_seconds: Some(whisper_pad),
-                    options: serde_json::json!({ "model_path": model_path.to_string_lossy() }),
+                    options: lt_asr::WorkerOptions::ModelPath(model_path),
                 },
                 display,
             ))
@@ -948,10 +946,9 @@ fn build_worker_config(
             Some((
                 WorkerConfig {
                     engine: "qwen3".into(),
-                    display_name: entry.display.into(),
                     language: language.to_string(),
                     pad_seconds: None,
-                    options: serde_json::json!({ "model_dir": model_dir.to_string_lossy() }),
+                    options: lt_asr::WorkerOptions::ModelDir(model_dir.to_path_buf()),
                 },
                 entry.display.into(),
             ))
@@ -1705,7 +1702,7 @@ mod tests {
         assert_eq!(cfg.engine, "nano");
         assert_eq!(cfg.pad_seconds, None, "nano 无 padding 语义");
         assert_eq!(display, "Fun-ASR-Nano");
-        assert!(cfg.options["model_dir"].as_str().is_some());
+        assert!(matches!(cfg.options, lt_asr::WorkerOptions::ModelDir(_)));
 
         let (cfg2, display2) =
             build_worker_config(&base, "funasr", "sensevoice-small", 0.5, "auto", "", 2.0)
@@ -1745,7 +1742,7 @@ mod tests {
         assert_eq!(cfg.engine, "qwen3");
         assert_eq!(cfg.pad_seconds, None, "qwen3 无 padding 语义");
         assert_eq!(display, "Qwen3-ASR-0.6B");
-        assert!(cfg.options["model_dir"].as_str().is_some());
+        assert!(matches!(cfg.options, lt_asr::WorkerOptions::ModelDir(_)));
 
         // 日志模型键分派（打错键会误导诊断）
         assert_eq!(
@@ -2029,20 +2026,21 @@ mod tests {
         let (cfg, display) = got.expect("tiny 已缓存应可装配");
         assert_eq!(cfg.engine, "whisper");
         assert_eq!(display, "Whisper tiny");
-        assert_eq!(cfg.display_name, "Whisper tiny");
         assert_eq!(cfg.language, "auto");
         // whisper 分支必须用 whisper_pad 而非 sensevoice pad
         assert_eq!(cfg.pad_seconds, Some(0.7));
-        let model_path = cfg
-            .options
-            .get("model_path")
-            .and_then(|v| v.as_str())
-            .expect("options 应带 model_path");
+        let cfg_mp = cfg.options.clone();
+        let model_path = match cfg_mp {
+            lt_asr::WorkerOptions::ModelPath(p) => p,
+            other => panic!("whisper 应带 ModelPath，实际 {other:?}"),
+        };
         assert!(
             model_path
+                .to_string_lossy()
                 .replace('\\', "/")
                 .ends_with("main/ggml-tiny-q5_1.bin"),
-            "{model_path}"
+            "{}",
+            model_path.display()
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2072,10 +2070,11 @@ mod tests {
         );
         let (cfg, display) = got.expect("存在的本地路径应直通");
         assert_eq!(cfg.engine, "whisper");
-        assert_eq!(
-            cfg.options.get("model_path").and_then(|v| v.as_str()),
-            Some(bin.to_string_lossy().as_ref())
-        );
+        let lp = match &cfg.options {
+            lt_asr::WorkerOptions::ModelPath(p) => p.to_path_buf(),
+            other => panic!("whisper 应带 ModelPath，实际 {other:?}"),
+        };
+        assert_eq!(lp, bin);
         assert_eq!(display, "my-whisper");
         assert_eq!(cfg.pad_seconds, Some(0.6));
         // 不存在的本地路径 → None（合成路径 temp 派生，path-hygiene PH-2 补漏）
@@ -2110,7 +2109,7 @@ mod tests {
         assert_eq!(cfg.engine, "sensevoice");
         assert_eq!(display, "SenseVoice Small");
         assert_eq!(cfg.pad_seconds, Some(0.4)); // funasr 用 sensevoice pad
-        assert!(cfg.options.get("model_dir").is_some());
+        assert!(matches!(cfg.options, lt_asr::WorkerOptions::ModelDir(_)));
         // manifest 不齐（缺 tokens.txt）→ 不得装配（防半截目录进引擎）
         std::fs::remove_file(ms.join("tokens.txt")).unwrap();
         assert!(

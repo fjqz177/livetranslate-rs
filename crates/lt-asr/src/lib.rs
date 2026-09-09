@@ -17,4 +17,4 @@ pub use engines::qwen3::Qwen3AsrEngine;
 pub use engines::whisper::WhisperEngine;
 pub use frame::{ErrorInfo, ReadyInfo, ReqKind, Request, RespKind, Response};
 pub use manager::{AsrEffectiveSettings, AsrManager, AsrManagerError, Spawner};
-pub use worker::WorkerConfig;
+pub use worker::{EchoOptions, WorkerConfig, WorkerOptions};

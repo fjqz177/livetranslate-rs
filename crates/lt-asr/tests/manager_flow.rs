@@ -62,18 +62,26 @@ fn flaky_spawn() -> Spawner {
 }
 
 /// 指定引擎名的配置（engine_family / 回滚测试用）
-fn cfg_engine(engine: &str, name: &str, options: serde_json::Value) -> WorkerConfig {
+fn cfg_engine(engine: &str, name: &str) -> WorkerConfig {
     WorkerConfig {
         engine: engine.into(),
-        display_name: name.into(),
         language: "auto".into(),
         pad_seconds: Some(0.5),
-        options,
+        options: lt_asr::worker::WorkerOptions::Echo(lt_asr::worker::EchoOptions::default()),
     }
 }
 
-fn cfg(name: &str, options: serde_json::Value) -> WorkerConfig {
-    cfg_engine("echo", name, options)
+fn cfg(name: &str) -> WorkerConfig {
+    cfg_engine("echo", name)
+}
+
+/// 带行为注入的配置（json! 语义迁移：注入参数类型化为 EchoOptions）
+fn cfg_echo(name: &str, mut echo: lt_asr::worker::EchoOptions) -> WorkerConfig {
+    let mut c = cfg_engine("echo", name);
+    if let lt_asr::worker::WorkerOptions::Echo(e) = &mut c.options {
+        *e = echo;
+    }
+    c
 }
 
 fn audio() -> Vec<f32> {
@@ -83,7 +91,7 @@ fn audio() -> Vec<f32> {
 #[test]
 fn success_path_resets_and_ready() {
     let mut m = AsrManager::with_spawner(fake_spawn());
-    let c = cfg("Echo", serde_json::json!({}));
+    let c = cfg("Echo");
     m.ensure_started(&c).expect("start");
     assert!(m.is_ready());
     let res = m.transcribe(&audio(), false, &eff()).expect("transcribe");
@@ -95,10 +103,7 @@ fn success_path_resets_and_ready() {
 #[test]
 fn crash_restarts_then_exhausts_to_unavailable() {
     let mut m = AsrManager::with_spawner(fake_spawn());
-    let c = cfg(
-        "Crash",
-        serde_json::json!({"fake": {"crash_on_transcribe": true}}),
-    );
+    let c = cfg_echo("Crash", lt_asr::worker::EchoOptions { crash_on_transcribe: true, ..Default::default() });
     m.ensure_started(&c).expect("start");
 
     // 每次识别都崩 worker → 恢复重启；配额 3 次耗尽后不可用
@@ -125,10 +130,7 @@ fn crash_restarts_then_exhausts_to_unavailable() {
 #[test]
 fn engine_switch_revives_unavailable() {
     let mut m = AsrManager::with_spawner(fake_spawn());
-    let bad = cfg(
-        "Crash",
-        serde_json::json!({"fake": {"crash_on_transcribe": true}}),
-    );
+    let bad = cfg_echo("Crash", lt_asr::worker::EchoOptions { crash_on_transcribe: true, ..Default::default() });
     m.ensure_started(&bad).expect("start");
     for _ in 0..4 {
         let _ = m.transcribe(&audio(), false, &eff());
@@ -136,7 +138,7 @@ fn engine_switch_revives_unavailable() {
     assert!(m.is_unavailable());
 
     // 换配置（引擎切换语义）→ 复活
-    let good = cfg("Echo", serde_json::json!({}));
+    let good = cfg("Echo");
     m.ensure_started(&good).expect("切换后应复活");
     assert!(!m.is_unavailable());
     assert!(m.transcribe(&audio(), false, &eff()).is_ok());
@@ -145,10 +147,7 @@ fn engine_switch_revives_unavailable() {
 #[test]
 fn three_consecutive_recoverable_errors_mark_unavailable() {
     let mut m = AsrManager::with_spawner(fake_spawn());
-    let c = cfg(
-        "Flaky",
-        serde_json::json!({"fake": {"fail_transcribe": true}}),
-    );
+    let c = cfg_echo("Flaky", lt_asr::worker::EchoOptions { fail_transcribe: true, ..Default::default() });
     m.ensure_started(&c).expect("start");
     for n in 1..=3 {
         match m.transcribe(&audio(), false, &eff()) {
@@ -168,10 +167,10 @@ fn three_consecutive_recoverable_errors_mark_unavailable() {
 #[test]
 fn config_change_replaces_worker() {
     let mut m = AsrManager::with_spawner(fake_spawn());
-    let a = cfg("A", serde_json::json!({}));
+    let a = cfg("A");
     m.ensure_started(&a).expect("start A");
 
-    let b = cfg("B", serde_json::json!({}));
+    let b = cfg("B");
     m.ensure_started(&b).expect("start B");
     // 旧实例已被关闭替换：新实例可用且配置为新签名
     assert!(m.transcribe(&audio(), false, &eff()).is_ok());
@@ -182,7 +181,7 @@ fn config_change_replaces_worker() {
 #[test]
 fn effective_language_applied_and_committed() {
     let mut m = AsrManager::with_spawner(fake_spawn());
-    m.ensure_started(&cfg("Echo", serde_json::json!({})))
+    m.ensure_started(&cfg("Echo"))
         .expect("start");
     assert_eq!(m.config().unwrap().language, "auto");
 
@@ -204,12 +203,8 @@ fn effective_language_applied_and_committed() {
 fn effective_padding_wrong_family_ignored() {
     let mut m = AsrManager::with_spawner(fake_spawn());
     // sensevoice → funasr 家族：快照换个 whisper 家族 padding 不应影响它
-    m.ensure_started(&cfg_engine(
-        "sensevoice",
-        "SenseVoice",
-        serde_json::json!({}),
-    ))
-    .expect("start");
+    m.ensure_started(&cfg_engine("sensevoice", "SenseVoice"))
+        .expect("start");
     assert_eq!(m.config().unwrap().pad_seconds, Some(0.5));
 
     m.transcribe(&audio(), false, &eff_with("auto", 0.5, 3.0))
@@ -230,10 +225,10 @@ fn effective_padding_wrong_family_ignored() {
 #[test]
 fn effective_retries_when_worker_dies_during_apply() {
     let mut m = AsrManager::with_spawner(fake_spawn());
-    let crash = cfg(
-        "CrashLang",
-        serde_json::json!({"fake": {"crash_on_set_language": true}}),
-    );
+    let crash = cfg_echo("CrashLang", lt_asr::worker::EchoOptions {
+        crash_on_set_language: true,
+        ..Default::default()
+    });
     m.ensure_started(&crash).expect("start");
 
     // 两次尝试均因 worker 崩溃失败（重启在配额内，非 unavailable）
@@ -247,7 +242,7 @@ fn effective_retries_when_worker_dies_during_apply() {
     assert_eq!(m.config().unwrap().language, "auto");
 
     // 切到正常 worker（配置替换 config≠快照）→ 首次 transcribe 前应用并提交
-    m.ensure_started(&cfg("Echo", serde_json::json!({})))
+    m.ensure_started(&cfg("Echo"))
         .expect("switch");
     m.transcribe(&audio(), false, &eff_with("zh", 0.5, 0.5))
         .expect("transcribe");
@@ -260,11 +255,11 @@ fn effective_retries_when_worker_dies_during_apply() {
 #[test]
 fn engine_switch_failure_rolls_back() {
     let mut m = AsrManager::with_spawner(switch_fail_spawn());
-    let good = cfg_engine("echo", "Echo", serde_json::json!({}));
+    let good = cfg_engine("echo", "Echo");
     m.ensure_started(&good).expect("start");
 
     // 切到 bad 引擎：加载失败 → 用旧配置恢复旧 worker，manager 仍可用
-    let bad = cfg_engine("bad", "Bad", serde_json::json!({}));
+    let bad = cfg_engine("bad", "Bad");
     let err = m.ensure_started(&bad).expect_err("切换应失败");
     assert!(
         !err.unavailable(),
@@ -280,7 +275,7 @@ fn engine_switch_failure_rolls_back() {
 fn first_start_failure_has_no_rollback() {
     let mut m = AsrManager::with_spawner(failing_spawn());
     let err = m
-        .ensure_started(&cfg("Echo", serde_json::json!({})))
+        .ensure_started(&cfg("Echo"))
         .expect_err("首次启动应失败");
     // 首次启动本就没有旧 worker：仅 Failed，不标记不可用
     assert!(!err.unavailable(), "首次失败应仅 Failed: {err}");
@@ -295,7 +290,7 @@ fn first_start_failure_has_no_rollback() {
 #[test]
 fn crash_between_requests_restarts_on_next_transcribe() {
     let mut m = AsrManager::with_spawner(fake_spawn());
-    let c = cfg("Echo", serde_json::json!({"fake": {"exit_after_ms": 800}}));
+    let c = cfg_echo("Echo", lt_asr::worker::EchoOptions { exit_after_ms: 800, ..Default::default() });
     m.ensure_started(&c).expect("start");
     assert!(m.transcribe(&audio(), false, &eff()).is_ok(), "首次识别应成功");
     std::thread::sleep(std::time::Duration::from_millis(1200));
@@ -313,7 +308,7 @@ fn crash_between_requests_restarts_on_next_transcribe() {
 #[test]
 fn failed_recover_gap_rebuilds_then_marks_unavailable() {
     let mut m = AsrManager::with_spawner(flaky_spawn());
-    let c = cfg("Echo", serde_json::json!({"fake": {"exit_after_ms": 800}}));
+    let c = cfg_echo("Echo", lt_asr::worker::EchoOptions { exit_after_ms: 800, ..Default::default() });
     m.ensure_started(&c).expect("start");
     assert!(m.transcribe(&audio(), false, &eff()).is_ok());
     std::thread::sleep(std::time::Duration::from_millis(1200));
@@ -326,7 +321,7 @@ fn failed_recover_gap_rebuilds_then_marks_unavailable() {
     assert!(err.unavailable(), "实际: {err}");
     assert!(m.is_unavailable());
     // 换配置（引擎切换语义）→ 复活（注入第 3 次起成功）
-    m.ensure_started(&cfg("Echo2", serde_json::json!({})))
+    m.ensure_started(&cfg("Echo2"))
         .expect("复活");
     assert!(m.transcribe(&audio(), false, &eff()).is_ok());
     m.shutdown();
@@ -337,7 +332,7 @@ fn failed_recover_gap_rebuilds_then_marks_unavailable() {
 #[test]
 fn load_failure_frame_marks_first_start_failed() {
     let mut m = AsrManager::with_spawner(fake_spawn());
-    let c = cfg("Echo", serde_json::json!({"fake": {"fail_load": true}}));
+    let c = cfg_echo("Echo", lt_asr::worker::EchoOptions { fail_load: true, ..Default::default() });
     let err = m.ensure_started(&c).unwrap_err();
     assert!(!err.unavailable(), "首次装载失败应仅 Failed: {err}");
     assert!(!m.is_unavailable());
@@ -348,9 +343,9 @@ fn load_failure_frame_marks_first_start_failed() {
 #[test]
 fn set_language_recoverable_fail_still_commits_effective() {
     let mut m = AsrManager::with_spawner(fake_spawn());
-    let c = cfg(
+    let c = cfg_echo(
         "Echo",
-        serde_json::json!({"fake": {"fail_set_language": true}}),
+        lt_asr::worker::EchoOptions { fail_set_language: true, ..Default::default() },
     );
     m.ensure_started(&c).expect("start");
     let res = m
