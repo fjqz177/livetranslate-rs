@@ -7,12 +7,12 @@
 //! 状态共享。原版 Tab 版无模型多选（跑全部模型），按钮语义 = 全选。
 
 use super::{group_card, Palette};
-use crate::state::{BenchUi, Settings};
+use crate::state::{BenchUi, SessionView, Settings};
 use crate::windows::bench::{self, BENCH_SRC_LANGS, BENCH_TGT_LANGS, LOG_BG, LOG_FG};
 use egui::{Color32, RichText, ScrollArea, Ui};
 
 /// 基准测试 Tab UI 总入口（panel_ui 按 PanelPage::Benchmark 分派）
-pub fn page(ui: &mut Ui, settings: &mut Settings, bench: &mut BenchUi, pal: &Palette) {
+pub fn page(ui: &mut Ui, session: &mut SessionView, settings: &mut Settings, bench: &mut BenchUi, pal: &Palette) {
     // 模型勾选与 settings.models 对位（Tab 版 = 全部勾选，原版 _run_benchmark 语义）
     bench::align_selection(&mut bench.selected, settings.models.len());
 
@@ -49,7 +49,7 @@ pub fn page(ui: &mut Ui, settings: &mut Settings, bench: &mut BenchUi, pal: &Pal
                     )
                     .clicked()
                 {
-                    bench::start_benchmark_public(bench, settings);
+                    bench::start_benchmark_public(bench, session, settings);
                 }
             });
         });

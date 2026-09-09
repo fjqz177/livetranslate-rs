@@ -299,6 +299,10 @@ pub fn run_benchmark_blocking(
 /// 后台线程版基准（对照原版 run_benchmark）：逐行回调输出，最后回调
 /// `BenchEvent::Finished`（W2：替代 `LogLine{target:"benchmark"}`+完成哨兵
 /// 哨兵——完成语义类型化，基准不再借道日志总线）。
+///
+/// W5（架构 2.0 R22）：`cancel` 为取消标志（`Cmd::CancelBench` 置位）——
+/// 在模型边界轮询：取消后不再启动新模型线程，已启动的以各自超时收敛
+/// （join 全部后落 Cancelled 行 + Finished{ok:false}）。
 #[allow(clippy::too_many_arguments)]
 pub fn run_benchmark<F>(
     models: Vec<BenchModel>,
@@ -306,6 +310,7 @@ pub fn run_benchmark<F>(
     target_lang: &str,
     timeout_s: u32,
     prompt: &str,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
     on_event: F,
 ) -> std::thread::JoinHandle<()>
 where
@@ -326,10 +331,11 @@ where
         )));
 
         // 每模型一个线程（原版 ThreadPoolExecutor(max_workers=len(models))），
-        // 测完即输出该模型明细行（提交顺序）
+        // 测完即输出该模型明细行（提交顺序）；提交前轮询取消标志（W5）
         let handles: Vec<_> = models
             .iter()
             .cloned()
+            .take_while(|_| !cancel.load(std::sync::atomic::Ordering::Relaxed))
             .map(|m| {
                 let sentences: Vec<&str> = sentences_for(&source_lang).to_vec();
                 let prompt = prompt.clone();
@@ -398,6 +404,10 @@ where
                 .partial_cmp(&b.avg_ttft)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
+        // W5：取消说明行（非模型失败——Cmd::CancelBench 触发了模型边界截停）
+        if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            on_event(BenchOutput::Line("  已取消（模型边界截停，在途模型以超时收敛）".into()));
+        }
         on_event(BenchOutput::Line(format!("\n{}", "=".repeat(60))));
         on_event(BenchOutput::Line("Ranking by Avg TTFT:".into()));
         for (i, r) in (1..).zip(results.iter().filter(|r| r.error.is_none())) {
@@ -413,10 +423,61 @@ where
                 r.error.clone().unwrap_or_default()
             )));
         }
-        let ok = !results.is_empty() && results.iter().all(|r| r.error.is_none());
+        let ok = !cancel.load(std::sync::atomic::Ordering::Relaxed)
+            && !results.is_empty()
+            && results.iter().all(|r| r.error.is_none());
         on_event(BenchOutput::Finished {
             ok,
             elapsed_ms: t0.elapsed().as_millis() as u64,
         });
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// W5f：取消标志预置 → 模型边界截停（零模型启动、零网络调用）——
+    /// 输出取消行 + Finished{ok:false}（`Cmd::CancelBench` 语义闭环）
+    #[test]
+    fn run_benchmark_cancel_immediately() {
+        use std::sync::atomic::AtomicBool;
+        use std::sync::Arc;
+
+        let cancel = Arc::new(AtomicBool::new(true));
+        let (tx, rx) = std::sync::mpsc::channel();
+        let h = run_benchmark(
+            vec![BenchModel {
+                name: "m".into(),
+                api_base: "http://127.0.0.1:1".into(),
+                api_key: "k".into(),
+                model: "d".into(),
+                proxy: "none".into(),
+                no_system_role: false,
+            }],
+            "en",
+            "zh",
+            1,
+            "p",
+            cancel,
+            move |out| {
+                let _ = tx.send(out);
+            },
+        );
+        let mut saw_cancel_line = false;
+        let mut saw_finished = false;
+        while let Ok(out) = rx.recv_timeout(std::time::Duration::from_secs(3)) {
+            match out {
+                BenchOutput::Line(l) if l.contains("已取消") => saw_cancel_line = true,
+                BenchOutput::Finished { ok, .. } => {
+                    saw_finished = true;
+                    assert!(!ok, "取消后 Finished 必须 ok=false");
+                }
+                _ => {}
+            }
+        }
+        assert!(saw_finished, "取消后必须终结 Finished 事件");
+        assert!(saw_cancel_line, "应输出取消说明行");
+        let _ = h.join();
+    }
 }

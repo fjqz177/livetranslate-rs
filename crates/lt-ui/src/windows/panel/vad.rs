@@ -13,7 +13,7 @@
 //! - "性能基准"按钮在页头（mod.rs），点击仅记日志（窗口随 M4.4 接入）。
 
 use super::{group_card, hint_line, mark_settings_dirty, send_switch_engine, Palette};
-use crate::state::{DeviceCache, DownloadUiState, PanelUi, SessionView, Settings};
+use crate::state::{DownloadUiState, PanelUi, SessionView, Settings};
 use egui::{RichText, Ui};
 use lt_proto::{AudioDeviceChoice, MicDeviceChoice};
 
@@ -316,9 +316,10 @@ pub fn page(ui: &mut Ui, panel: &mut PanelUi, session: &mut SessionView, setting
     let engine = settings.asr_engine.clone();
     let is_funasr = engine == "funasr";
 
-    // 设备枚举缓存：首次进入识别页时构建（UI 线程临时 WasapiBackend，COM 自 init）
+    // 设备枚举（W5/R13）：首入请求一次——枚举线上移到编排域 Supervisor
+    // 一次性线程（帧内不再阻塞 COM），结果经 UiEvent::Devices 回执缓存
     if panel.state.devices.is_none() {
-        panel.state.devices = Some(enumerate_devices());
+        session.send_cmd(lt_proto::Cmd::RefreshDevices);
     }
 
     // ── ASR 引擎（原版 asr_group）──
@@ -608,7 +609,7 @@ pub fn page(ui: &mut Ui, panel: &mut PanelUi, session: &mut SessionView, setting
                 )
                 .clicked()
             {
-                panel.state.devices = Some(enumerate_devices());
+                session.send_cmd(lt_proto::Cmd::RefreshDevices);
             }
         });
 
@@ -1229,28 +1230,6 @@ fn engine_status(settings: &Settings, engine: &str, pal: &Palette) -> (String, e
     ) {
         CacheStatus::Cached(_) => (lt_i18n::t("engine_status_available"), pal.ok),
         _ => (lt_i18n::t("engine_status_needs_model"), pal.warn),
-    }
-}
-
-/// UI 线程临时枚举（WasapiBackend::new 仅作枚举面，不 start 线程；
-/// 函数自带 COM init，见 lt-audio audio 模块注释）
-fn enumerate_devices() -> DeviceCache {
-    #[cfg(windows)]
-    {
-        use lt_audio::audio::AudioBackend as _;
-        let be = lt_audio::audio::wasapi_win::WasapiBackend::new();
-        let outputs = be.list_output_devices().unwrap_or_default();
-        let inputs = be.list_input_devices().unwrap_or_default();
-        let default_output = be.current_default_output().unwrap_or(None);
-        DeviceCache {
-            outputs,
-            inputs,
-            default_output,
-        }
-    }
-    #[cfg(not(windows))]
-    {
-        DeviceCache::default()
     }
 }
 

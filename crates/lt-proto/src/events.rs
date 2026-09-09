@@ -104,6 +104,17 @@ pub enum UiEvent {
         queue: QueueId,
         dropped_total: u64,
     },
+    /// 音频设备枚举结果（W5/R13：`Cmd::RefreshDevices` 的回执——设备探测下线
+    /// 到编排域 Supervisor 一次性线程，UI 帧内不再阻塞 COM 枚举）
+    Devices(DeviceList),
+    /// 导出文件路径回执（W5/R19：rfd 保存框移出事件循环线程——同步对话框挪
+    /// Supervisor 一次性线程，path=None = 用户取消）
+    ExportSave {
+        mode: ExportFileMode,
+        path: Option<String>,
+    },
+    /// 字幕背景图选择回执（W5/R19：同上——path=None = 用户取消）
+    BgImagePicked { path: Option<String> },
 }
 
 /// 应用级命令（托盘菜单与悬浮窗菜单同源；W2 替代 `Menu(String)` 字符串协议。
@@ -278,6 +289,12 @@ pub enum ThreadRole {
     /// 事件动脉桥线程（W2：动脉 → `UiMsg::Events` 批量投递；INV1 白名单
     /// "proxy 生产者仅动脉桥"的对位身份）
     ArteryBridge,
+    /// 设备探测一次性线程（W5：`Cmd::RefreshDevices` 的 Supervisor 会话；
+    /// Policy::Never——死亡仅上报）
+    DeviceProbe,
+    /// 文件对话框一次性线程（W5/R19：rfd 同步对话框移离事件循环线程；
+    /// Policy::Never）
+    FileDialog,
 }
 
 /// 被监督线程死亡事件载荷（R1）
@@ -288,6 +305,37 @@ pub struct ThreadDied {
     pub detail: String,
     /// 监督器是否已按策略重启
     pub restarted: bool,
+}
+
+/// 音频设备枚举结果（W5/R13：DeviceCache 的契约形态——UI 侧缓存替换为事件载荷）
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct DeviceList {
+    /// 输出设备名（默认设备恒在列表内；不含 "-- 默认 --" 合成项）
+    pub outputs: Vec<String>,
+    /// 输入设备名（不含 "__default__" 合成项）
+    pub inputs: Vec<String>,
+    /// 系统默认输出设备名（None = 枚举失败/无设备）
+    pub default_output: Option<String>,
+}
+
+/// 导出文件模式（W5：原 strings "original"/"translation"/"all" 的契约形态；
+/// 由 lt-ui 侧映射回原版行格式）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExportFileMode {
+    Original,
+    Translation,
+    All,
+}
+
+impl ExportFileMode {
+    /// 文件名后缀（原版 export 的文件名 livetrans_<ts>_<suffix>.txt）
+    pub fn suffix(self) -> &'static str {
+        match self {
+            ExportFileMode::Original => "original",
+            ExportFileMode::Translation => "translation",
+            ExportFileMode::All => "all",
+        }
+    }
 }
 
 /// UI → 管道的命令
@@ -332,6 +380,30 @@ pub enum Cmd {
     },
     /// 翻译配置「测试连接」：构建临时装置发一次最简请求，回执 TestTranslatorResult
     TestTranslator(Box<ModelConfig>),
+    /// 重新枚举音频设备（W5/R13：面板识别页首次进入/刷新按钮；编排域起
+    /// Supervisor 一次性探测线程 → `UiEvent::Devices` 回执——UI 帧内不再
+    /// 阻塞 COM 枚举）
+    RefreshDevices,
+    /// 启动性能基准（W5/R13：编排域起 Supervisor 一次性线程跑 `run_benchmark`，
+    /// 输出经动脉 `UiEvent::Bench` 回流——UI 侧不再直持线程与事件旁路）
+    RunBench {
+        models: Vec<ModelConfig>,
+        src: String,
+        tgt: String,
+        timeout: u32,
+        prompt: String,
+    },
+    /// 取消在途基准（supervisor 线程在模型边界轮询取消标志）
+    CancelBench,
+    /// 导出保存框（W5/R19：rfd 同步对话框移出错线程——编排域 Supervisor
+    /// 一次性线程弹框，选中路径经 `UiEvent::ExportSave` 回执）
+    PickExportFile {
+        mode: ExportFileMode,
+        default_name: String,
+        dialog_title: String,
+    },
+    /// 字幕背景图选择框（W5/R19：同上 → `UiEvent::BgImagePicked` 回执）
+    PickBgImage { dialog_title: String },
 }
 
 /// 音频设备选择（对应 settings.audio_device 语义）

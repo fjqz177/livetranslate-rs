@@ -14,8 +14,8 @@
 //! cmd mpsc 在 `about_to_wait` 直排（UI 与 shell 同在 winit 线程，无竞序）；
 //! 下载编排由本文件持有的 [`DownloadManager`] 接管（会话线程跑下载）。
 
-use lt_orchestrator::{DownloadManager, Msg, Pipeline, SettingsBus};
-use lt_proto::{AppCommand, Cmd, Settings, UiEvent, UiMsg};
+use lt_orchestrator::{DownloadManager, Msg, Pipeline, Policy, SettingsBus, Supervisor};
+use lt_proto::{AppCommand, Cmd, DeviceList, Settings, ThreadRole, UiEvent, UiMsg};
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
@@ -36,18 +36,25 @@ pub struct AppShell {
     proxy: winit::event_loop::EventLoopProxy<UiMsg>,
     /// 下载编排（会话线程化；设置读总线——经 `bus.load().raw`）
     download: DownloadManager,
+    /// 编排域监督器（app 侧实例，W5：设备探测/基准/文件对话框一次性线程
+    /// 的出生点——Policy::Never 死亡仅上报；动脉桥/日志桥同源）
+    sup: std::sync::Arc<Supervisor>,
+    /// 在途基准取消标志（W5f：Cmd::CancelBench 置位；RunBench 新会话重置）
+    bench_cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
     pipeline: Option<Pipeline>,
     started: bool,
 }
 
 impl AppShell {
     /// `start_settings` 为 Some（启动即就绪）时立即启动管道。
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         ui: lt_ui::MultiWindowApp,
         artery: lt_orchestrator::EventSink,
         monitor_cell: std::sync::Arc<arc_swap::ArcSwap<lt_proto::MonitorSample>>,
         cmd_rx: std::sync::mpsc::Receiver<Cmd>,
         proxy: winit::event_loop::EventLoopProxy<UiMsg>,
+        sup: std::sync::Arc<Supervisor>,
         start_settings: Option<Settings>,
     ) -> Self {
         // 总线先于一切读者就绪：初值 = 当前设置（pipeline None 期间的
@@ -66,6 +73,8 @@ impl AppShell {
             cmd_rx,
             proxy,
             download,
+            sup,
+            bench_cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             pipeline: None,
             started: false,
         };
@@ -278,7 +287,131 @@ impl AppShell {
             Cmd::Stop => {
                 tracing::info!("命令 Cmd::Stop → 请求退出");
             }
+            // ── W5 下沉三路 ──
+            // 设备探测（R13）：Supervisor 一次性线程（Policy::Never）——
+            // UI 帧内不再阻塞 COM 枚举；结果经动脉 Devices 回执
+            Cmd::RefreshDevices => self.spawn_device_probe(),
+            // 性能基准（R22）：Supervisor 一次性线程跑 run_benchmark
+            Cmd::RunBench {
+                models,
+                src,
+                tgt,
+                timeout,
+                prompt,
+            } => self.start_bench(models, src, tgt, timeout, prompt),
+            Cmd::CancelBench => {
+                self.bench_cancel
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                tracing::info!("取消基准（模型边界截停）");
+            }
+            // rfd 同步对话框移离事件循环线程（R19）：Supervisor 一次性线程弹框
+            Cmd::PickExportFile {
+                mode,
+                default_name,
+                dialog_title,
+            } => self.spawn_file_dialog(
+                dialog_title,
+                default_name,
+                FilePickKind::Export,
+                Box::new(move |path| UiEvent::ExportSave { mode, path }),
+            ),
+            Cmd::PickBgImage { dialog_title } => self.spawn_file_dialog(
+                dialog_title,
+                String::new(),
+                FilePickKind::BgImage,
+                Box::new(move |path| UiEvent::BgImagePicked { path }),
+            ),
         }
+    }
+
+    /// 设备探测一次性线程（W5/R13）：COM 枚举面自库内 init（WasapiBackend::new
+    /// 自带 COM init——探测器运行在独立线程，不污染 UI 线程 COM 状态）
+    fn spawn_device_probe(&self) {
+        let artery = self.artery.clone();
+        self.sup.spawn(
+            ThreadRole::DeviceProbe,
+            "lt-device-probe",
+            Policy::Never,
+            move || {
+                let artery = artery.clone();
+                Box::new(move || {
+                    artery.push(UiEvent::Devices(probe_audio_devices()));
+                })
+            },
+        );
+    }
+
+    /// 性能基准一次性线程（W5/R22）：ModelConfig → BenchModel 转换在此
+    /// （随迁自 lt-ui——UI 侧不再直持 lt-translate 基准执行）；取消经
+    /// `bench_cancel` 在模型边界轮询
+    fn start_bench(
+        &mut self,
+        models: Vec<lt_proto::ModelConfig>,
+        src: String,
+        tgt: String,
+        timeout: u32,
+        prompt: String,
+    ) {
+        self.bench_cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let bench_models: Vec<lt_translate::bench::BenchModel> =
+            models.iter().map(to_bench_model).collect();
+        let artery = self.artery.clone();
+        let cancel = self.bench_cancel.clone();
+        self.sup.spawn(ThreadRole::Bench, "lt-bench", Policy::Never, move || {
+            // factory 为 Fn（死亡可重生）：每次构造干净的运行闭包（INV5）
+            let artery = artery.clone();
+            let bench_models = bench_models.clone();
+            let src = src.clone();
+            let tgt = tgt.clone();
+            let prompt = prompt.clone();
+            let cancel = cancel.clone();
+            Box::new(move || {
+                lt_translate::bench::run_benchmark(
+                    bench_models,
+                    &src,
+                    &tgt,
+                    timeout,
+                    &prompt,
+                    cancel,
+                    move |out| {
+                        let ev = match out {
+                            lt_translate::bench::BenchOutput::Line(l) => {
+                                UiEvent::Bench(lt_proto::BenchEvent::Line(l))
+                            }
+                            lt_translate::bench::BenchOutput::Finished { ok, elapsed_ms } => {
+                                UiEvent::Bench(lt_proto::BenchEvent::Finished { ok, elapsed_ms })
+                            }
+                        };
+                        artery.push(ev);
+                    },
+                );
+            })
+        });
+    }
+
+    /// 文件对话框一次性线程（W5/R19）：rfd 同步 Dialog 的阻塞面被隔离到该
+    /// 线程（事件循环线程零阻塞）；`make_event` 把选中路径（None=取消）装配
+    /// 为回流事件
+    fn spawn_file_dialog(
+        &self,
+        dialog_title: String,
+        default_name: String,
+        kind: FilePickKind,
+        make_event: Box<dyn Fn(Option<String>) -> UiEvent + Send + Sync>,
+    ) {
+        let artery = self.artery.clone();
+        let make_event: std::sync::Arc<dyn Fn(Option<String>) -> UiEvent + Send + Sync> =
+            make_event.into();
+        self.sup.spawn(ThreadRole::FileDialog, "lt-file-dialog", Policy::Never, move || {
+            // factory 为 Fn（死亡可重生）：每次构造干净运行闭包（INV5）
+            let artery = artery.clone();
+            let make_event = make_event.clone();
+            let dialog_title = dialog_title.clone();
+            let default_name = default_name.clone();
+            Box::new(move || {
+                artery.push(make_event(pick_file_path(&dialog_title, &default_name, kind)));
+            })
+        });
     }
 
     /// 设置落盘（主线程直写；原子写由 settings_io 保证）
@@ -356,5 +489,99 @@ impl ApplicationHandler<UiMsg> for AppShell {
             self.handle_cmd(cmd);
         }
         self.ui.about_to_wait(event_loop);
+    }
+}
+
+// ── W5 下沉三路：探索/弹框/基准的纯函数助手（shell 侧；UI 不再直持） ──
+
+/// 文件对话框形态（导出=保存框 + txt 过滤器；背景图=打开框 + 图片过滤器）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FilePickKind {
+    Export,
+    BgImage,
+}
+
+/// rfd 同步对话框（W5/R19）：仅允许经 [`AppShell::spawn_file_dialog`] 在
+/// 监督器一次性线程调用——事件循环线程禁止任何同步模态（D-33）。
+fn pick_file_path(title: &str, default_name: &str, kind: FilePickKind) -> Option<String> {
+    let mut dialog = rfd::FileDialog::new().set_title(title);
+    match kind {
+        FilePickKind::Export => {
+            dialog = dialog
+                .set_file_name(default_name)
+                .add_filter("Text", &["txt"]);
+            dialog.save_file().map(|p| p.display().to_string())
+        }
+        FilePickKind::BgImage => dialog
+            .add_filter("Images", &["png", "webp", "jpg", "jpeg", "bmp"])
+            .pick_file()
+            .map(|p| p.display().to_string()),
+    }
+}
+
+/// 音频设备枚举（W5/R13：自 lt-audio 迁入——UI 帧内 COM 枚举下线；
+/// WasapiBackend::new 自带 COM init，独立线程调用安全）
+fn probe_audio_devices() -> DeviceList {
+    #[cfg(windows)]
+    {
+        use lt_audio::audio::AudioBackend as _;
+        let be = lt_audio::audio::wasapi_win::WasapiBackend::new();
+        DeviceList {
+            outputs: be.list_output_devices().unwrap_or_default(),
+            inputs: be.list_input_devices().unwrap_or_default(),
+            default_output: be.current_default_output().unwrap_or(None),
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        DeviceList::default()
+    }
+}
+
+/// ModelConfig → BenchModel（基准所需连接子集；随基准执行自 lt-ui 迁入——
+/// UI 不再直持执行，只发类型化命令载荷）
+fn to_bench_model(m: &lt_proto::ModelConfig) -> lt_translate::bench::BenchModel {
+    lt_translate::bench::BenchModel {
+        name: m.name.clone(),
+        api_base: m.api_base.clone(),
+        api_key: m.api_key.clone(),
+        model: m.model.clone(),
+        proxy: m.proxy.clone(),
+        no_system_role: m.no_system_role,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// W5f：ModelConfig → BenchModel 基准连接子集转换（随执行自 lt-ui 迁入）
+    #[test]
+    fn to_bench_model_copies_connection_fields() {
+        let cfg = lt_proto::ModelConfig {
+            name: "glm".into(),
+            api_base: "https://open.bigmodel.cn/api/paas/v4".into(),
+            api_key: "k".into(),
+            model: "glm-4".into(),
+            proxy: "system".into(),
+            no_system_role: true,
+            ..Default::default()
+        };
+        let b = to_bench_model(&cfg);
+        assert_eq!(b.name, "glm");
+        assert_eq!(b.api_base, "https://open.bigmodel.cn/api/paas/v4");
+        assert_eq!(b.api_key, "k");
+        assert_eq!(b.model, "glm-4");
+        assert_eq!(b.proxy, "system");
+        assert!(b.no_system_role);
+        // 基准之外的字段（价格/overrides/prompt）不参与转换
+        let cfg2 = lt_proto::ModelConfig {
+            context_turns: 9,
+            input_price: 3.0,
+            ..cfg
+        };
+        let b2 = to_bench_model(&cfg2);
+        assert_eq!(b2.name, "glm");
+        assert_eq!(b2.model, "glm-4");
     }
 }

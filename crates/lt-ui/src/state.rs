@@ -1,6 +1,6 @@
 //! UI 共享状态 —— 全部只被 UI 线程读写（事件经 UiMsg 进入，无锁竞争）。
 
-use lt_proto::{Cmd, SubtitleMode, UiMsg};
+use lt_proto::{Cmd, SubtitleMode};
 // Settings 为窗口模块共用类型（W5：域签名携带），从本模块公有导出
 pub use lt_proto::Settings;
 use std::time::{Duration, Instant};
@@ -772,8 +772,9 @@ pub struct OverlayUiState {
     pub pos_dirty_since: Option<Instant>,
     /// 上次保存的几何 (x, y, w, h)，未变化不触发（原版 _last_saved_geo）
     pub last_saved_geo: Option<(i32, i32, u32, u32)>,
-    /// 待执行的导出（右键菜单；"original"/"translation"/"both"，宿主帧后弹保存框）
-    pub export_request: Option<String>,
+    /// 待执行的导出（右键菜单；W5 起经 `Cmd::PickExportFile` 走编排域弹框，
+    /// 保存路径经 `UiEvent::ExportSave` 回执后写文件）
+    pub export_request: Option<lt_proto::ExportFileMode>,
 }
 
 // ── 控制面板（M4.3 第一批，对照原版 ui/panel/panel.py + _chrome.py）──
@@ -1257,14 +1258,6 @@ pub enum ThemeMode {
     Light,
 }
 
-/// 音频设备枚举缓存（UI 线程临时 WasapiBackend 枚举，刷新按钮/首次进入识别页时重建）
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct DeviceCache {
-    pub outputs: Vec<String>,
-    pub inputs: Vec<String>,
-    pub default_output: Option<String>,
-}
-
 /// 模型下载运行态（识别页缓存卡片的状态机；运行期下载的唯一 UI 反馈源）
 #[derive(Debug, Clone, Default, PartialEq)]
 pub enum DownloadUiState {
@@ -1360,7 +1353,9 @@ pub struct PanelUiState {
     /// 开机自启当前态（None=未探测；Windows 注册表 Run 键为事实源，见 panel::autostart）
     pub autostart: Option<bool>,
     /// 设备枚举缓存（None=未枚举；识别页首次显示或点"刷新"时重建）
-    pub devices: Option<DeviceCache>,
+    /// 音频设备枚举缓存（W5/R13：`UiEvent::Devices` 事件载荷——
+    /// 帧内 COM 枚举已下线，首入/刷新发 `Cmd::RefreshDevices`）
+    pub devices: Option<lt_proto::DeviceList>,
     /// 模型缓存探测缓存（DL-6/F12：识别页每帧渲染不再扫盘——2s TTL，
     /// 探测键（engine|model）变化或下载事件到达时失效）
     pub cache_probe: Option<(
@@ -1625,10 +1620,6 @@ pub struct BenchUi {
     pub src: usize,
     /// 性能基准目标语言下拉索引（BENCH_TGT_LANGS）
     pub tgt: usize,
-    /// UI → 事件环回出口（宿主构造时注入 EventLoopProxy 转发；后台线程经
-    /// send_event 回流 UiMsg——benchmark 窗的 on_line 日志流即走此通道。
-    /// W5f 基准迁 orchestrator 后删除）
-    pub event_tx: Option<std::sync::Arc<dyn Fn(UiMsg) + Send + Sync>>,
 }
 
 /// 启动流域（W5：首启向导/缺模型下载/Ready + 模型加载对话框）
@@ -1731,7 +1722,6 @@ impl AppUi {
                 selected: Vec::new(),
                 src: 0,
                 tgt: 0,
-                event_tx: None,
             },
             startup: StartupUi {
                 flow,
@@ -2078,16 +2068,6 @@ impl BenchUi {
         self.lines.push(line);
         if self.lines.len() > 500 {
             self.lines.remove(0);
-        }
-    }
-
-    /// UI → 事件环回（后台线程闭包持有 event_tx 的 Arc 克隆后调用；
-    /// W5f 基准迁 orchestrator 后随 event_tx 一并删除）。
-    /// 未注入时丢弃并记 debug（与 send_cmd 同款防御）。
-    pub fn send_event(&self, msg: UiMsg) {
-        match &self.event_tx {
-            Some(f) => f(msg),
-            None => tracing::debug!("event_tx 未注入，事件被丢弃: {msg:?}"),
         }
     }
 }

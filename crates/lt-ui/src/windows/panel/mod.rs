@@ -210,7 +210,7 @@ pub fn panel_ui(
                         subtitle_page::page(ui, panel, session, settings, modal, ctx, &pal)
                     }
                     PanelPage::Benchmark => {
-                        benchmark_tab::page(ui, settings, bench, &pal)
+                        benchmark_tab::page(ui, session, settings, bench, &pal)
                     }
                     PanelPage::Cache => data::page(ui, panel, session, settings, modal, &pal),
                     PanelPage::Changelog => changelog_tab::page(ui, &pal),

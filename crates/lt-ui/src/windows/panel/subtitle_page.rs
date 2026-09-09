@@ -467,14 +467,11 @@ fn bg_image_row(ui: &mut Ui, settings: &mut Settings, session: &mut SessionView)
             )
             .clicked()
         {
-            if let Some(p) = rfd::FileDialog::new()
-                .set_title(lt_i18n::t("subwin_bg_image_select"))
-                .add_filter("Images", &["png", "webp", "jpg", "jpeg", "bmp"])
-                .pick_file()
-            {
-                settings.subtitle_mode.bg_image = p.display().to_string();
-                mark_settings_dirty(session);
-            }
+            // W5/R19：rfd 选择框移出事件循环线程——编排域 Supervisor 一次性
+            // 线程弹框，路径经 UiEvent::BgImagePicked 回执写回（帧内零阻塞）
+            session.send_cmd(lt_proto::Cmd::PickBgImage {
+                dialog_title: lt_i18n::t("subwin_bg_image_select"),
+            });
         }
         if ui
             .add(

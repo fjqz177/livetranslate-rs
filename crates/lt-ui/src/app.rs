@@ -90,14 +90,6 @@ impl MultiWindowApp {
             egui_wgpu::RendererOptions::default(),
         ));
         let proxy = event_loop.create_proxy();
-        // UI → 事件环回出口（后台线程经 AppState.send_event 回流 UiMsg；
-        // benchmark 窗的 on_line 日志流即走此通道）
-        {
-            let proxy = proxy.clone();
-            app_state.bench.event_tx = Some(std::sync::Arc::new(move |msg: UiMsg| {
-                let _ = proxy.send_event(msg);
-            }));
-        }
         // W5b：可见性真值表初始化（启动流进行中主窗口隐藏；见 initial_visibility）
         let visible = initial_visibility(&app_state.settings, &app_state.startup.flow);
         Ok(Self {
@@ -428,7 +420,7 @@ impl MultiWindowApp {
         self.process_actions();
         if id == WinId::Overlay {
             if let Some(mode) = self.app_state.overlay.state.export_request.take() {
-                self.run_export(&mode);
+                self.run_export(mode);
             }
             if self.app_state.overlay.clear_request {
                 self.app_state.overlay.clear_request = false;
@@ -1205,6 +1197,29 @@ impl MultiWindowApp {
                 }
                 // ── 模型加载结束：关闭加载框（仅 load_dialog 显示中才动作）──
                 lt_proto::UiEvent::ModelLoadDone { .. } => self.close_load_dialog(),
+                // ── 音频设备枚举回执（W5/R13）：`Cmd::RefreshDevices` 的响应——
+                // 面板识别页设备缓存替换为事件载荷（帧内 COM 枚举已下线）──
+                lt_proto::UiEvent::Devices(list) => {
+                    self.app_state.panel.state.devices = Some(list);
+                    self.redraw(WinId::Panel);
+                }
+                // ── 导出保存路径回执（W5/R19）：rfd 对话框在编排域一次性线程
+                // 弹出（事件循环零阻塞）；选中后按模式组行写文件 ──
+                lt_proto::UiEvent::ExportSave { mode, path } => {
+                    if let Some(path) = path {
+                        self.write_export_file(&path, mode);
+                    }
+                }
+                // ── 字幕背景图路径回执（W5/R19）：同上；选中即写设置 + 防抖 ──
+                lt_proto::UiEvent::BgImagePicked { path } => {
+                    if let Some(path) = path {
+                        self.app_state.settings.subtitle_mode.bg_image = path;
+                        crate::windows::panel::mark_settings_dirty(
+                            &mut self.app_state.session,
+                        );
+                        self.redraw(WinId::Panel);
+                    }
+                }
         }
     }
 
@@ -1839,8 +1854,10 @@ impl MultiWindowApp {
     #[cfg(not(windows))]
     fn update_subtitle_drag(&mut self) {}
 
-    /// 执行导出（原版 export_messages；rfd 保存对话框 + 三种模式行格式）
-    fn run_export(&mut self, mode: &str) {
+    /// 导出请求（W5/R19）：空检查后发 `Cmd::PickExportFile` ——rfd 保存框
+    /// 移出事件循环线程（编排域 Supervisor 一次性线程弹框；原版 export_messages
+    /// 的写文件段随 `UiEvent::ExportSave` 回执执行）
+    fn run_export(&mut self, mode: lt_proto::ExportFileMode) {
         if self.app_state.overlay.messages.is_empty() {
             // P1-4：空导出就地提示（原版仅日志；用户点了按钮必须看到反馈）。
             // D-33/H-5：改原生通知（原位 rfd 同步框阻塞事件循环线程）。
@@ -1853,37 +1870,33 @@ impl MultiWindowApp {
             tracing::info!("{}", lt_i18n::t("export_empty"));
             return;
         }
-        let suffix = match mode {
-            "original" => "original",
-            "translation" => "translation",
-            _ => "all",
-        };
         let default_name = format!(
             "livetrans_{}_{}.txt",
             chrono::Local::now().format("%Y%m%d_%H%M%S"),
-            suffix
+            mode.suffix()
         );
-        let Some(path) = rfd::FileDialog::new()
-            .set_title(lt_i18n::t("export_dialog_title"))
-            .set_file_name(&default_name)
-            .add_filter("Text", &["txt"])
-            .save_file()
-        else {
-            return;
-        };
+        self.app_state.session.send_cmd(lt_proto::Cmd::PickExportFile {
+            mode,
+            default_name,
+            dialog_title: lt_i18n::t("export_dialog_title"),
+        });
+    }
+
+    /// 导出写文件（`UiEvent::ExportSave` 回执后执行；三种模式行格式不变）
+    fn write_export_file(&self, path: &str, mode: lt_proto::ExportFileMode) {
         let mut lines = Vec::new();
         for msg in &self.app_state.overlay.messages {
             let ts = &msg.timestamp;
             let orig = msg.original.trim();
             let trans = msg.translation.as_deref().unwrap_or("").trim();
             match mode {
-                "original" => lines.push(format!("[{ts}] {orig}")),
-                "translation" => {
+                lt_proto::ExportFileMode::Original => lines.push(format!("[{ts}] {orig}")),
+                lt_proto::ExportFileMode::Translation => {
                     if !trans.is_empty() {
                         lines.push(format!("[{ts}] {trans}"));
                     }
                 }
-                _ => {
+                lt_proto::ExportFileMode::All => {
                     lines.push(format!("[{ts}] {orig}"));
                     if !trans.is_empty() {
                         lines.push(format!("  -> {trans}"));
@@ -1892,11 +1905,13 @@ impl MultiWindowApp {
                 }
             }
         }
-        let body = lines.join("\n").trim_end().to_string() + "\n";
-        if let Err(e) = std::fs::write(&path, body) {
+        let body = lines.join("
+").trim_end().to_string() + "
+";
+        if let Err(e) = std::fs::write(path, body) {
             tracing::error!("{}: {e}", lt_i18n::t("export_failed"));
         } else {
-            tracing::info!("导出完成: {}", path.display());
+            tracing::info!("导出完成: {path}");
         }
     }
 

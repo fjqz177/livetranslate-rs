@@ -16,8 +16,8 @@ pub const PROTO_VERSION: u32 = 3;
 
 pub use asr_result::{language_display, AsrResult, EngineError, WordTs};
 pub use events::{
-    AppCommand, AudioDeviceChoice, AudioRole, BenchEvent, CaptureEvent, Cmd, DownloadEvent,
-    DownloadFailKind, DownloadPhase, MicDeviceChoice, MonitorSample, QueueId, ThreadDied,
-    ThreadRole, UiEvent, UiMsg,
+    AppCommand, AudioDeviceChoice, AudioRole, BenchEvent, CaptureEvent, Cmd, DeviceList,
+    DownloadEvent, DownloadFailKind, DownloadPhase, ExportFileMode, MicDeviceChoice, MonitorSample,
+    QueueId, ThreadDied, ThreadRole, UiEvent, UiMsg,
 };
 pub use settings::{normalize_language, ModelConfig, Settings, Style, SubtitleLine, SubtitleMode};

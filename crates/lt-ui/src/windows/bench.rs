@@ -3,18 +3,15 @@
 //! 源/目标语言下拉 + 模型多选（settings.models 全部默认勾选）+ 开始按钮 +
 //! 只读输出区（Consolas）+ 关闭按钮。
 //!
-//! 数据流（egui 无跨线程句柄；本版事件通道复用方案）：
-//! 后台线程经 `lt_translate::bench::run_benchmark` 测试，回调
-//! `lt_translate::bench::BenchOutput` 适配为 `proto::BenchEvent` 经
-//! `AppState.event_tx`（EventLoopProxy 转发）回流 `UiEvent::Bench`，UI 线程
-//! 在 app.rs 的 Bench 分支把 Line 同步追加到 `AppState.bench_lines` 渲染，
-//! `Finished` 到达即复位运行态并弹完成提示（W2：不借道日志总线，无
-//! 完成哨兵）。
+//! 数据流（W5f/R22）：本窗只做**编排请求**——点开始 → `Cmd::RunBench`
+//! （模型快照/语言/超时/prompt 类型化载荷）→ 编排域 Supervisor 一次性线程
+//! 跑 `lt_translate::bench::run_benchmark` → 输出经事件动脉 `UiEvent::Bench`
+//! 回流，UI 在 app.rs 的 Bench 分支追加行/复位运行态并弹完成提示（W2 起
+//! 不借道日志总线，无完成哨兵；event_tx 后台旁路随本波删除）。
 
 use crate::state::{BenchUi, SessionView, Settings};
 use egui::{Color32, RichText, ScrollArea, Ui};
-use lt_proto::{ModelConfig, UiEvent, UiMsg};
-use lt_translate::bench::{run_benchmark, BenchModel};
+use lt_proto::{Cmd, ModelConfig};
 
 /// 源语言下拉项（原版 _bench_lang）
 pub const BENCH_SRC_LANGS: [&str; 6] = ["ja", "en", "zh", "ko", "fr", "de"];
@@ -26,18 +23,6 @@ pub const LOG_BG: Color32 = Color32::from_rgb(0x1e, 0x1e, 0x2e);
 pub const LOG_FG: Color32 = Color32::from_rgb(0xcd, 0xd6, 0xf4);
 
 // ── 纯逻辑（单测覆盖） ──
-
-/// ModelConfig → BenchModel（基准所需子集：连接四要素 + no_system_role）
-pub fn to_bench_model(m: &ModelConfig) -> BenchModel {
-    BenchModel {
-        name: m.name.clone(),
-        api_base: m.api_base.clone(),
-        api_key: m.api_key.clone(),
-        model: m.model.clone(),
-        proxy: m.proxy.clone(),
-        no_system_role: m.no_system_role,
-    }
-}
 
 /// 基准 prompt（原版 _run_benchmark：system_prompt 缺省回退 DEFAULT_PROMPT，
 /// 再按显示名填充 {source_lang}/{target_lang} 占位）
@@ -85,7 +70,7 @@ pub fn bench_ui(ui: &mut Ui, bench: &mut BenchUi, session: &mut SessionView, set
             )
             .clicked()
         {
-            start_benchmark(bench, settings);
+            start_benchmark(bench, session, settings);
         }
     });
 
@@ -157,31 +142,31 @@ fn lang_combo(ui: &mut Ui, id: &str, index: &mut usize, langs: &[&str]) {
         });
 }
 
-/// 开始基准（原版 _run_benchmark）：清空输出 → 后台线程测试，
-/// on_line 经 event_tx 回流 LogLine{target:"benchmark"}。
+/// 开始基准（W5f/R22）：编排请求——快照模型/语言/超时/prompt 进类型化命令
+/// 发给 shell（编排域 Supervisor 一次性线程执行；输出经动脉回流）。
 /// Tab 版/工具窗版共用入口（原版 Tab 版跑全部模型，勾选表已对位）
-pub fn start_benchmark_public(bench: &mut BenchUi, settings: &mut Settings) {
-    start_benchmark(bench, settings);
+pub fn start_benchmark_public(
+    bench: &mut BenchUi,
+    session: &mut SessionView,
+    settings: &mut Settings,
+) {
+    start_benchmark(bench, session, settings);
 }
 
-fn start_benchmark(bench: &mut BenchUi, settings: &mut Settings) {
+fn start_benchmark(bench: &mut BenchUi, session: &mut SessionView, settings: &mut Settings) {
     if bench.running {
         return;
     }
-    let models: Vec<BenchModel> = settings
+    let models: Vec<ModelConfig> = settings
         .models
         .iter()
         .enumerate()
         .filter(|(i, _)| bench.selected.get(*i).copied().unwrap_or(true))
-        .map(|(_, m)| to_bench_model(m))
+        .map(|(_, m)| m.clone())
         .collect();
     if models.is_empty() {
         return;
     }
-    let Some(event_tx) = bench.event_tx.clone() else {
-        tracing::warn!("event_tx 未注入，无法启动基准");
-        return;
-    };
     let src = BENCH_SRC_LANGS[bench.src.min(BENCH_SRC_LANGS.len() - 1)];
     let tgt = BENCH_TGT_LANGS[bench.tgt.min(BENCH_TGT_LANGS.len() - 1)];
     let timeout = settings.timeout.max(1);
@@ -189,19 +174,12 @@ fn start_benchmark(bench: &mut BenchUi, settings: &mut Settings) {
 
     bench.lines.clear();
     bench.running = true;
-    // 原版 run_benchmark：后台线程 + result_callback 逐行回传，末行完成标记
-    // ——W2 类型化：Line/Finished 回调经 proto::BenchEvent 回流（不再借道
-    // LogLine[benchmark] + 完成哨兵，INV9）
-    run_benchmark(models, src, tgt, timeout, &prompt, move |out| {
-        let ev = match out {
-            lt_translate::bench::BenchOutput::Line(l) => {
-                UiEvent::Bench(lt_proto::BenchEvent::Line(l))
-            }
-            lt_translate::bench::BenchOutput::Finished { ok, elapsed_ms } => {
-                UiEvent::Bench(lt_proto::BenchEvent::Finished { ok, elapsed_ms })
-            }
-        };
-        event_tx(UiMsg::Event(ev));
+    session.send_cmd(Cmd::RunBench {
+        models,
+        src: src.to_string(),
+        tgt: tgt.to_string(),
+        timeout,
+        prompt,
     });
     tracing::info!("性能基准已启动（{src} → {tgt}，timeout={timeout}s）");
 }
@@ -209,36 +187,6 @@ fn start_benchmark(bench: &mut BenchUi, settings: &mut Settings) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// ModelConfig → BenchModel 字段子集转换
-    #[test]
-    fn to_bench_model_copies_connection_fields() {
-        let cfg = ModelConfig {
-            name: "glm".into(),
-            api_base: "https://open.bigmodel.cn/api/paas/v4".into(),
-            api_key: "k".into(),
-            model: "glm-4".into(),
-            proxy: "system".into(),
-            no_system_role: true,
-            ..Default::default()
-        };
-        let b = to_bench_model(&cfg);
-        assert_eq!(b.name, "glm");
-        assert_eq!(b.api_base, "https://open.bigmodel.cn/api/paas/v4");
-        assert_eq!(b.api_key, "k");
-        assert_eq!(b.model, "glm-4");
-        assert_eq!(b.proxy, "system");
-        assert!(b.no_system_role);
-        // 基准所需之外的字段（价格/overrides/prompt）不参与转换
-        let cfg2 = ModelConfig {
-            context_turns: 9,
-            input_price: 3.0,
-            ..cfg
-        };
-        let b2 = to_bench_model(&cfg2);
-        assert_eq!(b2.name, "glm");
-        assert_eq!(b2.model, "glm-4");
-    }
 
     /// 基准 prompt：缺省回退 DEFAULT_PROMPT + 显示名占位填充
     #[test]

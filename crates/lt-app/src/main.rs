@@ -89,6 +89,7 @@ fn main() -> anyhow::Result<()> {
         monitor_cell,
         cmd_rx,
         proxy.clone(),
+        app_sup.clone(),
         Some(initial_settings.clone()),
     );
 

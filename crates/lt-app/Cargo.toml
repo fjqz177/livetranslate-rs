@@ -18,6 +18,11 @@ lt-ui = { workspace = true }
 lt-asr = { workspace = true }
 lt-audio = { workspace = true }
 lt-orchestrator = { workspace = true }
+# W5f：基准执行经监督器线程调 lt_translate::bench
+lt-translate = { workspace = true }
+# W5/R19：rfd 同步对话框移离 UI 窗口层——shell（组合根）经监督器起一次性
+# 线程弹框（lt-ui 不再依赖 rfd；事件循环线程零阻塞）
+rfd = { workspace = true }
 arc-swap = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }

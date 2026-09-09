@@ -657,7 +657,7 @@ fn messages_area(
         .show(ui, |ui| {
             // 原版空态为纯黑空白（无占位文本）
             for msg in &overlay.messages {
-                let mut export: Option<String> = None;
+                let mut export: Option<lt_proto::ExportFileMode> = None;
                 let mut clear = false;
                 message_block(ui, settings, ctx, msg, compact, opa_pct, &mut export, &mut clear);
                 if let Some(mode) = export {
@@ -686,7 +686,7 @@ fn message_block(
     msg: &OverlayMessage,
     compact: bool,
     opa_pct: u32,
-    export: &mut Option<String>,
+    export: &mut Option<lt_proto::ExportFileMode>,
     clear: &mut bool,
 ) {
     let s = &settings.style;
@@ -814,13 +814,15 @@ fn message_block(
         }
         ui.separator();
         ui.menu_button(lt_i18n::t("export_menu"), |ui| {
+            // 三种模式（原版 export_original/export_translation/export_all）；
+            // W5 起类型化（字符串旁路禁令 INV9 的对位）
             for (key, mode) in [
-                ("export_original", "original"),
-                ("export_translation", "translation"),
-                ("export_all", "both"),
+                ("export_original", lt_proto::ExportFileMode::Original),
+                ("export_translation", lt_proto::ExportFileMode::Translation),
+                ("export_all", lt_proto::ExportFileMode::All),
             ] {
                 if ui.button(lt_i18n::t(key)).clicked() {
-                    *export = Some(mode.to_string());
+                    *export = Some(mode);
                     ui.close();
                 }
             }
