@@ -18,8 +18,9 @@ pub enum UiMsg {
     /// 应用级命令（W2 起替代 `Menu(String)`/`Tray(String)` 字符串协议；托盘
     /// 与悬浮窗菜单同源，变体全集见 [`AppCommand`]）
     AppCommand(AppCommand),
-    /// UI → 宿主的管道命令（backend 线程转发；AppShell 统一分发；W4 退役）
-    Cmd(Cmd),
+    // W4：`Cmd(Cmd)` 变体已删——cmd mpsc 由 AppShell 在 about_to_wait 直排
+    //（lt-backend 线程退役，控制面 UI→mpsc→shell 两跳，INV2）。`Cmd` 枚举
+    // 本身保留为该 mpsc 的载荷契约。
 }
 
 /// 工作线程 → UI 的事件（对齐原版 SubtitleOverlay 的跨线程信号集）

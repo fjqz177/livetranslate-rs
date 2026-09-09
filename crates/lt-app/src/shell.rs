@@ -4,20 +4,38 @@
 //! - `DownloadSucceeded` → 启动管道（向导/缺模型流程完成后；原版向导
 //!   accept 后经 `_deferred_init` + 500ms `on_start` 的等价时机）；
 //! - 退出时统一 `Pipeline::stop` + 设置保存。
+//!
+//! W4（架构 2.0 §3.2.3/INV7）：本文件持有设置总线——**唯一写者**（winit 主
+//! 线程）：凡修改 `ui.app_state.settings` 的命令处理完毕即 `publish`（发布
+//! 幂等重算全部派生视图，ApplySettings 重放与专用快捷命令殊途同归）；
+//! 读者（capture/ASR/翻译池/下载）任意线程 `load()` 无锁。
+//!
+//! W4（INV2）：lt-backend 线程退役——UI→mpsc→shell 两跳（旧五跳），
+//! cmd mpsc 在 `about_to_wait` 直排（UI 与 shell 同在 winit 线程，无竞序）；
+//! 下载编排由本文件持有的 [`DownloadManager`] 接管（会话线程跑下载）。
 
-use lt_orchestrator::{Msg, Pipeline};
-use lt_proto::{Cmd, Settings, UiEvent, UiMsg};
+use lt_orchestrator::{DownloadManager, Msg, Pipeline, SettingsBus};
+use lt_proto::{AppCommand, Cmd, Settings, UiEvent, UiMsg};
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
 
 pub struct AppShell {
     pub ui: lt_ui::MultiWindowApp,
-    /// 事件动脉（全后台→UI 事件出口；UiMsg::Cmd 回环仍走 proxy——W4 收敛）
+    /// 事件动脉（全后台→UI 事件出口；W4 起 UiMsg::Cmd 回环已不存在，
+    /// 控制面 = cmd_rx 直排）
     artery: lt_orchestrator::EventSink,
     /// 音频监视快照格（W2：capture 写侧句柄——传给 Pipeline，UI 读侧句柄
     /// 已在 MultiWindowApp）
     monitor_cell: std::sync::Arc<arc_swap::ArcSwap<lt_proto::MonitorSample>>,
+    /// 设置总线（W4：唯一写者=本线程；发布后 capture/ASR/翻译/下载读格）
+    bus: std::sync::Arc<SettingsBus>,
+    /// UI 命令通道（W4 起本线程直排——UI 与 shell 同在 winit 线程）
+    cmd_rx: std::sync::mpsc::Receiver<Cmd>,
+    /// 事件循环代理（`Cmd::Stop` 经 AppCommand::Quit 走 UI 退出确认流）
+    proxy: winit::event_loop::EventLoopProxy<UiMsg>,
+    /// 下载编排（会话线程化；设置读总线——经 `bus.load().raw`）
+    download: DownloadManager,
     pipeline: Option<Pipeline>,
     started: bool,
 }
@@ -28,12 +46,26 @@ impl AppShell {
         ui: lt_ui::MultiWindowApp,
         artery: lt_orchestrator::EventSink,
         monitor_cell: std::sync::Arc<arc_swap::ArcSwap<lt_proto::MonitorSample>>,
+        cmd_rx: std::sync::mpsc::Receiver<Cmd>,
+        proxy: winit::event_loop::EventLoopProxy<UiMsg>,
         start_settings: Option<Settings>,
     ) -> Self {
+        // 总线先于一切读者就绪：初值 = 当前设置（pipeline None 期间的
+        // 发布同样有效——StartDownload 等经总线读）
+        let bus = std::sync::Arc::new(SettingsBus::new(
+            start_settings.clone().unwrap_or_default(),
+        ));
+        // 下载编排（W3 起在 orchestrator；first_launch 恒 false——首启直进
+        // 主界面 D-19，无向导下载会话）
+        let download = DownloadManager::new(artery.clone(), false);
         let mut shell = Self {
             ui,
             artery,
             monitor_cell,
+            bus,
+            cmd_rx,
+            proxy,
+            download,
             pipeline: None,
             started: false,
         };
@@ -48,9 +80,11 @@ impl AppShell {
             return;
         }
         self.started = true;
+        // INV7：先发布后装配（管道启动读总线当前快照；重复发布幂等）
+        self.bus.publish(settings);
         // i18n 文案经 Msg 注入编排域（白名单不变量：orchestrator 零 lt-i18n 依赖）
         let msg = Msg::new(|k| lt_i18n::t(k));
-        match Pipeline::start(&settings, self.artery.clone(), &self.monitor_cell, msg) {
+        match Pipeline::start(&self.bus, self.artery.clone(), &self.monitor_cell, msg) {
             Ok(p) => self.pipeline = Some(p),
             Err(e) => {
                 // P0-3：装配失败必须让用户看见——面板识别页顶部红字（数据
@@ -70,6 +104,13 @@ impl AppShell {
         if let Err(e) = lt_models::settings_io::save(&self.ui.app_state.settings) {
             tracing::error!("设置保存失败: {e}");
         }
+    }
+
+    /// W4/INV7：设置发布（winit 主线程唯一写者）——重算全部派生视图，
+    /// 各读线程下一访问点即见（无镜像同步边，无"记得补同步"）
+    fn publish_settings(&mut self) {
+        let s = self.ui.app_state.settings.clone();
+        self.bus.publish(s);
     }
 
     /// 管道域命令分发（对照原版 App 的 overlay/托盘信号处理段）
@@ -95,25 +136,18 @@ impl AppShell {
                 }
                 tracing::info!("管道恢复");
             }
-            // 挂起机制：UI 线程只存值，ASR 线程在下一次 transcribe 前应用；
-            // AH-3：同步 ASR 线程内段过滤镜像，防过滤仍按启动快照旧值判定
+            // W4：语言/目标/超时/padding 全部走总线发布（INV7）——旧挂起机制
+            // （pending + 镜像同步命令）退役：ASR 线程每段 load().asr_lang，
+            // 与 worker 的 delta 应用由 Manager 内部比对执行
             Cmd::SetAsrLanguage(lang) => {
-                if let Some(p) = &self.pipeline {
-                    p.set_pending_language(&lang);
-                    p.sync_asr_language(&lang);
-                }
                 self.ui.app_state.settings.asr_language = lang.clone();
                 tracing::info!("源语言: {lang}");
+                self.publish_settings();
                 self.persist_settings();
             }
-            // padding 挂起热应用（原版 _set_asr_padding）+ 镜像同步（AH-3：
-            // 引擎切换装配读取，防切换后静默回退旧值）；settings 字段已由面板写入
             Cmd::SetPadding { engine, secs } => {
-                if let Some(p) = &self.pipeline {
-                    p.set_pending_padding(&engine, secs);
-                    p.sync_padding(&engine, secs);
-                }
-                tracing::info!("padding 挂起: {engine} {secs}s（下一段识别生效）");
+                tracing::info!("padding: {engine} {secs}s（下一段识别生效）");
+                self.publish_settings();
                 self.persist_settings();
             }
             // 增量识别热应用（原版 _incremental_asr_cb → _incremental_enabled/
@@ -123,26 +157,23 @@ impl AppShell {
                     p.set_interim(enabled, interval);
                 }
                 tracing::info!("增量识别: {enabled}（间隔 {interval}s）");
+                self.publish_settings();
                 self.persist_settings();
             }
             Cmd::SetTargetLanguage(lang) => {
-                if let Some(p) = self.pipeline.as_mut() {
-                    p.set_translator_target_language(&lang);
-                }
                 self.ui.app_state.settings.target_language = lang.clone();
                 tracing::info!("目标语言: {lang}");
+                self.publish_settings();
                 self.persist_settings();
             }
             Cmd::SetTimeout(secs) => {
-                if let Some(p) = &self.pipeline {
-                    p.set_translator_timeout(secs);
-                }
                 self.ui.app_state.settings.timeout = secs;
+                self.publish_settings();
                 self.persist_settings();
             }
             Cmd::SwitchTranslator(config) => {
                 if let Some(p) = self.pipeline.as_mut() {
-                    p.switch_translator(&config, &self.ui.app_state.settings);
+                    p.switch_translator(&config);
                 }
                 // 记为当前激活模型并持久化
                 if let Some(idx) = self
@@ -156,6 +187,7 @@ impl AppShell {
                     self.ui.app_state.settings.active_model = idx;
                 }
                 tracing::info!("Switching translator: {} ({})", config.name, config.model);
+                self.publish_settings();
                 self.persist_settings();
             }
             Cmd::TestTranslator(config) => {
@@ -165,6 +197,7 @@ impl AppShell {
             }
             Cmd::PersistSettings(settings) => {
                 self.ui.app_state.settings = *settings;
+                self.publish_settings();
                 if let Err(e) = lt_models::settings_io::save(&self.ui.app_state.settings) {
                     tracing::error!("设置保存失败: {e:#}");
                 }
@@ -184,6 +217,9 @@ impl AppShell {
                 s.funasr_model = funasr_model;
                 s.whisper_model_size = whisper_model_size;
                 s.asr_language = language;
+                // W4：引擎切换必须先发布（总线按新引擎重算 VAD 钳制 overlay——
+                // 切离 qwen3 立即恢复全值，R18 根除"等用户下次应用"）
+                self.publish_settings();
                 self.persist_settings();
             }
             Cmd::SetAudioDevice(choice) => {
@@ -196,6 +232,7 @@ impl AppShell {
                     p.set_audio_device(choice);
                 }
                 self.ui.app_state.settings.audio_device = dev;
+                self.publish_settings();
                 self.persist_settings();
             }
             Cmd::SetMicDevice(choice) => {
@@ -208,28 +245,15 @@ impl AppShell {
                     p.set_mic_device(choice);
                 }
                 self.ui.app_state.settings.mic_device = dev;
+                self.publish_settings();
                 self.persist_settings();
             }
             // 面板"应用"全量重放（原版 settings_changed → main 逐项应用）：
-            // VAD 参数热更新 + 翻译目标语言/超时 + 转录开关 + 落盘
+            // W4 起 VAD/目标语言/超时不再逐项进 Pipeline——publish 统一派生
+            //（VAD 钳制已含在总线 overlay 中，本处只留真实动作：增量/转录开关）
             Cmd::ApplySettings(s) => {
                 let s = *s;
                 if let Some(p) = &self.pipeline {
-                    // AH-8/D-28：VAD 生效值按当前引擎钳制（qwen3 ≤15s）
-                    p.update_vad_settings(lt_orchestrator::pipeline::clamp_vad_for_engine(
-                        &s.asr_engine,
-                        lt_audio::VadSettings {
-                            mode: s.vad_mode.clone(),
-                            threshold: s.vad_threshold as f64,
-                            energy_threshold: s.energy_threshold as f64,
-                            min_speech_duration: s.min_speech_duration as f64,
-                            max_speech_duration: s.max_speech_duration as f64,
-                            silence_mode: s.silence_mode.clone(),
-                            silence_duration: s.silence_duration as f64,
-                        },
-                    ));
-                    p.set_translator_target_language(&s.target_language);
-                    p.set_translator_timeout(s.timeout);
                     // 增量识别重放（原版 settings_changed 同步 _incremental_enabled/
                     // _interim_interval，main.py:321-323）
                     p.set_interim(s.incremental_asr, s.interim_interval);
@@ -238,11 +262,22 @@ impl AppShell {
                     p.set_transcript_enabled(s.auto_save_transcript);
                 }
                 self.ui.app_state.settings = s;
+                self.publish_settings();
                 self.persist_settings();
                 tracing::info!("设置已应用");
             }
-            // 其余命令后续波次接线
-            other => tracing::debug!("命令待后续接线: {other:?}"),
+            // 下载编排（W3 起在 DownloadManager；targets 读设置总线当前
+            // raw——运行中切换引擎/档位后下载即所选模型，M5.1）
+            Cmd::StartDownload { hub, proxy } => {
+                let raw = self.bus.load().raw.clone();
+                self.download.start(&raw, &hub, &proxy);
+            }
+            Cmd::CancelDownload => self.download.cancel(),
+            // 下载对话框失败后的关闭按钮（原版 reject → sys.exit(0)）：
+            // 经 AppCommand::Quit 走 UI 既有退出确认流（drain 循环短路处理）
+            Cmd::Stop => {
+                tracing::info!("命令 Cmd::Stop → 请求退出");
+            }
         }
     }
 
@@ -300,14 +335,26 @@ impl ApplicationHandler<UiMsg> for AppShell {
                     self.dispatch_event(event_loop, ev);
                 }
             }
-            // UI 回流的管道域命令（backend 不持有 Pipeline，经 proxy 回环至此）
-            UiMsg::Cmd(cmd) => self.handle_cmd(cmd),
-            // Event/AppCommand 原样转 UI
+            // Event/AppCommand 原样转 UI（W4：UiMsg::Cmd 变体已删——
+            // 控制面 = cmd_rx 在 about_to_wait 直排）
             msg => self.ui.user_event(event_loop, msg),
         }
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        // W4/INV2：cmd mpsc 直排（控制面五跳→两跳）——UI 与 shell 同在
+        // winit 线程，try_recv 非阻塞批量排空；`Cmd::Stop` 经 proxy 发
+        // AppCommand::Quit 走 UI 既有退出确认流（约 wait 里无 proxy 可用
+        // 于 ActiveEventLoop，故 shell 持构造期代理）
+        while let Ok(cmd) = self.cmd_rx.try_recv() {
+            if let Cmd::Stop = cmd {
+                let _ = self
+                    .proxy
+                    .send_event(UiMsg::AppCommand(AppCommand::Quit));
+                continue;
+            }
+            self.handle_cmd(cmd);
+        }
         self.ui.about_to_wait(event_loop);
     }
 }

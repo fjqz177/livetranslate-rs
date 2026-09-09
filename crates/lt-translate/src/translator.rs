@@ -154,7 +154,6 @@ pub struct TranslatorParams {
     pub api_base: String,
     pub api_key: String,
     pub model: String,
-    pub target_language: String, // "zh"
     pub max_tokens: u32,         // 256
     pub temperature: f64,        // 0.3
     pub streaming: bool,         // true
@@ -165,7 +164,6 @@ pub struct TranslatorParams {
     pub no_think: bool,
     pub thinking_style: Option<String>,
     pub json_response: bool,
-    pub timeout: u32, // 秒，10
     pub overrides: Option<BTreeMap<String, Value>>,
     pub extra_body: Option<Value>,
 }
@@ -176,7 +174,6 @@ impl Default for TranslatorParams {
             api_base: "http://127.0.0.1:1234/v1".into(),
             api_key: String::new(),
             model: String::new(),
-            target_language: "zh".into(),
             max_tokens: 256,
             temperature: 0.3,
             streaming: true,
@@ -186,16 +183,16 @@ impl Default for TranslatorParams {
             no_think: false,
             thinking_style: None,
             json_response: false,
-            timeout: 10,
             overrides: None,
             extra_body: None,
         }
     }
 }
 
+/// 会话态（W4：目标语言/超时不再是模型运行时状态——构架 2.0 §3.2.3，
+/// 设置总线派生视图，**提交翻译前读 `load().tl`**，逐调用参数传入；
+/// 以下全部为会话/用量态，跨调用存活，由实例独占）
 struct MutableState {
-    target_language: String,
-    timeout_secs: u64,
     context_turns: u32,
     history: Vec<(String, String)>,
     prompt_tokens: u64,
@@ -280,8 +277,6 @@ impl Translator {
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| DEFAULT_PROMPT.to_string()),
             state: Arc::new(Mutex::new(MutableState {
-                target_language: params.target_language,
-                timeout_secs: params.timeout as u64,
                 context_turns: 0,
                 history: Vec::new(),
                 prompt_tokens: 0,
@@ -296,16 +291,6 @@ impl Translator {
         (st.prompt_tokens, st.completion_tokens)
     }
 
-    pub fn set_target_language(&self, target_language: &str) {
-        self.state.lock().target_language = target_language.to_string();
-    }
-
-    /// 原版 set_timeout 会以新超时重建 httpx 客户端；此处超时在请求期生效，
-    /// 仅更新字段（语义等价）。
-    pub fn set_timeout(&self, timeout_secs: u32) {
-        self.state.lock().timeout_secs = timeout_secs as u64;
-    }
-
     pub fn set_context_turns(&self, n: u32) {
         let mut st = self.state.lock();
         st.context_turns = n;
@@ -318,8 +303,9 @@ impl Translator {
         self.state.lock().history.clear();
     }
 
-    /// 共享同一 client 的新 Translator（不同目标语言；历史/用量清零）
-    pub fn with_target_language(&self, target_language: &str) -> Translator {
+    /// 共享同一 client 的新 Translator（历史/用量清零；目标语言/超时随每次
+    /// 调用参数传入，W4——旧 with_target_language 的目标语言面随镜像退役）
+    pub fn share_client(&self) -> Translator {
         Translator {
             client: self.client.clone(),
             model: self.model.clone(),
@@ -333,19 +319,12 @@ impl Translator {
             extra_body: self.extra_body.clone(),
             system_prompt_template: self.system_prompt_template.clone(),
             state: Arc::new(Mutex::new(MutableState {
-                target_language: target_language.to_string(),
-                timeout_secs: self.state.lock().timeout_secs,
                 context_turns: 0,
                 history: Vec::new(),
                 prompt_tokens: 0,
                 completion_tokens: 0,
             })),
         }
-    }
-
-    /// 当前目标语言（快照）
-    pub fn target_language(&self) -> String {
-        self.state.lock().target_language.clone()
     }
 
     // ── prompt / messages 组装 ──
@@ -363,10 +342,10 @@ impl Translator {
         out.trim_end().to_string()
     }
 
-    fn build_system_prompt(&self, source_lang: &str) -> String {
-        let st = self.state.lock();
+    fn build_system_prompt(&self, source_lang: &str, target_lang: &str) -> String {
         let src = lang_display(source_lang);
-        let tgt = lang_display(&st.target_language);
+        let tgt = lang_display(target_lang);
+        let st = self.state.lock();
         let context = self.format_context(st.context_turns, &st.history);
         let prompt = match format_prompt_template(&self.system_prompt_template, src, tgt, &context)
         {
@@ -483,10 +462,15 @@ impl Translator {
 
     // ── 同步（非流式） ──
 
-    fn translate_sync(&self, system_prompt: &str, text: &str) -> Result<String, TranslateError> {
+    fn translate_sync(
+        &self,
+        system_prompt: &str,
+        text: &str,
+        timeout_secs: u64,
+    ) -> Result<String, TranslateError> {
         let body = self.build_request_body(system_prompt, text, false, false);
         let resp: CreateChatCompletionResponse =
-            self.timeout_block(self.client.chat().create_byot(body))?;
+            self.timeout_block(self.client.chat().create_byot(body), timeout_secs)?;
         {
             let mut st = self.state.lock();
             st.prompt_tokens = 0;
@@ -511,27 +495,35 @@ impl Translator {
     }
 
     /// 在共享运行时上执行带超时的 future（阻塞调用线程）
-    fn timeout_block<F, T>(&self, fut: F) -> Result<T, TranslateError>
+    /// W4：超时逐调用传入（设置总线 `tl.timeout` 生效值；不再存实例状态）
+    fn timeout_block<F, T>(&self, fut: F, timeout_secs: u64) -> Result<T, TranslateError>
     where
         F: std::future::Future<Output = Result<T, async_openai::error::OpenAIError>>,
     {
-        let t = self.state.lock().timeout_secs;
         // timeout(...) 必须在 runtime 上下文内求值（Sleep 需要 timer 句柄）
-        match runtime().block_on(async { tokio::time::timeout(Duration::from_secs(t), fut).await })
-        {
+        match runtime().block_on(async {
+            tokio::time::timeout(Duration::from_secs(timeout_secs), fut).await
+        }) {
             Ok(inner) => inner.map_err(TranslateError::from),
             Err(_) => Err(TranslateError::Timeout(format!(
-                "Translation exceeded {t}s total timeout"
+                "Translation exceeded {timeout_secs}s total timeout"
             ))),
         }
     }
 
     // ── 对外主入口 ──
 
-    /// 翻译并返回完整结果（原版 translate：按 streaming 配置走流式或同步）
-    pub fn translate(&self, text: &str, source_language: &str) -> Result<String, TranslateError> {
+    /// 翻译并返回完整结果（原版 translate：按 streaming 配置走流式或同步）。
+    /// W4：`target_lang`/`timeout_secs` 为调用方从设置总线读出的生效值（TlView）。
+    pub fn translate(
+        &self,
+        text: &str,
+        source_language: &str,
+        target_lang: &str,
+        timeout_secs: u32,
+    ) -> Result<String, TranslateError> {
         let mut last: Option<Result<String, TranslateError>> = None;
-        for item in self.translate_iter(text, source_language) {
+        for item in self.translate_iter(text, source_language, target_lang, timeout_secs) {
             last = Some(Ok(item?));
         }
         // translate_iter 必产至少一个值
@@ -541,13 +533,23 @@ impl Translator {
     /// 流式翻译迭代器：流式模式下产出累积部分文本，最后一个值是完整译文；
     /// 非流式/json 模式只产出最终值。中途错误以 Err 项出现（此后迭代结束）。
     /// 消费方应迭代到底并以最后一个 Ok 作为最终结果（与原版生成器语义一致）。
-    pub fn translate_iter(&self, text: &str, source_language: &str) -> TranslateStream {
-        let system_prompt = self.build_system_prompt(source_language);
+    /// W4：`target_lang`/`timeout_secs` 逐调用传入（原版 set_target_language/
+    /// set_timeout 的运行时可变面已退役——目标语言/超时来自设置总线）。
+    pub fn translate_iter(
+        &self,
+        text: &str,
+        source_language: &str,
+        target_lang: &str,
+        timeout_secs: u32,
+    ) -> TranslateStream {
+        let system_prompt = self.build_system_prompt(source_language, target_lang);
         if !self.streaming {
-            let result = self.translate_sync(&system_prompt, text).map(|r| {
-                self.append_history(text, &r);
-                r
-            });
+            let result = self
+                .translate_sync(&system_prompt, text, timeout_secs as u64)
+                .map(|r| {
+                    self.append_history(text, &r);
+                    r
+                });
             return TranslateStream::sync(result);
         }
 
@@ -557,7 +559,7 @@ impl Translator {
             m.insert("stream_options".into(), json!({"include_usage": true}));
             Value::Object(m)
         };
-        let read_timeout = Duration::from_secs(self.state.lock().timeout_secs);
+        let read_timeout = Duration::from_secs(timeout_secs as u64);
         let (tx, rx) = mpsc::channel();
         let client = self.client.clone();
         runtime().spawn(async move {
@@ -686,8 +688,6 @@ impl TranslateStream {
             json_response: false,
             thinking_style: "off",
             state: Arc::new(Mutex::new(MutableState {
-                target_language: String::new(),
-                timeout_secs: 10,
                 context_turns: 0,
                 history: Vec::new(),
                 prompt_tokens: 0,

@@ -91,15 +91,22 @@ pub struct CaptureLoop<F> {
     pub monitor: F,
     /// 暂停标志（暂停时丢弃 chunk 不喂 VAD，对齐原版 _paused）
     pub paused: Arc<AtomicBool>,
-    /// VAD 参数热更新槽（原版面板经 _vad_lock 调 update_settings 的等价物）：
-    /// UI 侧塞入 Some(新设置)，capture 线程每 chunk 取走应用（take-and-clear）
-    pub vad_update: Arc<Mutex<Option<crate::vad::VadSettings>>>,
+    /// VAD 生效设置发布格（架构 2.0 W4 设置总线读侧）：每循环轮询读
+    /// `(版本, 设置)`，版本变化才应用（update_settings / 按模式换置信度源）。
+    /// 替代旧"UI 塞槽 take-and-clear"（`vad_update`）——槽即镜像，同步靠人肉
+    /// 边（R10）；总线发布为唯一事实源，读者无锁
+    pub vad_tick: VadSource,
     /// 增量识别控制块（与 ASR 线程共享；见 [`InterimControl`]）
     pub interim: Arc<InterimControl>,
     /// 当前生效 VAD 模式（架构 2.0 W1/R2：检测模式变化以替换置信度源；
     /// 初值 = 启动装配所用模式，避免首帧把 Silero 重复加载一遍）
     pub current_mode: String,
 }
+
+/// VAD 生效设置发布格读数（`(版本, 设置)` 快照；版本单调递增）。
+/// 由编排域经设置总线构造——本 crate 不依赖 orchestrator（依赖白名单），
+/// 以闭包形态注入（发送方与接收方仅以元组数据耦合）。
+pub type VadSource = Arc<dyn Fn() -> (u64, crate::vad::VadSettings) + Send + Sync>;
 
 impl<F: Fn(f32, f64, Option<f32>) + Send> CaptureLoop<F> {
     /// 阻塞运行至 `running`（= stop 标志）置 true。
@@ -113,10 +120,14 @@ impl<F: Fn(f32, f64, Option<f32>) + Send> CaptureLoop<F> {
         running: &AtomicBool,
     ) {
         let silence_chunk = vec![0.0f32; CHUNK_SAMPLES];
+        // W4：上次已应用的发布版本（0 = 未应用 → 启动后首 tick 应用一次；
+        // 值与启动装配相同则幂等无害）
+        let mut applied_version: u64 = 0;
         while !running.load(Ordering::Relaxed) {
-            // 应用挂起的 VAD 参数（原版 vad_processor.update_settings）
-            if let Some(s) = self.vad_update.lock().unwrap().take() {
-                // 先绑定再分支（大坑 11：MutexGuard 临时值不得留在 if-let scrutinee）
+            // 应用生效 VAD 参数（W4 总线发布格：版本变了才 update_settings；
+            // 替代旧槽 take-and-clear——同一发布内全字段整体重算，无半应用窗口）
+            let (ver, s) = (self.vad_tick)();
+            if ver != applied_version {
                 let mut v = vad.lock().unwrap();
                 if self.current_mode != s.mode {
                     // 架构 2.0 W1/R2：模式变化必须替换置信度源——update_settings
@@ -127,6 +138,7 @@ impl<F: Fn(f32, f64, Option<f32>) + Send> CaptureLoop<F> {
                     self.current_mode = s.mode.clone();
                 }
                 v.update_settings(&s);
+                applied_version = ver;
             }
             match self.chunk_rx.pop_timeout(Duration::from_secs(1)) {
                 None => {
@@ -274,7 +286,9 @@ mod tests {
                 monitors.lock().unwrap().push((rms, vad, mic_rms));
             },
             paused,
-            vad_update: Arc::new(Mutex::new(None)),
+            // 版本 0 恒等于 applied_version：不触发应用/换源（测试源为自定义
+            // mock，走 make_confidence_source 会加载真 Silero）
+            vad_tick: Arc::new(|| (0, crate::vad::VadSettings::default())),
             interim,
             current_mode: String::new(),
         };
@@ -369,7 +383,7 @@ mod tests {
             segment_tx: seg_tx.clone(),
             monitor: |_, _, _| {},
             paused,
-            vad_update: Arc::new(Mutex::new(None)),
+            vad_tick: Arc::new(|| (0, crate::vad::VadSettings::default())),
             interim: Default::default(),
             current_mode: String::new(),
         };
@@ -382,6 +396,59 @@ mod tests {
         };
         assert_eq!(source, SegmentSource::VadFlush);
         assert!(seg.len() >= 40 * 512);
+        running.store(true, Ordering::Relaxed);
+        let _ = h.join();
+    }
+
+    // ── W4：设置总线发布格（版本变化 → 应用；版本不变 → 零动作） ──
+
+    #[test]
+    fn vad_tick_applied_when_version_changes() {
+        let q = Arc::new(BoundedDropQueue::<(Vec<f32>, Option<f32>)>::new(100, "test-chunk"));
+        let seg_tx = Arc::new(BoundedDropQueue::<(SegmentSource, Vec<f32>)>::new(
+            16, "test-seg",
+        ));
+        let paused = Arc::new(AtomicBool::new(false));
+        let mut vad = VadProcessor::new(boxed(Burst(1000.into())), 16000, 0.5, 1.0, 8.0, 0.032);
+        let tick_cell = Arc::new(Mutex::new((0u64, crate::vad::VadSettings::default())));
+        let reader: VadSource = {
+            let c = tick_cell.clone();
+            Arc::new(move || c.lock().unwrap().clone())
+        };
+        let running = Arc::new(AtomicBool::new(false));
+        let q_feed = q.clone();
+        let mut lp = CaptureLoop {
+            chunk_rx: q,
+            segment_tx: seg_tx.clone(),
+            monitor: |_, _, _| {},
+            paused,
+            vad_tick: reader,
+            interim: Default::default(),
+            current_mode: "silero".into(),
+        };
+        let vad = Arc::new(Mutex::new(vad));
+        let vad_obs = vad.clone();
+        let r = running.clone();
+        let h = std::thread::spawn(move || lp.run(&vad, &r));
+        // 喂弱数据让循环跑起来，确认版本 0 不应用
+        for _ in 0..4 {
+            q_feed.push((vec![0.0f32; 512], None));
+        }
+        std::thread::sleep(Duration::from_millis(150));
+        assert_eq!(vad_obs.lock().unwrap().max_speech_samples(), (8.0 * 16000.0) as usize);
+        // 发布版本 1 + 新阈值/时长 → 下一循环轮询应用
+        let mut s = crate::vad::VadSettings::default();
+        s.max_speech_duration = 15.0;
+        *tick_cell.lock().unwrap() = (1, s);
+        for _ in 0..4 {
+            q_feed.push((vec![0.0f32; 512], None));
+        }
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while vad_obs.lock().unwrap().max_speech_samples() != (15.0 * 16000.0) as usize {
+            assert!(std::time::Instant::now() < deadline, "版本 1 设置未应用");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        // 版本不变（再读同版本）不重复应用（换断言：timeout 后会轮询下一轮）
         running.store(true, Ordering::Relaxed);
         let _ = h.join();
     }

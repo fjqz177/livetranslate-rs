@@ -5,7 +5,7 @@ pub mod interim;
 pub mod transcript;
 pub mod vad;
 
-pub use audio::capture::{CaptureLoop, InterimControl};
+pub use audio::capture::{CaptureLoop, InterimControl, VadSource};
 pub use audio::{
     mix_with_mic, pad_bucket, pad_bucket_len, resample_linear, rms, to_mono, AudioBackend,
     BoundedDropQueue, CHUNK_DURATION, CHUNK_SAMPLES, TARGET_RATE,

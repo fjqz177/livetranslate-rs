@@ -195,7 +195,7 @@ fn streaming_yields_partials_then_final_with_usage() {
     let t = translator(&server.base_url);
     let mut partials = Vec::new();
     let mut final_text = String::new();
-    for item in t.translate_iter("hello world", "en") {
+    for item in t.translate_iter("hello world", "en", "zh", 10) {
         match item {
             Ok(p) => {
                 final_text = p.clone();
@@ -233,7 +233,7 @@ fn stream_options_retracted_when_rejected() {
         }
     }));
     let t = translator(&server.base_url);
-    let result: Result<String, lt_translate::TranslateError> = t.translate("hello", "en");
+    let result: Result<String, lt_translate::TranslateError> = t.translate("hello", "en", "zh", 10);
     let text = result.expect("重试后应成功");
     assert_eq!(text, "ok");
     assert_eq!(t.last_usage(), (3, 2));
@@ -258,7 +258,7 @@ fn json_response_mode_yields_only_final() {
         ..TranslatorParams::default()
     })
     .unwrap();
-    let items: Vec<_> = t.translate_iter("hello", "en").collect();
+    let items: Vec<_> = t.translate_iter("hello", "en", "zh", 10).collect();
     assert_eq!(items.len(), 1, "json 模式只产最终值: {items:?}");
     assert_eq!(items.into_iter().next().unwrap().unwrap(), "译文内容");
 }
@@ -274,7 +274,7 @@ fn sync_translate_returns_content_and_usage() {
         ..TranslatorParams::default()
     })
     .unwrap();
-    let text = t.translate("hello", "en").unwrap();
+    let text = t.translate("hello", "en", "zh", 10).unwrap();
     assert_eq!(text, "你好世界"); // trim 语义
     assert_eq!(t.last_usage(), (20, 10));
     let body = request_body(&server.requests()[0]);
@@ -289,13 +289,9 @@ fn timeout_classified_when_server_stalls() {
         std::thread::sleep(Duration::from_secs(3));
         sse_response(&[chunk_delta("late")])
     }));
-    let t = Translator::new(TranslatorParams {
-        api_base: server.base_url.clone(),
-        timeout: 1,
-        ..TranslatorParams::default()
-    })
-    .unwrap();
-    let err = t.translate("hello", "en").expect_err("应超时");
+    let t = translator(&server.base_url);
+    // W4：超时逐调用传入（设置总线 tl.timeout 生效值）
+    let err = t.translate("hello", "en", "zh", 1).expect_err("应超时");
     assert!(
         matches!(err, lt_translate::TranslateError::Timeout(_)),
         "实际: {err:?}"
@@ -315,7 +311,7 @@ fn repetition_error_detected() {
         sse_response(&[chunk_delta(&loop_text), chunk_usage(9, 9)])
     }));
     let t = translator(&server.base_url);
-    let err = t.translate("hello", "en").expect_err("应检出重复");
+    let err = t.translate("hello", "en", "zh", 10).expect_err("应检出重复");
     assert!(
         matches!(err, lt_translate::TranslateError::Repetition(_)),
         "实际: {err:?}"
@@ -326,7 +322,7 @@ fn repetition_error_detected() {
 fn auth_error_classified() {
     let server = MockServer::start(Arc::new(|_| error_response(401, "Invalid API key")));
     let t = translator(&server.base_url);
-    let err = t.translate("hello", "en").expect_err("应失败");
+    let err = t.translate("hello", "en", "zh", 10).expect_err("应失败");
     assert!(
         matches!(err, lt_translate::TranslateError::Auth { code: 401, .. }),
         "实际: {err:?}"
@@ -347,8 +343,8 @@ fn context_history_appended_to_messages() {
     })
     .unwrap();
     t.set_context_turns(2);
-    t.translate("第一句", "en").unwrap();
-    t.translate("第二句", "en").unwrap();
+    t.translate("第一句", "en", "zh", 10).unwrap();
+    t.translate("第二句", "en", "zh", 10).unwrap();
     let body = request_body(&server.requests()[1]);
     let msgs = body["messages"].as_array().unwrap();
     // system + (user=第一句, assistant=译文) + user=第二句
@@ -372,7 +368,7 @@ fn no_system_role_merges_prompt_into_user() {
         ..TranslatorParams::default()
     })
     .unwrap();
-    t.translate("hello", "en").unwrap();
+    t.translate("hello", "en", "zh", 10).unwrap();
     let body = request_body(&server.requests()[0]);
     let msgs = body["messages"].as_array().unwrap();
     assert_eq!(msgs.len(), 1);
@@ -389,11 +385,10 @@ fn language_display_names_in_prompt() {
     }));
     let t = Translator::new(TranslatorParams {
         api_base: server.base_url.clone(),
-        target_language: "zh".into(),
         ..TranslatorParams::default()
     })
     .unwrap();
-    t.translate("hello", "ja").unwrap();
+    t.translate("hello", "ja", "zh", 10).unwrap();
     let body = request_body(&server.requests()[0]);
     let sys = body["messages"][0]["content"].as_str().unwrap();
     assert!(
@@ -402,17 +397,23 @@ fn language_display_names_in_prompt() {
     );
 }
 
+/// W4：目标语言逐调用传入（此调用用「ja」→ prompt 变 Japanese；
+/// 下一次调用传回「zh」即恢复——不再有 set_target_language 运行时可变面）
 #[test]
-fn target_language_switch_affects_next_request() {
+fn target_language_per_call_affects_request() {
     let server = MockServer::start(Arc::new(|_| {
         sse_response(&[chunk_delta("x"), chunk_usage(1, 1)])
     }));
     let t = translator(&server.base_url);
-    t.set_target_language("ja");
-    t.translate("hello", "en").unwrap();
+    t.translate("hello", "en", "ja", 10).unwrap();
     let body = request_body(&server.requests()[0]);
     let sys = body["messages"][0]["content"].as_str().unwrap();
     assert!(sys.contains("into Japanese"), "system prompt: {sys}");
+    // 下一次调用传回 zh → 不复用上一调的 ja
+    t.translate("hallo", "en", "zh", 10).unwrap();
+    let body = request_body(&server.requests()[1]);
+    let sys = body["messages"][0]["content"].as_str().unwrap();
+    assert!(sys.contains("into Chinese"), "system prompt: {sys}");
 }
 
 // ── overrides / response_format ──
@@ -436,7 +437,7 @@ fn overrides_appear_in_request_body() {
         ..TranslatorParams::default()
     })
     .unwrap();
-    t.translate("hello", "en").unwrap();
+    t.translate("hello", "en", "zh", 10).unwrap();
     let body = request_body(&server.requests()[0]);
     assert_eq!(body["temperature"], 0.7);
     assert_eq!(body["top_p"], 0.9);
@@ -455,7 +456,7 @@ fn json_response_sends_json_schema_format() {
         ..TranslatorParams::default()
     })
     .unwrap();
-    t.translate("hello", "en").unwrap();
+    t.translate("hello", "en", "zh", 10).unwrap();
     let body = request_body(&server.requests()[0]);
     let sys = body["messages"][0]["content"].as_str().unwrap();
     assert!(
@@ -484,7 +485,7 @@ fn thinking_body_merged_into_request() {
 }
 
 #[test]
-fn with_target_language_shares_settings_but_fresh_history() {
+fn share_client_preserves_config_but_fresh_state() {
     let server = MockServer::start(Arc::new(|_| {
         non_streaming_response("200 OK", &completion_response("译文", 2, 3))
     }));
@@ -495,12 +496,13 @@ fn with_target_language_shares_settings_but_fresh_history() {
     })
     .unwrap();
     t.set_context_turns(2);
-    t.translate("hi", "en").unwrap();
-    let clone = t.with_target_language("fr");
-    assert_eq!(clone.target_language(), "fr");
+    t.translate("hi", "en", "zh", 10).unwrap();
+    // W4：with_target_language 的目标语言面随镜像退役 → share_client
+    // （共享 client 配置；历史/用量清零；目标语言逐调用传入）
+    let clone = t.share_client();
     assert_eq!(clone.last_usage(), (0, 0), "克隆后用量清零");
     // 原实例历史不受克隆影响，克隆历史为空
-    clone.translate("bonjour", "en").unwrap();
+    clone.translate("bonjour", "en", "fr", 10).unwrap();
     let body = request_body(&server.requests()[1]);
     let msgs = body["messages"].as_array().unwrap();
     assert_eq!(msgs.len(), 2, "克隆实例无历史: {msgs:?}");

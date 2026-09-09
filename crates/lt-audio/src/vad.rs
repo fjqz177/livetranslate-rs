@@ -189,7 +189,7 @@ pub fn make_confidence_source(
 
 // ─────────────────────────── 设置 ───────────────────────────
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct VadSettings {
     pub mode: String,             // silero | energy | disabled
     pub threshold: f64,           // silero 阈值
@@ -329,24 +329,6 @@ impl<C: ConfidenceSource> VadProcessor<C> {
         if new_limit != self.silence_limit {
             tracing::debug!("Adaptive silence: {target:.2}s ({new_limit} chunks), P75={p75:.2}s");
             self.silence_limit = new_limit;
-        }
-    }
-
-    /// 引擎段长上限钳制（AH-8/D-28）：qwen3 的 `MAX_TOTAL_LEN=512` 为
-    /// audio+输出共享 token 预算，超长段有静默截尾风险——生效值超上限则收敛。
-    /// 返回是否发生钳制（供调用方记日志）；settings/UI 保存值不动。
-    /// 注意：后续 `update_settings`（面板「应用」全量重放）会整体覆盖本值，
-    /// 调用方须在应用点同步钳制。
-    pub fn clamp_max_speech(&mut self, engine: &str, max_secs: f64) -> bool {
-        if engine != "qwen3" {
-            return false;
-        }
-        let cap_samples = (max_secs * self.sample_rate as f64) as usize;
-        if self.max_speech_samples > cap_samples {
-            self.max_speech_samples = cap_samples;
-            true
-        } else {
-            false
         }
     }
 
@@ -713,6 +695,14 @@ impl<C: ConfidenceSource> VadProcessor<C> {
     }
 }
 
+/// 测试观测面（capture.rs 集成测验证版本变化应用；生产无此入口）
+#[cfg(test)]
+impl VadProcessor {
+    pub(crate) fn max_speech_samples(&self) -> usize {
+        self.max_speech_samples
+    }
+}
+
 // ─────────────────────────── 测试 ───────────────────────────
 
 #[cfg(test)]
@@ -993,25 +983,6 @@ mod tests {
         assert!(p2.is_speaking());
         let seg = p2.flush().expect("达标应出段");
         assert_eq!(seg.len(), 40 * 512);
-    }
-
-    #[test]
-    fn clamp_max_speech_only_qwen3_and_only_down() {
-        // AH-8/D-28：仅 qwen3 生效且只向下收敛（update_settings 之后调用可收敛）
-        let s = VadSettings {
-            max_speech_duration: 30.0,
-            ..Default::default()
-        };
-        let mut p = make(&[]);
-        p.update_settings(&s);
-        assert!(!p.clamp_max_speech("funasr", 15.0), "非 qwen3 不钳制");
-        assert_eq!(p.max_speech_samples, (30.0f64 * 16000.0) as usize);
-        let mut p2 = make(&[]);
-        p2.update_settings(&s);
-        assert!(p2.clamp_max_speech("qwen3", 15.0));
-        assert_eq!(p2.max_speech_samples, (15.0f64 * 16000.0) as usize);
-        // 已达上限不再动
-        assert!(!p2.clamp_max_speech("qwen3", 15.0));
     }
 
     #[test]

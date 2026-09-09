@@ -12,7 +12,6 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod artery;
-mod backend;
 mod logging;
 mod panic_hook;
 mod shell;
@@ -81,12 +80,17 @@ fn main() -> anyhow::Result<()> {
     // 动脉桥线程（W2：UiMsg::Events 批量投递；Always 重生）——队列侧在
     // lt-orchestrator，本文件只留需要 winit 的投递桥（W3 拓扑勘正）
     artery::spawn_bridge(artery.clone(), &app_sup, proxy.clone(), bridge_stop.clone());
-    // 后台命令线程：下载编排（识别页/面板触发）+ 下载期日志转发。
-    // 下载目标不在此快照：backend 维护 settings 镜像，StartDownload 时按当前
-    // 引擎/档位现场重算（运行中切换后下载的才是所选模型，M5.1）。
-    backend::spawn(cmd_rx, proxy.clone(), artery.clone(), false, initial_settings.clone());
+    // W4/INV2：lt-backend 线程退役——cmd mpsc 由 AppShell 在 about_to_wait
+    // 直排（UI→mpsc→shell 两跳）；下载编排在 shell 内的 DownloadManager
 
-    let mut shell = shell::AppShell::new(app, artery, monitor_cell, Some(initial_settings.clone()));
+    let mut shell = shell::AppShell::new(
+        app,
+        artery,
+        monitor_cell,
+        cmd_rx,
+        proxy.clone(),
+        Some(initial_settings.clone()),
+    );
 
     let result = event_loop.run_app(&mut shell);
     // 收尾序（INV4）：监督器 stopping 先置位（禁 respawn——必须在一切线程停止

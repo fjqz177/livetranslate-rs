@@ -1,10 +1,27 @@
 //! AsrManager 语义测试（真子进程；原版 _run_asr/_recover_asr_worker 行为对照）。
 
 use lt_asr::{
-    AsrClientError, AsrManager, AsrManagerError, AsrPendingHandle, AsrWorkerClient, Spawner,
+    AsrClientError, AsrEffectiveSettings, AsrManager, AsrManagerError, AsrWorkerClient, Spawner,
     WorkerConfig,
 };
 use std::path::PathBuf;
+
+/// 生效快照（W4 总线视图）：language="auto" + 双 pad 0.5（=默认设置透视）
+fn eff() -> AsrEffectiveSettings {
+    AsrEffectiveSettings {
+        language: "auto".into(),
+        sensevoice_pad: 0.5,
+        whisper_pad: 0.5,
+    }
+}
+
+fn eff_with(language: &str, sensevoice_pad: f32, whisper_pad: f32) -> AsrEffectiveSettings {
+    AsrEffectiveSettings {
+        language: language.into(),
+        sensevoice_pad,
+        whisper_pad,
+    }
+}
 
 fn fake_spawn() -> Spawner {
     let path = PathBuf::from(env!("CARGO_BIN_EXE_fake_asr_worker"));
@@ -69,7 +86,7 @@ fn success_path_resets_and_ready() {
     let c = cfg("Echo", serde_json::json!({}));
     m.ensure_started(&c).expect("start");
     assert!(m.is_ready());
-    let res = m.transcribe(&audio(), false).expect("transcribe");
+    let res = m.transcribe(&audio(), false, &eff()).expect("transcribe");
     assert_eq!(res.text, "echo len=1600");
     assert!(!m.is_unavailable());
     m.shutdown();
@@ -86,7 +103,7 @@ fn crash_restarts_then_exhausts_to_unavailable() {
 
     // 每次识别都崩 worker → 恢复重启；配额 3 次耗尽后不可用
     for call in 1..=4 {
-        match m.transcribe(&audio(), false) {
+        match m.transcribe(&audio(), false, &eff()) {
             Err(e) => {
                 if call < 4 {
                     assert!(!e.unavailable(), "call{call} 应还在配额内: {e}");
@@ -100,7 +117,7 @@ fn crash_restarts_then_exhausts_to_unavailable() {
     assert!(m.is_unavailable());
     // 耗尽后不再尝试 spawn
     assert!(matches!(
-        m.transcribe(&audio(), false),
+        m.transcribe(&audio(), false, &eff()),
         Err(AsrManagerError::Unavailable(_))
     ));
 }
@@ -114,7 +131,7 @@ fn engine_switch_revives_unavailable() {
     );
     m.ensure_started(&bad).expect("start");
     for _ in 0..4 {
-        let _ = m.transcribe(&audio(), false);
+        let _ = m.transcribe(&audio(), false, &eff());
     }
     assert!(m.is_unavailable());
 
@@ -122,7 +139,7 @@ fn engine_switch_revives_unavailable() {
     let good = cfg("Echo", serde_json::json!({}));
     m.ensure_started(&good).expect("切换后应复活");
     assert!(!m.is_unavailable());
-    assert!(m.transcribe(&audio(), false).is_ok());
+    assert!(m.transcribe(&audio(), false, &eff()).is_ok());
 }
 
 #[test]
@@ -134,7 +151,7 @@ fn three_consecutive_recoverable_errors_mark_unavailable() {
     );
     m.ensure_started(&c).expect("start");
     for n in 1..=3 {
-        match m.transcribe(&audio(), false) {
+        match m.transcribe(&audio(), false, &eff()) {
             Err(AsrManagerError::Failed(msg)) => {
                 if n == 3 {
                     // 第 3 次连续错误 → 致命 → 不可用
@@ -157,77 +174,83 @@ fn config_change_replaces_worker() {
     let b = cfg("B", serde_json::json!({}));
     m.ensure_started(&b).expect("start B");
     // 旧实例已被关闭替换：新实例可用且配置为新签名
-    assert!(m.transcribe(&audio(), false).is_ok());
+    assert!(m.transcribe(&audio(), false, &eff()).is_ok());
 }
 
-// ── pending（原版 _asr_pending_* / _apply_pending_asr_settings） ──
+// ── 生效设置（W4 总线快照；原版 _asr_pending_* / _apply_pending_asr_settings） ──
 
 #[test]
-fn pending_language_applied_and_committed() {
-    let handle = AsrPendingHandle::default();
-    let mut m = AsrManager::with_spawner_and_pending(fake_spawn(), handle.clone());
+fn effective_language_applied_and_committed() {
+    let mut m = AsrManager::with_spawner(fake_spawn());
     m.ensure_started(&cfg("Echo", serde_json::json!({})))
         .expect("start");
     assert_eq!(m.config().unwrap().language, "auto");
 
-    // UI 线程挂起 → ASR 线程 transcribe 前应用并提交（写回 restart config）
-    handle.set_language("zh");
-    let res = m.transcribe(&audio(), false).expect("transcribe");
+    // 总线快照语言 zh → transcribe 前应用并提交（写回 restart config）
+    let res = m
+        .transcribe(&audio(), false, &eff_with("zh", 0.5, 0.5))
+        .expect("transcribe");
     assert_eq!(res.text, "echo len=1600");
     assert_eq!(m.config().unwrap().language, "zh");
 
-    // 挂起已清除且 restart config 已更新：再次挂起别的值同样走"应用→提交"
-    handle.set_language("en");
-    m.transcribe(&audio(), false).expect("transcribe 2");
+    // 快照换成 en：同样走"比对→应用→提交"；快照不变（同值）不重复下发
+    m.transcribe(&audio(), false, &eff_with("en", 0.5, 0.5))
+        .expect("transcribe 2");
     assert_eq!(m.config().unwrap().language, "en");
     m.shutdown();
 }
 
 #[test]
-fn pending_padding_wrong_family_ignored() {
-    let handle = AsrPendingHandle::default();
-    let mut m = AsrManager::with_spawner_and_pending(fake_spawn(), handle.clone());
-    // sensevoice → funasr 家族：挂起 whisper 家族的 padding 不应影响它
+fn effective_padding_wrong_family_ignored() {
+    let mut m = AsrManager::with_spawner(fake_spawn());
+    // sensevoice → funasr 家族：快照换个 whisper 家族 padding 不应影响它
     m.ensure_started(&cfg_engine(
         "sensevoice",
         "SenseVoice",
         serde_json::json!({}),
     ))
     .expect("start");
-    let before = m.config().unwrap().pad_seconds;
+    assert_eq!(m.config().unwrap().pad_seconds, Some(0.5));
 
-    handle.set_padding("whisper", 1.0);
-    m.transcribe(&audio(), false).expect("transcribe");
-    assert_eq!(m.config().unwrap().pad_seconds, before);
+    m.transcribe(&audio(), false, &eff_with("auto", 0.5, 3.0))
+        .expect("transcribe");
+    assert_eq!(m.config().unwrap().pad_seconds, Some(0.5), "whisper pad 不生效");
+
+    // funasr 家族生效值变了 → 应用并提交
+    m.transcribe(&audio(), false, &eff_with("auto", 1.5, 3.0))
+        .expect("transcribe 2");
+    assert_eq!(m.config().unwrap().pad_seconds, Some(1.5));
     m.shutdown();
 }
 
-/// worker 在 set_language 送达途中死亡：命令未送达 → 挂起保持、不提交，
-/// 换正常 worker 后挂起值在其首次 transcribe 前被重新应用（原版
-/// "worker-death exceptions propagate with the pending intact"）
+/// worker 在 set_language 送达途中死亡：命令未送达 → 不提交（config 不变），
+/// 换正常 worker 后同快照再传 → 比对仍不等 → 重新应用（原版
+/// "worker-death exceptions propagate with the pending intact" —— W4 形态：
+/// 挂起态即总线快照，本层无易失状态）
 #[test]
-fn pending_kept_when_worker_dies_during_apply() {
-    let handle = AsrPendingHandle::default();
-    let mut m = AsrManager::with_spawner_and_pending(fake_spawn(), handle.clone());
+fn effective_retries_when_worker_dies_during_apply() {
+    let mut m = AsrManager::with_spawner(fake_spawn());
     let crash = cfg(
         "CrashLang",
         serde_json::json!({"fake": {"crash_on_set_language": true}}),
     );
     m.ensure_started(&crash).expect("start");
-    handle.set_language("zh");
 
     // 两次尝试均因 worker 崩溃失败（重启在配额内，非 unavailable）
     for i in 1..=2 {
-        let err = m.transcribe(&audio(), false).unwrap_err();
+        let err = m
+            .transcribe(&audio(), false, &eff_with("zh", 0.5, 0.5))
+            .unwrap_err();
         assert!(!err.unavailable(), "尝试 {i}: {err}");
     }
     // 命令未送达 → 不写回 restart config
     assert_eq!(m.config().unwrap().language, "auto");
 
-    // 挂起保持：切到正常 worker 后首次 transcribe 前被应用并提交
+    // 切到正常 worker（配置替换 config≠快照）→ 首次 transcribe 前应用并提交
     m.ensure_started(&cfg("Echo", serde_json::json!({})))
         .expect("switch");
-    m.transcribe(&audio(), false).expect("transcribe");
+    m.transcribe(&audio(), false, &eff_with("zh", 0.5, 0.5))
+        .expect("transcribe");
     assert_eq!(m.config().unwrap().language, "zh");
     m.shutdown();
 }
@@ -249,7 +272,7 @@ fn engine_switch_failure_rolls_back() {
     );
     assert!(m.is_ready());
     assert_eq!(m.config().unwrap().engine, "echo");
-    assert!(m.transcribe(&audio(), false).is_ok());
+    assert!(m.transcribe(&audio(), false, &eff()).is_ok());
     m.shutdown();
 }
 
@@ -274,14 +297,14 @@ fn crash_between_requests_restarts_on_next_transcribe() {
     let mut m = AsrManager::with_spawner(fake_spawn());
     let c = cfg("Echo", serde_json::json!({"fake": {"exit_after_ms": 800}}));
     m.ensure_started(&c).expect("start");
-    assert!(m.transcribe(&audio(), false).is_ok(), "首次识别应成功");
+    assert!(m.transcribe(&audio(), false, &eff()).is_ok(), "首次识别应成功");
     std::thread::sleep(std::time::Duration::from_millis(1200));
     // 间隙死亡后的第一次识别：自动恢复（本段丢弃），而非 Failed 死循环
-    let err = m.transcribe(&audio(), false).unwrap_err();
+    let err = m.transcribe(&audio(), false, &eff()).unwrap_err();
     assert!(matches!(err, AsrManagerError::Restarted(_)), "实际: {err}");
     assert!(!err.unavailable());
     // 重启后的 worker 正常工作（注：同配置仍带 exit_after_ms，须立即识别）
-    assert!(m.transcribe(&audio(), false).is_ok());
+    assert!(m.transcribe(&audio(), false, &eff()).is_ok());
     m.shutdown();
 }
 
@@ -292,20 +315,20 @@ fn failed_recover_gap_rebuilds_then_marks_unavailable() {
     let mut m = AsrManager::with_spawner(flaky_spawn());
     let c = cfg("Echo", serde_json::json!({"fake": {"exit_after_ms": 800}}));
     m.ensure_started(&c).expect("start");
-    assert!(m.transcribe(&audio(), false).is_ok());
+    assert!(m.transcribe(&audio(), false, &eff()).is_ok());
     std::thread::sleep(std::time::Duration::from_millis(1200));
     // 间隙死亡 → recover → 重启 spawn 失败（注入第 1 次）→ Failed 且 client=None
-    let err = m.transcribe(&audio(), false).unwrap_err();
+    let err = m.transcribe(&audio(), false, &eff()).unwrap_err();
     assert!(matches!(err, AsrManagerError::Failed(_)), "实际: {err}");
     assert!(!m.is_unavailable(), "配额未耗尽不应标记不可用");
     // 空窗的下一次识别：有限重建（注入第 2 次失败）→ 标记 unavailable
-    let err = m.transcribe(&audio(), false).unwrap_err();
+    let err = m.transcribe(&audio(), false, &eff()).unwrap_err();
     assert!(err.unavailable(), "实际: {err}");
     assert!(m.is_unavailable());
     // 换配置（引擎切换语义）→ 复活（注入第 3 次起成功）
     m.ensure_started(&cfg("Echo2", serde_json::json!({})))
         .expect("复活");
-    assert!(m.transcribe(&audio(), false).is_ok());
+    assert!(m.transcribe(&audio(), false, &eff()).is_ok());
     m.shutdown();
 }
 
@@ -321,21 +344,23 @@ fn load_failure_frame_marks_first_start_failed() {
 }
 
 /// worker 回 set_language 可恢复错误（qwen3 非 auto 语言的日常形态）：
-/// 原版"送达即提交"——warn 后仍写回 restart config，识别继续、挂起清除
+/// 原版"送达即提交"——warn 后仍写回 restart config，识别继续
 #[test]
-fn set_language_recoverable_fail_still_commits_pending() {
-    let handle = AsrPendingHandle::default();
-    let mut m = AsrManager::with_spawner_and_pending(fake_spawn(), handle.clone());
+fn set_language_recoverable_fail_still_commits_effective() {
+    let mut m = AsrManager::with_spawner(fake_spawn());
     let c = cfg(
         "Echo",
         serde_json::json!({"fake": {"fail_set_language": true}}),
     );
     m.ensure_started(&c).expect("start");
-    handle.set_language("zh");
-    let res = m.transcribe(&audio(), false).expect("transcribe");
+    let res = m
+        .transcribe(&audio(), false, &eff_with("zh", 0.5, 0.5))
+        .expect("transcribe");
     assert_eq!(res.text, "echo len=1600");
-    assert_eq!(m.config().unwrap().language, "zh", "挂起值应已提交");
-    // 挂起已清：后续识别不再重复下发
-    assert!(m.transcribe(&audio(), false).is_ok());
+    assert_eq!(m.config().unwrap().language, "zh", "生效值应已提交");
+    // config 已提交：后续同快照不再重复下发
+    assert!(m
+        .transcribe(&audio(), false, &eff_with("zh", 0.5, 0.5))
+        .is_ok());
     m.shutdown();
 }

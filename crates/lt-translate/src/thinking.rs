@@ -230,7 +230,7 @@ mod tests {
     }
 
     #[test]
-    fn target_language_clone_preserves_thinking_control() {
+    fn shared_client_preserves_thinking_control() {
         let t = Translator::for_test(
             "https://api.deepseek.com",
             "deepseek-v4-pro",
@@ -238,7 +238,7 @@ mod tests {
             true,
             None,
         );
-        let clone = t.with_target_language("ja");
+        let clone = t.share_client();
         assert_eq!(
             clone.merged_extra_body(),
             json!({"thinking": {"type": "disabled"}})

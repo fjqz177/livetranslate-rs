@@ -8,19 +8,30 @@
 //!   调用，对齐原版 _asr_loop queue.Empty 分支）
 //! - 引擎配置变更 → 替换 worker（generation 语义：旧实例关闭，计数清零）；
 //!   新配置加载失败 → 回滚旧 worker（原版 _switch_asr_engine._load）
-//! - 语言/padding 走挂起句柄（原版 _asr_pending_*）：UI 线程只存值，ASR 线程
-//!   在每次 transcribe 前应用（_apply_pending_asr_settings，送达即提交）
+//! - 语言/padding 走生效快照（架构 2.0 W4：值由设置总线按次发布派生、ASR
+//!   线程每段经 [`AsrEffectiveSettings`] 传入，本层仅"与 config 比对、变了才
+//!   下发"——替代旧双线程共享挂起句柄（原版 _asr_pending_*），同步边消灭）
 
 use crate::client::{AsrClientError, AsrWorkerClient};
 use crate::worker::WorkerConfig;
 use lt_proto::AsrResult;
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex, MutexGuard};
 
 /// 自动重启上限（原版 _asr_restart_max）
 const RESTART_MAX: u32 = 3;
 /// RSS 回收阈值：超出加载后基线这么多 MB 就回收（原版 _asr_recycle_delta_mb）
 const RECYCLE_DELTA_MB: u64 = 2048;
+
+/// ASR 生效设置快照（W4 设置总线读侧视图）：ASR 线程每次 transcribe 前经
+/// [`AsrManager::transcribe`] 传入并应用——与原版"送达即提交"语义一致，
+/// 但值不再来自跨线程共享状态（旧 AsrPendingHandle 已删，同步边零存留）。
+/// 语言 + 双 pad 由总线按引擎派生出；qwen3（无 pad 语义）与 nano（家族
+/// funasr 但引擎不支持 padding）由本层跳过 pad 下发。
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct AsrEffectiveSettings {
+    pub language: String,
+    pub sensevoice_pad: f32,
+    pub whisper_pad: f32,
+}
 
 /// 管理层错误（unavailable = 需要用户干预/换引擎；其余为单次失败）
 #[derive(Debug, thiserror::Error)]
@@ -28,8 +39,8 @@ pub enum AsrManagerError {
     #[error("ASR 不可用: {0}")]
     Unavailable(String),
     /// worker 死亡/超时且已自动重启（本段丢弃）：**命令未送达**。
-    /// pending 语义据此保持挂起（原版异常传播路径：挂起值由重启后的
-    /// worker 在下一次 transcribe 前重新应用）
+    /// 生效值保存在总线快照中（非易失挂起态），下段比对自动重试——
+    /// 等价原版异常传播 + 挂起保持语义
     #[error("{0}")]
     Restarted(String),
     #[error("{0}")]
@@ -44,39 +55,7 @@ impl AsrManagerError {
 
 pub type Spawner = Box<dyn Fn(&WorkerConfig) -> Result<AsrWorkerClient, AsrClientError> + Send>;
 
-/// 挂起状态（原版 _asr_pending_language/_asr_pending_padding；
-/// UI 线程只写，ASR 线程在每次 transcribe 前应用并清除）
-#[derive(Default)]
-struct PendingState {
-    language: Option<String>,
-    /// padding 按引擎类型挂起（"funasr"/"whisper"），互不覆盖
-    padding: HashMap<String, f32>,
-}
-
-/// UI 线程安全句柄：仅加锁存值，绝不跨进程调用（原版 _set_asr_language/
-/// _set_asr_padding 语义——慢/挂死的 worker 不能冻结 UI）。UI 线程与 ASR 线程
-/// 各持一份克隆，共享同一挂起状态。
-#[derive(Clone, Default)]
-pub struct AsrPendingHandle(Arc<Mutex<PendingState>>);
-
-impl AsrPendingHandle {
-    /// UI 线程：挂起识别语言（ASR 线程下一次 transcribe 前应用并提交）
-    pub fn set_language(&self, lang: &str) {
-        self.lock().language = Some(lang.to_string());
-    }
-
-    /// UI 线程：按引擎家族（"funasr"/"whisper"）挂起 padding，互不覆盖
-    pub fn set_padding(&self, engine_family: &str, secs: f32) {
-        self.lock().padding.insert(engine_family.to_string(), secs);
-    }
-
-    /// 锁内仅做存取（无 panic 点）；中毒也取回数据，不放大 panic
-    fn lock(&self) -> MutexGuard<'_, PendingState> {
-        self.0.lock().unwrap_or_else(|e| e.into_inner())
-    }
-}
-
-/// 引擎名 → 引擎家族（padding 挂起键，对应原版 asr_type "funasr"/"whisper"）。
+/// 引擎名 → 引擎家族（padding 生效键，对应原版 asr_type "funasr"/"whisper"）。
 /// 注意：M5 nano 接入时复核（nano 属 funasr 家族但不支持 padding）。
 /// WP-B：qwen3 独立家族——若落 whisper 兜底，此前挂起的 whisper padding 会
 /// 泄漏到 qwen3 worker（Unsupported 噪音）；UI 不产生 "qwen3" 家族键 → 恒 no-op。
@@ -97,28 +76,16 @@ pub struct AsrManager {
     baseline_mb: Option<u64>,
     unavailable: bool,
     spawn: Spawner,
-    /// 语言/padding 挂起句柄（与 UI 线程共享；transcribe 前应用）
-    pending: AsrPendingHandle,
 }
 
 impl AsrManager {
     /// 生产构造：走 `当前exe --asr-worker`（与 AsrWorkerClient::spawn 相同）
     pub fn new() -> Self {
-        Self::with_pending(AsrPendingHandle::default())
-    }
-
-    /// 生产构造 + 指定挂起句柄（UI 线程持同一句柄即可挂起语言/padding）
-    pub fn with_pending(pending: AsrPendingHandle) -> Self {
-        Self::with_spawner_and_pending(Box::new(|cfg| AsrWorkerClient::spawn(cfg.clone())), pending)
+        Self::with_spawner(Box::new(|cfg| AsrWorkerClient::spawn(cfg.clone())))
     }
 
     /// 注入 spawner（测试用假 worker）
     pub fn with_spawner(spawn: Spawner) -> Self {
-        Self::with_spawner_and_pending(spawn, AsrPendingHandle::default())
-    }
-
-    /// 注入 spawner + 挂起句柄（测试：假 worker + 共享挂起状态）
-    pub fn with_spawner_and_pending(spawn: Spawner, pending: AsrPendingHandle) -> Self {
         Self {
             client: None,
             config: None,
@@ -127,7 +94,6 @@ impl AsrManager {
             baseline_mb: None,
             unavailable: false,
             spawn,
-            pending,
         }
     }
 
@@ -221,7 +187,8 @@ impl AsrManager {
         }
     }
 
-    /// 单次识别：错误分类 + 自动恢复（失败不重试同一段）。
+    /// 单次识别：错误分类 + 自动恢复（失败不重试同一段）；识别前应用
+    /// 生效设置（语言/padding，W4 总线派生快照）。
     /// 恢复语义（AH-2/D-26）：`Worker{recoverable}` 走三振计数，**其余一切
     /// 错误（Exited/Timeout/Status/Io）一律进 [`Self::recover`]**——client 层
     /// 任何使用点发现的死亡/协议失序都交还统一重建入口（原版 `except
@@ -230,6 +197,7 @@ impl AsrManager {
         &mut self,
         audio: &[f32],
         word_timestamps: bool,
+        eff: &AsrEffectiveSettings,
     ) -> Result<AsrResult, AsrManagerError> {
         if self.unavailable {
             return Err(AsrManagerError::Unavailable("worker 未就绪".into()));
@@ -252,9 +220,10 @@ impl AsrManager {
                 }
             };
         }
-        // 识别前应用挂起设置（原版 _apply_pending_asr_settings）：
-        // worker 死亡/超时 → 保持挂起并直接上抛，重启后的 worker 重新应用
-        if let Err(e) = self.apply_pending() {
+        // 识别前应用生效设置（原版 _apply_pending_asr_settings 的 W4 形态）：
+        // worker 死亡/超时 → 直接上抛（生效值在总线快照中，下段比对自动重试，
+        // 等价旧"挂起保持"——挂起存根即总线当前值）
+        if let Err(e) = self.apply_effective_settings(eff) {
             return Err(e);
         }
         let result = self
@@ -294,70 +263,65 @@ impl AsrManager {
         self.simple_request(|c| c.set_input_padding(pad_seconds))
     }
 
-    /// 应用挂起的语言/padding（原版 _apply_pending_asr_settings；transcribe 前调用）。
-    /// 提交规则（原版"命令送达即提交"）：
+    /// 应用生效语言/padding（原版 _apply_pending_asr_settings；transcribe 前调用）。
+    /// W4 形态：值来自总线快照（ASR 线程按段传入），本层与 restart config
+    /// 比对——**变了才下发**，不变零 IPC。提交规则（原版"命令送达即提交"）：
     /// - 命令送达（Ok）或送达后 worker 回可恢复错误（Failed，仅 warn）→ 写回
-    ///   restart config（防自动重启/RSS 回收回退到引擎切换时的旧值）+ 清除挂起；
-    /// - worker 死亡/超时（Unavailable，原版异常传播）→ 保持挂起并上抛。
-    fn apply_pending(&mut self) -> Result<(), AsrManagerError> {
-        let snapshot = {
-            let st = self.pending.lock();
-            (st.language.clone(), st.padding.clone())
-        };
-        // ── 语言 ──
-        if let Some(lang) = snapshot.0 {
-            match self.set_language(&lang) {
-                Err(e @ AsrManagerError::Unavailable(_)) => return Err(e), // 保持挂起
-                // worker 死亡/超时（命令未送达，原版异常传播）：保持挂起，
-                // 由重启后的 worker 在下一次 transcribe 前重新应用
+    ///   restart config（防自动重启/RSS 回收回退到旧值）；
+    /// - worker 死亡/超时（Unavailable/Restarted，原版异常传播）→ 上抛，
+    ///   本段丢弃；总线快照未变，下段比对仍不等 → 自动重试。
+    fn apply_effective_settings(
+        &mut self,
+        eff: &AsrEffectiveSettings,
+    ) -> Result<(), AsrManagerError> {
+        // ── 语言：与 config 比对，变了才下发 ──
+        if self.config.as_ref().map(|c| c.language.as_str()) != Some(eff.language.as_str()) {
+            match self.set_language(&eff.language) {
+                Err(e @ AsrManagerError::Unavailable(_)) => return Err(e),
+                // worker 死亡/超时（命令未送达，原版异常传播）：上抛；
+                // 生效值在总线快照中，下段自动重试（等价旧"挂起保持"）
                 Err(e @ AsrManagerError::Restarted(_)) => return Err(e),
                 Err(AsrManagerError::Failed(e)) => {
-                    tracing::warn!("ASR 语言更新失败（仍提交挂起值）: {e}");
+                    tracing::warn!("ASR 语言更新失败（仍提交生效值）: {e}");
                 }
                 Ok(()) => {}
             }
             if let Some(cfg) = self.config.as_mut() {
-                cfg.language = lang.clone();
-            }
-            // 清除挂起（原版 _clear_pending_language：UI 期间又挂了新值则保留新值）
-            let mut st = self.pending.lock();
-            if st.language.as_deref() == Some(lang.as_str()) {
-                st.language = None;
+                cfg.language = eff.language.clone();
             }
         }
-        // ── padding：只取当前 worker 引擎家族对应的挂起条目 ──
+        // ── padding：只取当前 worker 引擎家族对应的生效条目 ──
         let Some(engine) = self.config.as_ref().map(|c| c.engine.clone()) else {
             return Ok(());
         };
         let family = engine_family(&engine);
-        let Some(&secs) = snapshot.1.get(family) else {
+        let Some(secs) = (match family {
+            "funasr" => Some(eff.sensevoice_pad),
+            "whisper" => Some(eff.whisper_pad),
+            // qwen3 独立家族：无 padding 语义（B-α），恒 no-op
+            _ => None,
+        }) else {
             return Ok(());
         };
         // funasr 家族中 nano 不支持 padding（原版 funasr_supports_padding：
-        // sensevoice=true、nano=false）：不下发也不写回 config，仅清除挂起
+        // sensevoice=true、nano=false）：不下发也不写回 config
         if family == "funasr" && engine == "nano" {
-            let mut st = self.pending.lock();
-            if st.padding.get(family) == Some(&secs) {
-                st.padding.remove(family);
-            }
+            return Ok(());
+        }
+        if self.config.as_ref().map(|c| c.pad_seconds) == Some(Some(secs)) {
             return Ok(());
         }
         match self.set_input_padding(secs) {
-            Err(e @ AsrManagerError::Unavailable(_)) => return Err(e), // 保持挂起
-            // 同语言分支：worker 死亡/超时命令未送达，保持挂起
+            Err(e @ AsrManagerError::Unavailable(_)) => return Err(e),
+            // 同语言分支：worker 死亡/超时命令未送达，上抛重试
             Err(e @ AsrManagerError::Restarted(_)) => return Err(e),
             Err(AsrManagerError::Failed(e)) => {
-                tracing::warn!("ASR padding 更新失败（仍提交挂起值）: {e}");
+                tracing::warn!("ASR padding 更新失败（仍提交生效值）: {e}");
             }
             Ok(()) => {}
         }
         if let Some(cfg) = self.config.as_mut() {
             cfg.pad_seconds = Some(secs);
-        }
-        // 清除挂起（原版 _clear_pending_padding：值已被 UI 更新则保留新值）
-        let mut st = self.pending.lock();
-        if st.padding.get(family) == Some(&secs) {
-            st.padding.remove(family);
         }
         Ok(())
     }

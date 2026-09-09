@@ -12,7 +12,8 @@
 //!
 //! 不变量落点：
 //! - **INV1 回流通路唯一**：生产侧全部改走 `push`（本文件之外不再直发
-//!   proxy 的 UiEvent——`UiMsg::Cmd`/`UiMsg::AppCommand` 是控制面，不经动脉）；
+//!   proxy 的 UiEvent——`UiMsg::AppCommand` 是控制面，不经动脉；W4 起
+//!   `UiMsg::Cmd` 已删，控制面 = 命令 mpsc 由 AppShell 直排）；
 //! - **INV8 事件序**：`BoundedDropQueue` 为 MPMC FIFO——跨生产者无全序，但
 //!   同生产者严格 FIFO（实体粘线程：AddMessage/AsrDevice ← ASR 线程、
 //!   UpdateTranslation ← tl worker、Download ← 下载会话线程），序即安全；

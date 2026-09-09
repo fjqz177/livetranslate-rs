@@ -21,18 +21,19 @@
 //! 未就绪链路：模型未缓存 → 发 AsrUnavailable（M2.5 向导接管首启下载）。
 
 use crate::event_artery::EventSink;
+use crate::settings_bus::{EffectiveSettings, SettingsBus};
 use crate::supervisor::{artery_sink, Policy, Supervisor};
 use crate::Msg;
-use lt_asr::{AsrManager, WorkerConfig};
+use lt_asr::{AsrEffectiveSettings, AsrManager, WorkerConfig};
 use lt_models::registry;
 use lt_audio::audio::wasapi_win::WasapiBackend;
+use lt_audio::audio::capture::VadSource;
 use lt_audio::interim::{
     is_short_utterance, pending_merge, split_sentences, strip_committed_overlap, trim_samples,
     InterimState,
 };
 use lt_audio::{
     AudioBackend, BoundedDropQueue, CaptureLoop, InterimControl, SegmentSource, VadProcessor,
-    VadSettings,
 };
 use lt_proto::{AudioRole, CaptureEvent, MonitorSample, QueueId, ThreadRole, UiEvent};
 use lt_translate::Translator;
@@ -211,29 +212,37 @@ struct TlRig {
     transcript: Arc<lt_audio::transcript::TranscriptWriter>,
     /// 用户可见文案服务（i18n 注入；错误占位/回执文案经此取，见 [`Msg`]）
     msg: Msg,
+    /// 设置总线（W4：翻译 worker 提交前读 `tl` 生效视图——目标语言/超时不再
+    /// 存实例可变态（旧 MutableState 设置面 + TlSwitch::TargetLanguage/Timeout 镜像）
+    bus: Arc<SettingsBus>,
 }
 
 impl TlRig {
     /// 按设置构建；models 为空/active_model 越界 → Ok(None)（不翻译，仅 ASR）；
     /// 配置无效（URL 格式错等）→ Err(原因)（必须让用户可见，见 TranslatorUnavailable）
     fn from_settings(
-        settings: &lt_proto::Settings,
+        bus: &Arc<SettingsBus>,
         sup: &Supervisor,
         sink: EventSink,
         transcript: Arc<lt_audio::transcript::TranscriptWriter>,
         msg: Msg,
     ) -> Result<Option<Self>, String> {
-        let Some(mc) = settings.models.get(settings.active_model) else {
+        let eff = bus.load();
+        let Some(mc) = eff.raw.models.get(eff.raw.active_model) else {
             return Ok(None);
         };
-        Self::from_model_config(mc, settings, sup, sink, transcript, msg)
+        Self::from_effective(mc, &eff, bus, sup, sink, transcript, msg)
     }
 
     /// 按指定模型配置构建（运行时切换用；构建失败返回 Err——UI 收到
-    /// TranslatorUnavailable 显示到翻译页状态行，不再静默关闭整条翻译）
-    fn from_model_config(
+    /// TranslatorUnavailable 显示到翻译页状态行，不再静默关闭整条翻译）。
+    /// W4：目标语言/超时/系统提示读自设置总线（eff 快照），不再携带
+    /// settings 全量（旧 ReplaceRig 载荷）——发布即生效，无镜像同步边
+    #[allow(clippy::too_many_arguments)]
+    fn from_effective(
         mc: &lt_proto::ModelConfig,
-        settings: &lt_proto::Settings,
+        eff: &EffectiveSettings,
+        bus: &Arc<SettingsBus>,
         sup: &Supervisor,
         sink: EventSink,
         transcript: Arc<lt_audio::transcript::TranscriptWriter>,
@@ -243,19 +252,17 @@ impl TlRig {
             api_base: mc.api_base.clone(),
             api_key: mc.api_key.clone(),
             model: mc.model.clone(),
-            target_language: settings.target_language.clone(),
             max_tokens: 256,
             temperature: 0.3,
             streaming: mc.streaming,
-            system_prompt: (!settings.system_prompt.is_empty())
-                .then(|| settings.system_prompt.clone()),
+            system_prompt: (!eff.raw.system_prompt.is_empty())
+                .then(|| eff.raw.system_prompt.clone()),
             proxy: mc.proxy.clone(),
             // 原版 no_think 缺省 true（legacy 迁移后仅 thinking_style 生效）
             no_think: true,
             no_system_role: mc.no_system_role,
             thinking_style: mc.thinking_style.clone(),
             json_response: mc.json_response,
-            timeout: settings.timeout,
             overrides: mc.overrides.clone(),
             extra_body: mc.extra_body.clone(),
         };
@@ -277,11 +284,15 @@ impl TlRig {
             pool: JobPool::new(TL_POOL_WORKERS, sup, sink),
             transcript,
             msg,
+            bus: bus.clone(),
         }))
     }
 
     /// 提交一段的翻译任务（对照原版 _translate_async 的成功/重复/错误三路）；
-    /// 同语言不进此函数（ASR 线程直接回空译文，见 run_asr_thread）
+    /// 同语言不进此函数（ASR 线程直接回空译文，见 run_asr_thread）。
+    /// W4：目标语言/超时在 **任务执行时** 读总线（排队期间设置变更与旧
+    /// `set_target_language` 改运行时可变面的语义同为"执行时最新"——旧实现
+    /// worker 开始执行才取 state 锁；此处等价且无锁）
     fn submit_translation(
         &self,
         sink: &EventSink,
@@ -294,10 +305,14 @@ impl TlRig {
         let transcript = self.transcript.clone();
         let sink = sink.clone();
         let msg = self.msg.clone();
+        let bus = self.bus.clone();
         self.pool.submit(move || {
+            let eff = bus.load();
+            let target = eff.tl.target_language.clone();
+            let timeout = eff.tl.timeout;
             let t0 = Instant::now();
             let mut translated: Option<String> = None;
-            for item in translator.translate_iter(&text, &source_lang) {
+            for item in translator.translate_iter(&text, &source_lang, &target, timeout) {
                 match item {
                     Ok(partial) => {
                         let _ = sink.push(UiEvent::UpdateStreaming {
@@ -409,18 +424,11 @@ pub struct Pipeline {
     /// 暂停标志（capture 线程丢弃 chunk 不喂 VAD）；M4 托盘暂停联动
     #[allow(dead_code)]
     paused: Arc<AtomicBool>,
-    /// UI 线程挂起语言/padding 的句柄：UI 线程调用 set_pending_*，ASR 线程在
-    /// 下一次 transcribe 前应用（原版 _set_asr_language/_set_asr_padding +
-    /// _apply_pending_asr_settings）；仅加锁存值，绝不跨进程调用
-    #[allow(dead_code)]
-    pending: lt_asr::AsrPendingHandle,
     /// 翻译装置（models 空/构建失败时 None = 仅 ASR 不翻译）
     tl: Option<Arc<TlRig>>,
     /// 运行时翻译器切换通道（UI 域命令 → ASR 线程空闲分支应用；
-    /// 原版对应 _switch_translator / set_target_language / set_timeout）
+    /// 原版对应 _switch_translator / _switch_asr_engine / 测试连接）
     tl_switch: Option<crossbeam_channel::Sender<TlSwitch>>,
-    /// VAD 参数热更新槽（面板"应用"→ capture 线程）
-    vad_update: Arc<std::sync::Mutex<Option<lt_audio::VadSettings>>>,
     /// 增量识别控制块（与 capture/ASR 线程共享；set_interim 热应用）
     interim: Arc<InterimControl>,
     /// 线程监督器（架构 2.0 W1/INV3）：capture/ASR/翻译池/音频状态转发全部
@@ -430,24 +438,13 @@ pub struct Pipeline {
     transcript: Arc<lt_audio::transcript::TranscriptWriter>,
 }
 
-/// ASR 线程消费的翻译器/引擎命令
+/// ASR 线程消费的翻译器/引擎命令（W4 收敛三臂——目标语言/超时/语言/padding
+/// 四臂被设置总线派生视图吸收：真实重建/切换动作才必须走线程命令）
 pub(crate) enum TlSwitch {
     /// 整体重建翻译装置（切模型；历史随旧实例丢弃，与原版重建 Translator 一致）
     ReplaceRig {
         config: Box<lt_proto::ModelConfig>,
-        settings: Box<lt_proto::Settings>,
     },
-    /// 原地改目标语言（原版 set_target_language；同语言判定也用新值）
-    TargetLanguage(String),
-    /// 原地改超时（原版 set_timeout）
-    Timeout(u32),
-    /// 识别语言过滤镜像同步（AH-3/H4）：pending 机制驱动 worker 实际语言，
-    /// 此命令同步 ASR 线程内段过滤所用镜像——二者不一致时改语言后过滤仍按
-    /// 旧值判定（字幕全灭/漏过滤）
-    AsrLanguage(String),
-    /// padding 镜像同步（AH-3/H4；family = "funasr" | "whisper"）：引擎切换
-    /// 装配读取，防运行时改 pad 后切换静默回退启动快照旧值
-    Pad { family: String, secs: f32 },
     /// 运行时切换 ASR 引擎/模型（原版 _switch_asr_engine；ensure_started
     /// 内部带替换+失败回滚，此处只补路由与 UI 事件）
     ReplaceEngine {
@@ -479,14 +476,19 @@ fn transcript_handle() -> Arc<lt_audio::transcript::TranscriptWriter> {
 }
 
 impl Pipeline {
-    /// 按设置启动整条管道；模型未缓存时不阻断 UI（发 AsrUnavailable）。
+    /// 按设置总线当前快照启动整条管道；模型未缓存时不阻断 UI（发 AsrUnavailable）。
+    /// `bus` 为组合根持有的总线句柄（启动前其当前快照 = 要应用的设置——
+    /// shell 先 publish 后调用本函数，INV7）；各线程持克隆自行 `load()`。
     /// `msg` 为 i18n 文案服务（白名单不变量：本 crate 零 lt-i18n 依赖，见 [`Msg`]）。
     pub fn start(
-        settings: &lt_proto::Settings,
+        bus: &Arc<SettingsBus>,
         sink: EventSink,
         monitor_cell: &Arc<ArcSwap<MonitorSample>>,
         msg: Msg,
     ) -> anyhow::Result<Self> {
+        let eff = bus.load();
+        let settings = eff.raw.clone();
+
         // ── 转录写盘（原版 self._transcript + auto_save_transcript）──
         let transcript = transcript_handle();
         transcript.set_enabled(settings.auto_save_transcript);
@@ -496,8 +498,6 @@ impl Pipeline {
 
         let stop = Arc::new(AtomicBool::new(false));
         let paused = Arc::new(AtomicBool::new(false));
-        // 语言/padding 挂起句柄：Pipeline 存一份供 UI 线程调，ASR 线程持克隆应用
-        let pending = lt_asr::AsrPendingHandle::default();
 
         // R12/D-62：半初始化守卫——任一 ? 提前返回时回滚已 spawn 线程与音频
         // 后端（现状缺陷：音频线程泄漏独占设备直到进程退出）
@@ -522,19 +522,19 @@ impl Pipeline {
         guard.backend = Some(backend);
 
         // ── capture 线程：VAD 状态机 ──
-        let vad_update: Arc<std::sync::Mutex<Option<lt_audio::VadSettings>>> =
-            Arc::new(std::sync::Mutex::new(None));
-        let vad_settings = clamp_vad_for_engine(&settings.asr_engine, vad_settings_from(settings));
+        // W4：VAD 生效值 = 总线派生视图（已含 qwen3 钳制 overlay），capture
+        // 每轮读格比对版本应用——旧 vad_update 槽（镜像）退役
+        let vad_settings = eff.vad.clone();
         let confidence = lt_audio::vad::make_confidence_source(
-            &settings.vad_mode,
-            settings.energy_threshold as f64,
+            &vad_settings.mode,
+            vad_settings.energy_threshold,
         );
         let mut vad = VadProcessor::new(
             confidence,
             lt_audio::TARGET_RATE as usize,
-            settings.vad_threshold as f64,
-            settings.min_speech_duration as f64,
-            settings.max_speech_duration as f64,
+            vad_settings.threshold,
+            vad_settings.min_speech_duration,
+            vad_settings.max_speech_duration,
             lt_audio::CHUNK_DURATION,
         );
         vad.update_settings(&vad_settings);
@@ -552,16 +552,24 @@ impl Pipeline {
         // W2/D-67：音频监视快照格——capture 每 chunk 写；UI 以 ~33ms 节拍读格
         // 重绘（替代 UpdateMonitor 逐事件直发：31/s 唤醒泛洪归零，R23）
         let monitor_seq = Arc::new(AtomicU64::new(0));
+        // W4：VAD 生效设置发布格读侧（总线无锁 load——版本比对在 capture 内）
+        let vad_tick: VadSource = {
+            let bus = bus.clone();
+            Arc::new(move || {
+                let e = bus.load();
+                (e.version, e.vad.clone())
+            })
+        };
         {
             let stop = stop.clone();
             let paused = paused.clone();
             let segment_queue = segment_queue.clone();
             let monitor_cell = monitor_cell.clone();
             let monitor_seq = monitor_seq.clone();
-            let vad_update_capture = vad_update.clone();
+            let vad_tick = vad_tick.clone();
             let vad = vad.clone();
             let interim = interim.clone();
-            let mode = settings.vad_mode.clone();
+            let mode = vad_settings.mode.clone();
             // INV3/INV5：经监督器出生；panic 重生 = 工厂重建干净循环状态
             //（消费前清 chunk 陈旧积压——宕机期间音频已满丢旧轮转，续读=句中撕裂）
             sup.spawn(ThreadRole::Capture, "lt-capture", Policy::Always, move || {
@@ -570,7 +578,7 @@ impl Pipeline {
                 let segment_queue = segment_queue.clone();
                 let monitor_cell = monitor_cell.clone();
                 let monitor_seq = monitor_seq.clone();
-                let vad_update_capture = vad_update_capture.clone();
+                let vad_tick = vad_tick.clone();
                 let vad = vad.clone();
                 let interim = interim.clone();
                 let mode = mode.clone();
@@ -592,7 +600,7 @@ impl Pipeline {
                             }));
                         },
                         paused,
-                        vad_update: vad_update_capture,
+                        vad_tick,
                         interim,
                         // R2/D-60：初值=启动模式；模式热切换时 capture 换置信度源
                         current_mode: mode,
@@ -604,7 +612,7 @@ impl Pipeline {
 
         // ── 翻译装置（M3）：models 非空即构建；配置无效必须让用户可见
         //（TranslatorUnavailable → 面板翻译页状态行 + 悬浮窗译文占位）──
-        let tl = match TlRig::from_settings(settings, &sup, sink.clone(), transcript.clone(), msg.clone()) {
+        let tl = match TlRig::from_settings(bus, &sup, sink.clone(), transcript.clone(), msg.clone()) {
             Ok(t) => t.map(Arc::new),
             Err(reason) => {
                 let _ = sink.push(UiEvent::TranslatorUnavailable {
@@ -668,7 +676,7 @@ impl Pipeline {
             let sink = sink.clone();
             let segment_queue = segment_queue.clone();
             let settings = settings.clone();
-            let pending = pending.clone();
+            let bus_asr = bus.clone();
             let tl = tl.clone();
             let vad = vad.clone();
             let interim = interim.clone();
@@ -682,7 +690,7 @@ impl Pipeline {
                 let sink = sink.clone();
                 let segment_queue = segment_queue.clone();
                 let settings = settings.clone();
-                let pending = pending.clone();
+                let bus = bus_asr.clone();
                 let tl = tl.clone();
                 let vad = vad.clone();
                 let interim = interim.clone();
@@ -697,7 +705,7 @@ impl Pipeline {
                             segment_queue,
                             vad,
                             interim,
-                            pending,
+                            bus,
                             stop,
                             sink,
                             tl_switch,
@@ -716,10 +724,8 @@ impl Pipeline {
             backend: guard.disarm(),
             stop,
             paused,
-            pending,
             tl,
             tl_switch: Some(tl_switch_tx),
-            vad_update,
             interim,
             sup,
             transcript,
@@ -733,26 +739,13 @@ impl Pipeline {
     }
 
     /// 运行时切换翻译模型（原版 _switch_translator 的用户可见路径；
-    /// ASR 线程在下一次空闲分支应用，慢/挂死的服务端不冻结 UI）
-    pub fn switch_translator(&self, config: &lt_proto::ModelConfig, settings: &lt_proto::Settings) {
-        let Some(tx) = &self.tl_switch else { return };
-        let _ = tx.send(TlSwitch::ReplaceRig {
-            config: Box::new(config.clone()),
-            settings: Box::new(settings.clone()),
-        });
-    }
-
-    /// 运行时改目标语言（翻译 + 悬浮窗同语言判定同步生效）
-    pub fn set_translator_target_language(&self, lang: &str) {
+    /// ASR 线程在下一次空闲分支应用，慢/挂死的服务端不冻结 UI）。
+    /// W4：目标语言/超时/系统提示读自设置总线（不再随命令携带 settings 快照）
+    pub fn switch_translator(&self, config: &lt_proto::ModelConfig) {
         if let Some(tx) = &self.tl_switch {
-            let _ = tx.send(TlSwitch::TargetLanguage(lang.to_string()));
-        }
-    }
-
-    /// 运行时改翻译超时（原版 set_timeout）
-    pub fn set_translator_timeout(&self, secs: u32) {
-        if let Some(tx) = &self.tl_switch {
-            let _ = tx.send(TlSwitch::Timeout(secs));
+            let _ = tx.send(TlSwitch::ReplaceRig {
+                config: Box::new(config.clone()),
+            });
         }
     }
 
@@ -806,12 +799,6 @@ impl Pipeline {
         self.backend.set_mic_device(dev);
     }
 
-    /// VAD 参数热更新（原版面板 apply → vad_processor.update_settings）：
-    /// 塞入信号槽，capture 线程下一 chunk 应用
-    pub fn update_vad_settings(&self, s: lt_audio::VadSettings) {
-        *self.vad_update.lock().unwrap() = Some(s);
-    }
-
     /// 增量识别开关/间隔热应用（原版 _incremental_asr_cb → _incremental_enabled/
     /// _interim_interval）：写共享控制块，capture 线程下一 chunk 生效；
     /// 关闭时清进度计数，重开从零起算
@@ -822,39 +809,6 @@ impl Pipeline {
 
     pub fn set_paused(&self, paused: bool) {
         self.paused.store(paused, Ordering::Relaxed);
-    }
-
-    /// UI 线程调用：挂起 ASR 识别语言；ASR 线程在下一次 transcribe 前应用并提交
-    /// （原版 _set_asr_language + _apply_pending_asr_settings；仅加锁存值，
-    /// 绝不跨进程调用，慢/挂死的 worker 不会冻结 UI）
-    pub fn set_pending_language(&self, lang: &str) {
-        self.pending.set_language(lang);
-    }
-
-    /// UI 线程调用：按引擎家族（"funasr"/"whisper"）挂起 padding；ASR 线程在下一次
-    /// transcribe 前应用（原版 _set_asr_padding + _apply_pending_asr_settings）
-    pub fn set_pending_padding(&self, engine_family: &str, secs: f32) {
-        self.pending.set_padding(engine_family, secs);
-    }
-
-    /// UI 线程调用：同步识别语言过滤镜像（AH-3/H4）。pending 机制驱动 worker
-    /// 实际语言，此命令同步 ASR 线程段过滤所用值——二者必须一致，否则运行时
-    /// 改语言后过滤仍按旧值判定（字幕全灭/漏过滤）
-    pub fn sync_asr_language(&self, lang: &str) {
-        if let Some(tx) = &self.tl_switch {
-            let _ = tx.send(TlSwitch::AsrLanguage(lang.to_string()));
-        }
-    }
-
-    /// UI 线程调用：同步 padding 镜像（AH-3/H4）——引擎切换装配读取，防运行时
-    /// 改 pad 后切换静默回退启动快照旧值
-    pub fn sync_padding(&self, engine_family: &str, secs: f32) {
-        if let Some(tx) = &self.tl_switch {
-            let _ = tx.send(TlSwitch::Pad {
-                family: engine_family.to_string(),
-                secs,
-            });
-        }
     }
 
     pub fn stop(&mut self) {
@@ -871,36 +825,6 @@ impl Pipeline {
         self.sup.join_all();
         tracing::info!("管道已停止");
     }
-}
-
-fn vad_settings_from(s: &lt_proto::Settings) -> VadSettings {
-    VadSettings {
-        mode: s.vad_mode.clone(),
-        threshold: s.vad_threshold as f64,
-        energy_threshold: s.energy_threshold as f64,
-        min_speech_duration: s.min_speech_duration as f64,
-        max_speech_duration: s.max_speech_duration as f64,
-        silence_mode: s.silence_mode.clone(),
-        silence_duration: s.silence_duration as f64,
-    }
-}
-
-/// qwen3 生效段长上限（AH-8/D-28）：`MAX_TOTAL_LEN=512` 为 audio+输出共享
-/// token 预算，超长段有静默截尾风险；15s 为保守取值，S0 校准
-/// （docs/archive/asr-hardening.md §6-T1）实测后可调
-pub(crate) const QWEN3_MAX_SEGMENT_SECS: f64 = 15.0;
-
-/// 按引擎钳制 VAD 生效值（AH-8/D-28）：settings/UI 保存原值，仅生效值收敛
-/// （W3 起跨 crate 被 shell 的 ApplySettings 使用——编排域公开 API）
-pub fn clamp_vad_for_engine(engine: &str, mut s: VadSettings) -> VadSettings {
-    if engine == "qwen3" && s.max_speech_duration > QWEN3_MAX_SEGMENT_SECS {
-        tracing::info!(
-            "qwen3: max_speech_duration 生效值钳制为 {QWEN3_MAX_SEGMENT_SECS}s（设置值 {}s）",
-            s.max_speech_duration
-        );
-        s.max_speech_duration = QWEN3_MAX_SEGMENT_SECS;
-    }
-    s
 }
 
 /// 过滤原因（供 run_asr_thread 按层分级记日志，单测断言用）
@@ -1056,7 +980,10 @@ struct AsrThreadCtx {
     vad: Arc<Mutex<VadProcessor>>,
     /// 增量识别跨线程控制块（capture 写触发时间、本线程写消费进度）
     interim: Arc<InterimControl>,
-    pending: lt_asr::AsrPendingHandle,
+    /// 设置总线（W4：语言/padding/目标语言/超时生效值唯一事实源——
+    /// transcribe 前 load().asr_lang、同语言判定 load().tl，替代旧
+    /// AsrRuntime/挂起句柄/target_language 三重镜像）
+    bus: Arc<SettingsBus>,
     stop: Arc<AtomicBool>,
     sink: EventSink,
     tl_switch: crossbeam_channel::Receiver<TlSwitch>,
@@ -1068,38 +995,29 @@ struct AsrThreadCtx {
     msg: Msg,
 }
 
-/// ASR 线程内可热更的运行时设置镜像（AH-3/H4）：启动时的 settings 快照在
-/// 运行中会陈旧——asr_language 参与段过滤（reject_segment/commit_text）、双
-/// pad 参与引擎切换装配（build_worker_config）；经 TlSwitch 同步更新
-/// （与 target_language 的既有同款模式）
-struct AsrRuntime {
-    asr_language: String,
-    sensevoice_pad: f32,
-    whisper_pad: f32,
-}
-
-/// 翻译器域命令的共享路由（AH-1/H1）：待命循环与主循环空闲分支共用的四臂
-/// （ReplaceRig/TargetLanguage/Timeout/TestTranslator）+ AH-3 镜像同步两臂。
-/// `ReplaceEngine` 的引擎处理两侧不同——待命态只重试装配，主循环
-/// ensure_started+事件+回滚——原样透传给调用方自行处理。
-/// W3 起收 transcript/msg 注入参数（ReplaceRig/TestTranslator 重建装置用）。
+/// 翻译器域命令的共享路由（AH-1/H1）：待命循环与主循环空闲分支共用的三臂
+/// （ReplaceRig/TestTranslator；W4 收敛——TargetLanguage/Timeout/AsrLanguage/
+/// Pad 四臂被设置总线派生视图吸收）。`ReplaceEngine` 的引擎处理两侧不同——
+/// 待命态只重试装配，主循环 ensure_started+事件+回滚——原样透传给调用方。
+/// W3 起收 transcript/msg 注入参数（ReplaceRig/TestTranslator 重建装置用）；
+/// W4 起 `bus` 注入（ReplaceRig/TestTranslator 从总线读目标语言/超时/系统提示）。
 #[allow(clippy::too_many_arguments)]
 fn route_translator_switch(
     sw: TlSwitch,
     tl: &mut Option<Arc<TlRig>>,
-    target_language: &mut String,
-    runtime: &mut AsrRuntime,
+    bus: &Arc<SettingsBus>,
     sink: &EventSink,
-    settings: &lt_proto::Settings,
     sup: &Supervisor,
     transcript: &Arc<lt_audio::transcript::TranscriptWriter>,
     msg: &Msg,
 ) -> Option<TlSwitch> {
     match sw {
-        TlSwitch::ReplaceRig { config, settings } => {
-            match TlRig::from_model_config(
+        TlSwitch::ReplaceRig { config } => {
+            let eff = bus.load();
+            match TlRig::from_effective(
                 &config,
-                &settings,
+                &eff,
+                bus,
                 sup,
                 sink.clone(),
                 transcript.clone(),
@@ -1119,39 +1037,14 @@ fn route_translator_switch(
             }
             None
         }
-        TlSwitch::TargetLanguage(lang) => {
-            *target_language = lang.clone();
-            if let Some(rig) = tl {
-                rig.translator.set_target_language(&lang);
-            }
-            None
-        }
-        TlSwitch::Timeout(secs) => {
-            if let Some(rig) = tl {
-                rig.translator.set_timeout(secs);
-            }
-            None
-        }
-        TlSwitch::AsrLanguage(lang) => {
-            runtime.asr_language = lang;
-            None
-        }
-        TlSwitch::Pad { family, secs } => {
-            // 与 set_pending_padding 同键（"funasr"/"whisper" 家族；funasr 家族
-            // 仅 sensevoice 有 padding 语义 → 归 sensevoice_pad）
-            match family.as_str() {
-                "whisper" => runtime.whisper_pad = secs,
-                _ => runtime.sensevoice_pad = secs,
-            }
-            None
-        }
         TlSwitch::TestTranslator { name, config } => {
-            // 构建临时装置（不切换活动翻译器），发一次最简请求回执 UI
-            let mut test_settings = settings.clone();
-            test_settings.target_language = target_language.clone();
-            match TlRig::from_model_config(
+            // 构建临时装置（不切换活动翻译器），发一次最简请求回执 UI；
+            // 目标语言/超时读总线（与活动翻译器同源，发布即一致）
+            let eff = bus.load();
+            match TlRig::from_effective(
                 &config,
-                &test_settings,
+                &eff,
+                bus,
                 sup,
                 sink.clone(),
                 transcript.clone(),
@@ -1161,9 +1054,18 @@ fn route_translator_switch(
                     let sink = sink.clone();
                     let name = name.clone();
                     let msg_t = msg.clone();
+                    let bus_t = bus.clone();
                     rig.pool.submit(move || {
+                        let eff = bus_t.load();
+                        let target = eff.tl.target_language.clone();
+                        let timeout = eff.tl.timeout;
                         let t0 = Instant::now();
-                        let mut it = rig.translator.translate_iter("Livetranslate test", "auto");
+                        let mut it = rig.translator.translate_iter(
+                            "Livetranslate test",
+                            "auto",
+                            &target,
+                            timeout,
+                        );
                         let (ok, err, ms) = match it.next() {
                             Some(Ok(_partial)) => (true, None, t0.elapsed().as_millis() as u64),
                             Some(Err(e)) => {
@@ -1212,7 +1114,7 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
         segment_queue,
         vad,
         interim,
-        pending,
+        bus,
         stop,
         sink,
         tl_switch,
@@ -1220,15 +1122,6 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
         transcript,
         msg,
     } = ctx;
-    // 目标语言的运行时快照（同语言判定用；TlSwitch::TargetLanguage 同步更新）
-    let mut target_language = settings.target_language.clone();
-    // AH-3/H4 运行时镜像：asr_language（段过滤）+ 双 pad（引擎切换装配），
-    // 经 TlSwitch::AsrLanguage/Pad 同步，防启动快照陈旧
-    let mut runtime = AsrRuntime {
-        asr_language: settings.asr_language.clone(),
-        sensevoice_pad: settings.sensevoice_pad_seconds,
-        whisper_pad: settings.whisper_pad_seconds,
-    };
     // 增量识别会话状态（原版 _interim_* 字段；跨段存活，vad_flush 复位）
     let mut interim_state = InterimState::default();
     // 构造 worker 配置（当前仅 sensevoice；whisper M5）。
@@ -1243,6 +1136,8 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
             None
         }
     };
+    // W4：启动装配时的生效视图（语言/pad 不再走 AsrRuntime 镜像——总线快照；
+    // 启动后每次引擎装配/段过滤均重新 load()，无"记得补同步边"）
     let mut worker = None;
     if let Some(models_dir) = &models_dir {
         // 模型键 → 条目；mlt/非法键回退 sensevoice-small（不阻断 UI，也不得用 nano 冒充）。
@@ -1266,14 +1161,15 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
                 settings.funasr_model
             );
         }
+        let eff = bus.load();
         worker = build_worker_config(
             models_dir,
             &settings.asr_engine,
             &settings.funasr_model,
-            runtime.sensevoice_pad,
-            &runtime.asr_language,
+            eff.asr_lang.sensevoice_pad,
+            &eff.asr_lang.language,
             &settings.whisper_model_size,
-            runtime.whisper_pad,
+            eff.asr_lang.whisper_pad,
         );
         if worker.is_none() {
             let _ = sink.push(UiEvent::AsrUnavailable);
@@ -1282,7 +1178,7 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
     }
     // 待命 = 可唤醒状态而非死胡同（AH-1/H1，P0）：模型就绪前吞掉段，但必须
     // 消费 tl_switch——运行时下载完成后 shell 重发 SwitchEngine（shell.rs
-    // DownloadSucceeded 分支），收到即用挂起参数重装配并落回正常装配路径。
+    // DownloadSucceeded 分支），收到即装配并落回正常装配路径。
     // 原实现只排段不消费命令，唤醒信号无人接，新用户首启旅程必须重启应用。
     while worker.is_none() && !stop.load(Ordering::Relaxed) {
         let _ = segment_queue.pop_timeout(Duration::from_secs(1));
@@ -1292,17 +1188,7 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
                 funasr_model,
                 whisper_model_size,
                 language,
-            }) = route_translator_switch(
-                sw,
-                &mut tl,
-                &mut target_language,
-                &mut runtime,
-                &sink,
-                settings,
-                &sup,
-                &transcript,
-                &msg,
-            )
+            }) = route_translator_switch(sw, &mut tl, &bus, &sink, &sup, &transcript, &msg)
             else {
                 continue;
             };
@@ -1314,14 +1200,15 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
                 tracing::warn!("待命唤醒尝试：模型目录仍不可用，继续待命");
                 continue;
             };
+            let eff = bus.load();
             match build_worker_config(
                 &models_dir,
                 &engine,
                 &funasr_model,
-                runtime.sensevoice_pad,
+                eff.asr_lang.sensevoice_pad,
                 &language,
                 &whisper_model_size,
-                runtime.whisper_pad,
+                eff.asr_lang.whisper_pad,
             ) {
                 Some((config, display)) => {
                     tracing::info!("待命中模型已就绪: {engine}/{model_key}，退出待命装配 worker");
@@ -1339,8 +1226,7 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
         return;
     };
 
-    // Manager 持 UI 线程同款挂起句柄：transcribe 前应用挂起的语言/padding
-    let mut manager = AsrManager::with_pending(pending);
+    let mut manager = AsrManager::new();
     // 当前生效引擎的显示标签（切换失败回滚后用于恢复 AsrDevice，避免
     // 状态行挂着「ASR unavailable」而旧引擎实际仍在工作——P0-4）
     let mut current_display = display.clone();
@@ -1362,7 +1248,7 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
         // M6 interim 接入后再分流）
         let Some((source, audio)) = segment_queue.pop_timeout(Duration::from_millis(500)) else {
             // 空闲分支：RSS 回收（原版 _asr_loop queue.Empty）+ 翻译器切换命令
-            // （AH-1：翻译器四臂经 route_translator_switch 与待命循环共享）
+            // （AH-1：翻译器三臂经 route_translator_switch 与待命循环共享）
             manager.maybe_recycle_if_idle();
             while let Ok(sw) = tl_switch.try_recv() {
                 if let Some(TlSwitch::ReplaceEngine {
@@ -1370,17 +1256,8 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
                     funasr_model,
                     whisper_model_size,
                     language,
-                }) = route_translator_switch(
-                    sw,
-                    &mut tl,
-                    &mut target_language,
-                    &mut runtime,
-                    &sink,
-                    settings,
-                    &sup,
-                    &transcript,
-                    &msg,
-                ) {
+                }) = route_translator_switch(sw, &mut tl, &bus, &sink, &sup, &transcript, &msg)
+                {
                     // R3/D-61：每次切换尝试重解析 models_dir（与待命臂一致；
                     // 运行中目录损坏时切换路径同样可恢复）
                     let Ok(models_dir) =
@@ -1392,14 +1269,15 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
                     };
                     // 原版 _switch_asr_engine：装配新配置 → 加载对话框 →
                     // ensure_started（失败内部回滚旧 worker）→ 设备/不可用事件
+                    let eff = bus.load();
                     match build_worker_config(
                         &models_dir,
                         &engine,
                         &funasr_model,
-                        runtime.sensevoice_pad,
+                        eff.asr_lang.sensevoice_pad,
                         &language,
                         &whisper_model_size,
-                        runtime.whisper_pad,
+                        eff.asr_lang.whisper_pad,
                     ) {
                         Some((config, display)) => {
                             let _ = sink.push(UiEvent::ModelLoadStart(display.clone()));
@@ -1426,17 +1304,10 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
                                 // 日志按引擎打实际模型键（whisper 打 funasr_model 会误导诊断）
                                 let model_key =
                                     engine_model_key(&engine, &funasr_model, &whisper_model_size);
-                                // AH-8/D-28：按新引擎钳制段长上限（qwen3 ≤15s）。
-                                // 直接改共享 VAD 生效值——不能用启动快照重发
-                                // vad_update 槽（会覆盖用户的运行时 VAD 修改）；
-                                // 切离 qwen3 后由用户下次「应用」设置恢复完整值
-                                if vad
-                                    .lock()
-                                    .unwrap()
-                                    .clamp_max_speech(&engine, QWEN3_MAX_SEGMENT_SECS)
-                                {
-                                    tracing::info!("qwen3: max_speech_duration 生效值钳制为 {QWEN3_MAX_SEGMENT_SECS}s");
-                                }
+                                // AH-8/D-28 + R18：段长钳制随总线发布派生生效——
+                                // shell 在引擎切换路径 publish 后，capture 下一轮
+                                // 读格应用（overlay 视图：raw 永不变、切离即恢复，
+                                // 替代旧"直接改共享 VAD + 用户下次应用恢复"写穿）
                                 tracing::info!("引擎已切换: {engine}/{model_key}");
                             }
                         }
@@ -1459,6 +1330,8 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
             }
             continue;
         };
+        // W4：每段生效视图一次 load（语言过滤/同语言判定/翻译提交全部据此）
+        let eff = bus.load();
         match source {
             SegmentSource::Interim => {
                 // 增量通道（原版 main.py:1720-1724）：排空重复标记 → 锁 VAD
@@ -1468,8 +1341,8 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
                     &mut manager,
                     &vad,
                     &mut interim_state,
-                    &runtime.asr_language,
-                    &target_language,
+                    &eff.asr_lang,
+                    &eff.tl.target_language,
                     tl.as_deref(),
                     &sink,
                     &msg,
@@ -1485,7 +1358,7 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
                 }
                 let seg_seconds = audio.len() as f64 / lt_audio::TARGET_RATE as f64;
                 let t0 = std::time::Instant::now();
-                match manager.transcribe(&audio, false) {
+                match manager.transcribe(&audio, false, &eff.asr_lang) {
                     Ok(result) => {
                         asr_unavailable_notified = false;
                         let asr_ms = t0.elapsed().as_secs_f64() * 1000.0;
@@ -1494,8 +1367,8 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
                             // 回声剥离 → pending 前置拼接 → 噪声过滤 → 提交
                             commit_interim_final(
                                 &mut interim_state,
-                                &runtime.asr_language,
-                                &target_language,
+                                &eff.asr_lang.language,
+                                &eff.tl.target_language,
                                 tl.as_deref(),
                                 &sink,
                                 &result.text,
@@ -1507,7 +1380,7 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
                         } else if let Some(reason) = reject_segment(
                             &result.text,
                             seg_seconds,
-                            &runtime.asr_language,
+                            &eff.asr_lang.language,
                             &result.language,
                         ) {
                             // 段级三层过滤（原版 _process_segment：空/纯标点 → 噪声 → 语言）
@@ -1517,7 +1390,7 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
                                     let preview: String = result.text.chars().take(60).collect();
                                     tracing::info!(
                                         "语言过滤: 期望 {:?} 但识别为 {:?}，丢弃: {preview}",
-                                        runtime.asr_language,
+                                        eff.asr_lang.language,
                                         result.language
                                     );
                                 }
@@ -1532,8 +1405,8 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
                             }
                         } else {
                             commit_text(
-                                &runtime.asr_language,
-                                &target_language,
+                                &eff.asr_lang.language,
+                                &eff.tl.target_language,
                                 tl.as_deref(),
                                 &sink,
                                 &result.text,
@@ -1580,13 +1453,14 @@ fn drain_interim_duplicates(queue: &BoundedDropQueue<(SegmentSource, Vec<f32>)>)
 /// 增量通道（对照原版 `_do_interim_asr` 逐条）：锁 VAD peek → 短缓冲跳过 →
 /// 识别 → 回声剥离 → 分句 → 提交前 n-1 句（短句 ≤8 字母数字进 pending 拼接）
 /// → 比例裁剪已消费音频 → 更新 tail/active。返回是否提交了句子。
-/// `asr_language` 为运行时镜像（AH-3）。
+/// `eff` 为设置总线生效视图（W4：语言过滤/transcribe 前应用同源，取代
+/// 旧运行时镜像 asr_language）。
 #[allow(clippy::too_many_arguments)]
 fn run_interim_pass(
     manager: &mut AsrManager,
     vad: &Arc<Mutex<VadProcessor>>,
     st: &mut InterimState,
-    asr_language: &str,
+    eff: &AsrEffectiveSettings,
     target_language: &str,
     tl: Option<&TlRig>,
     sink: &EventSink,
@@ -1603,7 +1477,7 @@ fn run_interim_pass(
     }
     // ② 识别（原版 use_word_ts=False：词级时间戳对重复增量通道太贵）
     let t0 = Instant::now();
-    let Ok(result) = manager.transcribe(&audio, false) else {
+    let Ok(result) = manager.transcribe(&audio, false, eff) else {
         tracing::warn!("Interim ASR 识别失败，跳过本轮（收尾段不受影响）");
         return false;
     };
@@ -1649,7 +1523,7 @@ fn run_interim_pass(
         let text = pending_merge(&st.pending, text);
         st.pending.clear();
         commit_text(
-            asr_language,
+            &eff.language,
             target_language,
             tl,
             sink,
@@ -1913,38 +1787,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    // ── AH-8/D-28：qwen3 段长钳制 ──
-
-    #[test]
-    fn clamp_vad_only_affects_qwen3() {
-        let mk = |max: f64| VadSettings {
-            mode: "silero".into(),
-            threshold: 0.5,
-            energy_threshold: 0.02,
-            min_speech_duration: 1.0,
-            max_speech_duration: max,
-            silence_mode: "auto".into(),
-            silence_duration: 0.8,
-        };
-        // qwen3：超上限收敛、未超不动
-        assert_eq!(
-            clamp_vad_for_engine("qwen3", mk(30.0)).max_speech_duration,
-            QWEN3_MAX_SEGMENT_SECS
-        );
-        assert_eq!(
-            clamp_vad_for_engine("qwen3", mk(8.0)).max_speech_duration,
-            8.0
-        );
-        // 其它引擎：原值放行
-        assert_eq!(
-            clamp_vad_for_engine("funasr", mk(30.0)).max_speech_duration,
-            30.0
-        );
-        assert_eq!(
-            clamp_vad_for_engine("whisper", mk(30.0)).max_speech_duration,
-            30.0
-        );
-    }
+    // ── AH-8/D-28：qwen3 段长钳制（W4 起随设置总线 overlay 派生，测试见
+    // settings_bus.rs 的 clamp_is_overlay_never_write_through / clamp_only_* ──
 
     /// 测试监督器（sink 丢弃；用后 join_all 回收 monitor）
     fn test_sup() -> Arc<Supervisor> {
@@ -1961,6 +1805,11 @@ mod tests {
         Msg::new(|k| k.to_string())
     }
 
+    /// 测试设置总线（W4：from_settings 改读总线；发布即版本 1）
+    fn test_bus(settings: lt_proto::Settings) -> Arc<SettingsBus> {
+        Arc::new(SettingsBus::new(settings))
+    }
+
     /// 轮询等待（W1 泄漏回归专用）：worker 出生/退出均异步，条件 3s 内应成立
     fn wait_for(cond: impl Fn() -> bool) {
         let deadline = Instant::now() + Duration::from_secs(3);
@@ -1974,11 +1823,12 @@ mod tests {
     fn tl_rig_builds_from_default_settings() {
         let settings = lt_proto::Settings::default();
         let sup = test_sup();
-        let rig = TlRig::from_settings(&settings, &sup, EventArtery::new(), test_transcript(), test_msg())
+        let bus = test_bus(settings);
+        let rig = TlRig::from_settings(&bus, &sup, EventArtery::new(), test_transcript(), test_msg())
             .expect("默认设置不应报配置错误")
             .expect("默认 settings 带一个默认模型，应能构建");
-        // 目标语言来自全局设置而非模型配置
-        assert_eq!(rig.translator.target_language(), settings.target_language);
+        // W4：目标语言不再存实例态（逐调用经总线 tl 视图传入）——验证总线视图
+        assert_eq!(bus.load().tl.target_language, "zh");
         // 收尾：先停池再 join——worker 以 stopped 为退出条件，不先置标志
         // join_all 将无限等待（pop_timeout 永不返回）
         rig.pool.shutdown();
@@ -1990,7 +1840,7 @@ mod tests {
         let mut settings = lt_proto::Settings::default();
         settings.active_model = 99;
         let sup = test_sup();
-        assert!(TlRig::from_settings(&settings, &sup, EventArtery::new(), test_transcript(), test_msg()).unwrap().is_none());
+        assert!(TlRig::from_settings(&test_bus(settings), &sup, EventArtery::new(), test_transcript(), test_msg()).unwrap().is_none());
         sup.join_all();
     }
 
@@ -1999,7 +1849,7 @@ mod tests {
         let mut settings = lt_proto::Settings::default();
         settings.models.clear();
         let sup = test_sup();
-        assert!(TlRig::from_settings(&settings, &sup, EventArtery::new(), test_transcript(), test_msg()).unwrap().is_none());
+        assert!(TlRig::from_settings(&test_bus(settings), &sup, EventArtery::new(), test_transcript(), test_msg()).unwrap().is_none());
         sup.join_all();
     }
 
@@ -2026,13 +1876,13 @@ mod tests {
     #[test]
     fn replaced_rig_workers_shutdown_on_drop() {
         let sup = test_sup();
-        let settings = lt_proto::Settings::default();
-        let rig = TlRig::from_settings(&settings, &sup, EventArtery::new(), test_transcript(), test_msg()).unwrap().unwrap();
+        let bus = test_bus(lt_proto::Settings::default());
+        let rig = TlRig::from_settings(&bus, &sup, EventArtery::new(), test_transcript(), test_msg()).unwrap().unwrap();
         let old_alive = rig.pool.alive_workers.clone();
         wait_for(|| old_alive.load(Ordering::Relaxed) == TL_POOL_WORKERS);
         // 模拟 ReplaceRig 的替换语义（route_translator_switch：
         // `*tl = Some(Arc::new(rig))`——旧 rig 被 Drop，无人显式关机）
-        let replacement = TlRig::from_settings(&settings, &sup, EventArtery::new(), test_transcript(), test_msg()).unwrap().unwrap();
+        let replacement = TlRig::from_settings(&bus, &sup, EventArtery::new(), test_transcript(), test_msg()).unwrap().unwrap();
         wait_for(|| replacement.pool.alive_worker_count() == TL_POOL_WORKERS);
         drop(rig);
         // 旧池经 JobPool::Drop 自动停机：3s 内应归零（500ms pop_timeout 节拍）
@@ -2048,8 +1898,8 @@ mod tests {
     #[test]
     fn test_rig_dropped_with_job_shuts_down_pool() {
         let sup = test_sup();
-        let settings = lt_proto::Settings::default();
-        let rig = TlRig::from_settings(&settings, &sup, EventArtery::new(), test_transcript(), test_msg()).unwrap().unwrap();
+        let bus = test_bus(lt_proto::Settings::default());
+        let rig = TlRig::from_settings(&bus, &sup, EventArtery::new(), test_transcript(), test_msg()).unwrap().unwrap();
         let alive = rig.pool.alive_workers.clone();
         wait_for(|| alive.load(Ordering::Relaxed) == TL_POOL_WORKERS);
         // 等价于任务闭包 Drop 时 rig 的丢弃语义

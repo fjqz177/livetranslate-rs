@@ -14,11 +14,13 @@ pub mod download;
 pub mod event_artery;
 pub mod logging;
 pub mod pipeline;
+pub mod settings_bus;
 pub mod supervisor;
 
 pub use download::DownloadManager;
 pub use event_artery::{EventArtery, EventSink};
 pub use pipeline::Pipeline;
+pub use settings_bus::{EffectiveSettings, SettingsBus, TlView};
 pub use supervisor::{Policy, Supervisor};
 
 /// 用户可见文案服务（i18n 注入点）。

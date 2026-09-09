@@ -31,6 +31,16 @@ pub const ASR_ENGINE_LEGACY_ALIASES: [(&str, &str); 3] = [
     ("funasr-mlt-nano", "funasr-mlt-nano-2512"),
 ];
 
+/// 语言代码归一（D-74）：小写 + 主子标签（"-" 前），`"zh-CN"` → `"zh"`、
+/// `"ZH-cn"` → `"zh"`；`"auto"`/空串原样（空前缀回空串）。
+/// 用途：同语言免翻译比较（目标语言侧归一；ASR 检出侧保持原样——检出
+/// 码本就是短码，归一它属于新行为，超出 D-74 登记面）。
+pub fn normalize_language(code: &str) -> String {
+    let lower = code.trim().to_lowercase();
+    let primary = lower.split('-').next().unwrap_or_default().trim();
+    primary.to_string()
+}
+
 fn normalize_funasr_model(v: &str) -> String {
     match v {
         "sensevoice" => "sensevoice-small".into(),
@@ -702,5 +712,18 @@ mod tests {
         let fixed2 = s2.sanitize();
         assert_eq!(s2.style.translation_font_family, "");
         assert!(!fixed2.iter().any(|f| f.contains("translation_font_family")));
+    }
+
+    /// D-74：语言码归一（同语言免翻译比较的目标语言侧）
+    #[test]
+    fn normalize_language_codes() {
+        assert_eq!(normalize_language("zh-CN"), "zh");
+        assert_eq!(normalize_language("ZH-cn"), "zh");
+        assert_eq!(normalize_language("zh"), "zh");
+        assert_eq!(normalize_language("en-US"), "en");
+        assert_eq!(normalize_language("yue"), "yue");
+        assert_eq!(normalize_language(" auto "), "auto");
+        assert_eq!(normalize_language(""), "");
+        assert_eq!(normalize_language("-"), "");
     }
 }

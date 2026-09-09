@@ -824,8 +824,7 @@ impl MultiWindowApp {
                     self.on_event(event_loop, ev);
                 }
             }
-            // 管道域命令由 lt-app::AppShell.user_event 处理（本层无 Pipeline）
-            UiMsg::Cmd(_) => {}
+            // W4：UiMsg::Cmd 变体已删（控制面 = mpsc 由 AppShell 直排）
             UiMsg::Event(e) => self.on_event(event_loop, e),
         }
     }
