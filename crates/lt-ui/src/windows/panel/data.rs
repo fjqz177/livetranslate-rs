@@ -1,5 +1,5 @@
 //! 数据与存储页（对照原版 panel/tabs/cache_tab.py）：转录自动保存复选
-//! （经 300ms 防抖 ApplySettings → transcript_shared().set_enabled）与打开转录
+//! （经 300ms 防抖 ApplySettings → shell → pipeline.set_transcript_enabled）与打开转录
 //! 目录；模型缓存总量与缓存列表（按注册表扫描，每行"名 — 大小"）、删除所选、
 //! 删除全部、打开模型目录、刷新。
 //!
@@ -111,7 +111,7 @@ pub fn page(ui: &mut Ui, state: &mut AppState, pal: &Palette) {
                 .changed()
             {
                 state.settings.auto_save_transcript = auto_save;
-                // 300ms 防抖 ApplySettings → shell transcript_shared().set_enabled
+                // 300ms 防抖 ApplySettings → shell → pipeline.set_transcript_enabled（W3）
                 mark_settings_dirty(state);
             }
             if ui

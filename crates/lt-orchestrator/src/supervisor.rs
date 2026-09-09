@@ -167,7 +167,7 @@ impl Supervisor {
 
 /// 生产死亡出口：UiEvent::ThreadDied 经事件动脉回流 UI（W2：与全部后台
 /// 事件同路——INV1 回流通路唯一；sink.push 非阻塞，monitor 线程安全）
-pub fn artery_sink(sink: Arc<crate::artery::EventArtery>) -> impl Fn(ThreadDied) + Send + Sync + 'static {
+pub fn artery_sink(sink: Arc<crate::event_artery::EventArtery>) -> impl Fn(ThreadDied) + Send + Sync + 'static {
     move |d: ThreadDied| {
         sink.push(UiEvent::ThreadDied(d));
     }

@@ -1,23 +1,18 @@
 [package]
-name = "lt-app"
+name = "lt-orchestrator"
 version.workspace = true
 edition.workspace = true
 
-[[bin]]
-name = "livetranslate"
-path = "src/main.rs"
-
-[build-dependencies]
-winresource = "0.1"
-
 [dependencies]
+# 编排域（自 lt-app/pipeline.rs 迁入，W3）：白名单见 docs/architecture-v2.md §3.1
+# —— 禁依赖 lt-ui/winit；文案经 Msg 注入（不依赖 lt-i18n），见 pipeline.rs
 lt-proto = { workspace = true }
-lt-i18n = { workspace = true }
 lt-models = { workspace = true }
-lt-ui = { workspace = true }
-lt-asr = { workspace = true }
 lt-audio = { workspace = true }
-lt-orchestrator = { workspace = true }
+lt-asr = { workspace = true }
+lt-translate = { workspace = true }
+
+crossbeam-channel = { workspace = true }
 arc-swap = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
@@ -25,7 +20,8 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 tokio = { workspace = true }
 chrono = { workspace = true }
-winit = { workspace = true }
+uuid = { workspace = true }
 
 [target."cfg(windows)".dependencies]
+# 仅下载管理域：free_disk_bytes（AH-5 磁盘预检，GetDiskFreeSpaceExW）
 windows = { workspace = true }

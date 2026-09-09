@@ -20,26 +20,26 @@
 //!
 //! 未就绪链路：模型未缓存 → 发 AsrUnavailable（M2.5 向导接管首启下载）。
 
+use crate::event_artery::EventSink;
+use crate::supervisor::{artery_sink, Policy, Supervisor};
+use crate::Msg;
 use lt_asr::{AsrManager, WorkerConfig};
 use lt_models::registry;
-use lt_pipeline::audio::wasapi_win::WasapiBackend;
-use lt_pipeline::interim::{
+use lt_audio::audio::wasapi_win::WasapiBackend;
+use lt_audio::interim::{
     is_short_utterance, pending_merge, split_sentences, strip_committed_overlap, trim_samples,
     InterimState,
 };
-use lt_pipeline::{
+use lt_audio::{
     AudioBackend, BoundedDropQueue, CaptureLoop, InterimControl, SegmentSource, VadProcessor,
     VadSettings,
 };
-use crate::supervisor::{artery_sink, Policy, Supervisor};
-use lt_proto::{AudioRole, CaptureEvent, QueueId, ThreadRole, UiEvent};
+use lt_proto::{AudioRole, CaptureEvent, MonitorSample, QueueId, ThreadRole, UiEvent};
 use lt_translate::Translator;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use crate::artery::EventSink;
 use arc_swap::ArcSwap;
-use lt_proto::MonitorSample;
 
 /// 段队列容量（对齐原版 _asr_queue maxsize=16，满丢最旧）
 const SEGMENT_QUEUE_CAP: usize = 16;
@@ -64,6 +64,7 @@ struct JobPool {
     queue: Arc<BoundedDropQueue<Box<dyn FnOnce() + Send>>>,
     stopped: Arc<AtomicBool>,
     /// 存活 worker 计数（RAII 增减）：泄漏回归测试的观测面
+    #[allow(dead_code)]
     alive_workers: Arc<AtomicUsize>,
     /// R15② 水位事件出口（W2：慢 LLM 积压从"仅日志 warn"升级为类型化事件）
     sink: EventSink,
@@ -136,6 +137,7 @@ impl JobPool {
     }
 
     /// 存活 worker 数（泄漏回归测试观测面）
+    #[cfg(test)]
     fn alive_worker_count(&self) -> usize {
         self.alive_workers.load(Ordering::Relaxed)
     }
@@ -206,7 +208,9 @@ struct TlRig {
     stats: Arc<TlStats>,
     pool: JobPool,
     /// 会话转录写盘（原版 self._transcript；ASR 线程写原文，worker 配对译文）
-    transcript: Arc<lt_pipeline::transcript::TranscriptWriter>,
+    transcript: Arc<lt_audio::transcript::TranscriptWriter>,
+    /// 用户可见文案服务（i18n 注入；错误占位/回执文案经此取，见 [`Msg`]）
+    msg: Msg,
 }
 
 impl TlRig {
@@ -216,11 +220,13 @@ impl TlRig {
         settings: &lt_proto::Settings,
         sup: &Supervisor,
         sink: EventSink,
+        transcript: Arc<lt_audio::transcript::TranscriptWriter>,
+        msg: Msg,
     ) -> Result<Option<Self>, String> {
         let Some(mc) = settings.models.get(settings.active_model) else {
             return Ok(None);
         };
-        Self::from_model_config(mc, settings, sup, sink)
+        Self::from_model_config(mc, settings, sup, sink, transcript, msg)
     }
 
     /// 按指定模型配置构建（运行时切换用；构建失败返回 Err——UI 收到
@@ -230,6 +236,8 @@ impl TlRig {
         settings: &lt_proto::Settings,
         sup: &Supervisor,
         sink: EventSink,
+        transcript: Arc<lt_audio::transcript::TranscriptWriter>,
+        msg: Msg,
     ) -> Result<Option<Self>, String> {
         let params = lt_translate::TranslatorParams {
             api_base: mc.api_base.clone(),
@@ -267,7 +275,8 @@ impl TlRig {
             translator,
             stats,
             pool: JobPool::new(TL_POOL_WORKERS, sup, sink),
-            transcript: Pipeline::transcript_handle(),
+            transcript,
+            msg,
         }))
     }
 
@@ -284,6 +293,7 @@ impl TlRig {
         let stats = self.stats.clone();
         let transcript = self.transcript.clone();
         let sink = sink.clone();
+        let msg = self.msg.clone();
         self.pool.submit(move || {
             let t0 = Instant::now();
             let mut translated: Option<String> = None;
@@ -303,7 +313,7 @@ impl TlRig {
                         transcript.finalize_no_translation(id);
                         let _ = sink.push(UiEvent::UpdateTranslation {
                             id,
-                            text: lt_i18n::t("error_repetition"),
+                            text: msg.t("error_repetition"),
                             tl_ms: 0.0,
                         });
                         return;
@@ -410,12 +420,14 @@ pub struct Pipeline {
     /// 原版对应 _switch_translator / set_target_language / set_timeout）
     tl_switch: Option<crossbeam_channel::Sender<TlSwitch>>,
     /// VAD 参数热更新槽（面板"应用"→ capture 线程）
-    vad_update: Arc<std::sync::Mutex<Option<lt_pipeline::VadSettings>>>,
+    vad_update: Arc<std::sync::Mutex<Option<lt_audio::VadSettings>>>,
     /// 增量识别控制块（与 capture/ASR 线程共享；set_interim 热应用）
     interim: Arc<InterimControl>,
     /// 线程监督器（架构 2.0 W1/INV3）：capture/ASR/翻译池/音频状态转发全部
     /// 经其出生，stop 时 join_all 统一回收
     sup: Arc<Supervisor>,
+    /// 转录写盘（原版 self._transcript；TlRig/面板共用同一句柄）
+    transcript: Arc<lt_audio::transcript::TranscriptWriter>,
 }
 
 /// ASR 线程消费的翻译器/引擎命令
@@ -452,38 +464,32 @@ pub(crate) enum TlSwitch {
     },
 }
 
-/// 转录写盘共享句柄（面板"应用"热切换 enabled；与 Pipeline 内部同源）
-pub fn transcript_shared() -> Arc<lt_pipeline::transcript::TranscriptWriter> {
-    Pipeline::transcript_handle()
+/// 转录写盘句柄（W3 起随 Pipeline 生命周期显式持有：进程级 OnceLock 单例
+/// 退役——句柄真源从"全局"收敛为"Pipeline 字段"，UI 面板"应用"经
+/// [`Pipeline::set_transcript_enabled`] 访问，不再跨域取全局）
+fn transcript_handle() -> Arc<lt_audio::transcript::TranscriptWriter> {
+    // R26/D-62：回退链=配置目录/transcripts，绝不落 CWD（路径卫生）
+    let dir = lt_models::paths::transcripts_dir().unwrap_or_else(|e| {
+        tracing::error!("transcripts_dir 不可用（{e}），回退配置目录");
+        lt_models::paths::config_dir()
+            .map(|d| d.join("transcripts"))
+            .unwrap_or_else(|_| std::path::PathBuf::from("transcripts"))
+    });
+    Arc::new(lt_audio::transcript::TranscriptWriter::new(dir))
 }
 
 impl Pipeline {
-    /// 转录写盘句柄（进程级单例；enabled 跟随 settings.auto_save_transcript）
-    fn transcript_handle() -> Arc<lt_pipeline::transcript::TranscriptWriter> {
-        static HANDLE: std::sync::OnceLock<Arc<lt_pipeline::transcript::TranscriptWriter>> =
-            std::sync::OnceLock::new();
-        HANDLE
-            .get_or_init(|| {
-                // R26/D-62：回退链=配置目录/transcripts，绝不落 CWD（路径卫生）
-                let dir = lt_models::paths::transcripts_dir().unwrap_or_else(|e| {
-                    tracing::error!("transcripts_dir 不可用（{e}），回退配置目录");
-                    lt_models::paths::config_dir()
-                        .map(|d| d.join("transcripts"))
-                        .unwrap_or_else(|_| std::path::PathBuf::from("transcripts"))
-                });
-                Arc::new(lt_pipeline::transcript::TranscriptWriter::new(dir))
-            })
-            .clone()
-    }
-
-    /// 按设置启动整条管道；模型未缓存时不阻断 UI（发 AsrUnavailable）
+    /// 按设置启动整条管道；模型未缓存时不阻断 UI（发 AsrUnavailable）。
+    /// `msg` 为 i18n 文案服务（白名单不变量：本 crate 零 lt-i18n 依赖，见 [`Msg`]）。
     pub fn start(
         settings: &lt_proto::Settings,
         sink: EventSink,
         monitor_cell: &Arc<ArcSwap<MonitorSample>>,
+        msg: Msg,
     ) -> anyhow::Result<Self> {
         // ── 转录写盘（原版 self._transcript + auto_save_transcript）──
-        Self::transcript_handle().set_enabled(settings.auto_save_transcript);
+        let transcript = transcript_handle();
+        transcript.set_enabled(settings.auto_save_transcript);
 
         // ── 线程监督器（架构 2.0 W1/INV3：管道线程唯一出生点）──
         let sup = Supervisor::new(artery_sink(sink.clone()));
@@ -516,20 +522,20 @@ impl Pipeline {
         guard.backend = Some(backend);
 
         // ── capture 线程：VAD 状态机 ──
-        let vad_update: Arc<std::sync::Mutex<Option<lt_pipeline::VadSettings>>> =
+        let vad_update: Arc<std::sync::Mutex<Option<lt_audio::VadSettings>>> =
             Arc::new(std::sync::Mutex::new(None));
         let vad_settings = clamp_vad_for_engine(&settings.asr_engine, vad_settings_from(settings));
-        let confidence = lt_pipeline::vad::make_confidence_source(
+        let confidence = lt_audio::vad::make_confidence_source(
             &settings.vad_mode,
             settings.energy_threshold as f64,
         );
         let mut vad = VadProcessor::new(
             confidence,
-            lt_pipeline::TARGET_RATE as usize,
+            lt_audio::TARGET_RATE as usize,
             settings.vad_threshold as f64,
             settings.min_speech_duration as f64,
             settings.max_speech_duration as f64,
-            lt_pipeline::CHUNK_DURATION,
+            lt_audio::CHUNK_DURATION,
         );
         vad.update_settings(&vad_settings);
 
@@ -598,7 +604,7 @@ impl Pipeline {
 
         // ── 翻译装置（M3）：models 非空即构建；配置无效必须让用户可见
         //（TranslatorUnavailable → 面板翻译页状态行 + 悬浮窗译文占位）──
-        let tl = match TlRig::from_settings(settings, &sup, sink.clone()) {
+        let tl = match TlRig::from_settings(settings, &sup, sink.clone(), transcript.clone(), msg.clone()) {
             Ok(t) => t.map(Arc::new),
             Err(reason) => {
                 let _ = sink.push(UiEvent::TranslatorUnavailable {
@@ -632,7 +638,7 @@ impl Pipeline {
                         // tx 在音频线程退出（Pipeline::stop→backend.stop）时 drop
                         // → 本线程自然收尾（停机期监督器静默收割）
                         for st in rx {
-                            use lt_pipeline::audio::wasapi_win::AudioStatus;
+                            use lt_audio::audio::wasapi_win::AudioStatus;
                             let ev = match st {
                                 AudioStatus::OutputLost(e) => CaptureEvent::Unavailable {
                                     role: AudioRole::Loopback,
@@ -668,6 +674,8 @@ impl Pipeline {
             let interim = interim.clone();
             let sup_asr = sup.clone();
             let tl_switch_rx = tl_switch_rx.clone();
+            let msg_asr = msg.clone();
+            let transcript_asr = transcript.clone();
             // INV3：经监督器出生；panic 重生 = 待命/装配路径干净重启（INV5）
             sup.spawn(ThreadRole::AsrMain, "lt-asr-main", Policy::Always, move || {
                 let stop = stop.clone();
@@ -680,6 +688,8 @@ impl Pipeline {
                 let interim = interim.clone();
                 let sup = sup_asr.clone();
                 let tl_switch = tl_switch_rx.clone();
+                let msg = msg_asr.clone();
+                let transcript = transcript_asr.clone();
                 Box::new(move || {
                     run_asr_thread(
                         &settings,
@@ -692,6 +702,8 @@ impl Pipeline {
                             sink,
                             tl_switch,
                             sup,
+                            transcript,
+                            msg,
                         },
                         tl,
                     );
@@ -710,7 +722,14 @@ impl Pipeline {
             vad_update,
             interim,
             sup,
+            transcript,
         })
+    }
+
+    /// 转录写盘启停（面板"应用"热切换；W3 起句柄真源 = Pipeline 字段，
+    /// 不再经进程级单例跨域访问——旧 transcript_shared() 已删）
+    pub fn set_transcript_enabled(&self, enabled: bool) {
+        self.transcript.set_enabled(enabled);
     }
 
     /// 运行时切换翻译模型（原版 _switch_translator 的用户可见路径；
@@ -789,7 +808,7 @@ impl Pipeline {
 
     /// VAD 参数热更新（原版面板 apply → vad_processor.update_settings）：
     /// 塞入信号槽，capture 线程下一 chunk 应用
-    pub fn update_vad_settings(&self, s: lt_pipeline::VadSettings) {
+    pub fn update_vad_settings(&self, s: lt_audio::VadSettings) {
         *self.vad_update.lock().unwrap() = Some(s);
     }
 
@@ -872,7 +891,8 @@ fn vad_settings_from(s: &lt_proto::Settings) -> VadSettings {
 pub(crate) const QWEN3_MAX_SEGMENT_SECS: f64 = 15.0;
 
 /// 按引擎钳制 VAD 生效值（AH-8/D-28）：settings/UI 保存原值，仅生效值收敛
-pub(crate) fn clamp_vad_for_engine(engine: &str, mut s: VadSettings) -> VadSettings {
+/// （W3 起跨 crate 被 shell 的 ApplySettings 使用——编排域公开 API）
+pub fn clamp_vad_for_engine(engine: &str, mut s: VadSettings) -> VadSettings {
     if engine == "qwen3" && s.max_speech_duration > QWEN3_MAX_SEGMENT_SECS {
         tracing::info!(
             "qwen3: max_speech_duration 生效值钳制为 {QWEN3_MAX_SEGMENT_SECS}s（设置值 {}s）",
@@ -1042,6 +1062,10 @@ struct AsrThreadCtx {
     tl_switch: crossbeam_channel::Receiver<TlSwitch>,
     /// 线程监督器句柄（ReplaceRig 重建翻译池用）
     sup: Arc<Supervisor>,
+    /// 转录写盘（ReplaceRig/TestTranslator 重建翻译装置时共享同一句柄）
+    transcript: Arc<lt_audio::transcript::TranscriptWriter>,
+    /// 用户可见文案服务（i18n 注入；错误占位/测试连接回执经此取）
+    msg: Msg,
 }
 
 /// ASR 线程内可热更的运行时设置镜像（AH-3/H4）：启动时的 settings 快照在
@@ -1058,6 +1082,8 @@ struct AsrRuntime {
 /// （ReplaceRig/TargetLanguage/Timeout/TestTranslator）+ AH-3 镜像同步两臂。
 /// `ReplaceEngine` 的引擎处理两侧不同——待命态只重试装配，主循环
 /// ensure_started+事件+回滚——原样透传给调用方自行处理。
+/// W3 起收 transcript/msg 注入参数（ReplaceRig/TestTranslator 重建装置用）。
+#[allow(clippy::too_many_arguments)]
 fn route_translator_switch(
     sw: TlSwitch,
     tl: &mut Option<Arc<TlRig>>,
@@ -1066,10 +1092,19 @@ fn route_translator_switch(
     sink: &EventSink,
     settings: &lt_proto::Settings,
     sup: &Supervisor,
+    transcript: &Arc<lt_audio::transcript::TranscriptWriter>,
+    msg: &Msg,
 ) -> Option<TlSwitch> {
     match sw {
         TlSwitch::ReplaceRig { config, settings } => {
-            match TlRig::from_model_config(&config, &settings, sup, sink.clone()) {
+            match TlRig::from_model_config(
+                &config,
+                &settings,
+                sup,
+                sink.clone(),
+                transcript.clone(),
+                msg.clone(),
+            ) {
                 Ok(Some(rig)) => {
                     tracing::info!("翻译器已切换: {} ({})", config.name, config.model);
                     *tl = Some(Arc::new(rig));
@@ -1114,10 +1149,18 @@ fn route_translator_switch(
             // 构建临时装置（不切换活动翻译器），发一次最简请求回执 UI
             let mut test_settings = settings.clone();
             test_settings.target_language = target_language.clone();
-            match TlRig::from_model_config(&config, &test_settings, sup, sink.clone()) {
+            match TlRig::from_model_config(
+                &config,
+                &test_settings,
+                sup,
+                sink.clone(),
+                transcript.clone(),
+                msg.clone(),
+            ) {
                 Ok(Some(rig)) => {
                     let sink = sink.clone();
                     let name = name.clone();
+                    let msg_t = msg.clone();
                     rig.pool.submit(move || {
                         let t0 = Instant::now();
                         let mut it = rig.translator.translate_iter("Livetranslate test", "auto");
@@ -1128,7 +1171,7 @@ fn route_translator_switch(
                             }
                             None => (
                                 false,
-                                Some(lt_i18n::t("test_translator_no_response")),
+                                Some(msg_t.t("test_translator_no_response")),
                                 t0.elapsed().as_millis() as u64,
                             ),
                         };
@@ -1144,7 +1187,7 @@ fn route_translator_switch(
                     let _ = sink.push(UiEvent::TestTranslatorResult {
                         name,
                         ok: false,
-                        error: Some(lt_i18n::t("test_translator_no_config").into()),
+                        error: Some(msg.t("test_translator_no_config")),
                         ms: 0,
                     });
                 }
@@ -1174,6 +1217,8 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
         sink,
         tl_switch,
         sup,
+        transcript,
+        msg,
     } = ctx;
     // 目标语言的运行时快照（同语言判定用；TlSwitch::TargetLanguage 同步更新）
     let mut target_language = settings.target_language.clone();
@@ -1255,6 +1300,8 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
                 &sink,
                 settings,
                 &sup,
+                &transcript,
+                &msg,
             )
             else {
                 continue;
@@ -1331,6 +1378,8 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
                     &sink,
                     settings,
                     &sup,
+                    &transcript,
+                    &msg,
                 ) {
                     // R3/D-61：每次切换尝试重解析 models_dir（与待命臂一致；
                     // 运行中目录损坏时切换路径同样可恢复）
@@ -1423,6 +1472,7 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
                     &target_language,
                     tl.as_deref(),
                     &sink,
+                    &msg,
                 );
                 let samples = { vad.lock().unwrap().speech_samples() };
                 interim
@@ -1433,7 +1483,7 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
                 if audio.is_empty() {
                     continue;
                 }
-                let seg_seconds = audio.len() as f64 / lt_pipeline::TARGET_RATE as f64;
+                let seg_seconds = audio.len() as f64 / lt_audio::TARGET_RATE as f64;
                 let t0 = std::time::Instant::now();
                 match manager.transcribe(&audio, false) {
                     Ok(result) => {
@@ -1452,6 +1502,7 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
                                 &result.language,
                                 asr_ms,
                                 seg_seconds,
+                                &msg,
                             );
                         } else if let Some(reason) = reject_segment(
                             &result.text,
@@ -1488,6 +1539,7 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
                                 &result.text,
                                 &result.language,
                                 asr_ms,
+                                &msg,
                             );
                         }
                     }
@@ -1538,6 +1590,7 @@ fn run_interim_pass(
     target_language: &str,
     tl: Option<&TlRig>,
     sink: &EventSink,
+    msg: &Msg,
 ) -> bool {
     // ① 锁内 peek，立即解锁（原版 with self._vad_lock: peek_buffer）；
     // 代际随行（AH-4/D-27）——识别期间 VAD 可能被 capture 线程收段/切分
@@ -1579,7 +1632,7 @@ fn run_interim_pass(
         audio.len(),
         committed_text.chars().count(),
         full_text.chars().count(),
-        lt_pipeline::TARGET_RATE as usize,
+        lt_audio::TARGET_RATE as usize,
     );
     // ⑥ 提交完整句；短句进 pending 等下句前置拼接（无分隔符，原版同）
     let mut committed = false;
@@ -1603,6 +1656,7 @@ fn run_interim_pass(
             &text,
             &result.language,
             asr_ms,
+            msg,
         );
         committed = true;
     }
@@ -1626,7 +1680,7 @@ fn run_interim_pass(
     tracing::info!(
         "Interim ASR: committed {} sentence(s), trimmed {:.2}s",
         complete.len(),
-        trim as f64 / lt_pipeline::TARGET_RATE as f64
+        trim as f64 / lt_audio::TARGET_RATE as f64
     );
     true
 }
@@ -1647,6 +1701,7 @@ fn commit_interim_final(
     lang: &str,
     asr_ms: f64,
     seg_seconds: f64,
+    msg: &Msg,
 ) {
     let stripped = strip_committed_overlap(raw_text.trim(), &st.committed_tail);
     let mut text = pending_merge(&st.pending, &stripped);
@@ -1668,6 +1723,7 @@ fn commit_interim_final(
         &text,
         lang,
         asr_ms,
+        msg,
     );
 }
 
@@ -1684,6 +1740,7 @@ fn commit_text(
     text: &str,
     lang: &str,
     asr_ms: f64,
+    msg: &Msg,
 ) {
     let original_text = text.trim();
     if original_text.is_empty() || !original_text.chars().any(|c| c.is_alphanumeric()) {
@@ -1716,7 +1773,7 @@ fn commit_text(
         // 给出明确占位，不停留在永久的「翻译中...」——P0-2
         let _ = sink.push(UiEvent::UpdateTranslation {
             id,
-            text: lt_i18n::t("translator_unavailable_placeholder"),
+            text: msg.t("translator_unavailable_placeholder"),
             tl_ms: 0.0,
         });
         return;
@@ -1740,7 +1797,7 @@ fn commit_text(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::artery::EventArtery;
+    use crate::event_artery::EventArtery;
 
     // ── build_worker_config：funasr 按 entry.key 分派（WP-A）──
 
@@ -1894,6 +1951,16 @@ mod tests {
         Supervisor::new(|_| {})
     }
 
+    /// 测试转录句柄（临时目录；测试内不落盘启用——TranscriptWriter 仅记录语义）
+    fn test_transcript() -> Arc<lt_audio::transcript::TranscriptWriter> {
+        Arc::new(lt_audio::transcript::TranscriptWriter::new(tmp_models_dir("transcript")))
+    }
+
+    /// 测试文案服务（键名原样返回，避免测试组依赖真实 i18n）
+    fn test_msg() -> Msg {
+        Msg::new(|k| k.to_string())
+    }
+
     /// 轮询等待（W1 泄漏回归专用）：worker 出生/退出均异步，条件 3s 内应成立
     fn wait_for(cond: impl Fn() -> bool) {
         let deadline = Instant::now() + Duration::from_secs(3);
@@ -1907,7 +1974,7 @@ mod tests {
     fn tl_rig_builds_from_default_settings() {
         let settings = lt_proto::Settings::default();
         let sup = test_sup();
-        let rig = TlRig::from_settings(&settings, &sup, EventArtery::new())
+        let rig = TlRig::from_settings(&settings, &sup, EventArtery::new(), test_transcript(), test_msg())
             .expect("默认设置不应报配置错误")
             .expect("默认 settings 带一个默认模型，应能构建");
         // 目标语言来自全局设置而非模型配置
@@ -1923,7 +1990,7 @@ mod tests {
         let mut settings = lt_proto::Settings::default();
         settings.active_model = 99;
         let sup = test_sup();
-        assert!(TlRig::from_settings(&settings, &sup, EventArtery::new()).unwrap().is_none());
+        assert!(TlRig::from_settings(&settings, &sup, EventArtery::new(), test_transcript(), test_msg()).unwrap().is_none());
         sup.join_all();
     }
 
@@ -1932,7 +1999,7 @@ mod tests {
         let mut settings = lt_proto::Settings::default();
         settings.models.clear();
         let sup = test_sup();
-        assert!(TlRig::from_settings(&settings, &sup, EventArtery::new()).unwrap().is_none());
+        assert!(TlRig::from_settings(&settings, &sup, EventArtery::new(), test_transcript(), test_msg()).unwrap().is_none());
         sup.join_all();
     }
 
@@ -1960,12 +2027,12 @@ mod tests {
     fn replaced_rig_workers_shutdown_on_drop() {
         let sup = test_sup();
         let settings = lt_proto::Settings::default();
-        let rig = TlRig::from_settings(&settings, &sup, EventArtery::new()).unwrap().unwrap();
+        let rig = TlRig::from_settings(&settings, &sup, EventArtery::new(), test_transcript(), test_msg()).unwrap().unwrap();
         let old_alive = rig.pool.alive_workers.clone();
         wait_for(|| old_alive.load(Ordering::Relaxed) == TL_POOL_WORKERS);
         // 模拟 ReplaceRig 的替换语义（route_translator_switch：
         // `*tl = Some(Arc::new(rig))`——旧 rig 被 Drop，无人显式关机）
-        let replacement = TlRig::from_settings(&settings, &sup, EventArtery::new()).unwrap().unwrap();
+        let replacement = TlRig::from_settings(&settings, &sup, EventArtery::new(), test_transcript(), test_msg()).unwrap().unwrap();
         wait_for(|| replacement.pool.alive_worker_count() == TL_POOL_WORKERS);
         drop(rig);
         // 旧池经 JobPool::Drop 自动停机：3s 内应归零（500ms pop_timeout 节拍）
@@ -1982,7 +2049,7 @@ mod tests {
     fn test_rig_dropped_with_job_shuts_down_pool() {
         let sup = test_sup();
         let settings = lt_proto::Settings::default();
-        let rig = TlRig::from_settings(&settings, &sup, EventArtery::new()).unwrap().unwrap();
+        let rig = TlRig::from_settings(&settings, &sup, EventArtery::new(), test_transcript(), test_msg()).unwrap().unwrap();
         let alive = rig.pool.alive_workers.clone();
         wait_for(|| alive.load(Ordering::Relaxed) == TL_POOL_WORKERS);
         // 等价于任务闭包 Drop 时 rig 的丢弃语义

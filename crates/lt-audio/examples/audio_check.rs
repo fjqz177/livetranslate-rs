@@ -1,12 +1,12 @@
 //! M1.2 冒烟：设备枚举 + loopback 实采 5 秒。
 //!
-//! 运行 `cargo run -p lt-pipeline --example audio_check`：
+//! 运行 `cargo run -p lt-audio --example audio_check`：
 //! - 打印输出/输入设备列表与当前默认输出
 //! - 实采 5s：轮询采集下静音期仍持续产出（chunk ≈31/s，静音块 RMS≈0）、
 //!   有声期 RMS 明显非零
 //! - 如听到本机在放音，RMS 应明显非零
 
-use lt_pipeline::audio::{wasapi_win::WasapiBackend, AudioBackend, BoundedDropQueue, TARGET_RATE};
+use lt_audio::audio::{wasapi_win::WasapiBackend, AudioBackend, BoundedDropQueue, TARGET_RATE};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -40,7 +40,7 @@ fn main() -> anyhow::Result<()> {
         match q.pop_timeout(Duration::from_millis(200)) {
             Some((chunk, _mic)) => {
                 n += 1;
-                let r = lt_pipeline::rms(&chunk);
+                let r = lt_audio::rms(&chunk);
                 if r > max_rms {
                     max_rms = r;
                 }

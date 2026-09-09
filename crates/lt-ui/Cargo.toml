@@ -6,9 +6,9 @@ edition.workspace = true
 [dependencies]
 lt-proto = { workspace = true }
 lt-i18n = { workspace = true }
-# 面板：模型缓存探测/注册表（lt-models）+ 设备枚举（lt-pipeline 的 AudioBackend）
+# 面板：模型缓存探测/注册表（lt-models）+ 设备枚举（lt-audio 的 AudioBackend）
 lt-models = { workspace = true }
-lt-pipeline = { workspace = true }
+lt-audio = { workspace = true }
 # 翻译页 prompt 预设 + 性能基准独立窗（lt_translate::bench 直调）
 lt-translate = { workspace = true }
 serde_json = { workspace = true }

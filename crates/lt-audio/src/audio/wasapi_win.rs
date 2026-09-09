@@ -57,7 +57,7 @@ impl WasapiBackend {
 }
 
 /// 采集可用性边沿事件（架构 2.0 W1/R4：音频故障对用户可见——此前全部失败
-/// 路径仅 tracing。lt-pipeline 零 proto 依赖，由编排侧翻译为 UiEvent::Capture）
+/// 路径仅 tracing。lt-audio 零 proto 依赖，由编排侧翻译为 UiEvent::Capture）
 #[derive(Debug, Clone)]
 pub enum AudioStatus {
     /// 打开/读取失败（边沿触发一次，恢复前不重发）

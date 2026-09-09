@@ -5,7 +5,7 @@
 //!   accept 后经 `_deferred_init` + 500ms `on_start` 的等价时机）；
 //! - 退出时统一 `Pipeline::stop` + 设置保存。
 
-use crate::pipeline::{transcript_shared, Pipeline};
+use lt_orchestrator::{Msg, Pipeline};
 use lt_proto::{Cmd, Settings, UiEvent, UiMsg};
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
@@ -14,7 +14,7 @@ use winit::event_loop::ActiveEventLoop;
 pub struct AppShell {
     pub ui: lt_ui::MultiWindowApp,
     /// 事件动脉（全后台→UI 事件出口；UiMsg::Cmd 回环仍走 proxy——W4 收敛）
-    artery: crate::artery::EventSink,
+    artery: lt_orchestrator::EventSink,
     /// 音频监视快照格（W2：capture 写侧句柄——传给 Pipeline，UI 读侧句柄
     /// 已在 MultiWindowApp）
     monitor_cell: std::sync::Arc<arc_swap::ArcSwap<lt_proto::MonitorSample>>,
@@ -26,7 +26,7 @@ impl AppShell {
     /// `start_settings` 为 Some（启动即就绪）时立即启动管道。
     pub fn new(
         ui: lt_ui::MultiWindowApp,
-        artery: crate::artery::EventSink,
+        artery: lt_orchestrator::EventSink,
         monitor_cell: std::sync::Arc<arc_swap::ArcSwap<lt_proto::MonitorSample>>,
         start_settings: Option<Settings>,
     ) -> Self {
@@ -48,7 +48,9 @@ impl AppShell {
             return;
         }
         self.started = true;
-        match Pipeline::start(&settings, self.artery.clone(), &self.monitor_cell) {
+        // i18n 文案经 Msg 注入编排域（白名单不变量：orchestrator 零 lt-i18n 依赖）
+        let msg = Msg::new(|k| lt_i18n::t(k));
+        match Pipeline::start(&settings, self.artery.clone(), &self.monitor_cell, msg) {
             Ok(p) => self.pipeline = Some(p),
             Err(e) => {
                 // P0-3：装配失败必须让用户看见——面板识别页顶部红字（数据
@@ -214,9 +216,9 @@ impl AppShell {
                 let s = *s;
                 if let Some(p) = &self.pipeline {
                     // AH-8/D-28：VAD 生效值按当前引擎钳制（qwen3 ≤15s）
-                    p.update_vad_settings(crate::pipeline::clamp_vad_for_engine(
+                    p.update_vad_settings(lt_orchestrator::pipeline::clamp_vad_for_engine(
                         &s.asr_engine,
-                        lt_pipeline::VadSettings {
+                        lt_audio::VadSettings {
                             mode: s.vad_mode.clone(),
                             threshold: s.vad_threshold as f64,
                             energy_threshold: s.energy_threshold as f64,
@@ -231,8 +233,10 @@ impl AppShell {
                     // 增量识别重放（原版 settings_changed 同步 _incremental_enabled/
                     // _interim_interval，main.py:321-323）
                     p.set_interim(s.incremental_asr, s.interim_interval);
+                    // 转录写盘开关（W3 起经 Pipeline 方法——句柄真源收敛为
+                    // Pipeline 字段，不再经旧 transcript_shared 全局单例）
+                    p.set_transcript_enabled(s.auto_save_transcript);
                 }
-                transcript_shared().set_enabled(s.auto_save_transcript);
                 self.ui.app_state.settings = s;
                 self.persist_settings();
                 tracing::info!("设置已应用");

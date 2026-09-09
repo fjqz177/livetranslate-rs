@@ -1232,12 +1232,12 @@ fn engine_status(state: &AppState, engine: &str, pal: &Palette) -> (String, egui
 }
 
 /// UI 线程临时枚举（WasapiBackend::new 仅作枚举面，不 start 线程；
-/// 函数自带 COM init，见 lt-pipeline audio 模块注释）
+/// 函数自带 COM init，见 lt-audio audio 模块注释）
 fn enumerate_devices() -> DeviceCache {
     #[cfg(windows)]
     {
-        use lt_pipeline::audio::AudioBackend as _;
-        let be = lt_pipeline::audio::wasapi_win::WasapiBackend::new();
+        use lt_audio::audio::AudioBackend as _;
+        let be = lt_audio::audio::wasapi_win::WasapiBackend::new();
         let outputs = be.list_output_devices().unwrap_or_default();
         let inputs = be.list_input_devices().unwrap_or_default();
         let default_output = be.current_default_output().unwrap_or(None);

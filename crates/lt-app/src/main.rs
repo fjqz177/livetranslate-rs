@@ -15,9 +15,7 @@ mod artery;
 mod backend;
 mod logging;
 mod panic_hook;
-mod pipeline;
 mod shell;
-mod supervisor;
 
 use lt_proto::{Cmd, UiMsg};
 
@@ -35,7 +33,7 @@ fn main() -> anyhow::Result<()> {
     // 合法（D-33 禁令针对事件循环线程）——logging 初始化前的失败不再黑洞
     let early = (|| -> anyhow::Result<lt_proto::Settings> {
         // R-4 预案 A：ort 走 load-dynamic，任何 ort 调用前解压 dll 并指向它
-        lt_pipeline::ensure_ort_dylib()?;
+        lt_audio::ensure_ort_dylib()?;
         ensure_single_instance()?;
         // 无 settings 文件 → 全默认值（直进主界面；模型缺失走识别页按需下载）
         let initial_settings = lt_models::settings_io::load()?.unwrap_or_default();
@@ -72,14 +70,17 @@ fn main() -> anyhow::Result<()> {
 
     let proxy = event_loop.create_proxy();
     // ── 事件动脉（W2/INV1：后台 → UI 事件的唯一通路；满丢最旧 cap 4096）──
-    let artery = artery::EventArtery::new();
-    let app_sup = supervisor::Supervisor::new(supervisor::artery_sink(artery.clone()));
+    let artery = lt_orchestrator::EventArtery::new();
+    let app_sup = lt_orchestrator::Supervisor::new(lt_orchestrator::supervisor::artery_sink(
+        artery.clone(),
+    ));
     // 常驻日志桥接：广播 hub → 动脉（日志窗数据源）。
     // W1 起经监督器出生（死亡可见 + 重生）；stop 标志由 main 在停机序置位
     let bridge_stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    logging::spawn_bridge(&app_sup, bridge_stop.clone(), artery.clone());
-    // 动脉桥线程（W2：UiMsg::Events 批量投递；Always 重生）
-    artery.spawn_bridge(&app_sup, proxy.clone(), bridge_stop.clone());
+    lt_orchestrator::logging::spawn_bridge(&app_sup, bridge_stop.clone(), artery.clone());
+    // 动脉桥线程（W2：UiMsg::Events 批量投递；Always 重生）——队列侧在
+    // lt-orchestrator，本文件只留需要 winit 的投递桥（W3 拓扑勘正）
+    artery::spawn_bridge(artery.clone(), &app_sup, proxy.clone(), bridge_stop.clone());
     // 后台命令线程：下载编排（识别页/面板触发）+ 下载期日志转发。
     // 下载目标不在此快照：backend 维护 settings 镜像，StartDownload 时按当前
     // 引擎/档位现场重算（运行中切换后下载的才是所选模型，M5.1）。

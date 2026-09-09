@@ -1,4 +1,4 @@
-//! lt-pipeline：音频采集 / VAD / 分句 / 增量 ASR / 转写落盘。
+//! lt-audio：音频采集 / VAD / 分句 / 增量 ASR / 转写落盘。
 
 pub mod audio;
 pub mod interim;

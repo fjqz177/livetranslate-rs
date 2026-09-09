@@ -4,9 +4,10 @@ members = [
     "crates/lt-proto",
     "crates/lt-i18n",
     "crates/lt-models",
-    "crates/lt-pipeline",
+    "crates/lt-audio",
     "crates/lt-asr",
     "crates/lt-translate",
+    "crates/lt-orchestrator",
     "crates/lt-ui",
     "crates/lt-app",
 ]
@@ -20,9 +21,10 @@ license = "MIT"
 lt-proto = { path = "crates/lt-proto" }
 lt-i18n = { path = "crates/lt-i18n" }
 lt-models = { path = "crates/lt-models" }
-lt-pipeline = { path = "crates/lt-pipeline" }
+lt-audio = { path = "crates/lt-audio" }
 lt-asr = { path = "crates/lt-asr" }
 lt-translate = { path = "crates/lt-translate" }
+lt-orchestrator = { path = "crates/lt-orchestrator" }
 lt-ui = { path = "crates/lt-ui" }
 
 # ── 同步（W2/W4 设置+监视快照格；读者全为同步线程、写者 <1Hz）──

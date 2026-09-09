@@ -1,16 +1,16 @@
 //! M1.4 验证：Silero VAD（ort）输入名核对 + 置信度导出。
 //!
 //! 运行：
-//! 1. `cargo run -p lt-pipeline --example vad_check`
+//! 1. `cargo run -p lt-audio --example vad_check`
 //!    打印模型输入/输出名（与 v5 契约核对），并写出
 //!    `target/vad_input.f32` + `target/vad_conf_rust.json`
 //! 2. `python scripts/silero_reference.py`（onnxruntime 逐位对照，容差 1e-4）
 
-use lt_pipeline::vad::{ConfidenceSource as _, SileroVad};
+use lt_audio::vad::{ConfidenceSource as _, SileroVad};
 
 fn main() -> anyhow::Result<()> {
     // load-dynamic：任何 ort 调用前必须就位（首次加载读 ORT_DYLIB_PATH）
-    lt_pipeline::ensure_ort_dylib()?;
+    lt_audio::ensure_ort_dylib()?;
     // 独立构建 session 以打印元数据
     let model = std::fs::read("assets/silero_vad.onnx").or_else(|_| {
         std::fs::read(concat!(

@@ -2671,20 +2671,17 @@ dependencies = [
  "anyhow",
  "arc-swap",
  "chrono",
- "crossbeam-channel",
  "lt-asr",
+ "lt-audio",
  "lt-i18n",
  "lt-models",
- "lt-pipeline",
+ "lt-orchestrator",
  "lt-proto",
- "lt-translate",
  "lt-ui",
- "parking_lot",
  "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",
- "uuid",
  "windows",
  "winit",
  "winresource",
@@ -2706,6 +2703,23 @@ dependencies = [
  "uuid",
  "whisper-rs",
  "windows",
+]
+
+[[package]]
+name = "lt-audio"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "crossbeam-channel",
+ "lt-models",
+ "ndarray",
+ "ort",
+ "parking_lot",
+ "serde_json",
+ "tracing",
+ "uuid",
+ "wasapi",
 ]
 
 [[package]]
@@ -2732,20 +2746,24 @@ dependencies = [
 ]
 
 [[package]]
-name = "lt-pipeline"
+name = "lt-orchestrator"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "arc-swap",
  "chrono",
  "crossbeam-channel",
+ "lt-asr",
+ "lt-audio",
  "lt-models",
- "ndarray",
- "ort",
- "parking_lot",
+ "lt-proto",
+ "lt-translate",
  "serde_json",
+ "tokio",
  "tracing",
+ "tracing-subscriber",
  "uuid",
- "wasapi",
+ "windows",
 ]
 
 [[package]]
@@ -2785,9 +2803,9 @@ dependencies = [
  "egui-wgpu",
  "egui-winit",
  "image",
+ "lt-audio",
  "lt-i18n",
  "lt-models",
- "lt-pipeline",
  "lt-proto",
  "lt-translate",
  "muda",
