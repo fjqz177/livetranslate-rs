@@ -408,7 +408,7 @@ WinId::Overlay => { let AppUi { overlay, session, settings, modal, .. } = app;
 | D-69 | W4 | qwen3 钳制不再写穿用户设置（R18） | 回归测试（已合入：settings_bus `clamp_is_overlay_never_write_through`——切离 qwen3 立即恢复全值，raw 永不变） |
 | D-70 | W4 | 控制面五跳→两跳（用户无感；**引擎切换延迟至静默间隙的语义保留不变**，见 §7） | 既有行为（已合入：lt-backend 退役、`UiMsg::Cmd` 删除、PROTO_VERSION=3） |
 | D-71 | W5 | 悬浮窗拖动手工化（R22，D-37 同法） | 拖动探针（已合入：overlay_drag_start_stop_enqueued headless 序列）+ 实机走查（待用户） |
-| D-72 | W6 | 设备切换清段队列 + VAD 复位（R31） | 拼接错位回归 |
+| D-72 | W6 | 设备切换清段队列 + VAD 复位（R31）——已合入：`set_audio_device`/`set_mic_device` 会话边界清根（segment_queue.clear + VAD reset + interim reset_counter）+ SetMic 补 chunk_tx.clear（方案点名 460-471 缺口）+ R4② 读错误每 tick 一次重试 | 拼接错位回归（已合入：interim_reset_counter_keeps_toggles） |
 | D-73 | W6 | 二次启动激活已有窗口（WD-5） | 实机 |
 | D-74 | W4（§5 施工卡提前于 §3.7 表 W6 档） | 同语言免翻译比较归一化（`zh` vs `zh-CN`；pipeline.rs:1473 现为裸字符串比较）——仅在目标语言侧归一（TlView 派生点），ASR 检出侧保持原样（归一它是新行为，超出本号登记面；R21 档位/源侧归一仍 W6） | 归一单测（已合入：lt-proto `normalize_language` + `tl_view_normalizes_target_language`） |
 | D-75 | W1（缺陷修复） | settings.json 缺失但 `.bak` 在位时 load 自动恢复旧配置——save 原子链「现档→bak→tmp→现档」的崩溃中间态自愈，不再静默回默认值（R17 补全）；代价：手动删除 settings.json 的重置意图同样被 .bak 复活，崩溃自愈优先 | 单测 |
