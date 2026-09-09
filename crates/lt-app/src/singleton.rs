@@ -90,7 +90,7 @@ mod win {
                 lpfnWndProc: Some(wnd_proc),
                 cbClsExtra: 0,
                 cbWndExtra: 0,
-                hInstance: hinstance.into(),
+                hInstance: hinstance,
                 hIcon: HICON::default(),
                 hCursor: HCURSOR::default(),
                 hbrBackground: HBRUSH::default(),
