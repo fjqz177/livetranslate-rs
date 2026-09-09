@@ -42,7 +42,8 @@ jobs:
       - name: Path hygiene gate
         run: powershell -ExecutionPolicy Bypass -File scripts/check_personal_paths.ps1
 
-      # lt-ui 存在约 20 条既有基线告警：清零前 advisory（W7 收口转 gate）
-      - name: Clippy (advisory)
-        run: cargo clippy --workspace --all-targets
-        continue-on-error: true
+	      # 全仓存在既有基线告警（W1~W4 积累于 pipeline/lt-audio/lt-asr 等；
+	      # W5 触及文件净增已清零）：清零前 advisory（W7 收口转 gate）
+	      - name: Clippy (advisory)
+	        run: cargo clippy --workspace --all-targets
+	        continue-on-error: true

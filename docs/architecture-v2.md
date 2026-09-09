@@ -334,6 +334,12 @@ WinId::Overlay => { let AppUi { overlay, session, settings, modal, .. } = app;
 
 **bench 编排迁出 UI**：`run_benchmark` 线程（lt-translate/bench.rs:305）改 `Cmd::RunBench/CancelBench` → orchestrator Supervisor（Never）→ `BenchEvent` 流；`AppState.event_tx` 后台旁路通道删除。
 
+**W5 收口修复（2026-09-09 合入后 review 增补）**——两条 P1 是 W5cdf 引入的新缺陷（非 W1~W4 回退），按 §5「前向修复」处理：
+- **P1 一次性线程误报 ThreadDied**：monitor 对 `Policy::Never` 线程的**正常退出**（join 无 panic）也推 `ThreadDied{"未停机即退出（异常）"}`——W5 三路一次性线程（DeviceProbe/FileDialog/Bench）均为运行期设计内收尾，每次设备刷新/文件框关闭/基准结束都会在日志窗出现错误级假报（W1 时代 Never 线程仅在停机期退出，被 stopping 静默收割，语义洞从未暴露）。收口：Never+未 panic = 静默收割（tracing::debug 保留可观测性），panic 仍上报；Always 不变（上报+重生）；死条目从 entries 移除不再积累。
+- **P1 RefreshDevices 无 in-flight 守卫**：识别页（面板默认落地页）以 `devices.is_none()` 每帧重发命令，回执多跳往返期间探测线程按帧率叠发（并放大上一条的假报）。收口：`PanelUiState.devices` 改 `DevicesState{Idle,Probe,Ready}` 三态——Idle→Probe 只发一次；刷新按钮在途幂等；回执（含失败空表）落 Ready 收敛，不再卡 Probe 重发。
+- **P3 RunBench 防重入**：shell 侧 `bench_active`（swap 抢占 + Drop 守卫，正常收尾与 panic unwind 均复位）——连发 RunBench 不再叠线程、旧会话取消标志不再被整体换新。
+- **P3 其他**：bench 取消说明行与其余基准输出行风格对齐（英文工具输出，i18n 只覆盖 UI chrome）；W5 触及文件 clippy 净增清零（W5e 测试 2 + W5a map_or 1）。
+
 ### 3.5 Boot v2（main.rs 重排）
 
 现状与病灶（main.rs 全文复核）：panic hook 无；`ensure_ort_dylib`/单实例/settings 加载全在 `logging::init`（:42）之前，失败一律 `?` 出 main——release `windows_subsystem="windows"` 下 stderr 黑洞，用户看到的是"双击后无事发生"（R11）；单实例 `OpenMutexW` 探测 + `CreateMutexW` 不检查 `ERROR_ALREADY_EXISTS` = TOCTOU 竞窗穿透（R11）。
