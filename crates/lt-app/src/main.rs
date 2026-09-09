@@ -27,6 +27,12 @@ fn main() -> anyhow::Result<()> {
         return asr_worker_entry();
     }
 
+    // WD-2：版本旗标（--version/-V）——零初始化直接输出（GUI 外可见性）
+    if std::env::args().any(|a| a == "--version" || a == "-V") {
+        println!("livetranslate {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+
     // ── R1/D-62：panic hook 最早安装（先于一切可失败步骤；hook 落 crash
     // 文件 + tracing，线程 panic 从此不再黑洞）──
     panic_hook::install();

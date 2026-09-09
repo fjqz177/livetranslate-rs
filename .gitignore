@@ -8,3 +8,5 @@ LiveTranslate/
 docs/ui-audit/
 # archify 交互式架构图产物（HTML/PNG 校验图），禁止入库（docs/architecture 已从 git 历史移除）
 docs/architecture/
+# WD-1 打包产物（scripts/package_release.ps1 写入），禁止入库
+/dist/

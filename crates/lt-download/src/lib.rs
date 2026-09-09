@@ -26,8 +26,14 @@ pub use lt_proto::Hub;
 
 /// 下载源尝试链（DL-5，落地 D-21「所选 hub 优先，缺失回落另一 hub」）：
 /// 所选 hub 居首；always_hf 模型恒 HF 居首——D-21 后 always_hf 语义 =
-/// 「HF 优先」而非「HF 唯一」，whisper 的 MS 镜像条目经 distribution WD-4
-/// 实测登记后自然获得回落能力。只含实际有仓库的源。
+/// 「HF 优先」而非「HF 唯一」。只含实际有仓库的源。
+///
+/// WD-4 实测登记（2026-09-09）：whisper 仍为单源（hub_ms=None）——
+/// ModelScope 无 ggml whisper.cpp 镜像仓库（ggingganov/whisper.cpp 与
+/// modelscope 系列候选均经 API 实测 404，搜索面无结果）；其「MS 镜像」
+/// 能力由 [`hf_endpoint_for`] 端点机制承接：用户 hub=ms 时 HF 尝试走
+/// hf-mirror.com（HEAD 实测可达）→ 下载链路同样可通，单链 + 端点随所选
+/// hub = whisper 双源语义的现状完成态。
 pub fn hub_chain<'a>(
     hub: Hub,
     hub_hf: Option<&'a str>,

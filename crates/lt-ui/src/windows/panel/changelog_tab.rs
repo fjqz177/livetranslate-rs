@@ -27,6 +27,12 @@ pub fn changelog_text(lang: &str) -> &'static str {
 /// 面板整页 ScrollArea 滚动——嵌套 ScrollArea 会叠加双层滚动条占位宽
 /// （6px×2）造成文本 wrap 宽度与可见宽度错位、行尾被裁（实机走查修复）。
 pub fn page(ui: &mut Ui, _pal: &Palette) {
+    // WD-2：版本行（弱化显示；与 --version 同源 = CARGO_PKG_VERSION）
+    ui.label(
+        RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
+            .weak()
+            .small(),
+    );
     let text = changelog_text(&lt_i18n::get_lang());
     group_card(ui, _pal, &lt_i18n::t("group_changelog"), |ui| {
         // wrapped 行宽收 10px 安全量：ScrollArea 的 wrap 分配宽与 clip 缘存在
