@@ -683,6 +683,8 @@ fn messages_area(
 /// 独立换行的富文本 label（译文行必另起一行），外层 margins (8,4,8,4)；
 /// 头部行字号 = original_font_size（YaHei 11pt），译文行 = translation_font_size（14pt）。
 /// 菜单动作经局部标志回传（消息链借用期间不可变写 AppState）。
+/// 8 参数 = 渲染上下文 + 消息链局部状态（消息借用期不可合并为结构——过拟合）
+#[allow(clippy::too_many_arguments)]
 fn message_block(
     ui: &mut Ui,
     settings: &Settings,

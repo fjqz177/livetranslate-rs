@@ -239,7 +239,7 @@ impl<R: Read> FrameReader<R> {
         };
         let (req, audio_bytes) = split_request_payload(&payload)?;
         let audio = audio_bytes
-            .chunks_exact(4)
+            .as_chunks::<4>().0.iter()
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
         Ok(Some(IncomingRequest {
@@ -378,6 +378,6 @@ mod tests {
 
         let err = Response::error(Some("e1"), "boom", false);
         assert!(!err.ok);
-        assert_eq!(err.error_info().unwrap().recoverable, false);
+        assert!(!err.error_info().unwrap().recoverable);
     }
 }

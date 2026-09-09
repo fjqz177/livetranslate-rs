@@ -185,10 +185,12 @@ mod tests {
         assert_eq!(eff.asr_lang.language, "auto");
         assert_eq!(eff.asr_lang.sensevoice_pad, 0.5);
 
-        let mut s = Settings::default();
-        s.asr_language = "yue".into();
-        s.sensevoice_pad_seconds = 1.25;
-        s.whisper_pad_seconds = 2.0;
+        let s = Settings {
+            asr_language: "yue".into(),
+            sensevoice_pad_seconds: 1.25,
+            whisper_pad_seconds: 2.0,
+            ..Default::default()
+        };
         bus.publish(s);
         let eff = bus.load();
         assert_eq!(eff.asr_lang.language, "yue");

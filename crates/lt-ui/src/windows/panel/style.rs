@@ -51,7 +51,7 @@ pub fn reset_style(style: &mut Style) {
 pub fn page(ui: &mut Ui, session: &mut SessionView, settings: &mut Settings, ctx: &mut UiContext, pal: &Palette) {
     // N3/N4：样式页偏离默认提示 + 恢复本页（Style 14 键 + 两把主字体键；
     // 窗口几何（overlay_x 等）不纳入——样式页已有「重置窗口位置」按钮）
-    let diffs = crate::panel_diff::diff_paths(&settings);
+    let diffs = crate::panel_diff::diff_paths(settings);
     let page_diffs: Vec<&str> = diffs
         .iter()
         .filter(|p| {
@@ -68,7 +68,7 @@ pub fn page(ui: &mut Ui, session: &mut SessionView, settings: &mut Settings, ctx
             settings.ui_font_family = def.ui_font_family.clone();
             settings.subtitle_font_family = def.subtitle_font_family.clone();
             // 字体键变化必须重装字体链（D-17：行级"跟随"解析自注册表）
-            crate::fonts::apply_fonts(ui.ctx(), &settings, &mut ctx.fonts);
+            crate::fonts::apply_fonts(ui.ctx(), settings, &mut ctx.fonts);
             mark_settings_dirty(session);
         });
     }
@@ -86,7 +86,7 @@ pub fn page(ui: &mut Ui, session: &mut SessionView, settings: &mut Settings, ctx
             false,
         ) {
             settings.ui_font_family = next;
-            crate::fonts::apply_fonts(ui.ctx(), &settings, &mut ctx.fonts);
+            crate::fonts::apply_fonts(ui.ctx(), settings, &mut ctx.fonts);
             mark_settings_dirty(session);
         }
         let cur_sub = settings.subtitle_font_family.clone();
@@ -100,7 +100,7 @@ pub fn page(ui: &mut Ui, session: &mut SessionView, settings: &mut Settings, ctx
             false,
         ) {
             settings.subtitle_font_family = next;
-            crate::fonts::apply_fonts(ui.ctx(), &settings, &mut ctx.fonts);
+            crate::fonts::apply_fonts(ui.ctx(), settings, &mut ctx.fonts);
             mark_settings_dirty(session);
         }
         ui.label(
@@ -121,7 +121,7 @@ pub fn page(ui: &mut Ui, session: &mut SessionView, settings: &mut Settings, ctx
                 if next < PRESET_NAMES.len() {
                     apply_preset(&mut settings.style, PRESET_NAMES[next]);
                     // 预设可能改写行级字体键（D-17 默认=跟随），字体链需同步
-                    crate::fonts::apply_fonts(ui.ctx(), &settings, &mut ctx.fonts);
+                    crate::fonts::apply_fonts(ui.ctx(), settings, &mut ctx.fonts);
                     mark_settings_dirty(session);
                 }
             }
@@ -133,7 +133,7 @@ pub fn page(ui: &mut Ui, session: &mut SessionView, settings: &mut Settings, ctx
                 .clicked()
             {
                 reset_style(&mut settings.style);
-                crate::fonts::apply_fonts(ui.ctx(), &settings, &mut ctx.fonts);
+                crate::fonts::apply_fonts(ui.ctx(), settings, &mut ctx.fonts);
                 mark_settings_dirty(session);
             }
             // 原版样式 Tab 同行右侧"重置窗口位置"（_on_reset_positions → reset_positions 信号）
@@ -370,6 +370,9 @@ fn style_pct_row(
 }
 
 /// "标签 + 整数 DragValue"行（px/pt 后缀）
+/// 8 参数 = 行形态配置（label/field/range/suffix 四元配置面，合并为结构
+/// 反而遮蔽语义）
+#[allow(clippy::too_many_arguments)]
 fn style_u32_row(
     ui: &mut Ui,
     settings: &mut Settings,
@@ -419,7 +422,7 @@ fn font_row(
         {
             *field(&mut settings.style) = next;
             mark_custom(&mut settings.style);
-            crate::fonts::apply_fonts(ui.ctx(), &settings, &mut ctx.fonts);
+            crate::fonts::apply_fonts(ui.ctx(), settings, &mut ctx.fonts);
             mark_settings_dirty(session);
         }
     });

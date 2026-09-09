@@ -122,9 +122,11 @@ mod tests {
         assert!(load().unwrap().is_none());
 
         // 保存 → 读回一致
-        let mut s = Settings::default();
-        s.target_language = "ja".into();
-        s.vad_threshold = 0.3;
+        let s = Settings {
+            target_language: "ja".into(),
+            vad_threshold: 0.3,
+            ..Default::default()
+        };
         save(&s).unwrap();
         let back = load().unwrap().unwrap();
         assert_eq!(back.target_language, "ja");
@@ -199,8 +201,10 @@ mod tests {
         let bak = path.with_extension("json.bak");
         std::fs::write(&path, r#"{ "target_language": "zh" }"#).unwrap();
 
-        let mut s = Settings::default();
-        s.target_language = "ja".into();
+        let s = Settings {
+            target_language: "ja".into(),
+            ..Default::default()
+        };
         save(&s).unwrap();
 
         // 成功后 .bak 完成使命被删除、tmp 无残留，新内容生效
@@ -227,8 +231,10 @@ mod tests {
         std::fs::write(&bak, old).unwrap();
         std::fs::create_dir_all(&path).unwrap();
 
-        let mut s = Settings::default();
-        s.target_language = "ja".into();
+        let s = Settings {
+            target_language: "ja".into(),
+            ..Default::default()
+        };
         let err = save(&s).expect_err("目录占位应使保存失败");
 
         // .bak 保留且内容仍是旧档；错误信息提到 .bak 可手动恢复

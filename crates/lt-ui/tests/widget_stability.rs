@@ -127,8 +127,10 @@ fn plain_dark_theme_is_stabilized() {
 /// overlay 注入链单帧（host stabilize + overlay_ui 三态原位覆盖）：
 /// 返回按钮响应 rect 与文本 galley 合并 rect；`events` 决定指针状态。
 fn overlay_frame(ctx: &egui::Context, events: Vec<Event>) -> (Rect, Rect) {
-    let mut ri = RawInput::default();
-    ri.events = events;
+    let ri = RawInput {
+        events,
+        ..Default::default()
+    };
     let mut btn = Rect::NOTHING;
     let mut out = ctx.run_ui(ri, |ui| {
         ui.set_clip_rect(Rect::from_min_size(

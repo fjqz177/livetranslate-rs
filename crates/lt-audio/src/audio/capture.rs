@@ -254,17 +254,20 @@ mod tests {
     /// monitor 回调收集日志：(rms, vad, mic_rms)
     type MonitorLog = Arc<Mutex<Vec<(f32, f64, Option<f32>)>>>;
 
-    /// 测试源装箱（run 特化为 boxed 默认形态后的统一入口）
-    fn boxed(src: impl ConfidenceSource + Send + 'static) -> Box<dyn ConfidenceSource + Send> {
-        Box::new(src)
-    }
-
-    fn setup() -> (
+    /// 测试固定装置（队列 ×2 + 日志 + 运行标志）
+    type TestRig = (
         Arc<BoundedDropQueue<(Vec<f32>, Option<f32>)>>,
         Arc<BoundedDropQueue<(SegmentSource, Vec<f32>)>>,
         MonitorLog,
         Arc<AtomicBool>,
-    ) {
+    );
+
+    /// 测试源装箱（run 特化为 boxed 默认形态后的统一入口）
+    fn boxed(src: impl ConfidenceSource + 'static) -> Box<dyn ConfidenceSource + Send> {
+        Box::new(src)
+    }
+
+    fn setup() -> TestRig {
         let q = Arc::new(BoundedDropQueue::new(100, "test-chunk"));
         let seg = Arc::new(BoundedDropQueue::new(16, "test-seg"));
         (
@@ -332,7 +335,7 @@ mod tests {
         assert_eq!(source, SegmentSource::VadFlush);
         assert!(audio.len() >= 40 * 512);
         let mons = monitors.lock().unwrap();
-        assert!(mons.len() >= 1, "段入队前应有监视回调");
+        assert!(!mons.is_empty(), "段入队前应有监视回调");
         for (rms, _, mic_rms) in mons.iter() {
             assert_eq!(*rms, 0.5);
             assert_eq!(*mic_rms, Some(0.25));
@@ -416,7 +419,7 @@ mod tests {
             16, "test-seg",
         ));
         let paused = Arc::new(AtomicBool::new(false));
-        let mut vad = VadProcessor::new(boxed(Burst(1000.into())), 16000, 0.5, 1.0, 8.0, 0.032);
+        let vad = VadProcessor::new(boxed(Burst(1000.into())), 16000, 0.5, 1.0, 8.0, 0.032);
         let tick_cell = Arc::new(Mutex::new((0u64, crate::vad::VadSettings::default())));
         let reader: VadSource = {
             let c = tick_cell.clone();
@@ -444,8 +447,10 @@ mod tests {
         std::thread::sleep(Duration::from_millis(150));
         assert_eq!(vad_obs.lock().unwrap().max_speech_samples(), (8.0 * 16000.0) as usize);
         // 发布版本 1 + 新阈值/时长 → 下一循环轮询应用
-        let mut s = crate::vad::VadSettings::default();
-        s.max_speech_duration = 15.0;
+        let s = crate::vad::VadSettings {
+            max_speech_duration: 15.0,
+            ..Default::default()
+        };
         *tick_cell.lock().unwrap() = (1, s);
         for _ in 0..4 {
             q_feed.push((vec![0.0f32; 512], None));

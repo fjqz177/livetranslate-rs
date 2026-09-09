@@ -122,7 +122,7 @@ impl AsrManager {
         let mut client = (self.spawn)(config)
             .map_err(|e| AsrManagerError::Failed(format!("worker 启动失败: {e}")))?;
         client.wait_ready().map_err(|e| {
-            let _ = client.shutdown();
+            client.shutdown();
             AsrManagerError::Failed(format!("worker 未就绪: {e}"))
         })?;
         self.client = Some(client);
@@ -137,7 +137,7 @@ impl AsrManager {
             let same = self
                 .config
                 .as_ref()
-                .map_or(false, |c| sig(c) == sig(config));
+                .is_some_and(|c| sig(c) == sig(config));
             if same {
                 return Err(AsrManagerError::Unavailable("重启配额已耗尽".into()));
             }
@@ -151,7 +151,7 @@ impl AsrManager {
             && self
                 .config
                 .as_ref()
-                .map_or(false, |c| sig(c) == sig(config))
+                .is_some_and(|c| sig(c) == sig(config))
         {
             return Ok(()); // 已就绪且配置一致
         }
@@ -231,9 +231,7 @@ impl AsrManager {
         // 识别前应用生效设置（原版 _apply_pending_asr_settings 的 W4 形态）：
         // worker 死亡/超时 → 直接上抛（生效值在总线快照中，下段比对自动重试，
         // 等价旧"挂起保持"——挂起存根即总线当前值）
-        if let Err(e) = self.apply_effective_settings(eff) {
-            return Err(e);
-        }
+        self.apply_effective_settings(eff)?;
         let result = self
             .client
             .as_mut()

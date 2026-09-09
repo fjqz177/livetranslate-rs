@@ -1325,9 +1325,11 @@ mod tests {
     ) -> Vec<(crate::state::WinId, crate::state::WinAction)> {
         let mut collected = Vec::new();
         for events in frames {
-            let mut ri = egui::RawInput::default();
-            ri.screen_rect = Some(sub_screen_rect());
-            ri.events = events;
+            let ri = egui::RawInput {
+                screen_rect: Some(sub_screen_rect()),
+                events,
+                ..Default::default()
+            };
             let mut out = ctx.run_ui(ri, |ui| crate::windows::subtitle::subtitle_ui(
                 ui,
                 &mut st.subtitle,
@@ -1466,9 +1468,11 @@ mod tests {
         ];
         let mut acts = Vec::new();
         for events in frames {
-            let mut ri = egui::RawInput::default();
-            ri.screen_rect = Some(screen);
-            ri.events = events;
+            let ri = egui::RawInput {
+                screen_rect: Some(screen),
+                events,
+                ..Default::default()
+            };
             let mut out = ctx.run_ui(ri, |ui| crate::windows::subtitle::subtitle_ui(
                 ui,
                 &mut st.subtitle,

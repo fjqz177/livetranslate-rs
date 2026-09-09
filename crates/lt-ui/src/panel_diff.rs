@@ -102,8 +102,10 @@ mod tests {
     #[test]
     fn model_collection_changes_detected() {
         let mut s = lt_proto::Settings::default();
-        let mut cfg = lt_proto::ModelConfig::default();
-        cfg.name = "my-model".into();
+        let cfg = lt_proto::ModelConfig {
+            name: "my-model".into(),
+            ..Default::default()
+        };
         s.models.push(cfg);
         let d = diff_paths(&s);
         // 数组长度差 → 整条 models 路径

@@ -546,9 +546,8 @@ impl Translator {
         if !self.streaming {
             let result = self
                 .translate_sync(&system_prompt, text, timeout_secs as u64)
-                .map(|r| {
-                    self.append_history(text, &r);
-                    r
+                .inspect(|r| {
+                    self.append_history(text, r);
                 });
             return TranslateStream::sync(result);
         }

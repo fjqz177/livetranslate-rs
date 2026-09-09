@@ -870,11 +870,10 @@ mod probe_nano_tmp {
                     ..
                 } => {
                     let (tot, pct) = (total.unwrap_or(0), |d: u64, t: u64| {
-                        if t > 0 {
-                            (d * 100 / t) as usize
-                        } else {
-                            0
-                        }
+                        // checked 链：t==0 或 d*100 溢出 → 0（进度不推进）
+                        d.checked_mul(100)
+                            .and_then(|x| x.checked_div(t))
+                            .map_or(0, |v| v as usize)
                     });
                     let p = pct(done, tot);
                     if p >= last_pct[k - 1] + 25 || done == tot {
@@ -910,6 +909,6 @@ mod probe_nano_tmp {
             "snapshot = {snapshot:?}\n六件实测合计 = {total} bytes，总耗时 {el:?}，均速 {:.1} MB/s",
             total as f64 / 1_048_576.0 / el.as_secs_f64()
         );
-        assert_eq!(cancel.load(Ordering::Relaxed), false);
+        assert!(!cancel.load(Ordering::Relaxed));
     }
 }

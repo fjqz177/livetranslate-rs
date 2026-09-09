@@ -1,7 +1,11 @@
 //! 下载管理（架构 2.0 W3 自 lt-app/backend.rs 下载会话域迁入，方案 §3.1：
-//! lt-orchestrator 承接下载编排）。无状态 + 单在途会话：目标清单现场重算、
-//! 磁盘预检、会话线程（DL-4 响应性）、进度/失败/取消全部经 EventArtery
-//! 类型化回流（W2 后的无字符串协议形态，见 event_artery 注记）。
+//! lt-orchestrator 承接下载编排）。单在途会话：目标清单现场重算、磁盘预检、
+//! 进度/失败/取消全部经 EventArtery 类型化回流（W2 后的无字符串协议形态，
+//! 见 event_artery 注记）。线程模型（W7 收口）：会话线程经
+//! [`Supervisor::spawn`]（Policy::Never，`ThreadRole::Download`）出生——死亡
+//! 经 `ThreadDied` 可见；下载 worker 为会话子线程，由会话线程 join（完成
+//! 结果与 panic 均转终态事件，终止语义仅此一处消费——全局监督器单句柄
+//! 单一消费者，子线程不复用同一句柄）。
 //!
 //! 原版对应物：SetupWizardDialog/ModelDownloadDialog 的 `_download_worker`
 //! 后台线程 + `_LogCapture`；Rust 版在 UI 只发 [`Cmd::StartDownload`] 的语义
@@ -13,7 +17,8 @@ use lt_download::{
     hf_endpoint_for, hub_chain, DlError, DownloadEvent, Downloader, Hub, ProxyMode,
 };
 use lt_proto::{
-    DownloadEvent as ProtoDownload, DownloadFailKind, DownloadPhase, Settings, UiEvent,
+    DownloadEvent as ProtoDownload, DownloadFailKind, DownloadPhase, Settings, ThreadRole,
+    UiEvent,
 };
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::TryRecvError;
@@ -21,39 +26,43 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::event_artery::EventSink;
+use crate::supervisor::{Policy, Supervisor};
 
-/// 在途下载会话（DL-4）：取消令牌 + 会话线程句柄
-struct DownloadSession {
-    cancel: Arc<AtomicBool>,
-    handle: std::thread::JoinHandle<()>,
-}
+/// 会话线程名（生命周期查询键：`Supervisor::is_thread_finished`）
+const DL_SESSION_THREAD: &str = "lt-download-session";
 
 /// 下载编排管理器（命令线程上下文独占；会话线程仅持 EventSink + 设置快照）
 pub struct DownloadManager {
     artery: EventSink,
     /// 首启目标固定 sensevoice-small（原版向导语义；运行期下载跟随设置镜像现场重算）
     first_launch: bool,
-    session: Option<DownloadSession>,
+    /// 监督器（下载会话线程出生点；在途判定经 `is_thread_finished`）
+    sup: Arc<Supervisor>,
+    /// 在途会话取消令牌（start 置位；cancel 只置标志——线程收尾读）
+    cancel: Option<Arc<AtomicBool>>,
 }
 
 impl DownloadManager {
-    pub fn new(artery: EventSink, first_launch: bool) -> Self {
+    pub fn new(artery: EventSink, first_launch: bool, sup: Arc<Supervisor>) -> Self {
         Self {
             artery,
             first_launch,
-            session: None,
+            sup,
+            cancel: None,
         }
+    }
+
+    /// 在途判定（W7：会话结束经监督器查询收敛——终态事件丢失时
+    /// `is_thread_finished` 仍可自愈，不会永久滞留"下载中"）
+    fn in_flight(&self) -> bool {
+        !self.sup.is_thread_finished(DL_SESSION_THREAD)
     }
 
     /// 起下载会话（非阻塞）：目标清单按当前设置现场重算（M5.1——运行中切换
     /// 的引擎/档位即时生效，启动快照会下错模型）；在途时忽略重复请求
     /// （UI 侧亦有按钮守卫）。
     pub fn start(&mut self, settings: &Settings, hub_s: &str, proxy_s: &str) {
-        // 回收已结束会话；在途则忽略重复请求（UI 侧亦有按钮守卫）
-        if self.session.as_ref().is_some_and(|s| s.handle.is_finished()) {
-            self.session = None;
-        }
-        if self.session.is_some() {
+        if self.in_flight() {
             tracing::warn!("已有下载会话在途，忽略重复 StartDownload");
             self.line("已有下载进行中，请等待完成或取消后重试");
             return;
@@ -66,32 +75,50 @@ impl DownloadManager {
         let session_hub = hub_s.to_string();
         let session_proxy_s = proxy_s.to_string();
         let cancel_for_run = cancel.clone();
-        let handle = std::thread::Builder::new()
-            .name("lt-download-session".into())
-            .spawn(move || {
-                run_download(
-                    &artery,
-                    first_launch,
-                    &session_settings,
-                    &missing,
-                    &session_hub,
-                    &session_proxy_s,
-                    cancel_for_run,
-                );
+        // INV3：会话线程出生唯一＝监督器；Policy::Never（常量回收语义）。
+        // factory 惰性持有（INV5 干净初态），catch_unwind 兜底层 panic →
+        // 终态事件（下载卡不再可能停驻"下载中"，R1 同源防线）。
+        self.sup.spawn(ThreadRole::Download, DL_SESSION_THREAD, Policy::Never, move || {
+            let artery = artery.clone();
+            let session_settings = session_settings.clone();
+            let missing = missing.clone();
+            let session_hub = session_hub.clone();
+            let session_proxy_s = session_proxy_s.clone();
+            let cancel_for_run = cancel_for_run.clone();
+            Box::new(move || {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    run_download(
+                        &artery,
+                        first_launch,
+                        &session_settings,
+                        &missing,
+                        &session_hub,
+                        &session_proxy_s,
+                        cancel_for_run,
+                    );
+                }));
+                if result.is_err() {
+                    fail(
+                        &artery,
+                        DownloadFailKind::Other,
+                        "下载会话异常退出（panic，详情见 crash 文件与日志）",
+                    );
+                }
             })
-            .expect("下载会话线程可启动");
-        self.session = Some(DownloadSession { cancel, handle });
+        });
+        self.cancel = Some(cancel);
     }
 
     /// 取消在途下载（进度已保留；无在途则忽略）
     pub fn cancel(&mut self) {
-        match &self.session {
-            Some(s) if !s.handle.is_finished() => {
-                s.cancel.store(true, Ordering::Relaxed);
+        if self.in_flight() {
+            if let Some(c) = &self.cancel {
+                c.store(true, Ordering::Relaxed);
                 tracing::info!("已请求取消下载");
                 self.line("正在取消下载（进度已保留）…");
             }
-            _ => tracing::debug!("无在途下载，忽略 CancelDownload"),
+        } else {
+            tracing::debug!("无在途下载，忽略 CancelDownload");
         }
     }
 
@@ -213,9 +240,11 @@ fn run_download(
     while let Ok(ev) = rx.try_recv() {
         emit_download_event(artery, &ev);
     }
-    match worker.join().expect("下载线程不 panic") {
-        Ok(()) => succeed(artery, first_launch, settings, hub_s, proxy_s),
-        Err((name, e)) => {
+    // W7：worker panic 不再是"会话线程被 expect 拖死"——join 的 Err 分支
+    // 直接落失败终态，下载卡收 DownloadFailed 收敛（卡死解除）。
+    match worker.join() {
+        Ok(Ok(())) => succeed(artery, first_launch, settings, hub_s, proxy_s),
+        Ok(Err((name, e))) => {
             let cancelled = e
                 .downcast_ref::<DlError>()
                 .is_some_and(|d| d.kind == DownloadFailKind::Cancelled);
@@ -230,6 +259,11 @@ fn run_download(
                 }
             }
         }
+        Err(_) => fail(
+            artery,
+            DownloadFailKind::Other,
+            "下载线程异常退出（panic，详情见 crash 文件与日志）",
+        ),
     }
 }
 
@@ -283,21 +317,22 @@ fn succeed(
     proxy_s: &str,
 ) {
     let final_settings = if first_launch {
-        let mut s = Settings::default();
-        s.hub = hub_s.into();
-        s.download_proxy = proxy_s.into();
-        s.asr_engine = "funasr".into();
-        s.funasr_model = "sensevoice-small".into();
-        s.vad_mode = "silero".into();
-        s.vad_threshold = 0.3;
-        s.energy_threshold = 0.02;
-        s.min_speech_duration = 1.0;
-        s.max_speech_duration = 8.0;
-        s.silence_mode = "auto".into();
-        s.silence_duration = 0.8;
-        s.asr_language = "auto".into();
-        s.target_language = "zh".into();
-        s
+        Settings {
+            hub: hub_s.into(),
+            download_proxy: proxy_s.into(),
+            asr_engine: "funasr".into(),
+            funasr_model: "sensevoice-small".into(),
+            vad_mode: "silero".into(),
+            vad_threshold: 0.3,
+            energy_threshold: 0.02,
+            min_speech_duration: 1.0,
+            max_speech_duration: 8.0,
+            silence_mode: "auto".into(),
+            silence_duration: 0.8,
+            asr_language: "auto".into(),
+            target_language: "zh".into(),
+            ..Default::default()
+        }
     } else {
         settings.clone()
     };
@@ -372,6 +407,7 @@ fn format_size(size_bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::event_artery::EventArtery;
 
     #[test]
     fn size_format_matches_original() {
@@ -392,6 +428,75 @@ mod tests {
         ));
     }
 
+    /// W7：下载会话经监督器出生——快速成功会话（缺失清单为空，零网络）
+    /// 发终态事件并收敛，随后可重入（在途守卫不误拦）。
+    #[test]
+    fn session_terminates_and_reallows_restart() {
+        let artery = EventArtery::new();
+        let sup = Supervisor::new(|_| {});
+        let mut dl = DownloadManager::new(artery.clone(), false, sup.clone());
+
+        let temp = std::env::temp_dir().join(format!("lt_dl_mgr_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp);
+        // 本地 GGML 路径 → 无缺失 → run_download 快速成功（合成路径，PH-2）
+        let s = Settings {
+            models_dir: Some(temp.clone()),
+            asr_engine: "whisper".into(),
+            whisper_model_size: temp
+                .join("lt_local")
+                .join("ggml-tiny.bin")
+                .to_string_lossy()
+                .into_owned(),
+            ..Default::default()
+        };
+
+        dl.start(&s, "hf", "none");
+        // 终态事件到达（DownloadSucceeded；本地路径零网络）
+        let mut batch = Vec::new();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            if artery.drain_batch(&mut batch, Duration::from_millis(200)) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "下载会话应快速成功收尾"
+            );
+        }
+        assert!(
+            batch
+                .iter()
+                .any(|ev| matches!(ev, UiEvent::DownloadSucceeded { .. })),
+            "快速失败路径应发成功后遗事件"
+        );
+        // 会话经监督器收敛 → 重入不被在途守卫拦截
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while dl.in_flight() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(!dl.in_flight(), "会话结束后在途判假");
+        dl.start(&s, "hf", "none");
+        let mut batch = Vec::new();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            if artery.drain_batch(&mut batch, Duration::from_millis(200)) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "重入会话应同样快速收尾"
+            );
+        }
+        assert!(
+            batch
+                .iter()
+                .any(|ev| matches!(ev, UiEvent::DownloadSucceeded { .. })),
+            "重入成功路径应发成功后遗事件"
+        );
+        let _ = std::fs::remove_dir_all(&temp);
+        sup.join_all();
+    }
+
     /// 下载目标现场重算：跟随 settings 镜像的引擎/档位（M5.1 快照 bug 回归测试）。
     /// 场景：启动时 funasr/sensevoice-small 未缓存（快照非空），运行中切 whisper/tiny
     /// → StartDownload 必须下载 whisper tiny，而不是启动快照里的 sensevoice。
@@ -399,12 +504,14 @@ mod tests {
     fn missing_targets_follow_settings_mirror() {
         let dir = std::env::temp_dir().join(format!("lt_backend_mirror_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let mut s = Settings::default();
-        s.models_dir = Some(dir.clone());
+        let mut s = Settings {
+            models_dir: Some(dir.clone()),
+            asr_engine: "funasr".into(),
+            funasr_model: "sensevoice-small".into(),
+            ..Default::default()
+        };
 
         // funasr/sensevoice-small 未缓存 → 1 条目标
-        s.asr_engine = "funasr".into();
-        s.funasr_model = "sensevoice-small".into();
         let miss = current_missing(&s);
         assert_eq!(miss.len(), 1, "sensevoice-small 未缓存应有 1 条目标");
         assert!(!miss[0].always_hf, "sensevoice 双 hub 可选");

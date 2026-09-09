@@ -8,7 +8,8 @@ use lt_proto::Style;
 
 /// 预设覆盖表：预设名 → 覆写字段（未列出的字段 = BASE 默认值）。
 /// 顺序即面板下拉顺序（default 之外的 13 个主题 + compact）。
-pub const PRESET_OVERRIDES: &[(&str, fn(&mut Style))] = &[
+type PresetOverride = (&'static str, fn(&mut Style));
+pub const PRESET_OVERRIDES: &[PresetOverride] = &[
     ("transparent", |s| {
         s.bg_opacity = 120;
         s.header_opacity = 120;
@@ -139,8 +140,10 @@ pub const PRESET_NAMES: &[&str] = &[
 
 /// 按预设名从 BASE 生成完整 Style（面板切换预设用，M4.3 消费）
 pub fn preset_style(name: &str) -> Style {
-    let mut s = Style::default(); // = BASE(default)
-    s.preset = name.to_string();
+    let mut s = Style {
+        preset: name.to_string(),
+        ..Style::default() // = BASE(default)
+    };
     if let Some((_, apply)) = PRESET_OVERRIDES.iter().find(|(n, _)| *n == name) {
         apply(&mut s);
     }

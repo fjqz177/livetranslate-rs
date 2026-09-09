@@ -4,7 +4,7 @@ use lt_asr::client::{AsrClientError, AsrWorkerClient, Status};
 use lt_asr::worker::WorkerConfig;
 use std::time::Duration;
 
-fn fake_config(name: &str, options: lt_asr::worker::EchoOptions) -> WorkerConfig {
+fn fake_config(_name: &str, options: lt_asr::worker::EchoOptions) -> WorkerConfig {
     WorkerConfig {
         engine: "echo".into(),
         language: "auto".into(),

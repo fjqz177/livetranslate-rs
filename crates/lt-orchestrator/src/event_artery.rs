@@ -161,7 +161,7 @@ mod tests {
             if batch.is_empty() {
                 break;
             }
-            drained.extend(batch.drain(..));
+            drained.append(&mut batch);
         }
         assert_eq!(drained.len(), ARTERY_CAP);
         let UiEvent::ThreadDied(d) = &drained[0] else {

@@ -201,13 +201,13 @@ fn apply_cmd(inner: &TrayInner, cmd: TrayCmd) -> bool {
             let _ = inner.icon.set_icon(Some(icon_for(s)));
         }
         TrayCmd::SetStatusLine(text) => {
-            let _ = inner.status.set_text(text);
+            inner.status.set_text(text);
         }
         TrayCmd::SetPauseLabel(text) => {
-            let _ = inner.pause.set_text(text);
+            inner.pause.set_text(text);
         }
         TrayCmd::SetOverlayToggleLabel(text) => {
-            let _ = inner.overlay_toggle.set_text(text);
+            inner.overlay_toggle.set_text(text);
         }
         TrayCmd::Quit => return true,
     }

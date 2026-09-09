@@ -97,6 +97,19 @@ impl Supervisor {
         self.stopping.store(true, Ordering::SeqCst);
     }
 
+    /// 查询命名线程是否已结束（W7：DownloadManager 在途会话判定——
+    /// JoinHandle 轮询的监督器版语义；Entry 不存在 = 从未出生或已收割 → 真）。
+    pub fn is_thread_finished(&self, name: &str) -> bool {
+        let entries = self.entries.lock().unwrap();
+        entries
+            .iter()
+            .find(|e| e.name == name)
+            .is_none_or(|e| match &e.handle {
+                None => true,
+                Some(h) => h.is_finished(),
+            })
+    }
+
     /// join 全部被监督线程 + monitor。须在 begin_shutdown 与各线程停止信号
     /// （stop 原子/通道关闭）之后调用。常驻无出口线程（如日志桥，hub 恒
     /// 存活不会 Closed）由调用方注入专用停止标志作为退出条件。
@@ -311,6 +324,51 @@ mod tests {
             "stopping 后不得重生（INV4）"
         );
         assert!(rx.try_recv().is_err(), "停机期不上报死亡事件");
+        sup.join_all();
+    }
+
+    /// W7：`is_thread_finished` 生命周期语义——出生待执行 = false；
+    /// 正常退出 = true；收割后（Entry 移除）= true（"无在途"收敛）
+    #[test]
+    fn is_thread_finished_tracks_lifecycle() {
+        let (sup, _rx) = setup();
+        let enter = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let enter2 = enter.clone();
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stop2 = stop.clone();
+        sup.spawn(ThreadRole::Download, "test-dl-session", Policy::Never, move || {
+            let enter = enter2.clone();
+            let stop = stop2.clone();
+            Box::new(move || {
+                enter.store(true, Ordering::SeqCst);
+                // 退出前让调用方先观察到 in-flight
+                std::thread::sleep(Duration::from_millis(300));
+                let _ = stop.load(Ordering::SeqCst);
+            })
+        });
+        // 出生窗口内必为在途（spawn 返回时线程已启动，enter 很快置位）
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while !enter.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(enter.load(Ordering::SeqCst), "线程应已启动");
+        assert!(
+            !sup.is_thread_finished("test-dl-session"),
+            "运行中应判在途"
+        );
+        // 等退出 + monitor 收割（500ms 轮询）→ 判"已结束"
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !sup.is_thread_finished("test-dl-session")
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(
+            sup.is_thread_finished("test-dl-session"),
+            "退出（含收割）后应判已结束"
+        );
+        // 从未出生的名字恒为"已结束"（可开新会话）
+        assert!(sup.is_thread_finished("never-existed"));
         sup.join_all();
     }
 }

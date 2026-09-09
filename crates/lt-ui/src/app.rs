@@ -372,7 +372,7 @@ impl MultiWindowApp {
         // egui 请求了立即重绘（动画/交互进行中）→ 跟一帧
         let want_repaint = full
             .viewport_output
-            .get(&viewport.into())
+            .get(&viewport)
             .map(|vo| vo.repaint_delay == Duration::ZERO)
             .unwrap_or(false);
         if want_repaint {

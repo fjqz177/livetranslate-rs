@@ -1492,6 +1492,12 @@ pub struct WizardState {
     pub log: Vec<String>,
 }
 
+impl Default for WizardState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl WizardState {
     /// 按当前界面语言取默认值（原版构造函数：中文系统 → ModelScope，其余 → HuggingFace）
     pub fn new() -> Self {

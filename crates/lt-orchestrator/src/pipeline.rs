@@ -315,7 +315,7 @@ impl TlRig {
             for item in translator.translate_iter(&text, &source_lang, &target, timeout) {
                 match item {
                     Ok(partial) => {
-                        let _ = sink.push(UiEvent::UpdateStreaming {
+                        sink.push(UiEvent::UpdateStreaming {
                             id,
                             partial: partial.clone(),
                         });
@@ -326,7 +326,7 @@ impl TlRig {
                             "Repetition loop detected, model may not support structured output well"
                         );
                         transcript.finalize_no_translation(id);
-                        let _ = sink.push(UiEvent::UpdateTranslation {
+                        sink.push(UiEvent::UpdateTranslation {
                             id,
                             text: msg.t("error_repetition"),
                             tl_ms: 0.0,
@@ -340,7 +340,7 @@ impl TlRig {
                             tracing::error!("Translate error: {e}");
                         }
                         transcript.finalize_no_translation(id);
-                        let _ = sink.push(UiEvent::UpdateTranslation {
+                        sink.push(UiEvent::UpdateTranslation {
                             id,
                             text: e.ui_text(),
                             tl_ms: 0.0,
@@ -357,12 +357,12 @@ impl TlRig {
             stats.prompt_tokens.fetch_add(pt, Ordering::Relaxed);
             stats.completion_tokens.fetch_add(ct, Ordering::Relaxed);
             tracing::info!("Translate ({tl_ms:.0}ms): {translated}");
-            let _ = sink.push(UiEvent::UpdateTranslation {
+            sink.push(UiEvent::UpdateTranslation {
                 id,
                 text: translated.clone(),
                 tl_ms,
             });
-            let _ = sink.push(stats.snapshot_event());
+            sink.push(stats.snapshot_event());
             if translated.is_empty() {
                 transcript.finalize_no_translation(id);
             } else {
@@ -621,7 +621,7 @@ impl Pipeline {
         let tl = match TlRig::from_settings(bus, &sup, sink.clone(), transcript.clone(), msg.clone()) {
             Ok(t) => t.map(Arc::new),
             Err(reason) => {
-                let _ = sink.push(UiEvent::TranslatorUnavailable {
+                sink.push(UiEvent::TranslatorUnavailable {
                     reason: reason.clone(),
                 });
                 tracing::error!("翻译装置不可用: {reason}");
@@ -669,7 +669,7 @@ impl Pipeline {
                                     CaptureEvent::Recovered { role: AudioRole::Mic }
                                 }
                             };
-                            let _ = sink.push(UiEvent::Capture(ev));
+                            sink.push(UiEvent::Capture(ev));
                         }
                     })
                 },
@@ -1052,8 +1052,7 @@ fn route_translator_switch(
                     tracing::warn!("翻译器切换目标为空（models 空/越界），保持当前装置");
                 }
                 Err(reason) => {
-                    let _ =
-                        sink.push(UiEvent::TranslatorUnavailable { reason });
+                    sink.push(UiEvent::TranslatorUnavailable { reason });
                 }
             }
             None
@@ -1098,7 +1097,7 @@ fn route_translator_switch(
                                 t0.elapsed().as_millis() as u64,
                             ),
                         };
-                        let _ = sink.push(UiEvent::TestTranslatorResult {
+                        sink.push(UiEvent::TestTranslatorResult {
                             name,
                             ok,
                             error: err,
@@ -1107,7 +1106,7 @@ fn route_translator_switch(
                     });
                 }
                 Ok(None) => {
-                    let _ = sink.push(UiEvent::TestTranslatorResult {
+                    sink.push(UiEvent::TestTranslatorResult {
                         name,
                         ok: false,
                         error: Some(msg.t("test_translator_no_config")),
@@ -1115,7 +1114,7 @@ fn route_translator_switch(
                     });
                 }
                 Err(reason) => {
-                    let _ = sink.push(UiEvent::TestTranslatorResult {
+                    sink.push(UiEvent::TestTranslatorResult {
                         name,
                         ok: false,
                         error: Some(reason),
@@ -1152,7 +1151,7 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
     let models_dir = match lt_models::paths::models_dir(settings.models_dir.as_deref()) {
         Ok(d) => Some(d),
         Err(e) => {
-            let _ = sink.push(UiEvent::AsrUnavailable);
+            sink.push(UiEvent::AsrUnavailable);
             tracing::error!("模型目录不可用，ASR 进入待命（可经切换引擎唤醒重试）: {e}");
             None
         }
@@ -1193,7 +1192,7 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
             eff.asr_lang.whisper_pad,
         );
         if worker.is_none() {
-            let _ = sink.push(UiEvent::AsrUnavailable);
+            sink.push(UiEvent::AsrUnavailable);
             tracing::warn!("ASR 模型未缓存（{entry:?}），进入待命态（AH-1）");
         }
     }
@@ -1217,7 +1216,7 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
             // R3/D-61：每次唤醒尝试重解析 models_dir（目录恢复后即可唤醒）
             let Ok(models_dir) = lt_models::paths::models_dir(settings.models_dir.as_deref())
             else {
-                let _ = sink.push(UiEvent::AsrUnavailable);
+                sink.push(UiEvent::AsrUnavailable);
                 tracing::warn!("待命唤醒尝试：模型目录仍不可用，继续待命");
                 continue;
             };
@@ -1236,7 +1235,7 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
                     worker = Some((config, display));
                 }
                 None => {
-                    let _ = sink.push(UiEvent::AsrUnavailable);
+                    sink.push(UiEvent::AsrUnavailable);
                     tracing::warn!("待命中切换目标仍未缓存: {engine}/{model_key}，继续待命");
                 }
             }
@@ -1255,13 +1254,13 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
     // 沿发一次事件，识别恢复（transcribe Ok / AsrDevice 发出）时复位
     let mut asr_unavailable_notified = false;
     // 模型加载对话框（原版 _ModelLoadDialog：装载期模态；AsrDevice/AsrUnavailable 关闭）
-    let _ = sink.push(UiEvent::ModelLoadStart(display.clone()));
+    sink.push(UiEvent::ModelLoadStart(display.clone()));
     if let Err(e) = manager.ensure_started(&config) {
         asr_unavailable_notified = true;
-        let _ = sink.push(UiEvent::AsrUnavailable);
+        sink.push(UiEvent::AsrUnavailable);
         tracing::error!("ASR worker 启动失败: {e}");
     } else {
-        let _ = sink.push(UiEvent::AsrDevice(format!("{display} [cpu]")));
+        sink.push(UiEvent::AsrDevice(format!("{display} [cpu]")));
     }
 
     while !stop.load(Ordering::Relaxed) {
@@ -1284,7 +1283,7 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
                     let Ok(models_dir) =
                         lt_models::paths::models_dir(settings.models_dir.as_deref())
                     else {
-                        let _ = sink.push(UiEvent::AsrUnavailable);
+                        sink.push(UiEvent::AsrUnavailable);
                         tracing::warn!("引擎切换尝试：模型目录不可用，跳过本轮");
                         continue;
                     };
@@ -1301,18 +1300,18 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
                         eff.asr_lang.whisper_pad,
                     ) {
                         Some((config, display)) => {
-                            let _ = sink.push(UiEvent::ModelLoadStart(display.clone()));
+                            sink.push(UiEvent::ModelLoadStart(display.clone()));
                             if let Err(e) = manager.ensure_started(&config) {
                                 // 回滚后旧 worker 仍在工作：恢复旧标签而非
                                 // 发 AsrUnavailable（避免状态与行为矛盾，P0-4）
-                                let _ = sink.push(UiEvent::AsrDevice(
+                                sink.push(UiEvent::AsrDevice(
                                     format!("{} [cpu]", current_display),
                                 ));
                                 tracing::error!("引擎切换失败（已回滚）: {e}");
                             } else {
                                 current_display = display.clone();
                                 asr_unavailable_notified = false;
-                                let _ = sink.push(UiEvent::AsrDevice(
+                                sink.push(UiEvent::AsrDevice(
                                     format!("{display} [cpu]"),
                                 ));
                                 // AH-3：切换后增量会话状态复位——旧引擎的
@@ -1336,7 +1335,7 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
                             // 未缓存/未知档：旧引擎继续运行——不发
                             // AsrUnavailable（P0-4），恢复标签并落日志；
                             // 面板侧缓存卡片「未缓存 + 下载按钮」给出下一步
-                            let _ = sink.push(UiEvent::AsrDevice(format!(
+                            sink.push(UiEvent::AsrDevice(format!(
                                 "{} [cpu]",
                                 current_display
                             )));
@@ -1441,7 +1440,7 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
                         tracing::warn!("ASR 段识别失败: {e}");
                         if e.unavailable() && !asr_unavailable_notified {
                             asr_unavailable_notified = true;
-                            let _ = sink.push(UiEvent::AsrUnavailable);
+                            sink.push(UiEvent::AsrUnavailable);
                         }
                     }
                 }
@@ -1654,7 +1653,7 @@ fn commit_text(
     }
     let timestamp = chrono::Local::now().format("%H:%M:%S").to_string();
     let id = uuid::Uuid::new_v4().as_u128() as u64;
-    let _ = sink.push(UiEvent::AddMessage {
+    sink.push(UiEvent::AddMessage {
         id,
         timestamp: timestamp.clone(),
         original: original_text.to_string(),
@@ -1666,7 +1665,7 @@ fn commit_text(
     let Some(rig) = tl else {
         // 翻译装置未就绪（配置无效已被 TranslatorUnavailable 提醒）：译文行立即
         // 给出明确占位，不停留在永久的「翻译中...」——P0-2
-        let _ = sink.push(UiEvent::UpdateTranslation {
+        sink.push(UiEvent::UpdateTranslation {
             id,
             text: msg.t("translator_unavailable_placeholder"),
             tl_ms: 0.0,
@@ -1678,12 +1677,12 @@ fn commit_text(
     if lang == target_language {
         tracing::info!("Same language ({lang}), no translation");
         rig.transcript.finalize_no_translation(id);
-        let _ = sink.push(UiEvent::UpdateTranslation {
+        sink.push(UiEvent::UpdateTranslation {
             id,
             text: String::new(),
             tl_ms: 0.0,
         });
-        let _ = sink.push(rig.stats.snapshot_event());
+        sink.push(rig.stats.snapshot_event());
     } else {
         rig.submit_translation(sink, id, original_text.to_string(), lang.to_string());
     }
@@ -1858,8 +1857,10 @@ mod tests {
 
     #[test]
     fn tl_rig_none_when_active_model_out_of_bounds() {
-        let mut settings = lt_proto::Settings::default();
-        settings.active_model = 99;
+        let settings = lt_proto::Settings {
+            active_model: 99,
+            ..Default::default()
+        };
         let sup = test_sup();
         assert!(TlRig::from_settings(&test_bus(settings), &sup, EventArtery::new(), test_transcript(), test_msg()).unwrap().is_none());
         sup.join_all();

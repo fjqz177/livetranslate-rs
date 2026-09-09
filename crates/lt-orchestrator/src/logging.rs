@@ -99,7 +99,7 @@ pub fn spawn_bridge(
             match rx.try_recv() {
                 Ok(ev) => artery.push(ev),
                 Err(tokio::sync::broadcast::error::TryRecvError::Lagged(n)) => {
-                    LAG_PENDING.fetch_add(n as u64, Ordering::Relaxed);
+                    LAG_PENDING.fetch_add(n, Ordering::Relaxed);
                     if lag_report_due() {
                         let total = LAG_PENDING.swap(0, Ordering::Relaxed);
                         tracing::debug!(target: BRIDGE_TARGET, "日志桥接丢弃 {total} 行（订阅端积压）");

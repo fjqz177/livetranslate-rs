@@ -15,6 +15,7 @@ mod artery;
 mod logging;
 mod panic_hook;
 mod shell;
+mod shell_helpers;
 mod singleton;
 
 use lt_proto::{Cmd, UiMsg};

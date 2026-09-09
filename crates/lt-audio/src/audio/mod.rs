@@ -62,7 +62,7 @@ fn numpy_sum_f32(a: &[f32]) -> f32 {
 /// interleaved → 各通道平均（对应 `reshape(-1, ch).mean(axis=1)`；
 /// 通道数 ≤8 时 numpy 为顺序累加，故此处顺序求和即逐位一致）
 pub fn to_mono(interleaved: &[f32], channels: usize) -> Vec<f32> {
-    assert!(channels >= 1 && interleaved.len() % channels == 0);
+    assert!(channels >= 1 && interleaved.len().is_multiple_of(channels));
     if channels == 1 {
         return interleaved.to_vec();
     }
@@ -135,7 +135,7 @@ pub fn mix_with_mic(loopback: &[f32], mic_buf: &mut Vec<f32>) -> (Vec<f32>, Opti
 /// pad 到 quantum 的整数倍（对应 §5.5 pad_bucket；quantum = round(16000*pad)）。
 /// 原样返回输入切片时零拷贝（None 表示无需 pad）。
 pub fn pad_bucket_len(len: usize, quantum: usize) -> usize {
-    if len % quantum == 0 {
+    if len.is_multiple_of(quantum) {
         len
     } else {
         (len / quantum + 1) * quantum
@@ -177,7 +177,7 @@ impl<T> BoundedDropQueue<T> {
 
     fn note_drop(&self) {
         let n = self.dropped.fetch_add(1, Ordering::Relaxed) + 1;
-        if n == 1 || n % 200 == 0 {
+        if n == 1 || n.is_multiple_of(200) {
             tracing::warn!(
                 "有界队列[{}]已满，丢弃最旧腾位（累计丢弃 {n}，容量 {}）",
                 self.name,
@@ -287,7 +287,7 @@ mod tests {
     }
     fn read_f32(name: &str) -> Vec<f32> {
         let b = fixture(name);
-        b.chunks_exact(4)
+        b.as_chunks::<4>().0.iter()
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect()
     }

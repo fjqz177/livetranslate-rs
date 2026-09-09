@@ -146,7 +146,7 @@ impl AsrWorkerClient {
         if matches!(
             self.status,
             Status::Starting | Status::Loading | Status::Ready | Status::Busy
-        ) && self.child.try_wait().map_or(false, |c| c.is_some())
+        ) && self.child.try_wait().is_ok_and(|c| c.is_some())
         {
             self.status = Status::Exited;
         }

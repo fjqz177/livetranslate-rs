@@ -299,6 +299,9 @@ pub enum ThreadRole {
     /// 文件对话框一次性线程（W5/R19：rfd 同步对话框移离事件循环线程；
     /// Policy::Never）
     FileDialog,
+    /// 下载会话线程（W7：`DownloadManager` 经 Supervisor 出生；Policy::Never
+    /// ——限时 join 语义由会话自管理的子线程承接，父线程死亡上报即可）
+    Download,
 }
 
 /// 被监督线程死亡事件载荷（R1）

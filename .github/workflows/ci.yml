@@ -42,8 +42,11 @@ jobs:
       - name: Path hygiene gate
         run: powershell -ExecutionPolicy Bypass -File scripts/check_personal_paths.ps1
 
-	      # 全仓存在既有基线告警（W1~W4 积累于 pipeline/lt-audio/lt-asr 等；
-	      # W5 触及文件净增已清零）：清零前 advisory（W7 收口转 gate）
-	      - name: Clippy (advisory)
-	        run: cargo clippy --workspace --all-targets
-	        continue-on-error: true
+      - name: Dependency direction guard (W7)
+        run: powershell -ExecutionPolicy Bypass -File scripts/check_deps.ps1
+
+      - name: Source ban guards (W7)
+        run: powershell -ExecutionPolicy Bypass -File scripts/check_guards.ps1
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings

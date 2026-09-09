@@ -66,7 +66,7 @@ fn flaky_spawn() -> Spawner {
 }
 
 /// 指定引擎名的配置（engine_family / 回滚测试用）
-fn cfg_engine(engine: &str, name: &str) -> WorkerConfig {
+fn cfg_engine(engine: &str, _name: &str) -> WorkerConfig {
     WorkerConfig {
         engine: engine.into(),
         language: "auto".into(),
@@ -80,7 +80,7 @@ fn cfg(name: &str) -> WorkerConfig {
 }
 
 /// 带行为注入的配置（json! 语义迁移：注入参数类型化为 EchoOptions）
-fn cfg_echo(name: &str, mut echo: lt_asr::worker::EchoOptions) -> WorkerConfig {
+fn cfg_echo(name: &str, echo: lt_asr::worker::EchoOptions) -> WorkerConfig {
     let mut c = cfg_engine("echo", name);
     if let lt_asr::worker::WorkerOptions::Echo(e) = &mut c.options {
         *e = echo;

@@ -32,7 +32,7 @@ pub fn picker_entries(follow: bool, system: &[SystemFont], filter: &str) -> Vec<
         .filter(|s| f.is_empty() || s.display.to_lowercase().contains(&f))
         .map(|s| s.display.clone())
         .collect();
-    names.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+    names.sort_by_key(|a| a.to_lowercase());
     out.extend(names.into_iter().map(PickerEntry::System));
     out
 }

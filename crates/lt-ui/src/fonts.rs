@@ -61,19 +61,19 @@ fn inflate_embedded(compressed: &'static [u8], name: &str) -> &'static [u8] {
 /// 解压后的内嵌思源字节。
 pub fn embedded_sans() -> &'static [u8] {
     static S: std::sync::OnceLock<&'static [u8]> = std::sync::OnceLock::new();
-    *S.get_or_init(|| inflate_embedded(SANS_BR, "Noto Sans CJK SC"))
+    S.get_or_init(|| inflate_embedded(SANS_BR, "Noto Sans CJK SC"))
 }
 
 /// 解压后的内嵌等宽字节。
 pub fn embedded_mono() -> &'static [u8] {
     static M: std::sync::OnceLock<&'static [u8]> = std::sync::OnceLock::new();
-    *M.get_or_init(|| inflate_embedded(MONO_BR, "Noto Sans Mono"))
+    M.get_or_init(|| inflate_embedded(MONO_BR, "Noto Sans Mono"))
 }
 
 /// 解压后的内嵌符号字节。
 pub fn embedded_symbols() -> &'static [u8] {
     static S: std::sync::OnceLock<&'static [u8]> = std::sync::OnceLock::new();
-    *S.get_or_init(|| inflate_embedded(SYMBOLS_BR, "Noto Sans Symbols 2"))
+    S.get_or_init(|| inflate_embedded(SYMBOLS_BR, "Noto Sans Symbols 2"))
 }
 
 /// 系统字体条目：注册表值清洗后的展示族名 + 字体文件路径（字节懒加载）。
@@ -313,7 +313,7 @@ fn resolve_font_path(data: &str, system_root: &Path) -> Option<PathBuf> {
     } else {
         d
     };
-    let normalized = normalized.trim_start_matches(|c| c == '\\' || c == '/');
+    let normalized = normalized.trim_start_matches(['\\', '/']);
     if normalized.is_empty() {
         return None;
     }
@@ -339,6 +339,7 @@ fn wish_family<'a>(wanted: &mut Vec<&'a str>, seen: &mut HashSet<String>, fam: &
 /// - Proportional：[界面字体] → [内嵌思源] → [内嵌符号] → [egui 默认族尾]
 /// - Monospace：[Consolas(系统，锦上添花)] → [内嵌等宽 MonoCJK] → [界面字体] → [内嵌思源] → [内嵌符号] → [默认族尾]
 /// - Name(族名)（行级/字幕字体）：[该字体] → [内嵌思源] → [内嵌符号]
+///
 /// 找不到的族名不注册（Name 不出现），渲染经 resolved 回落 Proportional（全局链，内嵌兜底）。
 /// **不读取任何系统符号字体**：✓ ✗ ● ▲ ▼ 等由内嵌思源 + Noto Sans Symbols 2 覆盖
 /// （覆盖率测试常驻，缺失任一字符即失败——仓库自洽成为硬保证）。
@@ -363,7 +364,7 @@ pub fn build_definitions(settings: &Settings, fonts: &mut FontsState) -> FontDef
     let consolas_key = "consolas";
     let consolas_ok = load_window_font(&mut fonts.consolas, "consola.ttf")
         .map(|d| {
-            defs.font_data.insert(consolas_key.into(), d.into());
+            defs.font_data.insert(consolas_key.into(), d);
         })
         .is_some();
 

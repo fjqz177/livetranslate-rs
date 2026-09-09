@@ -142,10 +142,8 @@ impl TranscriptWriter {
 
     pub fn close(&self) {
         let mut g = self.inner.lock();
-        for fp in g.files.values_mut() {
-            if let Some(f) = fp {
-                let _ = f.flush();
-            }
+        for f in g.files.values_mut().flatten() {
+            let _ = f.flush();
         }
         g.files.clear();
         g.pending.clear();
@@ -223,7 +221,7 @@ mod tests {
     fn lazy_session_opens_on_first_write() {
         let dir = tmpdir("lazy");
         let tw = TranscriptWriter::new(&dir);
-        assert!(!tw.is_enabled() == false);
+        assert!(tw.is_enabled());
         // 构造期不开文件（原版 _opened=False）
         assert!(tw.session_paths().is_empty());
         tw.write_original(1, "12:00:00", "你好");

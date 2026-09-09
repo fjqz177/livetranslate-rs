@@ -267,7 +267,8 @@ impl<C: ConfidenceSource> VadProcessor<C> {
         max_speech_duration: f64,
         chunk_duration: f64,
     ) -> Self {
-        let p = Self {
+        
+        Self {
             conf,
             sample_rate,
             chunk_duration,
@@ -293,19 +294,18 @@ impl<C: ConfidenceSource> VadProcessor<C> {
             adaptive_max: 2.0,
             generation: 0,
             last_confidence: 0.0,
-        };
-        p
+        }
     }
 
     /// Python round()（银行家舍入）——seconds_to_chunks 语义对齐
     fn py_round(x: f64) -> f64 {
         let r = x.floor();
         let d = x - r;
+        // 半位（d == 0.5）归偶：中间两分支同为 r，合并后再判奇偶
+        // （& 1 == 0 即 % 2 == 0；std 的 is_multiple_of 对 i64 尚未稳定）
         if d > 0.5 {
             r + 1.0
-        } else if d < 0.5 {
-            r
-        } else if (r as i64) % 2 == 0 {
+        } else if d < 0.5 || ((r as i64) & 1) == 0 {
             r
         } else {
             r + 1.0
@@ -492,9 +492,9 @@ impl<C: ConfidenceSource> VadProcessor<C> {
         let search_start = 1.max(n * 3 / 10);
         let mut min_val = f64::INFINITY;
         let mut min_idx: i64 = -1;
-        for i in search_start..n {
-            if smoothed[i] <= min_val {
-                min_val = smoothed[i];
+        for (i, &v) in smoothed.iter().enumerate().skip(search_start) {
+            if v <= min_val {
+                min_val = v;
                 min_idx = i as i64;
             }
         }
@@ -849,7 +849,7 @@ mod tests {
         // 段边界应落在谷底附近（第 54-58 chunk），且余量仍在积累
         let first_samples: usize = segs[0].len();
         assert!(
-            first_samples >= 54 * 512 && first_samples <= 58 * 512,
+            (54 * 512..=58 * 512).contains(&first_samples),
             "split at {} samples, want near chunk 56",
             first_samples / 512
         );

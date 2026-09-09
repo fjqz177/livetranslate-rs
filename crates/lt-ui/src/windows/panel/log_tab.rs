@@ -157,11 +157,10 @@ fn latest_log_file_in(dir: &std::path::Path) -> Option<std::path::PathBuf> {
     for e in std::fs::read_dir(dir).ok()?.flatten() {
         let p = e.path();
         let name = p.file_name()?.to_string_lossy().into_owned();
-        if name.starts_with("livetrans_") && name.ends_with(".log") {
-            if best.as_ref().map_or(true, |(bn, _)| *bn < name) {
+        if name.starts_with("livetrans_") && name.ends_with(".log")
+            && best.as_ref().is_none_or(|(bn, _)| *bn < name) {
                 best = Some((name, p));
             }
-        }
     }
     best.map(|(_, p)| p)
 }

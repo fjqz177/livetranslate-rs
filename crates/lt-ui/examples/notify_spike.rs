@@ -1,9 +1,9 @@
 //! Windows 原生通知实机验证（D-33/H-2）。
 //!
 //! 用法：`cargo run -p lt-ui --example notify_spike`
-//! 触发完整链路：RoInitialize(STA) + SetCurrentProcessExplicitAppUserModelID
-//! + 开始菜单快捷方式注册（首次）+ Toast 发送。退出码 0 = 链路无错
-//! （是否在系统通知区可见需人工确认）；1 = 链路任一步失败。
+//! 触发完整链路：RoInitialize(STA) + SetCurrentProcessExplicitAppUserModelID、
+//! 开始菜单快捷方式注册（首次）、Toast 发送。退出码 0 = 链路全链无错
+//! （通知是否目视可达需人工确认）；1 = 链路任一步失败。
 //! 副作用与产品行为一致：首次运行会在用户开始菜单创建 LiveTranslate 快捷方式。
 
 fn main() {
