@@ -80,6 +80,9 @@ pub struct AsrManager {
     baseline_mb: Option<u64>,
     unavailable: bool,
     spawn: Spawner,
+    /// 评审 §3.3 P2 顺手项：sysinfo::System 复用实例——旧 sample_rss_mb
+    /// 每 500ms 新建（进程表全量初始化），回收采样热路径上重复建开销
+    rss_sys: Option<sysinfo::System>,
 }
 
 impl AsrManager {
@@ -98,6 +101,7 @@ impl AsrManager {
             baseline_mb: None,
             unavailable: false,
             spawn,
+            rss_sys: None,
         }
     }
 
@@ -404,7 +408,13 @@ impl AsrManager {
             return;
         };
         let pid = client.pid();
-        let Some(rss_mb) = sample_rss_mb(pid) else {
+        // 惰性建 + 复用（进程表只刷目标 pid，`refresh_processes(Some(&[pid]))`
+        // 的单进程刷新不会因复用而缓存陈旧数据）
+        if self.rss_sys.is_none() {
+            self.rss_sys = Some(sysinfo::System::new());
+        }
+        let sys = self.rss_sys.as_mut().expect("刚保底");
+        let Some(rss_mb) = sample_rss_mb(sys, pid) else {
             return;
         };
         match self.baseline_mb {
@@ -444,9 +454,8 @@ fn should_recycle(baseline_mb: u64, current_mb: u64, delta_mb: u64) -> bool {
     current_mb >= baseline_mb.saturating_add(delta_mb)
 }
 
-/// 子进程 RSS 采样（MB）
-fn sample_rss_mb(pid: u32) -> Option<u64> {
-    let mut sys = sysinfo::System::new();
+/// 子进程 RSS 采样（MB）——复用调用方持有的 System（刷新仅目标 pid）
+fn sample_rss_mb(sys: &mut sysinfo::System, pid: u32) -> Option<u64> {
     sys.refresh_processes(
         sysinfo::ProcessesToUpdate::Some(&[sysinfo::Pid::from_u32(pid)]),
         true,

@@ -227,6 +227,40 @@ fn stale_incomplete_416_restarts_from_zero() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// R24：退避期间取消——旧实现 `thread::sleep(1s)` 整段吞掉取消（取消延迟
+/// 最坏 16s）；tick 化后置位 cancel 应在 ≤1tick 返回 [cancel]（验收 ≤1s）
+#[test]
+fn cancel_during_backoff_returns_promptly() {
+    let (port, _t) = serve(BODY, 999, Arc::new(Log::default())); // 恒 500 → 必退避
+    let dir = tmpdir("cancel_backoff");
+
+    let cancel = Arc::new(AtomicBool::new(false));
+    let cancel_ref = cancel.clone();
+    let handle = std::thread::spawn(move || {
+        // 让下载器先发出首请求（500 → 进入 1s 退避）再置取消
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        cancel_ref.store(true, Ordering::Relaxed);
+    });
+    let t0 = std::time::Instant::now();
+    let err = downloader_at(&dir, port)
+        .download_files(
+            Hub::Ms,
+            "iic/Test",
+            &[("model.bin", 1, "")],
+            &cancel,
+            None,
+        )
+        .expect_err("取消应返回错误");
+    let el = t0.elapsed();
+    assert!(err.to_string().contains("[cancel]"), "{err}");
+    assert!(
+        el < std::time::Duration::from_millis(900),
+        "退避中取消应 ≤900ms（旧实现 1s sleep 实为 ≥1s），实际 {el:?}"
+    );
+    let _ = handle.join();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn server_error_retries_with_backoff() {
     let log = Arc::new(Log::default());

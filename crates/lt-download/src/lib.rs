@@ -19,7 +19,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// 下载目标 hub（W6 上移 lt-proto：布局拼装与下载器两 crate 共用）
 pub use lt_proto::Hub;
@@ -106,6 +106,9 @@ const BACKOFFS: [Duration; 3] = [
 
 /// 进度事件节流：累计增量超过此值才发一条
 const PROGRESS_STEP: u64 = 256 * 1024;
+
+/// R24 退避轮询粒度：cancel 检查间隔（sleep 型退避拦截取消的最坏延迟）
+const BACKOFF_TICK: Duration = Duration::from_millis(200);
 
 // ── 失败分类（DL-2 类型化；W2 迁入 lt-proto 成为契约——Display 前缀
 //    `[net]` 等保留仅为人读日志形态，UI 分流不再依赖字符串还原）──
@@ -323,7 +326,15 @@ impl Downloader {
                 let msg = format!("[{repo}] {file} 下载失败，{backoff:?} 后第 {attempt} 次重试");
                 tracing::warn!("{msg}");
                 self.emit(tx, DownloadEvent::Log(msg));
-                std::thread::sleep(backoff);
+                // R24：退避 tick 化——连续 sleep 期间取消不响应（最长 16s）；
+                // 改 200ms 轮询 cancel 检查，取消延迟 ≤ 1tick（方案验收 ≤1s）
+                let deadline = Instant::now() + backoff;
+                while Instant::now() < deadline {
+                    if cancel.load(Ordering::Relaxed) {
+                        return Err(DlError::new(FailKind::Cancelled, "已取消"));
+                    }
+                    std::thread::sleep(BACKOFF_TICK);
+                }
             }
             if cancel.load(Ordering::Relaxed) {
                 return Err(DlError::new(FailKind::Cancelled, "已取消"));
