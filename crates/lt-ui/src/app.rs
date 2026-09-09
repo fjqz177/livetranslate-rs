@@ -1088,6 +1088,49 @@ impl MultiWindowApp {
                         }
                     }
                 }
+                // ── 音频采集可用性（架构 2.0 W1/R4/D-62）：日志窗可见告警。
+                // 事件本身边沿触发（Unavailable 转坏一次/Recovered 转好一次），
+                // 语义对齐 AsrUnavailable；面板设备卡片深化呈现随 W5 ──
+                lt_proto::UiEvent::Capture(ev) => {
+                    use lt_proto::{AudioRole, CaptureEvent};
+                    let (key, role, detail, level) = match ev {
+                        CaptureEvent::Unavailable { role, error } => {
+                            tracing::warn!("音频采集不可用: {role:?} {error}");
+                            ("capture_unavailable", role, error, 30u8)
+                        }
+                        CaptureEvent::Recovered { role } => {
+                            tracing::info!("音频采集已恢复: {role:?}");
+                            ("capture_recovered", role, String::new(), 20u8)
+                        }
+                    };
+                    let role_text = match role {
+                        AudioRole::Loopback => lt_i18n::t("capture_role_loopback"),
+                        AudioRole::Mic => lt_i18n::t("capture_role_mic"),
+                    };
+                    let text = if detail.is_empty() {
+                        format!("{}（{role_text}）", lt_i18n::t(key))
+                    } else {
+                        format!("{}（{role_text}）：{detail}", lt_i18n::t(key))
+                    };
+                    self.push_log_line(level, "capture", &text);
+                }
+                // ── 被监督线程死亡（架构 2.0 W1/R1/D-62）：线程 panic 不再黑洞
+                // ——panic 详情由 hook 落 crash 文件与 tracing，此处日志窗可见 ──
+                lt_proto::UiEvent::ThreadDied(d) => {
+                    tracing::error!(
+                        "线程死亡: {:?} restarted={} detail={}",
+                        d.role,
+                        d.restarted,
+                        d.detail
+                    );
+                    let state = if d.restarted {
+                        lt_i18n::t("thread_restarted")
+                    } else {
+                        lt_i18n::t("thread_not_restarted")
+                    };
+                    let text = format!("{}（{state}）：{}", lt_i18n::t("thread_died"), d.detail);
+                    self.push_log_line(40, "supervisor", &text);
+                }
                 // ── 模型加载对话框打开（标题固定 "LiveTranslate"）──
                 lt_proto::UiEvent::ModelLoadStart(label) => {
                     self.app_state.load_dialog = Some(label);
@@ -1104,6 +1147,29 @@ impl MultiWindowApp {
     }
 
     /// 重绘指定窗口（节拍/动作路径的便捷入口）
+    /// 日志窗 + 面板日志 tab 的统一入缓冲/重绘入口（与 LogLine 臂同款刷新
+    /// 语义：任一视图在展示时都要同帧重绘，否则无输入事件不刷新——观感"日志卡住"）
+    fn push_log_line(&mut self, level: u8, target: &str, msg: &str) {
+        if self.app_state.logwin.push(crate::state::LogLineEntry {
+            time: chrono::Local::now().format("%H:%M:%S").to_string(),
+            level,
+            target: target.to_string(),
+            msg: msg.to_string(),
+        }) {
+            self.redraw(WinId::Log);
+            if self.app_state.panel.page == PanelPage::Log
+                && self
+                    .app_state
+                    .visible
+                    .get(&WinId::Panel)
+                    .copied()
+                    .unwrap_or(false)
+            {
+                self.redraw(WinId::Panel);
+            }
+        }
+    }
+
     fn redraw(&mut self, id: WinId) {
         if let Some(hw) = self.find(id) {
             hw.window.request_redraw();
@@ -1828,6 +1894,9 @@ impl ApplicationHandler<UiMsg> for MultiWindowApp {
                 // 原版语义：关窗=隐藏（退出只走托盘）
                 if id == WinId::Subtitle {
                     self.app_state.settings.subtitle_mode.enabled = false;
+                    // R7（架构 2.0 W1）：与字幕窗顶条隐藏/穿透路径同款登记防抖
+                    // 脏标记，enabled=false 才会落盘（否则重启后字幕窗复活）
+                    crate::windows::panel::mark_settings_dirty(&mut self.app_state);
                 }
                 self.set_visible(id, false);
                 self.sync_tray_checks();

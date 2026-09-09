@@ -31,7 +31,8 @@ use lt_pipeline::{
     AudioBackend, BoundedDropQueue, CaptureLoop, InterimControl, SegmentSource, VadProcessor,
     VadSettings,
 };
-use lt_proto::{UiEvent, UiMsg};
+use crate::supervisor::{proxy_sink, Policy, Supervisor};
+use lt_proto::{AudioRole, CaptureEvent, ThreadRole, UiEvent, UiMsg};
 use lt_translate::Translator;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -44,43 +45,57 @@ const SEGMENT_QUEUE_CAP: usize = 16;
 /// 翻译线程池 worker 数（对齐原版 ThreadPoolExecutor(max_workers=8)）
 const TL_POOL_WORKERS: usize = 8;
 
-/// 定宽任务池（等价原版 _tl_executor：任务排队、固定 worker 消费）
+/// 翻译池待译段上限（R15①/D-64：慢 LLM + 快语速时保留最新、最旧放弃——
+/// 实时翻译语义下陈旧段价值单调衰减；原实现无界，极端时无限积压且不可见。
+/// 水位事件的 UI 呈现随 W2 事件动脉补齐）
+const TL_QUEUE_CAP: usize = 64;
+
+/// 定宽任务池（等价原版 _tl_executor：任务排队、固定 worker 消费）。
+/// 架构 2.0 W1 改造：①队列有界满丢最旧（复用 BoundedDropQueue，ADR-2）；
+/// ②worker 经 Supervisor 出生（INV3——修复现状 handle 丢弃、panic 永死）；
+/// ③shutdown 置停止标志后由 Supervisor::join_all 真正 join（修复从不 join）
 struct JobPool {
-    tx: crossbeam_channel::Sender<Box<dyn FnOnce() + Send>>,
+    queue: Arc<BoundedDropQueue<Box<dyn FnOnce() + Send>>>,
     stopped: Arc<AtomicBool>,
 }
 
 impl JobPool {
-    fn new(workers: usize) -> Self {
-        let (tx, rx) = crossbeam_channel::unbounded::<Box<dyn FnOnce() + Send>>();
-        let rx = Arc::new(rx);
+    fn new(workers: usize, sup: &Supervisor) -> Self {
+        let queue = Arc::new(BoundedDropQueue::<Box<dyn FnOnce() + Send>>::new(
+            TL_QUEUE_CAP,
+            "tl-job",
+        ));
         let stopped = Arc::new(AtomicBool::new(false));
         for i in 0..workers {
-            let rx = rx.clone();
+            let queue = queue.clone();
             let stopped = stopped.clone();
-            let _ = std::thread::Builder::new()
-                .name(format!("lt-tl-{i}"))
-                .spawn(move || {
-                    while let Ok(job) = rx.recv() {
-                        // 停止后排队的任务直接丢弃（等价 executor.shutdown）
-                        if stopped.load(Ordering::Relaxed) {
-                            continue;
+            sup.spawn(ThreadRole::TlWorker, format!("lt-tl-{i}"), Policy::Always, move || {
+                let queue = queue.clone();
+                let stopped = stopped.clone();
+                Box::new(move || {
+                    // 停止标志置位后 worker 在 ≤500ms 内退出，由 join_all 回收；
+                    // panic 由监督器重生（干净循环状态，INV5）
+                    while !stopped.load(Ordering::Relaxed) {
+                        match queue.pop_timeout(Duration::from_millis(500)) {
+                            Some(job) => job(),
+                            None => continue,
                         }
-                        job();
                     }
-                });
+                })
+            });
         }
-        Self { tx, stopped }
+        Self { queue, stopped }
     }
 
+    /// 提交翻译任务：队列满时丢最旧（R15①/D-64）。停止后仍可能有在途提交
+    /// ——worker 已退出不再消费，任务滞留队列随 Pipeline 释放（与原
+    /// 「停止后排队的任务直接丢弃」语义一致）
     fn submit(&self, job: impl FnOnce() + Send + 'static) {
-        if self.stopped.load(Ordering::Relaxed) {
-            return;
-        }
-        let _ = self.tx.send(Box::new(job));
+        self.queue.push(Box::new(job));
     }
 
-    /// 停止接收并丢弃排队任务；在跑的任务自然结束（translate 自带超时兜底）
+    /// 停止接收并丢弃排队任务；worker 退出后由 Supervisor::join_all 回收
+    /// （translate 自带超时兜底，在跑任务自然结束）
     fn shutdown(&self) {
         self.stopped.store(true, Ordering::Relaxed);
     }
@@ -140,11 +155,11 @@ struct TlRig {
 impl TlRig {
     /// 按设置构建；models 为空/active_model 越界 → Ok(None)（不翻译，仅 ASR）；
     /// 配置无效（URL 格式错等）→ Err(原因)（必须让用户可见，见 TranslatorUnavailable）
-    fn from_settings(settings: &lt_proto::Settings) -> Result<Option<Self>, String> {
+    fn from_settings(settings: &lt_proto::Settings, sup: &Supervisor) -> Result<Option<Self>, String> {
         let Some(mc) = settings.models.get(settings.active_model) else {
             return Ok(None);
         };
-        Self::from_model_config(mc, settings)
+        Self::from_model_config(mc, settings, sup)
     }
 
     /// 按指定模型配置构建（运行时切换用；构建失败返回 Err——UI 收到
@@ -152,6 +167,7 @@ impl TlRig {
     fn from_model_config(
         mc: &lt_proto::ModelConfig,
         settings: &lt_proto::Settings,
+        sup: &Supervisor,
     ) -> Result<Option<Self>, String> {
         let params = lt_translate::TranslatorParams {
             api_base: mc.api_base.clone(),
@@ -188,7 +204,7 @@ impl TlRig {
         Ok(Some(Self {
             translator,
             stats,
-            pool: JobPool::new(TL_POOL_WORKERS),
+            pool: JobPool::new(TL_POOL_WORKERS, sup),
             transcript: Pipeline::transcript_handle(),
         }))
     }
@@ -273,6 +289,43 @@ impl TlRig {
     }
 }
 
+/// `Pipeline::start` 半初始化守卫（R12/D-62）：armed 期间 Drop = 回滚——
+/// 置 stop → 停翻译池 → join 已 spawn 线程 → 停音频后端。disarm 后 Drop 变
+/// no-op。注意顺序：必须先 pool.shutdown 再 join_all——翻译 worker 以
+/// stopped 为退出条件，不先置标志 join_all 会被永久等待的 worker 卡死
+/// （这正是守卫要掩护的场景，遗漏即回滚路径自身死锁）
+struct StartGuard {
+    armed: bool,
+    stop: Arc<AtomicBool>,
+    sup: Arc<Supervisor>,
+    tl: Option<Arc<TlRig>>,
+    backend: Option<WasapiBackend>,
+}
+
+impl StartGuard {
+    fn disarm(mut self) -> WasapiBackend {
+        self.armed = false;
+        self.backend.take().expect("守卫移交时后端必须已就位")
+    }
+}
+
+impl Drop for StartGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        tracing::warn!("Pipeline::start 半初始化失败，回滚已启动的线程与音频后端");
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(tl) = &self.tl {
+            tl.shutdown();
+        }
+        self.sup.join_all();
+        if let Some(b) = self.backend.as_mut() {
+            b.stop();
+        }
+    }
+}
+
 pub struct Pipeline {
     backend: WasapiBackend,
     stop: Arc<AtomicBool>,
@@ -293,7 +346,9 @@ pub struct Pipeline {
     vad_update: Arc<std::sync::Mutex<Option<lt_pipeline::VadSettings>>>,
     /// 增量识别控制块（与 capture/ASR 线程共享；set_interim 热应用）
     interim: Arc<InterimControl>,
-    threads: Vec<std::thread::JoinHandle<()>>,
+    /// 线程监督器（架构 2.0 W1/INV3）：capture/ASR/翻译池/音频状态转发全部
+    /// 经其出生，stop 时 join_all 统一回收
+    sup: Arc<Supervisor>,
 }
 
 /// ASR 线程消费的翻译器/引擎命令
@@ -342,8 +397,13 @@ impl Pipeline {
             std::sync::OnceLock::new();
         HANDLE
             .get_or_init(|| {
-                let dir = lt_models::paths::transcripts_dir()
-                    .unwrap_or_else(|_| std::path::PathBuf::from("transcripts"));
+                // R26/D-62：回退链=配置目录/transcripts，绝不落 CWD（路径卫生）
+                let dir = lt_models::paths::transcripts_dir().unwrap_or_else(|e| {
+                    tracing::error!("transcripts_dir 不可用（{e}），回退配置目录");
+                    lt_models::paths::config_dir()
+                        .map(|d| d.join("transcripts"))
+                        .unwrap_or_else(|_| std::path::PathBuf::from("transcripts"))
+                });
                 Arc::new(lt_pipeline::transcript::TranscriptWriter::new(dir))
             })
             .clone()
@@ -357,19 +417,35 @@ impl Pipeline {
         // ── 转录写盘（原版 self._transcript + auto_save_transcript）──
         Self::transcript_handle().set_enabled(settings.auto_save_transcript);
 
+        // ── 线程监督器（架构 2.0 W1/INV3：管道线程唯一出生点）──
+        let sup = Supervisor::new(proxy_sink(&proxy));
+
         let stop = Arc::new(AtomicBool::new(false));
         let paused = Arc::new(AtomicBool::new(false));
         // 语言/padding 挂起句柄：Pipeline 存一份供 UI 线程调，ASR 线程持克隆应用
         let pending = lt_asr::AsrPendingHandle::default();
 
-        // ── 音频：chunk 满丢旧队列 ──
+        // R12/D-62：半初始化守卫——任一 ? 提前返回时回滚已 spawn 线程与音频
+        // 后端（现状缺陷：音频线程泄漏独占设备直到进程退出）
+        let mut guard = StartGuard {
+            armed: true,
+            stop: stop.clone(),
+            sup: sup.clone(),
+            tl: None,
+            backend: None,
+        };
+
+        // ── 音频：chunk 满丢旧队列 + 可用性边沿上报通道（R4/D-62）──
         let chunk_queue = Arc::new(BoundedDropQueue::new(100, "chunk"));
         let mut backend = WasapiBackend::new();
+        let (audio_status_tx, audio_status_rx) = std::sync::mpsc::channel();
         backend.start(
             settings.audio_device.clone(),
             settings.mic_device.clone(),
             chunk_queue.clone(),
+            Some(audio_status_tx),
         )?;
+        guard.backend = Some(backend);
 
         // ── capture 线程：VAD 状态机 ──
         let vad_update: Arc<std::sync::Mutex<Option<lt_pipeline::VadSettings>>> =
@@ -399,7 +475,6 @@ impl Pipeline {
         let interim = Arc::new(InterimControl::default());
         // 启动即按持久化设置就位（原版 _incremental_enabled/_interim_interval 随启动初始化）
         interim.set(settings.incremental_asr, settings.interim_interval);
-        let mut threads = Vec::new();
         {
             let stop = stop.clone();
             let paused = paused.clone();
@@ -408,12 +483,24 @@ impl Pipeline {
             let vad_update_capture = vad_update.clone();
             let vad = vad.clone();
             let interim = interim.clone();
-            std::thread::Builder::new()
-                .name("lt-capture".into())
-                .spawn(move || {
+            let mode = settings.vad_mode.clone();
+            // INV3/INV5：经监督器出生；panic 重生 = 工厂重建干净循环状态
+            //（消费前清 chunk 陈旧积压——宕机期间音频已满丢旧轮转，续读=句中撕裂）
+            sup.spawn(ThreadRole::Capture, "lt-capture", Policy::Always, move || {
+                let stop = stop.clone();
+                let paused = paused.clone();
+                let segment_queue = segment_queue.clone();
+                let proxy = proxy.clone();
+                let vad_update_capture = vad_update_capture.clone();
+                let vad = vad.clone();
+                let interim = interim.clone();
+                let mode = mode.clone();
+                let chunk_queue = chunk_queue.clone();
+                Box::new(move || {
+                    chunk_queue.clear();
                     // 原版 _capture_loop：monitor 直接跨线程信号（此处经 proxy 发 UI 事件，
                     // vad 转换为 UI 侧 f32），段直接塞 _asr_queue 等价队列（满丢旧）
-                    let loop_ = CaptureLoop {
+                    let mut loop_ = CaptureLoop {
                         chunk_rx: chunk_queue,
                         segment_tx: segment_queue,
                         monitor: move |rms, vad, mic_rms| {
@@ -426,14 +513,17 @@ impl Pipeline {
                         paused,
                         vad_update: vad_update_capture,
                         interim,
+                        // R2/D-60：初值=启动模式；模式热切换时 capture 换置信度源
+                        current_mode: mode,
                     };
                     loop_.run(&vad, &stop);
-                })?;
+                })
+            });
         }
 
         // ── 翻译装置（M3）：models 非空即构建；配置无效必须让用户可见
         //（TranslatorUnavailable → 面板翻译页状态行 + 悬浮窗译文占位）──
-        let tl = match TlRig::from_settings(settings) {
+        let tl = match TlRig::from_settings(settings, &sup) {
             Ok(t) => t.map(Arc::new),
             Err(reason) => {
                 let _ = proxy.send_event(UiMsg::Event(UiEvent::TranslatorUnavailable {
@@ -443,7 +533,53 @@ impl Pipeline {
                 None
             }
         };
+        // 守卫纳管翻译池（回滚时必须先停机再 join，见 StartGuard 注记）
+        guard.tl = tl.clone();
         let (tl_switch_tx, tl_switch_rx) = crossbeam_channel::unbounded::<TlSwitch>();
+
+        // ── 音频可用性转发线程（R4/D-62）：wasapi 边沿事件 → UiEvent::Capture ──
+        {
+            let proxy = proxy.clone();
+            // rx 不可克隆：装单槽 cell，重生工厂取空即空转退出（Never 策略）
+            let rx_cell = Arc::new(Mutex::new(Some(audio_status_rx)));
+            sup.spawn(
+                ThreadRole::AudioBridge,
+                "lt-audio-status",
+                Policy::Never,
+                move || {
+                    let proxy = proxy.clone();
+                    let rx_cell = rx_cell.clone();
+                    Box::new(move || {
+                        // INV6：先绑定再离开锁
+                        let Some(rx) = rx_cell.lock().unwrap().take() else {
+                            return;
+                        };
+                        // tx 在音频线程退出（Pipeline::stop→backend.stop）时 drop
+                        // → 本线程自然收尾（停机期监督器静默收割）
+                        for st in rx {
+                            use lt_pipeline::audio::wasapi_win::AudioStatus;
+                            let ev = match st {
+                                AudioStatus::OutputLost(e) => CaptureEvent::Unavailable {
+                                    role: AudioRole::Loopback,
+                                    error: e,
+                                },
+                                AudioStatus::InputLost(e) => CaptureEvent::Unavailable {
+                                    role: AudioRole::Mic,
+                                    error: e,
+                                },
+                                AudioStatus::OutputRecovered => {
+                                    CaptureEvent::Recovered { role: AudioRole::Loopback }
+                                }
+                                AudioStatus::InputRecovered => {
+                                    CaptureEvent::Recovered { role: AudioRole::Mic }
+                                }
+                            };
+                            let _ = proxy.send_event(UiMsg::Event(UiEvent::Capture(ev)));
+                        }
+                    })
+                },
+            );
+        }
 
         // ── ASR 线程：Manager 独占 + 段处理 ──
         {
@@ -455,30 +591,42 @@ impl Pipeline {
             let tl = tl.clone();
             let vad = vad.clone();
             let interim = interim.clone();
-            threads.push(
-                std::thread::Builder::new()
-                    .name("lt-asr-main".into())
-                    .spawn(move || {
-                        run_asr_thread(
-                            &settings,
-                            AsrThreadCtx {
-                                segment_queue,
-                                vad,
-                                interim,
-                                pending,
-                                stop,
-                                proxy,
-                                tl_switch: tl_switch_rx,
-                            },
-                            tl,
-                        );
-                    })?,
-            );
+            let sup_asr = sup.clone();
+            let tl_switch_rx = tl_switch_rx.clone();
+            // INV3：经监督器出生；panic 重生 = 待命/装配路径干净重启（INV5）
+            sup.spawn(ThreadRole::AsrMain, "lt-asr-main", Policy::Always, move || {
+                let stop = stop.clone();
+                let proxy = proxy.clone();
+                let segment_queue = segment_queue.clone();
+                let settings = settings.clone();
+                let pending = pending.clone();
+                let tl = tl.clone();
+                let vad = vad.clone();
+                let interim = interim.clone();
+                let sup = sup_asr.clone();
+                let tl_switch = tl_switch_rx.clone();
+                Box::new(move || {
+                    run_asr_thread(
+                        &settings,
+                        AsrThreadCtx {
+                            segment_queue,
+                            vad,
+                            interim,
+                            pending,
+                            stop,
+                            proxy,
+                            tl_switch,
+                            sup,
+                        },
+                        tl,
+                    );
+                })
+            });
         }
 
-        tracing::info!("管道已启动（capture + VAD + ASR + 翻译）");
+        tracing::info!("管道已启动（capture + VAD + ASR + 翻译；线程全部受监督）");
         Ok(Self {
-            backend,
+            backend: guard.disarm(),
             stop,
             paused,
             pending,
@@ -486,7 +634,7 @@ impl Pipeline {
             tl_switch: Some(tl_switch_tx),
             vad_update,
             interim,
-            threads,
+            sup,
         })
     }
 
@@ -616,14 +764,14 @@ impl Pipeline {
     }
 
     pub fn stop(&mut self) {
+        // INV4 停机序：stop 标志 → 音频后端 → 翻译池停止 → 监督器置 stopping
+        // 并 join 全部受监督线程（capture/ASR/翻译 worker/音频状态转发/monitor）
         self.stop.store(true, Ordering::Relaxed);
         self.backend.stop();
         if let Some(tl) = &self.tl {
             tl.shutdown();
         }
-        for h in self.threads.drain(..) {
-            let _ = h.join();
-        }
+        self.sup.join_all();
         tracing::info!("管道已停止");
     }
 }
@@ -814,6 +962,8 @@ struct AsrThreadCtx {
     stop: Arc<AtomicBool>,
     proxy: EventLoopProxy<UiMsg>,
     tl_switch: crossbeam_channel::Receiver<TlSwitch>,
+    /// 线程监督器句柄（ReplaceRig 重建翻译池用）
+    sup: Arc<Supervisor>,
 }
 
 /// ASR 线程内可热更的运行时设置镜像（AH-3/H4）：启动时的 settings 快照在
@@ -837,10 +987,11 @@ fn route_translator_switch(
     runtime: &mut AsrRuntime,
     proxy: &EventLoopProxy<UiMsg>,
     settings: &lt_proto::Settings,
+    sup: &Supervisor,
 ) -> Option<TlSwitch> {
     match sw {
         TlSwitch::ReplaceRig { config, settings } => {
-            match TlRig::from_model_config(&config, &settings) {
+            match TlRig::from_model_config(&config, &settings, sup) {
                 Ok(Some(rig)) => {
                     tracing::info!("翻译器已切换: {} ({})", config.name, config.model);
                     *tl = Some(Arc::new(rig));
@@ -885,7 +1036,7 @@ fn route_translator_switch(
             // 构建临时装置（不切换活动翻译器），发一次最简请求回执 UI
             let mut test_settings = settings.clone();
             test_settings.target_language = target_language.clone();
-            match TlRig::from_model_config(&config, &test_settings) {
+            match TlRig::from_model_config(&config, &test_settings, sup) {
                 Ok(Some(rig)) => {
                     let proxy = proxy.clone();
                     let name = name.clone();
@@ -944,6 +1095,7 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
         stop,
         proxy,
         tl_switch,
+        sup,
     } = ctx;
     // 目标语言的运行时快照（同语言判定用；TlSwitch::TargetLanguage 同步更新）
     let mut target_language = settings.target_language.clone();
@@ -956,48 +1108,54 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
     };
     // 增量识别会话状态（原版 _interim_* 字段；跨段存活，vad_flush 复位）
     let mut interim_state = InterimState::default();
-    // 构造 worker 配置（当前仅 sensevoice；whisper M5）
+    // 构造 worker 配置（当前仅 sensevoice；whisper M5）。
+    // R3/D-61：models_dir 失败 → 待命态而非 return 杀线程（AH-1 哲学推广：
+    // 线程死亡=切换命令通道消亡，用户从此无法唤醒）。待命循环内每次
+    // ReplaceEngine 尝试重新解析目录，用户修正环境后即可唤醒
     let models_dir = match lt_models::paths::models_dir(settings.models_dir.as_deref()) {
-        Ok(d) => d,
+        Ok(d) => Some(d),
         Err(e) => {
             let _ = proxy.send_event(UiMsg::Event(UiEvent::AsrUnavailable));
-            tracing::error!("模型目录不可用: {e}");
-            return;
+            tracing::error!("模型目录不可用，ASR 进入待命（可经切换引擎唤醒重试）: {e}");
+            None
         }
     };
-    // 模型键 → 条目；mlt/非法键回退 sensevoice-small（不阻断 UI，也不得用 nano 冒充）。
-    // 诊断仅 funasr 引擎相关：whisper/qwen3 启动诊断走 build_worker_config 对应分支
-    let (entry, fell_back) = if settings.asr_engine == "funasr" {
-        resolve_funasr_entry(&settings.funasr_model)
-    } else if settings.asr_engine == "qwen3" {
-        // WP-B：诊断用 qwen3 自身条目（否则未缓存日志打错模型名）
-        (registry::qwen3_entry(), false)
-    } else {
-        (registry::SENSEVOICE_SMALL.clone(), false)
-    };
-    if fell_back {
-        let reason = if settings.funasr_model == "funasr-mlt-nano-2512" {
-            "mlt 无上游 ONNX 转换，待上游产出（D-14）"
+    let mut worker = None;
+    if let Some(models_dir) = &models_dir {
+        // 模型键 → 条目；mlt/非法键回退 sensevoice-small（不阻断 UI，也不得用 nano 冒充）。
+        // 诊断仅 funasr 引擎相关：whisper/qwen3 启动诊断走 build_worker_config 对应分支
+        let (entry, fell_back) = if settings.asr_engine == "funasr" {
+            resolve_funasr_entry(&settings.funasr_model)
+        } else if settings.asr_engine == "qwen3" {
+            // WP-B：诊断用 qwen3 自身条目（否则未缓存日志打错模型名）
+            (registry::qwen3_entry(), false)
         } else {
-            "非法模型键"
+            (registry::SENSEVOICE_SMALL.clone(), false)
         };
-        tracing::warn!(
-            "funasr 模型 {:?} 不可用（{reason}），回退 sensevoice-small",
-            settings.funasr_model
+        if fell_back {
+            let reason = if settings.funasr_model == "funasr-mlt-nano-2512" {
+                "mlt 无上游 ONNX 转换，待上游产出（D-14）"
+            } else {
+                "非法模型键"
+            };
+            tracing::warn!(
+                "funasr 模型 {:?} 不可用（{reason}），回退 sensevoice-small",
+                settings.funasr_model
+            );
+        }
+        worker = build_worker_config(
+            models_dir,
+            &settings.asr_engine,
+            &settings.funasr_model,
+            runtime.sensevoice_pad,
+            &runtime.asr_language,
+            &settings.whisper_model_size,
+            runtime.whisper_pad,
         );
-    }
-    let mut worker = build_worker_config(
-        &models_dir,
-        &settings.asr_engine,
-        &settings.funasr_model,
-        runtime.sensevoice_pad,
-        &runtime.asr_language,
-        &settings.whisper_model_size,
-        runtime.whisper_pad,
-    );
-    if worker.is_none() {
-        let _ = proxy.send_event(UiMsg::Event(UiEvent::AsrUnavailable));
-        tracing::warn!("ASR 模型未缓存（{entry:?}），进入待命态（AH-1）");
+        if worker.is_none() {
+            let _ = proxy.send_event(UiMsg::Event(UiEvent::AsrUnavailable));
+            tracing::warn!("ASR 模型未缓存（{entry:?}），进入待命态（AH-1）");
+        }
     }
     // 待命 = 可唤醒状态而非死胡同（AH-1/H1，P0）：模型就绪前吞掉段，但必须
     // 消费 tl_switch——运行时下载完成后 shell 重发 SwitchEngine（shell.rs
@@ -1018,11 +1176,19 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
                 &mut runtime,
                 &proxy,
                 settings,
+                &sup,
             )
             else {
                 continue;
             };
             let model_key = engine_model_key(&engine, &funasr_model, &whisper_model_size);
+            // R3/D-61：每次唤醒尝试重解析 models_dir（目录恢复后即可唤醒）
+            let Ok(models_dir) = lt_models::paths::models_dir(settings.models_dir.as_deref())
+            else {
+                let _ = proxy.send_event(UiMsg::Event(UiEvent::AsrUnavailable));
+                tracing::warn!("待命唤醒尝试：模型目录仍不可用，继续待命");
+                continue;
+            };
             match build_worker_config(
                 &models_dir,
                 &engine,
@@ -1086,7 +1252,17 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
                     &mut runtime,
                     &proxy,
                     settings,
+                    &sup,
                 ) {
+                    // R3/D-61：每次切换尝试重解析 models_dir（与待命臂一致；
+                    // 运行中目录损坏时切换路径同样可恢复）
+                    let Ok(models_dir) =
+                        lt_models::paths::models_dir(settings.models_dir.as_deref())
+                    else {
+                        let _ = proxy.send_event(UiMsg::Event(UiEvent::AsrUnavailable));
+                        tracing::warn!("引擎切换尝试：模型目录不可用，跳过本轮");
+                        continue;
+                    };
                     // 原版 _switch_asr_engine：装配新配置 → 加载对话框 →
                     // ensure_started（失败内部回滚旧 worker）→ 设备/不可用事件
                     match build_worker_config(
@@ -1635,37 +1811,51 @@ mod tests {
         );
     }
 
+    /// 测试监督器（sink 丢弃；用后 join_all 回收 monitor）
+    fn test_sup() -> Arc<Supervisor> {
+        Supervisor::new(|_| {})
+    }
+
     #[test]
     fn tl_rig_builds_from_default_settings() {
         let settings = lt_proto::Settings::default();
-        let rig = TlRig::from_settings(&settings).expect("默认设置不应报配置错误");
-        assert!(rig.is_some(), "默认 settings 带一个默认模型，应能构建");
+        let sup = test_sup();
+        let rig = TlRig::from_settings(&settings, &sup)
+            .expect("默认设置不应报配置错误")
+            .expect("默认 settings 带一个默认模型，应能构建");
         // 目标语言来自全局设置而非模型配置
-        assert_eq!(
-            rig.unwrap().translator.target_language(),
-            settings.target_language
-        );
+        assert_eq!(rig.translator.target_language(), settings.target_language);
+        // 收尾：先停池再 join——worker 以 stopped 为退出条件，不先置标志
+        // join_all 将无限等待（pop_timeout 永不返回）
+        rig.pool.shutdown();
+        sup.join_all();
     }
 
     #[test]
     fn tl_rig_none_when_active_model_out_of_bounds() {
         let mut settings = lt_proto::Settings::default();
         settings.active_model = 99;
-        assert!(TlRig::from_settings(&settings).unwrap().is_none());
+        let sup = test_sup();
+        assert!(TlRig::from_settings(&settings, &sup).unwrap().is_none());
+        sup.join_all();
     }
 
     #[test]
     fn tl_rig_none_when_models_empty() {
         let mut settings = lt_proto::Settings::default();
         settings.models.clear();
-        assert!(TlRig::from_settings(&settings).unwrap().is_none());
+        let sup = test_sup();
+        assert!(TlRig::from_settings(&settings, &sup).unwrap().is_none());
+        sup.join_all();
     }
 
     #[test]
     fn job_pool_drops_jobs_after_shutdown() {
         use std::sync::atomic::AtomicU64;
-        let pool = JobPool::new(2);
+        let sup = test_sup();
+        let pool = JobPool::new(2, &sup);
         pool.shutdown();
+        sup.join_all();
         // shutdown 之后的提交不执行（submit 侧短路 + worker 侧双重检查）
         let ran = Arc::new(AtomicU64::new(0));
         let r = ran.clone();

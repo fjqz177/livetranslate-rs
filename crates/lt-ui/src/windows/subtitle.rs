@@ -717,6 +717,9 @@ pub fn subtitle_ui(ui: &mut Ui, state: &mut AppState) {
     if hide {
         // 与悬浮窗"字幕"按钮同路径：enabled 翻转 + ToggleSubtitle
         state.settings.subtitle_mode.enabled = false;
+        // R7（架构 2.0 W1）：与穿透路径同款登记面板防抖脏标记，enabled=false
+        // 才会经 300ms PanelApply 节拍落盘（否则重启后字幕窗复活）
+        crate::windows::panel::mark_settings_dirty(state);
         state.enqueue_action(WinId::Subtitle, WinAction::ToggleSubtitle);
     }
     if open_settings {
@@ -1398,5 +1401,68 @@ mod tests {
             )),
             "锁定后正文中键拖动应被禁止"
         );
+    }
+
+    /// R7 持久化对称（架构 2.0 W1）：顶条「关闭」按钮 = 隐藏路径，必须与穿透
+    /// 路径同款登记面板防抖脏标记——否则 enabled=false 不落盘、重启后字幕窗复活。
+    /// 走真实 UI 路径：headless 注入指针事件点击按钮，断言写值 + 入队 + 脏标记 +
+    /// 防抖到期快照（最终进入 Cmd::ApplySettings 的内容）。
+    #[test]
+    fn subtitle_hide_button_persists_enabled_false() {
+        let ctx = egui::Context::default();
+        let mut st = crate::state::AppState::new(lt_proto::Settings::default());
+        st.settings.subtitle_mode.enabled = true;
+        st.visible.insert(crate::state::WinId::Subtitle, true);
+        // 悬停终态（宿主 Win32 轮询注入同款置位）：顶条按钮可命中
+        st.subtitle.toolbar_hover = true;
+        st.subtitle.toolbar_anim = None;
+
+        // 关闭按钮 = 顶条右端第一颗（x ∈ [right-8-w, right-8]，w=文本宽+14 ≥ 14，
+        // 取右缘内 16px 必在按钮内；y ∈ [top+2, top+16] 取 +9）
+        let screen = sub_screen_rect();
+        let hit = egui::pos2(screen.right() - 16.0, screen.top() + 9.0);
+        let frames: Vec<Vec<egui::Event>> = vec![
+            vec![egui::Event::PointerMoved(hit)],
+            vec![egui::Event::PointerButton {
+                pos: hit,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::default(),
+            }],
+            vec![egui::Event::PointerButton {
+                pos: hit,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::default(),
+            }],
+        ];
+        let mut acts = Vec::new();
+        for events in frames {
+            let mut ri = egui::RawInput::default();
+            ri.screen_rect = Some(screen);
+            ri.events = events;
+            let mut out = ctx.run_ui(ri, |ui| crate::windows::subtitle::subtitle_ui(ui, &mut st));
+            out.textures_delta.clear();
+            acts.extend(st.drain_actions());
+        }
+
+        // 隐藏语义：enabled 翻 false + ToggleSubtitle 入队（悬浮窗"字幕"按钮同路径）
+        assert!(!st.settings.subtitle_mode.enabled, "隐藏后 enabled 应为 false");
+        assert!(
+            acts.contains(&(crate::state::WinId::Subtitle, crate::state::WinAction::ToggleSubtitle)),
+            "隐藏应入队 ToggleSubtitle"
+        );
+        // R7 主张：脏标记已置位（与穿透路径对称）
+        assert!(
+            st.panel.apply_due_at.is_some(),
+            "隐藏路径应登记面板设置脏标记（否则重启后字幕窗复活）"
+        );
+        // 防抖到期可消费，且快照（即 Cmd::ApplySettings 载荷）携带 enabled=false
+        let snap = st
+            .take_due_panel_apply(
+                std::time::Instant::now() + std::time::Duration::from_millis(300),
+            )
+            .expect("脏标记应在 300ms 防抖到期后被消费");
+        assert!(!snap.subtitle_mode.enabled, "落盘快照中 enabled 应为 false");
     }
 }

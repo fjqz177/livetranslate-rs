@@ -4,5 +4,8 @@ pub mod events;
 pub mod settings;
 
 pub use asr_result::{language_display, AsrResult, EngineError, WordTs};
-pub use events::{AudioDeviceChoice, Cmd, MicDeviceChoice, UiEvent, UiMsg};
+pub use events::{
+    AudioDeviceChoice, AudioRole, CaptureEvent, Cmd, MicDeviceChoice, ThreadDied, ThreadRole,
+    UiEvent, UiMsg,
+};
 pub use settings::{ModelConfig, Settings, Style, SubtitleLine, SubtitleMode};

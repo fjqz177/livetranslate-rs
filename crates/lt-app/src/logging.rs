@@ -1,6 +1,7 @@
 //! 日志基建：文件（DEBUG，按次滚动）+ 控制台（INFO）+ 广播（供日志窗/下载框订阅）。
 
-use lt_proto::UiEvent;
+use crate::supervisor::Policy;
+use lt_proto::{ThreadRole, UiEvent};
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
@@ -124,26 +125,41 @@ fn lag_report_due() -> bool {
 
 /// 常驻日志桥接线程（交接卡缺口 #4）：启动即订阅广播 hub，全程把 LogLine
 /// 事件转发到 UI（原版 LogWindow handler 常驻 root logger 的等价物）。
-pub fn spawn_bridge(proxy: winit::event_loop::EventLoopProxy<lt_proto::UiMsg>) {
-    let mut rx = subscribe();
-    std::thread::Builder::new()
-        .name("lt-logbridge".into())
-        .spawn(move || loop {
-            match rx.blocking_recv() {
+/// 架构 2.0 W1（INV3）：经监督器出生——死亡可见 + Always 重生（工厂克隆同
+/// 一 Receiver，重生从中断处继续）。hub 静态存活不会 Closed，故线程退出
+/// 条件 = main 停机序置位的 `stop` 标志（50ms 轮询，W2 事件动脉整体替换）
+pub fn spawn_bridge(
+    sup: &crate::supervisor::Supervisor,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    proxy: winit::event_loop::EventLoopProxy<lt_proto::UiMsg>,
+) {
+    sup.spawn(ThreadRole::LogBridge, "lt-logbridge", Policy::Always, move || {
+        // Receiver 不可克隆：重生时重新订阅（广播 hub 全量重放语义由 Lagged 兜底）
+        let mut rx = subscribe();
+        let stop = stop.clone();
+        let proxy = proxy.clone();
+        Box::new(move || loop {
+            if stop.load(Ordering::Relaxed) {
+                return;
+            }
+            match rx.try_recv() {
                 Ok(ev) => {
                     let _ = proxy.send_event(lt_proto::UiMsg::Event(ev));
                 }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(n)) => {
                     LAG_PENDING.fetch_add(n as u64, Ordering::Relaxed);
                     if lag_report_due() {
                         let total = LAG_PENDING.swap(0, Ordering::Relaxed);
                         tracing::debug!(target: BRIDGE_TARGET, "日志桥接丢弃 {total} 行（订阅端积压）");
                     }
                 }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                Err(tokio::sync::broadcast::error::TryRecvError::Closed) => return,
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
             }
         })
-        .ok();
+    });
 }
 
 fn level_u8(l: tracing::Level) -> u8 {

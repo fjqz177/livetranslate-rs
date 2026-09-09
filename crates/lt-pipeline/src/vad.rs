@@ -350,8 +350,19 @@ impl<C: ConfidenceSource> VadProcessor<C> {
         }
     }
 
+    /// 热切换置信度源（评审 P1 R2 / 架构 2.0 W1）：模式切换（silero/energy/
+    /// disabled）时由调用方按新 settings 经 [`make_confidence_source`] 构造
+    /// 新源传入；替换前对新源调 `reset()`，清其残留状态防跨模式串味。
+    /// 契约：仅 VAD 模式变化时调用——模式不变、仅阈值/时长变时走
+    /// [`Self::update_settings`]，不得换源（重建源代价高且丢会话状态）。
+    pub fn set_confidence_source(&mut self, mut source: C) {
+        source.reset();
+        self.conf = source;
+    }
+
     /// 对齐原版 update_settings：mode/threshold/energy/min/max/silence 全量热更新。
-    /// 模式切换时同步替换置信度源的行为由调用方（持有源）负责；本结构只更新阈值语义。
+    /// 模式切换时同步替换置信度源由调用方经 [`Self::set_confidence_source`]
+    /// 完成（R2）；本结构只更新阈值语义。
     pub fn update_settings(&mut self, s: &VadSettings) {
         self.mode = s.mode.clone();
         self.threshold = s.threshold;
@@ -707,6 +718,8 @@ impl<C: ConfidenceSource> VadProcessor<C> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// 脚本化置信度源：按序弹出（超出后重复末值），chunk 内容不计
     struct Script {
@@ -739,6 +752,32 @@ mod tests {
     fn feed(p: &mut VadProcessor<Script>, n: usize) -> Vec<Vec<f32>> {
         let chunk = vec![0.5f32; 512];
         (0..n).filter_map(|_| p.process_chunk(&chunk)).collect()
+    }
+
+    /// Box<dyn> 默认泛型处理器的快捷构造（换源测试用；语义同 make）
+    fn make_dyn(conf: Box<dyn ConfidenceSource + Send>) -> VadProcessor {
+        let mut p = VadProcessor::new(conf, 16000, 0.5, 1.0, 15.0, 0.032);
+        p.mode = "silero".into();
+        p
+    }
+
+    /// 测试 mock（W1-R2 换源）：带内部状态 + 共享 reset 计数器的源。
+    /// `calls` 每次 confidence() 递增、reset 归零（置信度随之漂移，残留
+    /// 状态可被行为识破）；`resets` 经 Arc 共享供测试侧在换入后观测
+    /// （conf 字段私有无法读回）。
+    struct SpySource {
+        calls: usize,
+        resets: Arc<AtomicUsize>,
+    }
+    impl ConfidenceSource for SpySource {
+        fn confidence(&mut self, _chunk: &[f32]) -> anyhow::Result<f64> {
+            self.calls += 1;
+            Ok(self.calls as f64 * 0.1)
+        }
+        fn reset(&mut self) {
+            self.calls = 0;
+            self.resets.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     #[test]
@@ -1003,5 +1042,79 @@ mod tests {
         );
         // 新段缓冲完好未裁（防误裁新段头部）
         assert_eq!(p2.speech_samples, 4 * 512);
+    }
+
+    #[test]
+    fn swap_energy_to_disabled_yields_speech_always() {
+        // W1-R2 热切换：energy 源对零能量样本置信度 0.0，换入 disabled 源后
+        // 同样本恒 1.0（源可替换；模式/阈值语义仍走 update_settings）
+        let mut p = make_dyn(Box::new(EnergyVad { threshold: 0.02 }));
+        p.mode = "energy".into();
+        let chunk = vec![0.0f32; 512]; // rms=0 → min(1, 0/0.04)=0
+        p.process_chunk(&chunk);
+        assert_eq!(p.last_confidence, 0.0, "energy 源下零能量应得 0");
+
+        // 模拟运行时切换：调用方按新 settings 构造新源换入，再 update_settings
+        p.set_confidence_source(make_confidence_source("disabled", 0.02));
+        p.update_settings(&VadSettings {
+            mode: "disabled".into(),
+            ..Default::default()
+        });
+        for _ in 0..5 {
+            p.process_chunk(&chunk);
+            assert_eq!(p.last_confidence, 1.0, "disabled 源恒 1.0");
+        }
+        assert!(p.is_speaking(), "1.0 ≥ 0.5 应判定为说话");
+    }
+
+    #[test]
+    fn swapped_source_state_is_reset() {
+        // W1-R2：换源必须对新源调 reset——先让新源积累"旧会话"残留状态
+        // （calls=2），换入时 reset 归零，换入后首个置信度应为 0.1
+        // （若漏 reset 则会带着 calls=2 得 0.3）；共享计数器另证 reset 恰一次
+        let resets = Arc::new(AtomicUsize::new(0));
+        let mut spy = SpySource {
+            calls: 0,
+            resets: resets.clone(),
+        };
+        spy.confidence(&[]).unwrap();
+        spy.confidence(&[]).unwrap();
+
+        let mut p = make_dyn(Box::new(EnergyVad { threshold: 0.02 }));
+        p.set_confidence_source(Box::new(spy));
+        assert_eq!(resets.load(Ordering::Relaxed), 1, "换源必须对新源调 reset");
+
+        let chunk = vec![0.0f32; 512];
+        p.process_chunk(&chunk);
+        assert_eq!(p.last_confidence, 0.1, "reset 后状态应从零起算，旧残留不得串味");
+    }
+
+    #[test]
+    fn update_settings_after_swap_keeps_new_source() {
+        // W1-R2：换源后 update_settings（mode 不变）只重放阈值语义，
+        // 不得回换置信度源、也不得触碰源状态
+        let resets = Arc::new(AtomicUsize::new(0));
+        let mut p = make_dyn(Box::new(EnergyVad { threshold: 0.02 }));
+        p.mode = "energy".into();
+        p.set_confidence_source(Box::new(SpySource {
+            calls: 0,
+            resets: resets.clone(),
+        }));
+        assert_eq!(resets.load(Ordering::Relaxed), 1);
+
+        p.update_settings(&VadSettings {
+            mode: "energy".into(),
+            ..Default::default()
+        });
+
+        // 行为特征断言源类型：EnergyVad 对零能量样本得 0.0，SpySource 恒 0.1 起步
+        let chunk = vec![0.0f32; 512];
+        p.process_chunk(&chunk);
+        assert_eq!(p.last_confidence, 0.1, "update_settings 不得替换已换入的源");
+        assert_eq!(
+            resets.load(Ordering::Relaxed),
+            1,
+            "update_settings 不应 reset 源"
+        );
     }
 }

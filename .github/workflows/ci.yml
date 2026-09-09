@@ -1,0 +1,48 @@
+# LiveTranslate-rs CI（架构 2.0 W1/R16）
+# windows-latest = Server 2025：工作目录已在 D:（target/ 随 checkout 落 D:）；
+# uv 钉版 libclang（.venv 相对路径由 .cargo/config.toml [env] 解析）；
+# sherpa-onnx 预编译库缓存（键 = fetch 脚本哈希）；ignored 探针保持离线纪律。
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Sync pinned toolchain (libclang via uv)
+        run: uv sync
+
+      - name: Cache sherpa-onnx prebuilt libs
+        uses: actions/cache@v4
+        with:
+          path: .cache/sherpa-onnx
+          key: sherpa-${{ hashFiles('scripts/fetch_sherpa_libs.ps1') }}
+
+      - name: Fetch sherpa-onnx libs
+        run: powershell -ExecutionPolicy Bypass -File scripts/fetch_sherpa_libs.ps1
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Run tests
+        run: cargo test --workspace
+
+      - name: Path hygiene gate
+        run: powershell -ExecutionPolicy Bypass -File scripts/check_personal_paths.ps1
+
+      # lt-ui 存在约 20 条既有基线告警：清零前 advisory（W7 收口转 gate）
+      - name: Clippy (advisory)
+        run: cargo clippy --workspace --all-targets
+        continue-on-error: true

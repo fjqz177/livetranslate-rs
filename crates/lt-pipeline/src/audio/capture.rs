@@ -12,7 +12,7 @@
 //! 进段队列，**不在 capture 线程跑 ASR**（原版拓扑）。
 
 use crate::audio::{rms, BoundedDropQueue, CHUNK_SAMPLES, TARGET_RATE};
-use crate::vad::{ConfidenceSource, VadProcessor};
+use crate::vad::VadProcessor;
 use crate::SegmentSource;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -96,21 +96,37 @@ pub struct CaptureLoop<F> {
     pub vad_update: Arc<Mutex<Option<crate::vad::VadSettings>>>,
     /// 增量识别控制块（与 ASR 线程共享；见 [`InterimControl`]）
     pub interim: Arc<InterimControl>,
+    /// 当前生效 VAD 模式（架构 2.0 W1/R2：检测模式变化以替换置信度源；
+    /// 初值 = 启动装配所用模式，避免首帧把 Silero 重复加载一遍）
+    pub current_mode: String,
 }
 
 impl<F: Fn(f32, f64, Option<f32>) + Send> CaptureLoop<F> {
     /// 阻塞运行至 `running`（= stop 标志）置 true。
     /// `vad` 由调用方构造并与 ASR 线程共享（增量识别跨线程读）。
-    pub fn run<C: ConfidenceSource>(
-        &self,
-        vad: &Arc<Mutex<VadProcessor<C>>>,
+    /// 形参特化为 boxed 默认形态（架构 2.0 W1/R2）：模式热切换需要经
+    /// `make_confidence_source` 重建源——只有 boxed trait object 可跨型替换；
+    /// 具体类型源（测试 mock）装箱传入即可
+    pub fn run(
+        &mut self,
+        vad: &Arc<Mutex<VadProcessor>>,
         running: &AtomicBool,
     ) {
         let silence_chunk = vec![0.0f32; CHUNK_SAMPLES];
         while !running.load(Ordering::Relaxed) {
             // 应用挂起的 VAD 参数（原版 vad_processor.update_settings）
             if let Some(s) = self.vad_update.lock().unwrap().take() {
-                vad.lock().unwrap().update_settings(&s);
+                // 先绑定再分支（大坑 11：MutexGuard 临时值不得留在 if-let scrutinee）
+                let mut v = vad.lock().unwrap();
+                if self.current_mode != s.mode {
+                    // 架构 2.0 W1/R2：模式变化必须替换置信度源——update_settings
+                    // 只更新阈值语义，源不换则 silero→energy/disabled 热切换不生效。
+                    // 模式不变（仅阈值/时长）走 update_settings，绝不换源
+                    let src = crate::vad::make_confidence_source(&s.mode, s.energy_threshold);
+                    v.set_confidence_source(src);
+                    self.current_mode = s.mode.clone();
+                }
+                v.update_settings(&s);
             }
             match self.chunk_rx.pop_timeout(Duration::from_secs(1)) {
                 None => {
@@ -156,7 +172,7 @@ impl<F: Fn(f32, f64, Option<f32>) + Send> CaptureLoop<F> {
     /// 增量触发判定：读 VAD 状态 → 纯函数判定 → 塞空音频 interim 标记。
     /// 原版 `_asr_ready` 条件不搬：Rust ASR 线程无引擎时本就吞段待命，无害。
     /// 严守「不在持 vad 锁时碰 segment_tx」。
-    fn maybe_trigger_interim<C: ConfidenceSource>(&self, vad: &Arc<Mutex<VadProcessor<C>>>) {
+    fn maybe_trigger_interim(&self, vad: &Arc<Mutex<VadProcessor>>) {
         if !self.interim.enabled.load(Ordering::Relaxed) {
             return;
         }
@@ -219,6 +235,11 @@ mod tests {
     /// monitor 回调收集日志：(rms, vad, mic_rms)
     type MonitorLog = Arc<Mutex<Vec<(f32, f64, Option<f32>)>>>;
 
+    /// 测试源装箱（run 特化为 boxed 默认形态后的统一入口）
+    fn boxed(src: impl ConfidenceSource + Send + 'static) -> Box<dyn ConfidenceSource + Send> {
+        Box::new(src)
+    }
+
     fn setup() -> (
         Arc<BoundedDropQueue<(Vec<f32>, Option<f32>)>>,
         Arc<BoundedDropQueue<(SegmentSource, Vec<f32>)>>,
@@ -236,17 +257,17 @@ mod tests {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn spawn<C: ConfidenceSource + 'static>(
+    fn spawn(
         q: Arc<BoundedDropQueue<(Vec<f32>, Option<f32>)>>,
         seg_tx: Arc<BoundedDropQueue<(SegmentSource, Vec<f32>)>>,
         monitors: MonitorLog,
         paused: Arc<AtomicBool>,
-        vad: VadProcessor<C>,
+        vad: VadProcessor,
         interim: Arc<InterimControl>,
     ) -> (std::thread::JoinHandle<()>, Arc<AtomicBool>) {
         // 正确语义：running=stop 标志，false 运行、true 停止（对齐 Pipeline::stop）
         let running = Arc::new(AtomicBool::new(false));
-        let lp = CaptureLoop {
+        let mut lp = CaptureLoop {
             chunk_rx: q,
             segment_tx: seg_tx,
             monitor: move |rms, vad, mic_rms| {
@@ -255,6 +276,7 @@ mod tests {
             paused,
             vad_update: Arc::new(Mutex::new(None)),
             interim,
+            current_mode: String::new(),
         };
         let vad = Arc::new(Mutex::new(vad));
         let r = running.clone();
@@ -267,7 +289,7 @@ mod tests {
     #[test]
     fn monitor_precedes_segment_and_chunk_rms_used() {
         let (q, seg_tx, monitors, paused) = setup();
-        let vad = VadProcessor::new(Burst(40.into()), 16000, 0.5, 1.0, 15.0, 0.032);
+        let vad = VadProcessor::new(boxed(Burst(40.into())), 16000, 0.5, 1.0, 15.0, 0.032);
         let (h, running) = spawn(
             q.clone(),
             seg_tx.clone(),
@@ -302,7 +324,7 @@ mod tests {
     fn pause_drops_chunks() {
         let (q, seg_tx, monitors, paused) = setup();
         paused.store(true, Ordering::Relaxed);
-        let vad = VadProcessor::new(Zero, 16000, 0.5, 1.0, 15.0, 0.032);
+        let vad = VadProcessor::new(boxed(Zero), 16000, 0.5, 1.0, 15.0, 0.032);
         let (h, running) = spawn(
             q.clone(),
             seg_tx.clone(),
@@ -335,20 +357,21 @@ mod tests {
             16, "test-seg",
         ));
         let paused = Arc::new(AtomicBool::new(false));
-        let mut vad = VadProcessor::new(Burst(40.into()), 16000, 0.5, 1.0, 15.0, 0.032);
+        let mut vad = VadProcessor::new(boxed(Burst(40.into())), 16000, 0.5, 1.0, 15.0, 0.032);
         let chunk = vec![0.1f32; 512];
         for _ in 0..40 {
             vad.process_chunk(&chunk);
         }
         assert!(vad.is_speaking());
         let running = Arc::new(AtomicBool::new(false));
-        let lp = CaptureLoop {
+        let mut lp = CaptureLoop {
             chunk_rx: q,
             segment_tx: seg_tx.clone(),
             monitor: |_, _, _| {},
             paused,
             vad_update: Arc::new(Mutex::new(None)),
             interim: Default::default(),
+            current_mode: String::new(),
         };
         let vad = Arc::new(Mutex::new(vad));
         let r = running.clone();
@@ -427,7 +450,7 @@ mod tests {
     fn interim_marker_pushed_when_speaking_long_enough() {
         let (q, seg_tx, _monitors, paused) = setup();
         // 200 chunk 配额 ≈ 6.4s 连续语音（间隔 1s 时远超触发线，且 < max 15s 不收段）
-        let vad = VadProcessor::new(Burst(200.into()), 16000, 0.5, 1.0, 15.0, 0.032);
+        let vad = VadProcessor::new(boxed(Burst(200.into())), 16000, 0.5, 1.0, 15.0, 0.032);
         let interim = Arc::new(InterimControl::default());
         interim.set(true, 1.0);
         let (h, running) = spawn(
@@ -470,7 +493,7 @@ mod tests {
     fn interim_marker_absent_when_disabled_or_silent() {
         let (q, seg_tx, _monitors, paused) = setup();
         // 未启用：即便长语音也不产 interim 标记
-        let vad = VadProcessor::new(Burst(200.into()), 16000, 0.5, 1.0, 15.0, 0.032);
+        let vad = VadProcessor::new(boxed(Burst(200.into())), 16000, 0.5, 1.0, 15.0, 0.032);
         let interim = Arc::new(InterimControl::default());
         let (h, running) = spawn(
             q.clone(),
@@ -490,7 +513,7 @@ mod tests {
 
         // 启用但静音（不说话）：同样零生产
         let (q2, seg_tx2, monitors2, paused2) = setup();
-        let vad2 = VadProcessor::new(Zero, 16000, 0.5, 1.0, 15.0, 0.032);
+        let vad2 = VadProcessor::new(boxed(Zero), 16000, 0.5, 1.0, 15.0, 0.032);
         let interim2 = Arc::new(InterimControl::default());
         interim2.set(true, 1.0);
         let (h2, running2) = spawn(

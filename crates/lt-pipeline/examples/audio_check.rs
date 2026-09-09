@@ -29,7 +29,7 @@ fn main() -> anyhow::Result<()> {
     eprintln!("[4] 启动采集线程…");
 
     let q = Arc::new(BoundedDropQueue::new(100, "audio_check"));
-    be.start(None, None, q.clone())?;
+    be.start(None, None, q.clone(), None)?;
     eprintln!("[5] 采集 5s（放点音乐看 RMS）…");
     let t0 = Instant::now();
     let mut n = 0usize;

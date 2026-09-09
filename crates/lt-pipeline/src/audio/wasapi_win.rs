@@ -56,6 +56,17 @@ impl WasapiBackend {
     }
 }
 
+/// 采集可用性边沿事件（架构 2.0 W1/R4：音频故障对用户可见——此前全部失败
+/// 路径仅 tracing。lt-pipeline 零 proto 依赖，由编排侧翻译为 UiEvent::Capture）
+#[derive(Debug, Clone)]
+pub enum AudioStatus {
+    /// 打开/读取失败（边沿触发一次，恢复前不重发）
+    OutputLost(String),
+    InputLost(String),
+    OutputRecovered,
+    InputRecovered,
+}
+
 impl super::AudioBackend for WasapiBackend {
     fn list_output_devices(&self) -> anyhow::Result<Vec<String>> {
         // 枚举可能在任意线程调用（UI/音频线程），COM 按线程初始化（经验 E-09）
@@ -84,6 +95,7 @@ impl super::AudioBackend for WasapiBackend {
         device: Option<String>,
         mic_device: Option<String>,
         chunk_tx: Arc<BoundedDropQueue<(Vec<f32>, Option<f32>)>>,
+        status: Option<std::sync::mpsc::Sender<AudioStatus>>,
     ) -> anyhow::Result<()> {
         anyhow::ensure!(self.thread.is_none(), "backend already started");
         self.device = device;
@@ -98,7 +110,7 @@ impl super::AudioBackend for WasapiBackend {
             .name("lt-audio".into())
             .spawn(move || {
                 let _ = initialize_mta();
-                read_loop(device, mic, cmd_rx, chunk_tx, running);
+                read_loop(device, mic, cmd_rx, chunk_tx, running, status);
                 wasapi::deinitialize();
             })?;
         self.thread = Some(h);
@@ -390,46 +402,92 @@ fn read_loop(
     cmd_rx: crossbeam_channel::Receiver<BackendCmd>,
     chunk_tx: Arc<BoundedDropQueue<(Vec<f32>, Option<f32>)>>,
     running: Arc<AtomicBool>,
+    status: Option<std::sync::mpsc::Sender<AudioStatus>>,
 ) {
     let mut requested_device = device;
     let mut requested_mic = mic_device;
     let loopback_disabled = |dev: &Option<String>| dev.as_deref() == Some("__disabled__");
 
+    // R4/D-62：可用性边沿上报——false=正常，true=已上报 Lost（恢复前不重发）。
+    // 全部失败路径（初始打开/重试/读错误/设备切换重开）经此收敛，与 tracing 并行
+    let mut loopback_down = false;
+    let mut mic_down = false;
+    let report = |down: &mut bool, lost: bool, out: bool, err: &str| {
+        if lost && !*down {
+            *down = true;
+            if let Some(tx) = &status {
+                let _ = tx.send(if out {
+                    AudioStatus::OutputLost(err.to_string())
+                } else {
+                    AudioStatus::InputLost(err.to_string())
+                });
+            }
+        } else if !lost && *down {
+            *down = false;
+            if let Some(tx) = &status {
+                let _ = tx.send(if out {
+                    AudioStatus::OutputRecovered
+                } else {
+                    AudioStatus::InputRecovered
+                });
+            }
+        }
+    };
+
     let mut st: Option<LoopStream> = None;
     if !loopback_disabled(&requested_device) {
-        st = open_loopback(requested_device.as_deref())
-            .map_err(|e| tracing::error!("打开 loopback 失败: {e:#}"))
-            .ok();
+        st = match open_loopback(requested_device.as_deref()) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                tracing::error!("打开 loopback 失败: {e:#}");
+                report(&mut loopback_down, true, true, &format!("{e:#}"));
+                None
+            }
+        };
     } else {
         tracing::info!("Loopback disabled (mic-only mode)");
     }
     let mut mic: Option<MicStream> = None;
     if requested_mic.is_some() {
-        mic = open_mic(requested_mic.as_deref())
-            .map_err(|e| tracing::warn!("打开麦克风失败: {e:#}"))
-            .ok();
+        mic = match open_mic(requested_mic.as_deref()) {
+            Ok(m) => Some(m),
+            Err(e) => {
+                tracing::warn!("打开麦克风失败: {e:#}");
+                report(&mut mic_down, true, false, &format!("{e:#}"));
+                None
+            }
+        };
     }
     let mut mic_buf: Vec<f32> = Vec::new();
     let mut last_device_check = Instant::now();
     // AH-7/H12：mic 读失败 → warn + 0.5s 退避重开（镜像 loopback 读错误恢复）；
     // 不清 chunk 队列（loopback 未受影响）。requested_mic 经参传入避免闭包
     // 与 SetMic 命令臂的可变借用冲突
-    let handle_mic =
-        |mic: &mut Option<MicStream>, mic_buf: &mut Vec<f32>, requested: &Option<String>| {
-            if let Some(m) = mic {
-                if !drain_mic(m, mic_buf) {
-                    tracing::warn!("麦克风读取失败（设备可能被移除/抢占），0.5s 后尝试重开");
-                    std::thread::sleep(Duration::from_millis(500));
-                    close_mic(mic);
-                    mic_buf.clear();
-                    *mic = open_mic(requested.as_deref())
-                        .map_err(|e| tracing::error!("读错误后重开麦克风失败: {e:#}"))
-                        .ok();
+    let handle_mic = |mic: &mut Option<MicStream>,
+                      mic_buf: &mut Vec<f32>,
+                      requested: &Option<String>,
+                      mic_down: &mut bool| {
+        if let Some(m) = mic {
+            if !drain_mic(m, mic_buf) {
+                tracing::warn!("麦克风读取失败（设备可能被移除/抢占），0.5s 后尝试重开");
+                std::thread::sleep(Duration::from_millis(500));
+                close_mic(mic);
+                mic_buf.clear();
+                match open_mic(requested.as_deref()) {
+                    Ok(m) => {
+                        report(mic_down, false, false, "");
+                        *mic = Some(m);
+                    }
+                    Err(e) => {
+                        tracing::error!("读错误后重开麦克风失败: {e:#}");
+                        report(mic_down, true, false, &format!("{e:#}"));
+                    }
                 }
             }
-            // MC-2/D-29：静音期只进不出 → 有界化（丢弃最旧）
-            cap_mic_buf(mic_buf);
-        };
+        }
+        // MC-2/D-29：静音期只进不出 → 有界化（丢弃最旧）
+        cap_mic_buf(mic_buf);
+    };
 
     while running.load(Ordering::Relaxed) {
         // ── 控制命令（原版 restart_event / mic_restart_event 分支）──
@@ -441,16 +499,32 @@ fn read_loop(
                     close_mic(&mut mic);
                     mic_buf.clear();
                     if !loopback_disabled(&requested_device) {
-                        st = open_loopback(requested_device.as_deref())
-                            .map_err(|e| tracing::error!("重启 loopback 失败: {e:#}"))
-                            .ok();
+                        match open_loopback(requested_device.as_deref()) {
+                            Ok(s) => {
+                                report(&mut loopback_down, false, true, "");
+                                st = Some(s);
+                            }
+                            Err(e) => {
+                                tracing::error!("重启 loopback 失败: {e:#}");
+                                report(&mut loopback_down, true, true, &format!("{e:#}"));
+                            }
+                        }
                     } else {
                         tracing::info!("Loopback disabled (mic-only mode)");
+                        // 刻意禁用 = 用户意图，静默清 Reported 标志不发事件
+                        loopback_down = false;
                     }
                     if requested_mic.is_some() {
-                        mic = open_mic(requested_mic.as_deref())
-                            .map_err(|e| tracing::warn!("重开麦克风失败: {e:#}"))
-                            .ok();
+                        match open_mic(requested_mic.as_deref()) {
+                            Ok(m) => {
+                                report(&mut mic_down, false, false, "");
+                                mic = Some(m);
+                            }
+                            Err(e) => {
+                                tracing::warn!("重开麦克风失败: {e:#}");
+                                report(&mut mic_down, true, false, &format!("{e:#}"));
+                            }
+                        }
                     }
                     chunk_tx.clear();
                     if let Some(s) = &st {
@@ -462,11 +536,19 @@ fn read_loop(
                     close_mic(&mut mic);
                     mic_buf.clear();
                     if requested_mic.is_some() {
-                        mic = open_mic(requested_mic.as_deref())
-                            .map_err(|e| tracing::error!("打开麦克风失败: {e:#}"))
-                            .ok();
+                        match open_mic(requested_mic.as_deref()) {
+                            Ok(m) => {
+                                report(&mut mic_down, false, false, "");
+                                mic = Some(m);
+                            }
+                            Err(e) => {
+                                tracing::error!("打开麦克风失败: {e:#}");
+                                report(&mut mic_down, true, false, &format!("{e:#}"));
+                            }
+                        }
                     } else {
                         tracing::info!("Mic disabled");
+                        mic_down = false;
                     }
                 }
             }
@@ -487,9 +569,16 @@ fn read_loop(
                             "System default output changed -> {current}; restarting capture..."
                         );
                         close_loopback(&mut st);
-                        st = open_loopback(None)
-                            .map_err(|e| tracing::error!("设备变更重启失败: {e:#}"))
-                            .ok();
+                        match open_loopback(None) {
+                            Ok(s) => {
+                                report(&mut loopback_down, false, true, "");
+                                st = Some(s);
+                            }
+                            Err(e) => {
+                                tracing::error!("设备变更重启失败: {e:#}");
+                                report(&mut loopback_down, true, true, &format!("{e:#}"));
+                            }
+                        }
                         chunk_tx.clear();
                         if let Some(s) = &st {
                             tracing::info!("Audio capture restarted on: {}", s.device_name);
@@ -510,11 +599,16 @@ fn read_loop(
             match st.as_mut() {
                 None => {
                     // 打开失败重试路径
-                    st = open_loopback(requested_device.as_deref())
-                        .map_err(|e| tracing::error!("重试打开 loopback: {e:#}"))
-                        .ok();
-                    if st.is_none() {
-                        std::thread::sleep(Duration::from_millis(500));
+                    match open_loopback(requested_device.as_deref()) {
+                        Ok(s) => {
+                            report(&mut loopback_down, false, true, "");
+                            st = Some(s);
+                        }
+                        Err(e) => {
+                            tracing::error!("重试打开 loopback: {e:#}");
+                            report(&mut loopback_down, true, true, &format!("{e:#}"));
+                            std::thread::sleep(Duration::from_millis(500));
+                        }
                     }
                     continue;
                 }
@@ -528,18 +622,36 @@ fn read_loop(
                         Ok(_) => take_native_chunks(s, &mut produced),
                         Err(e) => {
                             tracing::warn!("Read error (device may have changed): {e:#}");
+                            report(
+                                &mut loopback_down,
+                                true,
+                                true,
+                                &format!("read error: {e:#}"),
+                            );
                             std::thread::sleep(Duration::from_millis(500));
                             close_loopback(&mut st);
-                            st = open_loopback(requested_device.as_deref())
-                                .map_err(|e| tracing::error!("读错误后重启失败: {e:#}"))
-                                .ok();
+                            match open_loopback(requested_device.as_deref()) {
+                                Ok(s) => {
+                                    report(&mut loopback_down, false, true, "");
+                                    st = Some(s);
+                                }
+                                Err(e) => {
+                                    tracing::error!("读错误后重启失败: {e:#}");
+                                    report(
+                                        &mut loopback_down,
+                                        true,
+                                        true,
+                                        &format!("{e:#}"),
+                                    );
+                                }
+                            }
                             chunk_tx.clear();
                             continue;
                         }
                     }
                     if produced.is_empty() {
                         // 无新数据（原版 sleep(0.005) continue）
-                        handle_mic(&mut mic, &mut mic_buf, &requested_mic);
+                        handle_mic(&mut mic, &mut mic_buf, &requested_mic, &mut mic_down);
                         std::thread::sleep(Duration::from_millis(POLL_IDLE_MS));
                         continue;
                     }
@@ -548,7 +660,7 @@ fn read_loop(
         }
 
         // ── mic 排水 → 逐块混合推送（原版尾部逻辑）──
-        handle_mic(&mut mic, &mut mic_buf, &requested_mic);
+        handle_mic(&mut mic, &mut mic_buf, &requested_mic, &mut mic_down);
         for chunk in produced {
             let (mixed, mic_rms) = mix_with_mic(&chunk, &mut mic_buf);
             chunk_tx.push((mixed, mic_rms));

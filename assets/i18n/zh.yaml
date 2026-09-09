@@ -638,3 +638,12 @@ diff_page_badge: "{n} 项与默认值不同"
 restore_page_defaults: "恢复本页默认值"
 reset_confirm_title: "恢复默认设置"
 reset_confirm_translation: "确定恢复翻译页所有设置为默认值吗？当前配置（含 API Key）将被清除，可稍后重新添加。"
+
+# ── 音频采集可用性 / 线程监督（架构 2.0 W1，R4/R1）──
+capture_unavailable: "音频采集不可用"
+capture_recovered: "音频采集已恢复"
+capture_role_loopback: "系统声音"
+capture_role_mic: "麦克风"
+thread_died: "后台线程异常退出"
+thread_restarted: "已自动重启"
+thread_not_restarted: "未重启"

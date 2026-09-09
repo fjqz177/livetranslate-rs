@@ -251,12 +251,14 @@ pub trait AudioBackend: Send {
 
     /// 启动采集线程；device 语义与 settings.audio_device 一致
     /// （None=系统默认 | 名字 | "__disabled__"）。
-    /// 返回的 chunk 为 16k mono + 可选 mic RMS。
+    /// 返回的 chunk 为 16k mono + 可选 mic RMS。`status` 为可选的可用性
+    /// 边沿上报通道（R4/D-62：打开/读取失败与恢复；None = 不上报）
     fn start(
         &mut self,
         device: Option<String>,
         mic_device: Option<String>,
         chunk_tx: std::sync::Arc<BoundedDropQueue<(Vec<f32>, Option<f32>)>>,
+        status: Option<std::sync::mpsc::Sender<wasapi_win::AudioStatus>>,
     ) -> anyhow::Result<()>;
 
     /// 运行时切换采集设备（触发线程内重启）

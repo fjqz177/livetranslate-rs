@@ -637,3 +637,12 @@ diff_page_badge: "{n} item(s) differ from defaults"
 restore_page_defaults: "Restore page defaults"
 reset_confirm_title: "Restore defaults"
 reset_confirm_translation: "Restore all Translation page settings to defaults? Current config (including API keys) will be cleared; you can re-add them later."
+
+# ── Audio capture availability / thread supervision (arch v2 W1, R4/R1) ──
+capture_unavailable: "Audio capture unavailable"
+capture_recovered: "Audio capture recovered"
+capture_role_loopback: "system audio"
+capture_role_mic: "microphone"
+thread_died: "Background thread died"
+thread_restarted: "restarted automatically"
+thread_not_restarted: "not restarted"

@@ -13,8 +13,10 @@
 
 mod backend;
 mod logging;
+mod panic_hook;
 mod pipeline;
 mod shell;
+mod supervisor;
 
 use lt_proto::{Cmd, UiMsg};
 
@@ -24,22 +26,35 @@ fn main() -> anyhow::Result<()> {
         return asr_worker_entry(&cfg);
     }
 
-    // R-4 预案 A：ort 走 load-dynamic，任何 ort 调用前解压 dll 并指向它
-    lt_pipeline::ensure_ort_dylib()?;
+    // ── R1/D-62：panic hook 最早安装（先于一切可失败步骤；hook 落 crash
+    // 文件 + tracing，线程 panic 从此不再黑洞）──
+    panic_hook::install();
 
-    ensure_single_instance()?;
-
-    // 无 settings 文件 → 全默认值（直进主界面；模型缺失走识别页按需下载）
-    let initial_settings = lt_models::settings_io::load()?.unwrap_or_default();
-
-    // ui_lang="system" → 系统语言解析（新版 general_tab 的 resolve_ui_lang 语义）
-    let ui_lang = initial_settings.ui_lang.clone();
-    lt_i18n::set_lang(if ui_lang == "system" {
-        lt_i18n::detect_system_lang()
-    } else {
-        &ui_lang
-    });
-    logging::init()?;
+    // 早期失败呈现（R11①/D-65）：事件循环线程尚未建立，同步 MessageBoxW
+    // 合法（D-33 禁令针对事件循环线程）——logging 初始化前的失败不再黑洞
+    let early = (|| -> anyhow::Result<lt_proto::Settings> {
+        // R-4 预案 A：ort 走 load-dynamic，任何 ort 调用前解压 dll 并指向它
+        lt_pipeline::ensure_ort_dylib()?;
+        ensure_single_instance()?;
+        // 无 settings 文件 → 全默认值（直进主界面；模型缺失走识别页按需下载）
+        let initial_settings = lt_models::settings_io::load()?.unwrap_or_default();
+        // ui_lang="system" → 系统语言解析（新版 general_tab 的 resolve_ui_lang 语义）
+        let ui_lang = initial_settings.ui_lang.clone();
+        lt_i18n::set_lang(if ui_lang == "system" {
+            lt_i18n::detect_system_lang()
+        } else {
+            &ui_lang
+        });
+        logging::init()?;
+        Ok(initial_settings)
+    })();
+    let initial_settings = match early {
+        Ok(s) => s,
+        Err(e) => {
+            fatal_early(&format!("{e:#}"));
+            return Err(e);
+        }
+    };
 
     let event_loop = winit::event_loop::EventLoop::<UiMsg>::with_user_event().build()?;
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<Cmd>();
@@ -51,8 +66,11 @@ fn main() -> anyhow::Result<()> {
     app.kick_ticks();
 
     let proxy = event_loop.create_proxy();
-    // 常驻日志桥接：广播 hub → LogLine 事件（日志窗数据源）
-    logging::spawn_bridge(proxy.clone());
+    // 常驻日志桥接：广播 hub → LogLine 事件（日志窗数据源）。
+    // W1 起经监督器出生（死亡可见 + 重生）；stop 标志由 main 在停机序置位
+    let app_sup = supervisor::Supervisor::new(supervisor::proxy_sink(&proxy));
+    let bridge_stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    logging::spawn_bridge(&app_sup, bridge_stop.clone(), proxy.clone());
     // 后台命令线程：下载编排（识别页/面板触发）+ 下载期日志转发。
     // 下载目标不在此快照：backend 维护 settings 镜像，StartDownload 时按当前
     // 引擎/档位现场重算（运行中切换后下载的才是所选模型，M5.1）。
@@ -61,36 +79,66 @@ fn main() -> anyhow::Result<()> {
     let mut shell = shell::AppShell::new(app, proxy, Some(initial_settings.clone()));
 
     let result = event_loop.run_app(&mut shell);
-
+    // 收尾序：桥停止标志 → shell（stop 管道 + save settings）→ 监督器 join
+    bridge_stop.store(true, std::sync::atomic::Ordering::SeqCst);
     shell.shutdown();
+    app_sup.join_all();
     result?;
 
     tracing::info!("LiveTranslate 退出");
     Ok(())
 }
 
-/// 单实例：命名互斥量（先 Open 探测已存在的，再 Create 持有至进程退出）
+/// 单实例：命名互斥量直接 Create 判 ERROR_ALREADY_EXISTS（W1/R11：消除旧
+/// 「Open 探测 → Create」两步之间的 TOCTOU 竞窗——两进程可同时通过探测）。
+/// W6 将在此叠加二次启动激活已有窗口（WD-5）
 #[cfg(windows)]
 fn ensure_single_instance() -> anyhow::Result<()> {
     use windows::core::PCWSTR;
-    use windows::Win32::System::Threading::{CreateMutexW, SYNCHRONIZATION_SYNCHRONIZE};
+    use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
+    use windows::Win32::System::Threading::CreateMutexW;
 
     // 裸名（无反斜杠）：落在会话 BaseNamedObjects 根，
     // 带斜杠的名字会被对象命名空间当子目录解析而报 0x80070003
     let name: Vec<u16> = "LiveTranslateSingleInstance\0".encode_utf16().collect();
     let pcw = PCWSTR(name.as_ptr());
     unsafe {
-        // 已有实例持有同名互斥量 → Open 成功即拒绝启动
-        if windows::Win32::System::Threading::OpenMutexW(SYNCHRONIZATION_SYNCHRONIZE, false, pcw)
-            .is_ok()
-        {
-            anyhow::bail!("LiveTranslate 已在运行（单实例互斥量已存在）");
+        // windows crate 仅在失败路径消费 last error，成功路径保留 → 可靠判定
+        CreateMutexW(None, true, pcw)
+            .map_err(|e| anyhow::anyhow!("创建单实例互斥量失败: {e}"))?;
+        if GetLastError() == ERROR_ALREADY_EXISTS {
+            return Err(anyhow::anyhow!("LiveTranslate 已在运行（单实例互斥量已存在）"));
         }
         // HANDLE 是裸包装无 Drop：不关即存活到进程退出，由 OS 回收
-        let _handle = CreateMutexW(None, true, pcw)
-            .map_err(|e| anyhow::anyhow!("创建单实例互斥量失败: {e}"))?;
     }
     Ok(())
+}
+
+/// 早期启动失败的呈现（W1/R11①/D-65）：此时尚无事件循环线程，同步
+/// MessageBoxW 不违反 D-33；双击后「无事发生」的黑洞从此有形
+#[cfg(windows)]
+fn fatal_early(msg: &str) {
+    use windows::core::PCWSTR;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        MessageBoxW, MB_ICONERROR, MB_OK, MB_SETFOREGROUND, MB_TOPMOST,
+    };
+    let text: Vec<u16> = format!("LiveTranslate 启动失败\r\n{msg}\r\n\r\n（详情见日志目录；本窗口关闭后应用退出）\0")
+        .encode_utf16()
+        .collect();
+    let caption: Vec<u16> = "LiveTranslate\0".encode_utf16().collect();
+    unsafe {
+        let _ = MessageBoxW(
+            None,
+            PCWSTR(text.as_ptr()),
+            PCWSTR(caption.as_ptr()),
+            MB_ICONERROR | MB_OK | MB_SETFOREGROUND | MB_TOPMOST,
+        );
+    }
+}
+
+#[cfg(not(windows))]
+fn fatal_early(msg: &str) {
+    eprintln!("LiveTranslate 启动失败: {msg}");
 }
 
 #[cfg(not(windows))]

@@ -1,11 +1,13 @@
-//! settings.json 读写 —— 原子写（tmp + rename）+ 兼容加载。
+//! settings.json 读写 —— 原子写（tmp + .bak 链，R17）+ 兼容加载 + 坏档隔离（R17）。
 
 use crate::paths::settings_file;
 use lt_proto::Settings;
 
 /// 加载设置；文件不存在返回 None（调用方走首启向导）。
-/// 任何解析失败都不致命：记警告后按"文件不存在"处理（原版 _load_saved_settings
-/// 读坏文件同样得到空 dict）。
+/// 解析失败不致命（原版 _load_saved_settings 读坏文件同样得到空 dict），但坏档
+/// 不再无痕留在原地等下次 save 覆盖（R17）：原地改名为
+/// `settings.json.corrupt-<unix_secs>` 隔离留证；改名失败（如被占用）保留原文件
+/// 仅记日志。两种情况都按"文件不存在"处理返回 None。
 pub fn load() -> anyhow::Result<Option<Settings>> {
     let path = settings_file()?;
     if !path.exists() {
@@ -15,7 +17,22 @@ pub fn load() -> anyhow::Result<Option<Settings>> {
     let v: serde_json::Value = match serde_json::from_str(&raw) {
         Ok(v) => v,
         Err(e) => {
-            tracing::warn!("settings.json 解析失败，视为无配置: {e}");
+            // 坏档隔离（R17）：时间戳取 unix 秒（lt-models 无 chrono 依赖，SystemTime 足矣）
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let corrupt = path.with_extension(format!("json.corrupt-{ts}"));
+            match std::fs::rename(&path, &corrupt) {
+                Ok(()) => tracing::warn!(
+                    "settings.json 解析失败，坏档已隔离为 {} 留证，按无配置处理: {e}",
+                    corrupt.display()
+                ),
+                Err(re) => tracing::warn!(
+                    "settings.json 解析失败，隔离改名 {} 失败（文件可能被占用），原文件保留: {re}；解析错误: {e}",
+                    corrupt.display()
+                ),
+            }
             return Ok(None);
         }
     };
@@ -23,21 +40,54 @@ pub fn load() -> anyhow::Result<Option<Settings>> {
     Ok(Some(s))
 }
 
-/// 原子保存：先写 `settings.json.tmp` 再 rename 覆盖（防崩溃损坏，原版同款）。
+/// 原子保存（R17 .bak 链）：写 tmp 成功后 现档 → `settings.json.bak`，再 tmp → 现档，
+/// 成功后删 .bak。消除旧实现 remove 现档与 rename tmp 之间的"无 settings.json 窗口"
+/// （进程死在窗口期 = 配置全丢）：任意时刻崩溃，旧档要么原位、要么在 .bak，均可找回。
 pub fn save(s: &Settings) -> anyhow::Result<()> {
     let path = settings_file()?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
     let tmp = path.with_extension("json.tmp");
+    let bak = path.with_extension("json.bak");
     let body = serde_json::to_string_pretty(s)?;
     std::fs::write(&tmp, body)?;
-    // Windows 上 rename 目标存在时需要替换语义；std::fs::rename 在 Windows
-    // 对已存在目标的行为是失败（ERR_FILE_EXISTS 部分场景），用 remove+rename 兜底。
-    if path.exists() {
-        std::fs::remove_file(&path)?;
+    // 第一步：现档挪进 .bak。覆盖旧 .bak 用先 remove 再 rename 的顺序（Windows 上
+    // rename 对已存在目标的行为是失败，ERR_FILE_EXISTS 部分场景，历史注释同款）。
+    // 目录占位等异常状态不算"现档"，不进 .bak 链，交给第二步 rename 自然报错。
+    if path.is_file() {
+        if let Err(e) = std::fs::remove_file(&bak) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                return Err(anyhow::anyhow!("旧备份 {} 无法覆盖: {e}", bak.display()));
+            }
+        }
+        std::fs::rename(&path, &bak)?;
     }
-    std::fs::rename(&tmp, &path)?;
+    // 第二步：tmp 顶上现档。失败则尽力把 .bak 改回恢复旧档；恢复也失败就保留
+    // .bak 并在错误信息中提示可手动恢复。
+    if let Err(e) = std::fs::rename(&tmp, &path) {
+        let _ = std::fs::remove_file(&tmp); // 尽力清 tmp，失败不影响错误上抛
+        let restored = bak.exists() && std::fs::rename(&bak, &path).is_ok();
+        return if restored {
+            Err(anyhow::anyhow!(
+                "settings.json 保存失败（{e}）；旧档已从 {} 恢复",
+                bak.display()
+            ))
+        } else if bak.exists() {
+            Err(anyhow::anyhow!(
+                "settings.json 保存失败（{e}）；旧档保留在 {}，可手动改回 settings.json",
+                bak.display()
+            ))
+        } else {
+            Err(anyhow::anyhow!("settings.json 保存失败: {e}"))
+        };
+    }
+    // 成功：新档就位，.bak 完成使命（NotFound = 本次未走 .bak 链，忽略）
+    if let Err(e) = std::fs::remove_file(&bak) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            tracing::warn!("settings.json 已保存，但清理备份 {} 失败: {e}", bak.display());
+        }
+    }
     Ok(())
 }
 
@@ -90,14 +140,85 @@ mod tests {
     #[test]
     fn corrupted_file_treated_as_missing() {
         let _g = crate::ENV_LOCK.lock().unwrap();
-        let dir = std::env::temp_dir()
-            .join(format!("lt_settings_bad_{})", std::process::id()).replace(")", ""));
+        let dir = std::env::temp_dir().join(format!("lt_settings_bad_{}", std::process::id()));
         std::env::set_var("LIVETRANSLATE_CONFIG_DIR", &dir);
+        let _cleanup = scopeguard(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(settings_file().unwrap(), "{ 这不是合法 json").unwrap();
+        let bad = "{ 这不是合法 json";
+        std::fs::write(settings_file().unwrap(), bad).unwrap();
+
         assert!(load().unwrap().is_none());
-        let _ = std::fs::remove_dir_all(&dir);
-        std::env::remove_var("LIVETRANSLATE_CONFIG_DIR");
+
+        // R17：坏档已原地改名隔离为 settings.json.corrupt-<unix_secs>，内容留证
+        let path = settings_file().unwrap();
+        assert!(!path.exists(), "坏档应已隔离，settings.json 不再在原地");
+        let corrupt: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|n| n.starts_with("settings.json.corrupt-"))
+                    .unwrap_or(false)
+            })
+            .collect();
+        assert_eq!(corrupt.len(), 1, "应恰好产生一个隔离文件: {corrupt:?}");
+        assert_eq!(
+            std::fs::read_to_string(&corrupt[0]).unwrap(),
+            bad,
+            "隔离文件内容应与原坏档一致"
+        );
+    }
+
+    #[test]
+    fn save_bak_chain_recovers_on_success() {
+        let _g = crate::ENV_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join(format!("lt_settings_bak_ok_{}", std::process::id()));
+        std::env::set_var("LIVETRANSLATE_CONFIG_DIR", &dir);
+        let _cleanup = scopeguard(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = settings_file().unwrap();
+        let bak = path.with_extension("json.bak");
+        std::fs::write(&path, r#"{ "target_language": "zh" }"#).unwrap();
+
+        let mut s = Settings::default();
+        s.target_language = "ja".into();
+        save(&s).unwrap();
+
+        // 成功后 .bak 完成使命被删除、tmp 无残留，新内容生效
+        assert!(!bak.exists(), "成功保存后不应残留 .bak");
+        assert!(!path.with_extension("json.tmp").exists());
+        let back = load().unwrap().unwrap();
+        assert_eq!(back.target_language, "ja");
+    }
+
+    #[test]
+    fn save_keeps_bak_when_target_rename_fails() {
+        let _g = crate::ENV_LOCK.lock().unwrap();
+        let dir =
+            std::env::temp_dir().join(format!("lt_settings_bak_fail_{}", std::process::id()));
+        std::env::set_var("LIVETRANSLATE_CONFIG_DIR", &dir);
+        let _cleanup = scopeguard(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = settings_file().unwrap();
+        let bak = path.with_extension("json.bak");
+        // 构造第二步 rename 失败（目录占位法）：settings.json 位置被一个目录占住，
+        // 「文件 rename 顶替目录」在 Windows/Linux 上都必然失败；上一轮崩溃遗留的
+        // .bak 里正是旧档。
+        let old = r#"{ "target_language": "zh" }"#;
+        std::fs::write(&bak, old).unwrap();
+        std::fs::create_dir_all(&path).unwrap();
+
+        let mut s = Settings::default();
+        s.target_language = "ja".into();
+        let err = save(&s).expect_err("目录占位应使保存失败");
+
+        // .bak 保留且内容仍是旧档；错误信息提到 .bak 可手动恢复
+        assert!(err.to_string().contains(".bak"), "错误信息应提到 .bak: {err}");
+        assert!(bak.exists(), "恢复失败后 .bak 应保留");
+        assert_eq!(std::fs::read_to_string(&bak).unwrap(), old);
+        assert!(!path.is_file(), "目录占位不应被新档顶替");
     }
 
     // 简易 RAII 清理（避免引入 scopeguard 依赖）

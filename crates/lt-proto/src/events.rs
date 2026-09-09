@@ -53,6 +53,15 @@ pub enum UiEvent {
     AsrDevice(String),
     /// ASR 完全不可用
     AsrUnavailable,
+    /// 音频采集可用性（架构 2.0 W1/R4：三层错误可见性对称性补齐——ASR 有
+    /// AsrUnavailable、翻译有 TranslatorUnavailable，音频此前仅 tracing）。
+    /// 边沿触发语义对齐 AsrUnavailable：Unavailable 只在转坏瞬间发一次，
+    /// 恢复前不重发；Recovered 只在转好瞬间发一次
+    Capture(CaptureEvent),
+    /// 被监督线程死亡（架构 2.0 W1/R1：线程 panic 不再黑洞；restarted =
+    /// 监督器已按策略重启。W1 仅覆盖 capture/ASR/翻译池/bench/日志桥，
+    /// 枚举面随波次扩充——加法豁免）
+    ThreadDied(ThreadDied),
     /// 日志行（tracing broadcast → 日志窗/下载框）
     LogLine {
         level: u8,
@@ -82,6 +91,46 @@ pub enum UiEvent {
         error: Option<String>,
         ms: u64,
     },
+}
+
+/// 音频采集角色（R4）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AudioRole {
+    /// 系统声输出回环（loopback）
+    Loopback,
+    /// 麦克风输入（mic）
+    Mic,
+}
+
+/// 音频采集可用性事件载荷（R4）
+#[derive(Debug, Clone)]
+pub enum CaptureEvent {
+    /// 采集不可用（打开/读取失败；error = 末次错误的人类可读串）
+    Unavailable { role: AudioRole, error: String },
+    /// 从不可用恢复
+    Recovered { role: AudioRole },
+}
+
+/// 被监督线程的身份（W1 先覆盖监督器首批接管面；随波次加法扩充）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThreadRole {
+    Capture,
+    AsrMain,
+    TlWorker,
+    Bench,
+    LogBridge,
+    /// wasapi 可用性边沿事件 → UiEvent::Capture 的转发线程（W1/R4）
+    AudioBridge,
+}
+
+/// 被监督线程死亡事件载荷（R1）
+#[derive(Debug, Clone)]
+pub struct ThreadDied {
+    pub role: ThreadRole,
+    /// panic 信息 + 位置（hook 已同时落 crash 文件与 tracing）
+    pub detail: String,
+    /// 监督器是否已按策略重启
+    pub restarted: bool,
 }
 
 /// UI → 管道的命令

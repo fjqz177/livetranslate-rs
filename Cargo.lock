@@ -2729,7 +2729,6 @@ dependencies = [
  "chrono",
  "crossbeam-channel",
  "lt-models",
- "lt-proto",
  "ndarray",
  "ort",
  "parking_lot",
