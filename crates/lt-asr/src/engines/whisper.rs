@@ -19,7 +19,7 @@
 //! stdout 纪律（E-07）：worker 的 stdout 是协议通道，whisper.cpp 的进度/时间戳
 //! 打印全部关闭（print_* 四项 false）；C++ 侧残留日志走 stderr，由父进程重定向。
 
-use super::normalize_language;
+use super::{normalize_language, pad_samples};
 use crate::engine::AsrEngine;
 use crate::worker::WorkerConfig;
 use lt_proto::{language_display, AsrResult, EngineError};
@@ -124,18 +124,6 @@ impl WhisperEngine {
         let joined = parts.join(" ").trim().to_string();
         (!joined.is_empty()).then_some(joined)
     }
-}
-
-/// pad 桶（原版 _prepare_audio_input：尾部补零至 quantum 整倍）。
-/// 返回 None 表示无需补零（quantum=0 或已整倍）。
-fn pad_samples(audio: &[f32], quantum: usize) -> Option<Vec<f32>> {
-    if quantum == 0 || audio.is_empty() || audio.len().is_multiple_of(quantum) {
-        return None;
-    }
-    let target = (audio.len() / quantum + 1) * quantum;
-    let mut out = audio.to_vec();
-    out.resize(target, 0.0);
-    Some(out)
 }
 
 impl AsrEngine for WhisperEngine {

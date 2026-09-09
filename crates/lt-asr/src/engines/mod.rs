@@ -91,9 +91,36 @@ pub(crate) fn sherpa_create_failure_hint() -> &'static str {
     "详情见日志窗 debug（asr_worker stderr）；若怀疑缓存损坏，可在 设置→数据与存储 删除该模型后重新下载"
 }
 
+/// pad 桶（R21 自 whisper.rs 提升共享，原版 _prepare_audio_input：尾部补零至
+/// quantum 整倍）。返回 None 表示无需补零（quantum=0 或已整倍）。
+/// 目前唯一消费方是 whisper（sensevoice/nano/qwen3 无 padding 语义）；
+/// 共享化后新引擎按需取用，避免跨引擎私有副本漂移。
+pub(crate) fn pad_samples(audio: &[f32], quantum: usize) -> Option<Vec<f32>> {
+    if quantum == 0 || audio.is_empty() || audio.len().is_multiple_of(quantum) {
+        return None;
+    }
+    let target = (audio.len() / quantum + 1) * quantum;
+    let mut out = audio.to_vec();
+    out.resize(target, 0.0);
+    Some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pad_samples_shared_semantics() {
+        // R21：共享版（原 whisper 私有副本语义不动）
+        // quantum=0 或空音频 → 无需补零
+        assert_eq!(pad_samples(&[], 512), None);
+        assert_eq!(pad_samples(&[0.1, 0.2], 0), None);
+        // 已整倍 → 无需补零
+        assert_eq!(pad_samples(&[0.1, 0.2, 0.3, 0.4], 2), None);
+        // 非整倍 → 补零至整倍
+        let got = pad_samples(&[0.1, 0.2, 0.3], 2).expect("应补零");
+        assert_eq!(got, vec![0.1, 0.2, 0.3, 0.0]);
+    }
 
     #[test]
     fn strip_special_tags_semantics() {

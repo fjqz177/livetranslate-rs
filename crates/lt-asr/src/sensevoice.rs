@@ -10,7 +10,7 @@
 //! 语言最终由 [`resolve_language`] 三优先决策：显式设置 > 模型标签 > 启发式。
 
 use crate::engine::AsrEngine;
-use crate::engines::{describe_model_files, guess_language, sherpa_create_failure_hint};
+use crate::engines::{describe_model_files, guess_language, normalize_language, sherpa_create_failure_hint};
 use lt_proto::{AsrResult, EngineError};
 use sherpa_onnx::{OfflineRecognizer, OfflineRecognizerConfig, OfflineSenseVoiceModelConfig};
 use std::path::{Path, PathBuf};
@@ -135,13 +135,6 @@ fn pick_model_file(dir: &Path) -> Result<PathBuf, EngineError> {
         "model.int8.onnx / model.onnx 均不存在于 {}",
         dir.display()
     )))
-}
-
-fn normalize_language(language: &str) -> Option<String> {
-    match language {
-        "" | "auto" | "Auto" => None,
-        l => Some(l.to_string()),
-    }
 }
 
 fn build_recognizer(
