@@ -12,8 +12,9 @@ pub mod settings;
 /// 历史：W0/W1 无结构变更（1）；W2 契约类型化（Menu/Tray→AppCommand、
 /// DownloadProgress→Download、DownloadFailed 类型化、完成哨兵→Bench、
 /// 新增 Events 批量变体）= 2；W4 设置总线（`UiMsg::Cmd` 删除——控制面
-/// mpsc 由 AppShell 直排，INV2；lt-backend 线程退役）= 3。
-pub const PROTO_VERSION: u32 = 3;
+/// mpsc 由 AppShell 直排，INV2；lt-backend 线程退役）= 3；E2 值域枚举化
+/// （`Cmd::StartDownload` 载荷改型 String→`Hub`/`ProxyMode`，D-79）= 4。
+pub const PROTO_VERSION: u32 = 4;
 
 pub use asr_result::{language_display, AsrResult, EngineError, WordTs};
 pub use events::{
@@ -22,4 +23,7 @@ pub use events::{
     QueueId, ThreadDied, ThreadRole, UiEvent, UiMsg,
 };
 pub use layout::Hub;
-pub use settings::{normalize_language, ModelConfig, Settings, Style, SubtitleLine, SubtitleMode};
+pub use settings::{
+    normalize_language, ASR_ENGINES, EngineKey, ModelConfig, ProxyMode, Settings, Style,
+    SubtitleLine, SubtitleMode,
+};

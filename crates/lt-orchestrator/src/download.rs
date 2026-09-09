@@ -60,8 +60,9 @@ impl DownloadManager {
 
     /// 起下载会话（非阻塞）：目标清单按当前设置现场重算（M5.1——运行中切换
     /// 的引擎/档位即时生效，启动快照会下错模型）；在途时忽略重复请求
-    /// （UI 侧亦有按钮守卫）。
-    pub fn start(&mut self, settings: &Settings, hub_s: &str, proxy_s: &str) {
+    /// （UI 侧亦有按钮守卫）。E2/D-79：hub/proxy 为值域枚举（UI 经透镜
+    /// 转换后传入，本层不再解析字符串）。
+    pub fn start(&mut self, settings: &Settings, hub: Hub, proxy: ProxyMode) {
         if self.in_flight() {
             tracing::warn!("已有下载会话在途，忽略重复 StartDownload");
             self.line("已有下载进行中，请等待完成或取消后重试");
@@ -72,8 +73,7 @@ impl DownloadManager {
         let artery = self.artery.clone();
         let first_launch = self.first_launch;
         let session_settings = settings.clone();
-        let session_hub = hub_s.to_string();
-        let session_proxy_s = proxy_s.to_string();
+        let session_proxy = proxy;
         let cancel_for_run = cancel.clone();
         // INV3：会话线程出生唯一＝监督器；Policy::Never（常量回收语义）。
         // factory 惰性持有（INV5 干净初态），catch_unwind 兜底层 panic →
@@ -82,8 +82,7 @@ impl DownloadManager {
             let artery = artery.clone();
             let session_settings = session_settings.clone();
             let missing = missing.clone();
-            let session_hub = session_hub.clone();
-            let session_proxy_s = session_proxy_s.clone();
+            let session_proxy = session_proxy.clone();
             let cancel_for_run = cancel_for_run.clone();
             Box::new(move || {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -92,8 +91,8 @@ impl DownloadManager {
                         first_launch,
                         &session_settings,
                         &missing,
-                        &session_hub,
-                        &session_proxy_s,
+                        hub,
+                        session_proxy,
                         cancel_for_run,
                     );
                 }));
@@ -133,24 +132,15 @@ impl DownloadManager {
     }
 }
 
-fn proxy_mode_from(s: &str) -> ProxyMode {
-    match s {
-        "none" => ProxyMode::None,
-        "system" | "" => ProxyMode::System,
-        url => ProxyMode::Url(url.to_string()),
-    }
-}
-
 fn run_download(
     artery: &Arc<crate::event_artery::EventArtery>,
     first_launch: bool,
     settings: &Settings,
     missing: &[MissingModel],
-    hub_s: &str,
-    proxy_s: &str,
+    hub: Hub,
+    proxy: ProxyMode,
     cancel: Arc<AtomicBool>,
 ) {
-    let hub = if hub_s == "hf" { Hub::Hf } else { Hub::Ms };
     let models_dir = match lt_models::paths::models_dir(settings.models_dir.as_deref()) {
         Ok(d) => d,
         Err(e) => {
@@ -168,7 +158,7 @@ fn run_download(
     };
     if targets.is_empty() {
         // 已就绪（重试幂等）：直接成功收尾
-        succeed(artery, first_launch, settings, hub_s, proxy_s);
+        succeed(artery, first_launch, settings, hub, &proxy);
         return;
     }
 
@@ -193,12 +183,12 @@ fn run_download(
     // 下载线程 + 事件泵（Downloader 阻塞式，独立线程）
     let (tx, rx) = std::sync::mpsc::channel::<DownloadEvent>();
     let dl_dir = models_dir.clone();
-    let dl_proxy_mode = proxy_mode_from(proxy_s);
+    let worker_proxy = proxy.clone();
     let worker = std::thread::Builder::new()
         .name("lt-download".into())
         .spawn(move || {
             // D-24：HF 尝试端点随所选 hub——选 HF=官方直连，选 MS=自动走 hf-mirror
-            let dl = Downloader::new(dl_dir, dl_proxy_mode).with_hf_endpoint(hf_endpoint_for(hub));
+            let dl = Downloader::new(dl_dir, worker_proxy).with_hf_endpoint(hf_endpoint_for(hub));
             for m in &targets {
                 // DL-5：所选 hub 优先，404/网络不可达时回落另一 hub（编排下沉
                 // Downloader::download_model；hub_chain 见 lt-models）
@@ -243,7 +233,7 @@ fn run_download(
     // W7：worker panic 不再是"会话线程被 expect 拖死"——join 的 Err 分支
     // 直接落失败终态，下载卡收 DownloadFailed 收敛（卡死解除）。
     match worker.join() {
-        Ok(Ok(())) => succeed(artery, first_launch, settings, hub_s, proxy_s),
+        Ok(Ok(())) => succeed(artery, first_launch, settings, hub, &proxy),
         Ok(Err((name, e))) => {
             let cancelled = e
                 .downcast_ref::<DlError>()
@@ -313,13 +303,15 @@ fn succeed(
     artery: &Arc<crate::event_artery::EventArtery>,
     first_launch: bool,
     settings: &Settings,
-    hub_s: &str,
-    proxy_s: &str,
+    hub: Hub,
+    proxy: &ProxyMode,
 ) {
     let final_settings = if first_launch {
         Settings {
-            hub: hub_s.into(),
-            download_proxy: proxy_s.into(),
+            // E2/D-79：持久层保持字符串——枚举经 as_settings_str/to_settings_str
+            // 写回（向导 13 键块的 hub/proxy 语义不变）
+            hub: hub.as_settings_str().into(),
+            download_proxy: proxy.to_settings_str(),
             asr_engine: "funasr".into(),
             funasr_model: "sensevoice-small".into(),
             vad_mode: "silero".into(),
@@ -417,15 +409,31 @@ mod tests {
         assert_eq!(format_size(3_100_000_000), "2.89 GB");
     }
 
+    /// E2/D-79：ProxyMode 单点转换随迁 proto——原 proxy_mode_from 语义等价
+    ///（none 直连 / 空串与 system 走系统 / 其余视作 URL）
     #[test]
     fn proxy_mode_mapping() {
-        assert!(matches!(proxy_mode_from("none"), ProxyMode::None));
-        assert!(matches!(proxy_mode_from("system"), ProxyMode::System));
-        assert!(matches!(proxy_mode_from(""), ProxyMode::System));
         assert!(matches!(
-            proxy_mode_from("http://127.0.0.1:7890"),
+            ProxyMode::from_settings_str("none"),
+            ProxyMode::None
+        ));
+        assert!(matches!(
+            ProxyMode::from_settings_str("system"),
+            ProxyMode::System
+        ));
+        assert!(matches!(ProxyMode::from_settings_str(""), ProxyMode::System));
+        assert!(matches!(
+            ProxyMode::from_settings_str("http://127.0.0.1:7890"),
             ProxyMode::Url(_)
         ));
+        // 往返：枚举 → 持久层字符串 → 枚举 恒等
+        for p in [
+            ProxyMode::None,
+            ProxyMode::System,
+            ProxyMode::Url("http://p:8080".into()),
+        ] {
+            assert_eq!(ProxyMode::from_settings_str(&p.to_settings_str()), p);
+        }
     }
 
     /// W7：下载会话经监督器出生——快速成功会话（缺失清单为空，零网络）
@@ -450,7 +458,7 @@ mod tests {
             ..Default::default()
         };
 
-        dl.start(&s, "hf", "none");
+        dl.start(&s, Hub::Hf, ProxyMode::None);
         // 终态事件到达（DownloadSucceeded；本地路径零网络）
         let mut batch = Vec::new();
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
@@ -475,7 +483,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(50));
         }
         assert!(!dl.in_flight(), "会话结束后在途判假");
-        dl.start(&s, "hf", "none");
+        dl.start(&s, Hub::Hf, ProxyMode::None);
         let mut batch = Vec::new();
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         loop {

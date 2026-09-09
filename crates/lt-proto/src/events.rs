@@ -5,7 +5,7 @@
 //! - [`Cmd`]：UI → 管道/worker（等价原版主线程直接调 App 方法）
 //! - 托盘/菜单：tray-icon 与 muda 的原始事件转发
 
-use crate::settings::{ModelConfig, Settings};
+use crate::settings::{ModelConfig, ProxyMode, Settings};
 
 /// UI ↔ 工作线程的统一外层消息（EventLoopProxy 的 user event）
 #[derive(Debug, Clone)]
@@ -351,10 +351,12 @@ pub enum Cmd {
     Pause,
     Resume,
     Stop,
-    /// 首启向导/缺模型对话框：开始下载（hub: "ms"|"hf"；proxy: "none"|"system"|URL）
+    /// 首启向导/缺模型对话框：开始下载（E2/D-79：载荷改型为值域枚举——
+    /// UI 经 `Settings::hub()`/`proxy_mode()` 透镜转换，消灭未知字符串
+    /// 静默暗默认）
     StartDownload {
-        hub: String,
-        proxy: String,
+        hub: crate::layout::Hub,
+        proxy: ProxyMode,
     },
     /// 取消在途下载（DL-4/D-23）：backend 置会话取消令牌，Downloader 在文件
     /// 边界/重试间隙/读块检查点停止并保留 .incomplete 续传现场（仅追加成员）

@@ -25,3 +25,8 @@ uuid = { workspace = true }
 [target."cfg(windows)".dependencies]
 # 仅下载管理域：free_disk_bytes（AH-5 磁盘预检，GetDiskFreeSpaceExW）
 windows = { workspace = true }
+
+[dev-dependencies]
+# 仅测试面：every_settings_field_is_classified 用 serde 键集做字段归类防线
+#（ADR-13①；E1-1 曾删零引用的 serde_json 正式依赖，此处是测试的真实需要）
+serde_json = { workspace = true }

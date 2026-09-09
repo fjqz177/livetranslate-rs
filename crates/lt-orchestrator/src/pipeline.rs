@@ -35,7 +35,9 @@ use lt_audio::interim::{
 use lt_audio::{
     AudioBackend, BoundedDropQueue, CaptureLoop, InterimControl, SegmentSource, VadProcessor,
 };
-use lt_proto::{AudioRole, CaptureEvent, MonitorSample, QueueId, ThreadRole, UiEvent};
+use lt_proto::{
+    ASR_ENGINES, AudioRole, CaptureEvent, EngineKey, MonitorSample, QueueId, ThreadRole, UiEvent,
+};
 use lt_translate::Translator;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -928,8 +930,15 @@ fn build_worker_config(
     whisper_model: &str,
     whisper_pad: f32,
 ) -> Option<(WorkerConfig, String)> {
-    match engine {
-        "funasr" => {
+    // E2/D-79：值域先验（未实装引擎诚实 None——不用 from_settings_str 的
+    // FunAsr 回退，那会把"未知引擎"错装配成 funasr worker），再走枚举分派。
+    // WorkerConfig.engine 保持 String：worker IPC 是唯一真进程边界
+    if !ASR_ENGINES.contains(&engine) {
+        tracing::warn!("引擎 {engine:?} 未实装，无法启动 worker");
+        return None;
+    }
+    match EngineKey::from_settings_str(engine) {
+        EngineKey::FunAsr => {
             let (entry, _fell_back) = resolve_funasr_entry(funasr_model);
             let model_dir = lt_models::cache::local_model_dir(models_dir, &entry)?;
             // WP-A：nano 为独立 worker 引擎（LLM 解码、无 padding 语义）；
@@ -949,7 +958,7 @@ fn build_worker_config(
                 entry.display.into(),
             ))
         }
-        "whisper" => {
+        EngineKey::Whisper => {
             // M5.1：whisper_model_size 为 builtin 档（缓存 snapshot 解析 .bin）
             // 或本地 GGML 路径；未缓存 → None（发 AsrUnavailable，等向导/下载）
             let (model_path, display) = resolve_whisper_model(models_dir, whisper_model)?;
@@ -963,7 +972,7 @@ fn build_worker_config(
                 display,
             ))
         }
-        "qwen3" => {
+        EngineKey::Qwen3 => {
             // WP-B：单一模型（B-α，settings 无独立模型键）；无 padding 语义
             let entry = registry::qwen3_entry();
             let model_dir = lt_models::cache::local_model_dir(models_dir, &entry)?;
@@ -977,20 +986,16 @@ fn build_worker_config(
                 entry.display.into(),
             ))
         }
-        other => {
-            tracing::warn!("引擎 {other:?} 未实装，无法启动 worker");
-            None
-        }
     }
 }
 
 /// 引擎切换日志的模型键：whisper 打档位、qwen3 打固定键（settings 无独立键）、
 /// funasr 打 funasr_model——打错键会误导诊断。
 fn engine_model_key<'a>(engine: &str, funasr_model: &'a str, whisper_model: &'a str) -> &'a str {
-    match engine {
-        "whisper" => whisper_model,
-        "qwen3" => "qwen3-asr-0.6b",
-        _ => funasr_model,
+    match EngineKey::from_settings_str(engine) {
+        EngineKey::Whisper => whisper_model,
+        EngineKey::Qwen3 => "qwen3-asr-0.6b",
+        EngineKey::FunAsr => funasr_model,
     }
 }
 
@@ -1162,13 +1167,12 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
     if let Some(models_dir) = &models_dir {
         // 模型键 → 条目；mlt/非法键回退 sensevoice-small（不阻断 UI，也不得用 nano 冒充）。
         // 诊断仅 funasr 引擎相关：whisper/qwen3 启动诊断走 build_worker_config 对应分支
-        let (entry, fell_back) = if settings.asr_engine == "funasr" {
-            resolve_funasr_entry(&settings.funasr_model)
-        } else if settings.asr_engine == "qwen3" {
+        // （E2/D-79：判定走引擎值域透镜，零字面量比较）
+        let (entry, fell_back) = match settings.engine_key() {
+            EngineKey::FunAsr => resolve_funasr_entry(&settings.funasr_model),
             // WP-B：诊断用 qwen3 自身条目（否则未缓存日志打错模型名）
-            (registry::qwen3_entry(), false)
-        } else {
-            (registry::SENSEVOICE_SMALL.clone(), false)
+            EngineKey::Qwen3 => (registry::qwen3_entry(), false),
+            EngineKey::Whisper => (registry::SENSEVOICE_SMALL.clone(), false),
         };
         if fell_back {
             let reason = if registry::funasr_key_is_ghost(&settings.funasr_model) {

@@ -16,6 +16,29 @@ pub enum Hub {
     Hf,
 }
 
+impl Hub {
+    /// settings 字符串 → 值域枚举（E2/D-79 唯一转换点；未知值回退 Ms 并
+    /// 告警——消灭 orchestrator `if hub_s == "hf" {Hf} else {Ms}` 的静默暗默认）
+    pub fn from_settings_str(v: &str) -> Self {
+        match v {
+            "hf" => Self::Hf,
+            "ms" => Self::Ms,
+            other => {
+                tracing::warn!("未知 hub 值 {other:?}，回退 ms（Hub 单点转换）");
+                Self::Ms
+            }
+        }
+    }
+
+    /// → settings 持久层字符串（写回 `Settings.hub` 用）
+    pub fn as_settings_str(self) -> &'static str {
+        match self {
+            Self::Ms => "ms",
+            Self::Hf => "hf",
+        }
+    }
+}
+
 /// HF 缓存根（布局兼容原版：huggingface/hub/models--org--name/...）
 pub fn hf_cache_root(models_dir: &Path) -> PathBuf {
     models_dir.join("huggingface").join("hub")
@@ -76,5 +99,18 @@ mod tests {
             hf_repo_dir(dir, "single"),
             Path::new("/models/huggingface/hub/models--single--")
         );
+    }
+
+    /// E2/D-79：Hub 单点转换——合法值域恒等；未知值回退 Ms（消灭
+    /// orchestrator 静默 else 后的告警回退语义钉死）
+    #[test]
+    fn hub_mapping_and_fallback() {
+        assert_eq!(Hub::from_settings_str("ms"), Hub::Ms);
+        assert_eq!(Hub::from_settings_str("hf"), Hub::Hf);
+        assert_eq!(Hub::from_settings_str("MS"), Hub::Ms, "大小写敏感，未知即回退");
+        assert_eq!(Hub::from_settings_str(""), Hub::Ms);
+        for h in [Hub::Ms, Hub::Hf] {
+            assert_eq!(Hub::from_settings_str(h.as_settings_str()), h);
+        }
     }
 }

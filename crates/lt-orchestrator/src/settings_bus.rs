@@ -13,13 +13,13 @@
 //! - 读者（capture 逐轮、ASR transcribe 前、翻译池提交前、下载 targets）
 //!   任意线程 `load()` 无锁（arc_swap load 是 lock-free wait-free）。
 //!
-//! 与方案 §3.2.3 的差异注记：方案示例含 `engine: EngineKey` 视图——W4
-//! 实测**无读者**（引擎切换走命令载荷、StartDownload 读 `raw` 全集、
-//! 钳制只读 `raw.asr_engine`），按"派生视图必须有读者"原则不落空字段；
-//! 档位规范化（R21）待 W6 统一处理。
+//! 与方案 §3.2.3 的差异注记：方案示例的 `engine: EngineKey` 视图在 W4 时
+//! 无读者故未落——E2/D-79 值域枚举化后域内判定改走透镜，本字段复位
+//! （`derive()` 经 `raw.engine_key()` 填充，orchestrator/lt-ui 判定零字面量）。
+//! 档位规范化（R21）已随 W6 落地。
 
 use lt_audio::VadSettings;
-use lt_proto::Settings;
+use lt_proto::{EngineKey, Settings};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -41,6 +41,9 @@ pub struct TlView {
 pub struct EffectiveSettings {
     /// 提交态设置（UI 编辑/落盘真值；publish 时克隆一次，永不被派生改写）
     pub raw: Arc<Settings>,
+    /// 引擎值域视图（E2/D-79）：`raw.asr_engine` 的类型化形态——域内判定
+    /// 读本字段或 `Settings::engine_key()`，不再写字面量比较
+    pub engine: EngineKey,
     /// VAD 生效值：已按当前引擎钳制（overlay）——qwen3 时 max_speech
     /// 收敛到 15s，**raw 的 max_speech_duration 保持用户值**（R18 根除：
     /// 现状引擎切换直接写穿共享 VAD 生效值，切离后靠用户"应用"恢复）
@@ -87,11 +90,12 @@ impl SettingsBus {
     }
 }
 
-/// 发布时整体重算全部派生视图（VAD 钳制 overlay + ASR 视图 + 翻译视图）
+/// 发布时整体重算全部派生视图（引擎值域 + VAD 钳制 overlay + ASR 视图 + 翻译视图）
 fn derive(raw: &Settings, version: u64) -> EffectiveSettings {
     EffectiveSettings {
         raw: Arc::new(raw.clone()),
-        vad: clamp_vad_for_engine(&raw.asr_engine, vad_from_settings(raw)),
+        engine: raw.engine_key(),
+        vad: clamp_vad_for_engine(raw.engine_key(), vad_from_settings(raw)),
         asr_lang: {
             let (t_base, t_per) = lt_asr::engine_timeout_profile(&raw.asr_engine);
             lt_asr::AsrEffectiveSettings {
@@ -122,11 +126,12 @@ fn vad_from_settings(s: &Settings) -> VadSettings {
     }
 }
 
-/// 按引擎钳制 VAD 生效值（AH-8/D-28）：settings/UI 保存原值，仅生效值收敛。
-/// R18 根治：本函数是**唯一**钳制点，且只在发布派生时调用——引擎切换不再
-/// 写穿共享 VAD（旧 pipeline.rs 直改 `clamp_max_speech` 的路径删除）。
-fn clamp_vad_for_engine(engine: &str, mut s: VadSettings) -> VadSettings {
-    if engine == "qwen3" && s.max_speech_duration > QWEN3_MAX_SEGMENT_SECS {
+/// 按引擎钳制 VAD 生效值（AH-8/D-28；E2 起判 EngineKey 枚举）：settings/UI
+/// 保存原值，仅生效值收敛。R18 根治：本函数是**唯一**钳制点，且只在发布
+/// 派生时调用——引擎切换不再写穿共享 VAD（旧 pipeline.rs 直改
+/// `clamp_max_speech` 的路径删除）。
+fn clamp_vad_for_engine(engine: EngineKey, mut s: VadSettings) -> VadSettings {
+    if engine == EngineKey::Qwen3 && s.max_speech_duration > QWEN3_MAX_SEGMENT_SECS {
         tracing::info!(
             "qwen3: max_speech_duration 生效值钳制为 {QWEN3_MAX_SEGMENT_SECS}s（设置值 {}s）",
             s.max_speech_duration
@@ -218,5 +223,82 @@ mod tests {
         let v3 = bus.publish(Settings::default());
         assert_eq!(v3, 3);
         assert_eq!(bus.load().version, 3);
+    }
+
+    /// E2（ADR-13①）：Settings 全字段归类防线——新增顶层字段必须显式归类为
+    /// 「总线派生接线」或「raw 直读」，漏归类即红（无反射环境用 serde 键集
+    /// 对照）。**局限**：只走查顶层键，嵌套结构（Style/SubtitleMode/
+    /// ModelConfig 内部）不在断言面——嵌套面靠 ADR-14「收口两问」兜底。
+    #[test]
+    fn every_settings_field_is_classified() {
+        let keys: Vec<String> = serde_json::to_value(Settings::default())
+            .expect("Settings 序列化")
+            .as_object()
+            .expect("Settings 顶层是 object")
+            .keys()
+            .cloned()
+            .collect();
+        // ① 派生视图接线（derive() 或其子视图消费——改这些字段的生效路径在总线）
+        let wired = [
+            "asr_engine", // engine 视图 + VAD 钳制 + asr_lang 超时档案
+            "asr_language",
+            "sensevoice_pad_seconds",
+            "whisper_pad_seconds",
+            "target_language", // tl.target_language（D-74 归一）
+            "timeout",         // tl.timeout
+            "vad_mode",
+            "vad_threshold",
+            "energy_threshold",
+            "min_speech_duration",
+            "max_speech_duration",
+            "silence_mode",
+            "silence_duration",
+        ];
+        // ② raw 直读（UI 草稿/装配点/下载 targets 直接读 raw，不经派生视图）
+        let raw_direct = [
+            "funasr_model",
+            "whisper_model_size",
+            "hub",
+            "download_proxy",
+            "incremental_asr",
+            "interim_interval",
+            "audio_device",
+            "mic_device",
+            "models",
+            "active_model",
+            "system_prompt",
+            "ui_lang",
+            "ui_font_family",
+            "subtitle_font_family",
+            "style",
+            "subtitle_mode",
+            "overlay_x",
+            "overlay_y",
+            "overlay_w",
+            "overlay_h",
+            "auto_save_transcript",
+            "models_dir",
+        ];
+        let classified: std::collections::HashSet<&str> = wired
+            .iter()
+            .chain(raw_direct.iter())
+            .copied()
+            .collect();
+        let mut missing: Vec<&str> = keys
+            .iter()
+            .map(|s| s.as_str())
+            .filter(|k| !classified.contains(k))
+            .collect();
+        missing.sort();
+        assert!(
+            missing.is_empty(),
+            "新增 Settings 字段未归类（总线派生 or raw 直读）：{missing:?}——\
+             请在 every_settings_field_is_classified 对应清单登记，或补进 derive() 接线"
+        );
+        assert_eq!(
+            keys.len(),
+            wired.len() + raw_direct.len(),
+            "清单与实际键集必须一一对应（清单多余条目也算漂移）"
+        );
     }
 }

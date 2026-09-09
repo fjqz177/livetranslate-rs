@@ -15,6 +15,76 @@ use std::path::PathBuf;
 
 /// 合法引擎值（r8 双引擎 + WP-B qwen3；anime/remote 已裁剪，导入时回退）
 pub const ASR_ENGINES: [&str; 3] = ["funasr", "whisper", "qwen3"];
+
+/// 识别引擎值域的类型化形态（E2/D-79，ADR-9「String 持久层 + 枚举透镜」）：
+/// `Settings.asr_engine` 持久层保持 String（与原版 user_settings.json 逐键
+/// 兼容），运行时判定一律经 [`Settings::engine_key`] 透镜——未知值单点
+/// 回退 FunAsr + warn，替代散落各域的 `== "funasr"` 字面量比较。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EngineKey {
+    FunAsr,
+    Whisper,
+    Qwen3,
+}
+
+impl EngineKey {
+    /// settings 字符串 → 值域枚举（唯一转换点；未知值回退 FunAsr 并告警，
+    /// 与 sanitize 的既有回退语义一致）
+    pub fn from_settings_str(v: &str) -> Self {
+        match v {
+            "funasr" => Self::FunAsr,
+            "whisper" => Self::Whisper,
+            "qwen3" => Self::Qwen3,
+            other => {
+                tracing::warn!("未知 asr_engine 值 {other:?}，回退 funasr（EngineKey 单点转换）");
+                Self::FunAsr
+            }
+        }
+    }
+
+    /// → settings 持久层字符串（写回 `Settings.asr_engine` 用）
+    pub fn as_settings_str(self) -> &'static str {
+        match self {
+            Self::FunAsr => "funasr",
+            Self::Whisper => "whisper",
+            Self::Qwen3 => "qwen3",
+        }
+    }
+}
+
+/// 代理三模式（语义对齐原版 proxy="none" 绕系统代理，E-03；E2/D-79 自
+/// lt-download 迁入契约层——`settings.download_proxy` 与
+/// `Cmd::StartDownload` 载荷共用的值域类型）
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum ProxyMode {
+    /// 强制直连（trust_env=False 等价）
+    #[default]
+    None,
+    /// 跟随系统环境变量
+    System,
+    /// 指定 URL
+    Url(String),
+}
+
+impl ProxyMode {
+    /// settings 字符串 → 值域枚举（唯一转换点；空串视同 system——原版语义）
+    pub fn from_settings_str(v: &str) -> Self {
+        match v {
+            "none" => Self::None,
+            "" | "system" => Self::System,
+            url => Self::Url(url.to_string()),
+        }
+    }
+
+    /// → settings 持久层字符串（写回 `settings.download_proxy` 用）
+    pub fn to_settings_str(&self) -> String {
+        match self {
+            Self::None => "none".into(),
+            Self::System => "system".into(),
+            Self::Url(u) => u.clone(),
+        }
+    }
+}
 /// 合法 funasr 模型（mlt 置灰但仍是合法存量值）
 pub const FUNASR_MODELS: [&str; 3] = [
     "sensevoice-small",
@@ -142,6 +212,22 @@ impl Default for Settings {
 }
 
 impl Settings {
+    /// 引擎值域透镜（E2/D-79）：运行时引擎判定的唯一入口——判定处不再写
+    /// `asr_engine == "…"` 字面量
+    pub fn engine_key(&self) -> EngineKey {
+        EngineKey::from_settings_str(&self.asr_engine)
+    }
+
+    /// 下载源透镜（E2/D-79）：`settings.hub` 字符串 → 值域枚举
+    pub fn hub(&self) -> crate::layout::Hub {
+        crate::layout::Hub::from_settings_str(&self.hub)
+    }
+
+    /// 代理模式透镜（E2/D-79）：`settings.download_proxy` → 值域枚举
+    pub fn proxy_mode(&self) -> ProxyMode {
+        ProxyMode::from_settings_str(&self.download_proxy)
+    }
+
     /// 兼容导入：任意 JSON（原版 user_settings.json / 本版 settings.json）→ Settings。
     /// 完成后调用 [`Settings::sanitize`] 做非法值回退。
     pub fn from_value_compatible(v: Value) -> Self {
@@ -485,6 +571,37 @@ impl Default for SubtitleMode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// E2/D-79：EngineKey 单点转换——合法值域恒等、未知值回退 FunAsr
+    #[test]
+    fn engine_key_mapping_and_fallback() {
+        for v in ASR_ENGINES {
+            let k = EngineKey::from_settings_str(v);
+            assert_eq!(k.as_settings_str(), v, "值域 {v} 往返必须恒等");
+        }
+        assert_eq!(
+            EngineKey::from_settings_str("qwen3"),
+            EngineKey::Qwen3
+        );
+        // 未知值（含旧版残留/手改）回退 FunAsr 而非 panic——与 sanitize 同语义
+        assert_eq!(EngineKey::from_settings_str("sensevoice"), EngineKey::FunAsr);
+        assert_eq!(EngineKey::from_settings_str(""), EngineKey::FunAsr);
+        // Settings 透镜
+        let mut s = Settings::default();
+        assert_eq!(s.engine_key(), EngineKey::FunAsr);
+        s.asr_engine = "qwen3".into();
+        assert_eq!(s.engine_key(), EngineKey::Qwen3);
+    }
+
+    /// E2/D-79：ProxyMode 往返恒等（空串视同 system 的原版语义钉死）
+    #[test]
+    fn proxy_mode_roundtrip() {
+        for src in ["none", "system", "", "http://p:8080"] {
+            let p = ProxyMode::from_settings_str(src);
+            assert_eq!(p.to_settings_str(), if src.is_empty() { "system" } else { src });
+        }
+        assert_eq!(Settings::default().proxy_mode(), ProxyMode::System);
+    }
 
     /// D-36：字幕窗默认背景不透明度 = 190（深色胶带观感：背景透 25%、
     /// 文字对比足；原版 76 在单窗 uniform alpha 下文字过淡）

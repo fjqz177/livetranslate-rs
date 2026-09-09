@@ -71,17 +71,9 @@ pub fn hf_endpoint_for(selected: Hub) -> &'static str {
     }
 }
 
-/// 代理三模式（语义对齐原版 proxy="none" 绕系统代理，E-03）
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub enum ProxyMode {
-    /// 强制直连（trust_env=False 等价）
-    None,
-    /// 跟随系统环境变量
-    #[default]
-    System,
-    /// 指定 URL
-    Url(String),
-}
+/// 代理三模式（E2/D-79 迁入 lt-proto 契约层——settings.download_proxy 与
+/// Cmd::StartDownload 载荷共用值域；本 crate re-export 保持兼容）
+pub use lt_proto::ProxyMode;
 
 /// 下载事件（→ 日志窗 / 下载对话框）
 #[derive(Debug, Clone)]

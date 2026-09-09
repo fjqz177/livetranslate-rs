@@ -238,8 +238,13 @@ pub fn model_cache_status(
     funasr_model: &str,
     whisper_size: &str,
 ) -> CacheStatus {
-    match engine {
-        "funasr" => match lt_models::registry::funasr_entry(funasr_model) {
+    // E2/D-79：值域枚举分派。未知引擎诚实 Unavailable——不用 from_settings_str
+    // 的 FunAsr 回退，那会把"未知引擎"错报成 funasr 缓存态
+    if !lt_proto::ASR_ENGINES.contains(&engine) {
+        return CacheStatus::Unavailable;
+    }
+    match lt_proto::EngineKey::from_settings_str(engine) {
+        lt_proto::EngineKey::FunAsr => match lt_models::registry::funasr_entry(funasr_model) {
             Some(entry) => {
                 if lt_models::cache::is_funasr_cached(models_dir, &entry) {
                     CacheStatus::Cached(entry.estimated_bytes)
@@ -249,7 +254,8 @@ pub fn model_cache_status(
             }
             None => CacheStatus::Unavailable,
         },
-        "whisper" => match lt_models::registry::whisper_entry_for(whisper_size) {
+        lt_proto::EngineKey::Whisper => match lt_models::registry::whisper_entry_for(whisper_size)
+        {
             Some(entry) => {
                 if lt_models::cache::is_whisper_cached(models_dir, whisper_size) {
                     CacheStatus::Cached(entry.estimated_bytes)
@@ -267,7 +273,7 @@ pub fn model_cache_status(
             }
         },
         // WP-B：qwen3 复用 manifest 探测（单一模型，B-α 无模型键）
-        "qwen3" => {
+        lt_proto::EngineKey::Qwen3 => {
             let entry = lt_models::registry::qwen3_entry();
             if lt_models::cache::is_funasr_cached(models_dir, &entry) {
                 CacheStatus::Cached(entry.estimated_bytes)
@@ -275,7 +281,6 @@ pub fn model_cache_status(
                 CacheStatus::Missing(entry.estimated_bytes)
             }
         }
-        _ => CacheStatus::Unavailable,
     }
 }
 
@@ -314,7 +319,9 @@ pub fn page(ui: &mut Ui, panel: &mut PanelUi, session: &mut SessionView, setting
     }
 
     let engine = settings.asr_engine.clone();
-    let is_funasr = engine == "funasr";
+    // E2/D-79：判定走值域透镜；engine 字符串仍供显示层（下拉/状态行）使用
+    let engine_key = settings.engine_key();
+    let is_funasr = engine_key == lt_proto::EngineKey::FunAsr;
 
     // 设备枚举（W5/R13）：首入请求一次——枚举线上移到编排域 Supervisor
     // 一次性线程（帧内不再阻塞 COM），结果经 UiEvent::Devices 回执缓存；
@@ -370,7 +377,7 @@ pub fn page(ui: &mut Ui, panel: &mut PanelUi, session: &mut SessionView, setting
         });
         // WP-B：qwen3 无语言参数（纯 auto-LID）——下拉保留（设置对其他引擎仍有效），
         // 但明示对当前引擎无效
-        if engine == "qwen3" {
+        if engine_key == lt_proto::EngineKey::Qwen3 {
             hint_line(ui, pal, &lt_i18n::t("qwen3_lang_auto_hint"));
         }
 
@@ -413,7 +420,7 @@ pub fn page(ui: &mut Ui, panel: &mut PanelUi, session: &mut SessionView, setting
         // Whisper 档位（原版 _whisper_size_combo；仅 whisper 引擎显示）。
         // 变更语义对齐原版 _on_whisper_size_changed：新档已缓存 → 即时切引擎；
         // 未缓存 → 仅落盘（缓存组下载完成后经 DownloadSucceeded 重发切换）
-        if engine == "whisper" {
+        if engine_key == lt_proto::EngineKey::Whisper {
             let tiers = whisper_tier_items();
             let sel_idx = whisper_tier_index_for(&settings.whisper_model_size);
             ui.add_space(2.0);
@@ -481,7 +488,7 @@ pub fn page(ui: &mut Ui, panel: &mut PanelUi, session: &mut SessionView, setting
             }
             hint_line(ui, pal, &lt_i18n::t("sensevoice_padding_tooltip"));
         }
-        if engine == "whisper" {
+        if engine_key == lt_proto::EngineKey::Whisper {
             let mut wv = settings.whisper_pad_seconds;
             if drag_secs(
                 ui,
@@ -504,7 +511,8 @@ pub fn page(ui: &mut Ui, panel: &mut PanelUi, session: &mut SessionView, setting
         // ── 下载源（原版 _hub_combo：ms/hf 二选一，_auto_save 落盘）──
         ui.add_space(4.0);
         let hubs = [lt_i18n::t("hub_modelscope"), lt_i18n::t("hub_huggingface")];
-        let hub_idx = if settings.hub == "hf" { 1 } else { 0 };
+        // E2/D-79：hub 判定走值域透镜（settings.hub() → Hub 枚举）
+        let hub_idx = if settings.hub() == lt_proto::Hub::Hf { 1 } else { 0 };
         ui.horizontal(|ui| {
             ui.label(RichText::new(format!("{} ", lt_i18n::t("label_hub"))).color(pal.text));
             egui::ComboBox::from_id_salt("panel_hub")
@@ -515,7 +523,14 @@ pub fn page(ui: &mut Ui, panel: &mut PanelUi, session: &mut SessionView, setting
                         if ui.selectable_label(hub_idx == i, label.clone()).clicked()
                             && hub_idx != i
                         {
-                            settings.hub = if i == 1 { "hf".into() } else { "ms".into() };
+                            // 写回持久层经枚举 as_settings_str（值域单点）
+                            settings.hub = if i == 1 {
+                                lt_proto::Hub::Hf
+                            } else {
+                                lt_proto::Hub::Ms
+                            }
+                            .as_settings_str()
+                            .into();
                             mark_settings_dirty(session);
                         }
                     }
@@ -873,15 +888,19 @@ pub fn page(ui: &mut Ui, panel: &mut PanelUi, session: &mut SessionView, setting
             }
         };
         ui.horizontal(|ui| {
-            let model_display = if settings.asr_engine == "funasr" {
-                funasr_model_items()[funasr_index_for(&settings.funasr_model)]
-                    .display
-                    .clone()
-            } else if settings.asr_engine == "qwen3" {
+            let model_display = match settings.engine_key() {
+                lt_proto::EngineKey::FunAsr => {
+                    funasr_model_items()[funasr_index_for(&settings.funasr_model)]
+                        .display
+                        .clone()
+                }
                 // WP-B：qwen3 显示名取注册表（缓存卡片/下载标题行）
-                lt_models::registry::qwen3_entry().display.to_string()
-            } else {
-                whisper_tier_display_for(&settings.whisper_model_size)
+                lt_proto::EngineKey::Qwen3 => {
+                    lt_models::registry::qwen3_entry().display.to_string()
+                }
+                lt_proto::EngineKey::Whisper => {
+                    whisper_tier_display_for(&settings.whisper_model_size)
+                }
             };
             ui.label(RichText::new(model_display).color(pal.text));
             match &panel.download {
@@ -1144,8 +1163,9 @@ fn start_download(panel: &mut PanelUi, session: &SessionView, settings: &Setting
         log,
     };
     session.send_cmd(lt_proto::Cmd::StartDownload {
-        hub: settings.hub.clone(),
-        proxy: settings.download_proxy.clone(),
+        // E2/D-79：载荷改型为值域枚举（UI 经 Settings 透镜转换）
+        hub: settings.hub(),
+        proxy: settings.proxy_mode(),
     });
 }
 

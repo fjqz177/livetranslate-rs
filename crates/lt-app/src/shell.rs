@@ -305,10 +305,11 @@ impl AppShell {
                 tracing::info!("设置已应用");
             }
             // 下载编排（W3 起在 DownloadManager；targets 读设置总线当前
-            // raw——运行中切换引擎/档位后下载即所选模型，M5.1）
+            // raw——运行中切换引擎/档位后下载即所选模型，M5.1）。
+            // E2/D-79：载荷已是值域枚举，直传不解析
             Cmd::StartDownload { hub, proxy } => {
                 let raw = self.bus.load().raw.clone();
-                self.download.start(&raw, &hub, &proxy);
+                self.download.start(&raw, hub, proxy);
             }
             Cmd::CancelDownload => self.download.cancel(),
             // 下载对话框失败后的关闭按钮（原版 reject → sys.exit(0)）：

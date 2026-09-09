@@ -1823,7 +1823,11 @@ pub fn wizard_auto_start(flow: &mut StartupFlow, session: &mut SessionView) {
         w.phase = WizardPhase::Downloading;
     }
     session.cancel_tick(WinId::Setup, TickKind::Setup);
-    session.send_cmd(Cmd::StartDownload { hub, proxy });
+    // E2/D-79：载荷改型为值域枚举——向导的字符串参数在发送点经单点转换
+    session.send_cmd(Cmd::StartDownload {
+        hub: lt_proto::Hub::from_settings_str(&hub),
+        proxy: lt_proto::ProxyMode::from_settings_str(&proxy),
+    });
 }
 
 impl SessionView {
@@ -2686,8 +2690,8 @@ mod tests {
         assert!(st.session.ticks.iter().all(|t| t.win != WinId::Setup));
         match rx.try_recv() {
             Ok(Cmd::StartDownload { hub, proxy }) => {
-                assert_eq!(hub, "hf");
-                assert_eq!(proxy, "none");
+                assert_eq!(hub, lt_proto::Hub::Hf);
+                assert_eq!(proxy, lt_proto::ProxyMode::None);
             }
             other => panic!("应发送 StartDownload，实际 {other:?}"),
         }
