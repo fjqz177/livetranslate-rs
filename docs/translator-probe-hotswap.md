@@ -1,32 +1,51 @@
-# 供应商连接测试与热切换加固方案（D-85）
+# 翻译供应商：连接测试 / 热切换 / 配置体验改造方案（D-85）
 
 > 定稿 2026-09-10。**本文档即施工依据**：所有决策已在 §3 定案、所有接口已在 §4 给出精确形态，
 > 施工按 §5 的提交切分逐步落地，验收按 §6 执行。文档先于实现提交（AGENTS「docs 提交时机」约定）。
 >
-> **定案方式说明**：§3 的 A~F 采用前两轮「编号 + 推荐 + 备选 + 代价」清单中的推荐项定案；
-> **G 为用户直接裁决**（2026-09-10：「累计价格做成最近一次持续运行以来的费用总和，重启清零」）。
-> 若用户对某项另有指示，只需改 §3 对应行并同步该行指向的 §4 小节与 §6 测试项。
+> **定案方式说明**：§3 的定案中，**【用户裁决】标注项为 2026-09-10 用户直接给定**（E 设置页职责 /
+> B 预算 10 秒 / G 会话级累计 / H 币种 / J 厂商预设 / K 默认供应商），其余为前两轮「编号 + 推荐 +
+> 备选 + 代价」清单的推荐项定案。若用户对某项另有指示，只需改 §3 对应行并同步该行指向的
+> §4/§十 小节与 §6 测试项。
 
 ---
 
 ## 〇、改造后怎么用（大白话，供实现者对齐意图 / 供验收）
 
-1. 打开 **设置 → 翻译**。模型列表里，**每一行右边都有一个「测试」按钮**——想测哪个供应商就点哪个，
-   不用先选中、不会把你正在用的模型切走、也不会偷偷去测别的。
-2. 点下去后，那一行的按钮变成 **「中断」**，下面开始走秒：`测试中… 3.4 秒`。
-   其他行的测试按钮临时变灰（一次只测一个）。
-3. 不想等了就点 **「中断」**：界面立刻恢复可用，后台那次请求也会被真正掐断（不会偷偷跑完、不会占着连接）。
-4. 结果直接出现在**那一行下面**，四种之一：
+### 0.1 两个界面的分工（用户裁决 E，本次最关键的语义变更）
+
+- **设置 → 翻译页的供应商列表 = 只管配置**：新增、编辑、复制、删除，以及每行的「测试」按钮。
+  **点一行只是"选中它"**（作为编辑/复制/删除的目标），**不会再切换正在使用的模型**。
+- **切换"当前用哪个模型翻译" = 悬浮窗（主界面）第二行的「模型」下拉**（既有功能，位置不变）。
+- 设置页列表上方有一行只读的 `当前使用：XXX`（告诉你现在用的是谁）+ 一句提示"要换模型请到悬浮窗的
+  「模型」下拉里选"。
+
+### 0.2 测试按钮怎么用
+
+1. 打开 **设置 → 翻译**，找到要验证的那个供应商，点它那一行右边的 **「测试」**。
+2. 那一行的按钮立刻变成 **「中断」**，下面开始走秒：`测试中… 1.4 秒`。其他行的测试按钮临时变灰。
+3. 不想等了就点 **「中断」**：界面立刻恢复，后台请求也会被真正掐断（不会偷偷跑完、不会占着连接）。
+4. **最多 10 秒**必有结论，四种之一：
    - 绿 ✓ `连接成功 · 820 ms · 已降级请求形态 · 返回："…"`
    - 红 ✖ `连接失败` + 一眼看懂的中文原因（地址连不上 / 密钥不对 / 模型名不存在 / 被限流 / 超时）
    - 灰 ⏱ `已中断`
-   - 黄 ？ `60 秒内未取得结论`——**不是失败**，可再点一次（本地模型首次加载常这样）
-5. 测试期间应用照常工作：录音、字幕、翻译都不受影响（测试跑在自己的线程上，不再占用识别线程）。
+   - 黄 ？ `10 秒内未取得结论`——**不是失败**，可再点一次（本机模型首次加载慢时常见）
+5. 测试期间应用照常工作：录音、字幕、翻译都不受影响（测试跑在自己的线程上，不占用识别线程，
+   也不会改动你正在用的模型）。
 6. 改了某一行的地址/密钥/模型名，那行的旧测试结果自动作废，重新点「测试」即可。
-7. 列表上方新增一行 **`当前使用：XXX`**：这就是"当前用哪个 LLM 做翻译"的答案（原来只能靠行首
-   `>>>` 猜）。点某一行即把它设为当前使用，切换生效后短暂显示「已切换生效」。
-8. 右下角费用统计改为 **本次运行累计**：切换模型不清零、退出应用归零；用不报用量的端点时
-   费用旁标「部分未知」。
+
+### 0.3 新增供应商怎么加（用户裁决 J/K）
+
+- 编辑对话框顶部有 **「厂商预设」下拉**：OpenAI / DeepSeek / 智谱 GLM / Kimi / 通义千问 / 火山方舟 /
+  本机 LM Studio / 本机 Ollama / 自定义。选一个，地址、推荐模型名、关思考姿态、币种自动填好，
+  **你只需要贴自己的 API Key**。
+- 出厂默认那条配置 = **DeepSeek**（首启后到翻译页把 API Key 贴上即可用）。
+
+### 0.4 费用怎么算（用户裁决 G/H/I）
+
+- 费用按 **本次运行累计**：换模型不清零、退出应用归零；不报用量的调用会让总额偏低，界面标「部分未知」。
+- 币种**每个供应商各自一份**（DeepSeek/GLM/Kimi/通义/方舟 = 人民币，OpenAI = 美元；不填就按界面语言：
+  中文=人民币、英文=美元）。界面按各笔自己的币种显示，两个币种分别累计、并列显示非零项。
 
 ---
 
@@ -50,7 +69,7 @@
 | # | 欠缺 | 证据 |
 |---|---|---|
 | H1 | 生效时机不可控：`ReplaceRig` 只在 ASR 线程空闲分支被消费，连续识别时延后到"当前段转录完 + 下一个 500ms 空窗" | `pipeline.rs:2028`、`:1947` |
-| H2 | 零反馈：面板唯一变化是 `>>>` 前缀与加粗挪位，无"当前使用"状态行、无"已生效"回执 | `translation.rs:64-78`（`model_row_text` 的 `>>>` 前缀） |
+| H2 | 零反馈：面板上唯一能看出"当前用哪个"的线索只是 `>>>` 前缀与加粗，没有状态行、没有"已生效"回执；且该线索随"点行即切换"一起被连带（用户裁决 E 后点行不再切换，线索更需显式化） | `translation.rs:64-78`（`model_row_text` 的 `>>>` 前缀） |
 | H3 | 换模型时在队未翻译的段收到写死的红色失败回执「队列积压，保留最新（本段已放弃）」——**真实原因是切换了模型** | 回执文案：`pipeline.rs:87-98`；i18n：`assets/i18n/zh.yaml:528` `err_dropped`；字幕按失败色渲染：`crates/lt-ui/src/windows/subtitle.rs:530-537` |
 | H4 | 不做语义验证：地址/密钥/模型名错要等后续每段翻译失败才暴露（URL 形态错有红字拦截） | `pipeline.rs:1744-1772`（构建失败发 `TranslatorUnavailable`） |
 | H5 | 累计统计被清零：新装置自带全新 `TlStats`，`UpdateStats` 在 UI 侧整体覆盖 | `pipeline.rs:221-266`（per-rig）、`:738`（每装置新建）；`app.rs:1043-1055`（整体覆盖） |
@@ -65,34 +84,44 @@
 
 **目标**
 
-1. 连接测试**点哪测哪**：目标永远是用户点的那一行供应商配置，无静默回落、无副作用（不切换正在使用的模型）。
-2. 测试**随时可中断**，中断后界面 1 秒内恢复且后台请求真正被掐断。
-3. 测试**不再卡死**：任何异常路径（命令丢失、线程死亡、回执超时）都必须收敛到终态。
-4. 测试不依赖 ASR 线程，识别/翻译进行中也能测，且不干扰在进行的翻译。
-5. 热切换可见（当前使用 + 已生效）、可控（下一段边界即生效）、可信（先测再切）。
-6. 累计费用按**进程生命周期**累加，切换模型不清零，退出即归零。
+1. **两个界面各司其职**（裁决 E）：设置页 = 配置管理（增删改查 + 测试），切换使用中的模型 = 悬浮窗
+   「模型」下拉；设置页的行点击不再产生任何切换副作用。
+2. 连接测试**点哪测哪**：目标永远是用户点的那一行供应商配置，无静默回落、无副作用。
+3. 测试**随时可中断**、**最多 10 秒出结论**（裁决 B），中断后界面 1 秒内恢复且后台请求真正被掐断。
+4. 测试**不再卡死**：任何异常路径（命令丢失、线程死亡、回执超时）都必须收敛到终态。
+5. 测试不依赖 ASR 线程，识别/翻译进行中也能测，且不干扰在进行的翻译。
+6. 热切换可见（当前使用 + 已生效）、可控（下一段边界即生效）、可信（先测再切）。
+7. 累计费用按**进程生命周期**累加（裁决 G），**分币种**（裁决 H/I），退出即归零。
+8. 新增供应商**有官方参数可依**（裁决 J/K）：预设一键填充，出厂默认可直接用（贴 Key 即可）。
 
 **非目标**（明确不做，避免范围蔓延）
 
 - 不做"切换前自动探针"（换模型不得因网络而变慢，验证权交给用户）。
 - 不做并发多探测（同一时刻至多一个在途探测）。
+- 设置页不提供任何切换控件（裁决 E 的取舍，见 §八）。
 - 不改 ASR 侧任何行为（引擎/模型/下载/零信任闸门）。
-- 不改模型编辑对话框的字段与校验逻辑（`config_warnings` 保持现状）。
+- 不改模型编辑对话框的既有字段校验逻辑（`config_warnings` 保持现状；仅新增预设与币种两个控件）。
 - 不做跨进程持久的费用累计（重启必须清零）。
 
 ---
 
-## 三、定案（A~G）
+## 三、定案（A~K）
+
+> 用户裁决的条目以 **【用户裁决】** 标注；其余为前两轮清单的推荐项定案。
 
 | # | 议题 | **定案** | 备选与否决理由 |
 |---|---|---|---|
-| **A** | 测试入口 | **每行独立「测试」按钮**（列表行右侧），删除底部四按钮行中的测试按钮与"无选中回落活动模型" | 否决"单按钮 + 必须先选中"：本应用中"选中一行"＝"设为当前使用并立即切换翻译器"（`translation.rs:268-277`），会让"只是想试试备用供应商"变成切走生产模型 |
-| **B** | 单次预算 | **总预算 60 秒；单步超时 = min(用户超时, 20 秒)**；预算耗尽 → `Inconclusive`（**不是失败**） | 否决 30 秒（本地模型首次加载常超，会误报未定论）；否决不设上限（最坏 7 分钟，违背即时反馈） |
+| **A** | 测试入口 | **每行独立「测试」按钮**（列表行右侧），删除底部四按钮行中的测试按钮与"无选中回落活动模型" | 否决"单按钮 + 必须先选中"：测试目标必须显式（点哪行测哪行），不引入"没选中就不让测"的隐式规则 |
+| **B** | 单次预算 | 【用户裁决】**整场测试 10 秒封顶**；单步超时 = `min(用户超时设置, 10 秒, 剩余预算)`；预算耗尽 → `Inconclusive`（**不是失败**，可重试） | 否决 60/30 秒与不封顶：用户要"立刻有结论"；代价是本地模型首次加载可能报"未定论"（重试即可，文案已说明） |
 | **C** | 结果内容 | 成功：耗时 + 实际生效请求形态（降级时告知）+ 回执摘要（≤60 字符）；失败：分类中文原因 + 原始详情（次要行/悬停） | 否决"只显示 ✓/✖ + 耗时"（丢失诊断价值） |
 | **D** | 并发 | **一次只测一个**：在途期间其他行的测试按钮禁用 | 否决并发（取消语义与结果归属复杂化） |
-| **E** | 选中语义 | **不拆**：行点击保持"设为当前使用"（原版语义）；测试改用每行按钮后与选中互不干扰；另加"当前使用"状态行消除歧义 | 否决本轮拆分"选中/使用"（改动面大，收益可由状态行覆盖） |
-| **F** | 热切换加固 | **做四项**：F1 命令消费点提前到每轮循环开头；F2 切换回执 `TranslatorSwitched` + 「当前使用」状态行 + 分组使用说明；F3 退休任务回执中性化（新 `FailureKind::Superseded`，字幕中性灰）；F4 管道未装配时切换回 `TranslatorUnavailable`（不再静默）。**另补** `route_translator_switch` 单测 | — |
-| **G** | 统计口径 | **会话级累计**（用户裁决）：`asr_n / tl_n / tokens / cost` 全部按本次运行累加，跨模型切换不清零，重启归零；费用按**每笔发生时的当时单价**累加 | 否决"仅费用累计、句数保持 per-rig"（会出现"费用在涨、句数只有 3"的自相矛盾显示） |
+| **E** | **设置页职责** | 【用户裁决】**设置页的供应商列表只做配置管理**（新增/编辑/复制/删除 + 每行「测试」）；**行点击只选中，不再切换运行中的模型**；**切换当前翻译模型一律在悬浮窗（主界面）既有的「模型」下拉**完成 | 否决"设置页点行即切换"（原版语义）：会让"只想试试备用供应商"变成切走正在用的模型 |
+| **F** | 热切换加固 | **做四项**：F1 命令消费点提前到每轮循环开头；F2 切换回执 `TranslatorSwitched` + 「当前使用」状态行（只读）+ 分组使用说明；F3 退休任务回执中性化（新 `FailureKind::Superseded`，字幕中性灰）；F4 管道未装配时切换回 `TranslatorUnavailable`（不再静默）。**另补** `route_translator_switch` 单测 | — |
+| **G** | 统计口径 | 【用户裁决】**会话级累计**：`asr_n / tl_n / tokens / cost` 全部按本次运行累加，跨模型切换不清零，重启归零；费用按**每笔发生时的当时单价**累加 | 否决"仅费用累计、句数保持 per-rig"（会出现"费用在涨、句数只有 3"的自相矛盾显示） |
+| **H** | 计价币种 | 【用户裁决】**每个供应商配置自带币种**：新增 `ModelConfig.currency: Option<String>`（`"cny"` / `"usd"`）；**不写 = 跟随界面语言**（中文→人民币，英文→美元），写了就按写的来 | 否决"全局单一币种"：国内厂商官方定价是人民币、国外是美元，强制一种会让另一种必须手工换算 |
+| **I** | 费用显示 | 符号随**该笔费用所属配置的币种**（不再随界面语言）；价格输入行标注「元 / 1M tok」或「美元 / 1M tok」；会话累计**分币种两个账本**，界面显示非零项（如 `$0.0123 ¥0.0456`） | 否决汇率折算（需要汇率来源，且会引入不可解释的数字） |
+| **J** | 厂商预设 | 【用户裁决】**做**：编辑对话框加「厂商预设」下拉，选中即填 `api_base` + 建议模型 id + 关思考姿态 + 币种；参数以**官方文档**为准（见 §十） | — |
+| **K** | 出厂默认配置 | 【用户裁决】**默认供应商由"本机 LM Studio"改为 DeepSeek**（`api_base` / `model` / 关思考姿态 / 币种按 §十 官方文档核实值）；`api_key` 留空，用户首启在翻译页粘贴 | 保留 LM Studio 默认的旧行为已不适用：默认那条对本机没装 LM Studio 的用户永远不通，且报错（连接被拒）不如"缺 API Key"可执行 |
 
 ---
 
@@ -106,11 +135,55 @@
 且 `lt-ui` **不得**依赖 `lt-orchestrator`——架构 §3.1 白名单）：
 
 ```rust
-/// 连接探测总预算（秒）。编排域据此设 deadline，UI 域据此设看门狗（+10s 裕量）。
-pub const PROBE_TOTAL_BUDGET_SECS: u64 = 60;
-/// 单步超时上限（秒）：用户超时更短时取用户值，更长时封顶。
-pub const PROBE_STEP_TIMEOUT_CAP_SECS: u32 = 20;
+/// 连接探测总预算（秒，用户裁决 B）。编排域据此设 deadline，UI 域据此设看门狗（+10s 裕量）。
+pub const PROBE_TOTAL_BUDGET_SECS: u64 = 10;
+/// 单步超时上限（秒）：用户超时更短时取用户值，更长时封顶（与总预算同值，故不构成额外限制）。
+pub const PROBE_STEP_TIMEOUT_CAP_SECS: u32 = 10;
 ```
+
+**会话统计的币种（用户裁决 H/I）**：`src/settings.rs` 的 `ModelConfig` 新增
+
+```rust
+/// 计价币种（"cny" | "usd"）。None = 跟随界面语言（中文→cny，英文→usd）。
+/// serde 默认 + skip_serializing_if = Option::is_none：老档案不写该键 = 走默认。
+#[serde(default, skip_serializing_if = "Option::is_none")]
+pub currency: Option<String>,
+```
+
+> 注：`every_settings_field_is_classified`（`settings_bus.rs:233`）**只走查 Settings 顶层键**，
+> `ModelConfig` 内部字段不在其断言面——`currency` 是嵌套新增，**不需要**在该测试的两份清单里登记，
+> 该测试也不会因此变红。
+
+配套纯函数（UI 与编排域共用的唯一判据，放 `lt-proto`）：
+
+```rust
+/// 配置生效币种：显式值优先，否则按界面语言（"zh" → Cny，其余 → Usd）。
+pub fn effective_currency(cfg_currency: Option<&str>, ui_lang: &str) -> Currency;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Currency { Cny, Usd }
+impl Currency {
+    /// 显示符号（"¥" / "$"）
+    pub fn symbol(self) -> &'static str;
+    /// 价格单位文案的 i18n 键（"price_unit_cny" / "price_unit_usd"）
+    pub fn unit_key(self) -> &'static str;
+}
+```
+
+`UpdateStats` 的费用字段改型（单币种 → 双账本）：
+
+```rust
+UpdateStats {
+    asr_n: u64, tl_n: u64,
+    prompt_tokens: u64, completion_tokens: u64,
+    /// 本次运行累计（分币种两个账本；未发生的币种为 0.0）
+    cost_usd: f64,
+    cost_cny: f64,
+    usage_known: bool,
+},
+```
+
+（原 `cost: f64` 删除；消费点仅 `lt-ui/src/windows/overlay.rs` 与 `state.rs::OverlayStats`。）
 
 `src/events.rs` 新增：
 
@@ -398,31 +471,49 @@ Cmd::SwitchTranslator(config) => {
        tl_count: AtomicU64,
        prompt_tokens: AtomicU64,
        completion_tokens: AtomicU64,
-       /// 累计金额，单位 1e-9 美元（整数累加，避免浮点原子）
-       cost_nano: AtomicU64,
+       /// 累计金额的两个账本，单位 1e-9（整数累加，避免浮点原子）；币种按各笔调用
+       /// 各自配置的 `effective_currency` 归账（裁决 H/I）
+       cost_nano_cny: AtomicU64,
+       cost_nano_usd: AtomicU64,
        /// 本次运行是否**出现过**用量未知的调用（true = 费用不完整）
        usage_unknown_seen: AtomicBool,
    }
    ```
 
    方法：
-   - `fn new() -> Self`（无参——价格不再属于累计器）
-   - `fn record_translation(&self, pt: u64, ct: u64, usage_known: bool, prices: (f64, f64))`：
-     累加 tokens、`tl_count`，并按**本次调用的价格**累加金额：
-     `cost_nano += (compute_cost(pt, ct, prices.0, prices.1) * 1e9).round() as u64`；
+   - `fn new() -> Self`（无参——价格与币种都不属于累计器）
+   - `fn record_translation(&self, pt: u64, ct: u64, usage_known: bool,
+     prices: (f64, f64), currency: lt_proto::Currency)`：
+     累加 tokens、`tl_count`，并按**本次调用的价格与币种**累加金额：
+     `(*账本) += (compute_cost(pt, ct, prices.0, prices.1) * 1e9).round() as u64`；
      `usage_known == false` → `usage_unknown_seen.store(true)`。
-   - `fn snapshot_event(&self) -> UiEvent`：`cost = cost_nano as f64 / 1e9`，
+   - `fn snapshot_event(&self) -> UiEvent`：
+     `cost_cny = cost_nano_cny as f64 / 1e9`、`cost_usd = cost_nano_usd as f64 / 1e9`，
      `usage_known = !usage_unknown_seen.load()`。
 2. **归属上移**：`Pipeline` 增字段 `session_stats: Arc<TlStats>`，在 `Pipeline::start` 创建一次
    （`pipeline.rs:1130` 附近），传给 `TlRig::from_effective`；`TlRig` 的 `stats` 字段保留但**不再自建**
    （`pipeline.rs:738` 的 `Arc::new(TlStats::new(...))` 删除）。装置持有 `Arc` 克隆，故该字段删掉也不影响
    生命周期；保留它是为了让"会话级"这一事实在类型上可见（若 clippy/编译器报未读，加
    `#[allow(dead_code)]` 并写明"持有即语义"）。
-3. `TlRig` 增字段 `prices: (f64, f64)`（取自 `mc.input_price/output_price`）；
-   `finish_ok` / `fail`（`pipeline.rs:547-620`）改为调用 `stats.record_translation(pt, ct,
-   attempt.usage_known, prices)`，`prices` 由调用处透传。
+3. `TlRig` 增字段 `prices: (f64, f64)` 与 `currency: lt_proto::Currency`（构造期由
+   `effective_currency(mc.currency.as_deref(), msg.lang())` 求得——**界面语言经 `Msg` 注入**，
+   编排域不依赖 lt-i18n）。`crates/lt-orchestrator/src/lib.rs` 的 `Msg` 增第二个注入点：
+
+   ```rust
+   pub struct Msg { t: Arc<dyn Fn(&str) -> String + Send + Sync>,
+                    lang: Arc<dyn Fn() -> String + Send + Sync> }
+   impl Msg {
+       pub fn new(t: impl Fn(&str) -> String + Send + Sync + 'static,
+                  lang: impl Fn() -> String + Send + Sync + 'static) -> Self { … }
+       pub fn lang(&self) -> String { (self.lang)() }
+   }
+   ```
+   组合根唯一构造点 `shell.rs:152` 改为 `Msg::new(lt_i18n::t, lt_i18n::get_lang)`；
+   `finish_ok` / `fail`（`pipeline.rs:547-620`）改为调用
+   `stats.record_translation(pt, ct, attempt.usage_known, prices, currency)`，两参数由调用处透传。
 4. `asr_count`、同语言路径的 `snapshot_event()` 调用点不变——计数器现在是会话级，天然满足"重启清零"。
-5. UI 侧（`app.rs:1043`）**不改结构**（仍整体覆盖），只按 §4.9 的键补"部分未知"标记。
+5. UI 侧（`app.rs:1043`）仍整体覆盖 `OverlayStats`，但字段改双账本（`cost_usd` / `cost_cny`），
+   并按 §4.9 的键补"部分未知"标记。
 
 ### 4.7 lt-app：命令路由与一次性线程
 
@@ -480,9 +571,32 @@ Cmd::CancelTranslatorTest { probe_id } => {
    }
    ```
 5. **停机**：`AppShell::shutdown` 增加 `self.probe_cancel.store(true, SeqCst);`（在 `p.stop()` 之前），
-   避免退出被在途探测拖住最多一个流式轮询周期（150ms）或一次尝试超时（非流式，≤20s）。
+   避免退出被在途探测拖住最多一个流式轮询周期（150ms）或一次尝试超时（非流式，≤10s）。
 
 ### 4.8 lt-ui：翻译页交互
+
+**行点击语义变更（用户裁决 E，本节最关键的改动）**：`translation.rs:268-277` 现有的
+"行选中 → 写 `settings.active_model` + 发 `Cmd::SwitchTranslator` + `mark_settings_dirty`"
+**整段删除**，替换为只写 `panel.state.model_selected = Some(i);`（仅用于编辑/复制/删除的目标行）。
+本页**不再产生任何模型切换副作用**。
+
+保留不动（正确性需要，不是"设置页在切换"）：
+
+| 场景 | 行为 | 原因 |
+|---|---|---|
+| 删除"正在使用"的那一行 | 删后按钳制规则修正 `active_model`，并内部发 `Cmd::SwitchTranslator` 让运行中的翻译器换到存活的那条 | 不换则运行装置指向已不存在的配置 |
+| 编辑"正在使用"的那一行并确定 | 内部发 `Cmd::SwitchTranslator`（现有 `was_active` 分支保留） | 让运行中的翻译器用上新地址/密钥 |
+| "当前模型的上下文数"直达行（`translation.rs:397-420`） | 保持指向**活动模型**并 600ms 重建 | 原语义（只影响正在跑的那个） |
+| 悬浮窗「模型」下拉（`overlay.rs:369-402`） | 保持"选中即切换"（发 `SwitchTranslator` + `mark_settings_dirty`） | 这是**唯一**的用户可见切换入口（裁决 E） |
+
+**切换入口的唯一性与边界（明确写死，避免歧义）**：
+
+- 用户可见的切换入口 = **悬浮窗第二行「模型」下拉**。设置页**不提供**任何切换控件（不加"设为当前使用"
+  按钮、不加单选列）。
+- 悬浮窗处于**紧凑形态**时行 2（含该下拉）不显示（`overlay.rs:5/116`）——想切模型需先点悬浮窗的
+  形态切换按钮展开；悬浮窗整体隐藏时可经托盘菜单「显示悬浮窗」唤出。**这两条是已知且接受的边界，
+  不在本方案内新增入口**（用户裁决 E 的明确取舍）。
+- 设置页列表上方的 `当前使用：XXX` 是**只读**展示，不承担切换职责。
 
 **状态（`crates/lt-ui/src/state.rs`，替换现有 `TestTranslatorState`）**：
 
@@ -566,16 +680,17 @@ preview }`：
 
 **看门狗（永不卡死的最终保证）**：面板帧内（渲染前）检查
 `if let Some(r) = &panel.probe.running { if r.started.elapsed().as_secs() > lt_proto::PROBE_TOTAL_BUDGET_SECS + 10 { ... } }`
-（常量取 `lt_proto`——**不得**从 `lt-orchestrator` 取，UI 无此依赖边）
+（常量取 `lt_proto`——**不得**从 `lt-orchestrator` 取，UI 无此依赖边；预算 10 秒 → 看门狗 20 秒）
 → 落 `ProbeResult { outcome: Inconclusive { attempted: 0 }, .. }`、清 `running`、记
 `tracing::warn!("连接测试回执超时（命令可能未送达）")`、`redraw`。
 
-**状态行 + 使用说明（F2）**：模型配置 `group_card` 内、错误横幅之后、列表之前增加两行：
+**状态行 + 使用说明（F2）**：模型配置 `group_card` 内、错误横幅之后、列表之前增加两行
+（**均为只读**，不含任何切换控件——见本节"切换入口的唯一性"）：
 
 ```text
 当前使用：{name}            // settings.active_model 对应行；越界时回落第 0 行
-    + 若 active_model_note 新鲜（<2s）→ 追加 " · 已切换生效"
-<hint_line> models_group_hint    // 见 §4.9；这是"如何设置当前使用的模型"的现场答案
+    + 若 active_model_note 新鲜（<2s）→ 追加 " · 已切换生效"（来自 TranslatorSwitched 回执）
+<hint_line> models_group_hint    // 见 §4.9：点行=选中；切换去悬浮窗「模型」下拉；每行「测试」可验证
 ```
 
 ### 4.9 i18n 键表（`assets/i18n/zh.yaml` + `en.yaml` 同步）
@@ -593,7 +708,7 @@ preview }`：
 | `probe_ok` | 连接成功 | Connection OK |
 | `probe_failed` | 连接失败 | Connection failed |
 | `probe_cancelled` | 已中断 | Cancelled |
-| `probe_inconclusive` | 60 秒内未取得结论 | No verdict within 60 s |
+| `probe_inconclusive` | 10 秒内未取得结论 | No verdict within 10 s |
 | `probe_inconclusive_hint` | 不是失败：可能是模型较慢或端点无响应。可重试。 | Not a failure: the model may be slow or the endpoint unresponsive. You can retry. |
 | `probe_preview` | 返回：{text} | Reply: {text} |
 | `probe_attempted` | 已尝试 {n} 种请求形态 | {n} request shapes tried |
@@ -605,22 +720,46 @@ preview }`：
 | `err_subtitle_skipped` | — 已跳过（切换模型） | — skipped (model switched) |
 | `status_active_model` | 当前使用：{name} | Active model: {name} |
 | `status_switched` | 已切换生效 | Switched |
-| `models_group_hint` | 点任意一行即把它设为当前使用的模型；每行右侧的「测试」按钮可验证该供应商是否可用。 | Click any row to make it the active model; use the Test button on a row to verify that provider. |
+| `models_group_hint` | 点一行＝选中（用于编辑/复制/删除）；要换当前使用的模型请到悬浮窗的「模型」下拉里选。每行右侧的「测试」可验证该供应商是否可用。 | Clicking a row only selects it (for Edit/Duplicate/Remove). To change the active model, use the model dropdown on the floating window. The Test button on a row verifies that provider. |
 | `stats_partial_unknown` | 部分未知 | partial |
 | `stats_partial_unknown_hint` | 本次运行中有调用未返回用量，金额可能偏低。 | Some calls this session returned no usage, so the total may be low. |
+| `currency_label` | 币种 | Currency |
+| `currency_cny` | 人民币（元） | CNY (¥) |
+| `currency_usd` | 美元（$） | USD ($) |
+| `currency_follow_lang` | 跟随界面语言 | Follow UI language |
+| `price_unit_cny` | 元 / 1M tok | CNY / 1M tok |
+| `price_unit_usd` | 美元 / 1M tok | USD / 1M tok |
+| `preset_label` | 厂商预设 | Provider preset |
+| `preset_custom` | 自定义 | Custom |
+| `preset_deepseek` | 深度求索 DeepSeek | DeepSeek |
+| `preset_openai` | OpenAI | OpenAI |
+| `preset_zhipu` | 智谱 GLM | Zhipu GLM |
+| `preset_moonshot` | Kimi（月之暗面） | Kimi (Moonshot) |
+| `preset_qwen` | 通义千问（阿里云） | Qwen (Alibaba Cloud) |
+| `preset_ark` | 火山方舟（字节跳动） | Volcengine Ark |
+| `preset_lmstudio` | 本机 LM Studio | Local LM Studio |
+| `preset_ollama` | 本机 Ollama | Local Ollama |
+| `translator_switch_no_pipeline` | 翻译管道未启动，模型切换未生效；请到「识别」页查看错误后重启应用。 | The translation pipeline is not running, so the model switch did not take effect. Check the errors on the Recognition tab and restart the app. |
 
 `status_active_model` 的 `{name}` 同样按调用点 `.replace("{name}", …)` 填充（同 §4.8 插值约束）。
+
+**币种相关键的用法（无歧义）**：编辑对话框的价格行单位文本取
+`lt_i18n::t(currency.unit_key())`；币种下拉三项 = `currency_follow_lang` / `currency_cny` /
+`currency_usd`（选中项写回 `ModelConfig.currency`：`None` / `Some("cny")` / `Some("usd")`）；
+费用显示符号取 `currency.symbol()`，**不再**按 `lt_i18n::get_lang()` 判断。
+Preset 项的显示名取 `preset_*` 键（品牌名中英同形者两边写同一串）。
 
 **G 在 MonitorBar 的落地（`crates/lt-ui/src/windows/overlay.rs`，两处判据都要改）**：
 
 | 位置 | 现状 | 改为 |
 |---|---|---|
 | 约 `:547` token 段 | `!usage_known` → 显示 `stats_usage_unknown`（"—"） | `total_tokens == 0 && !usage_known` → "—"；否则显示**累计值**，并在 `!usage_known` 时于悬停保留 `stats_usage_unknown_hint` |
-| 约 `:652` 费用段 | 仅 `cost > 0.0` 时渲染 `{¥/$}{:.4}` | 同上渲染；`!usage_known` 时在同一标签尾追加弱色 ` · {stats_partial_unknown}` 并 `on_hover_text(stats_partial_unknown_hint)` |
+| 约 `:652` 费用段 | 仅 `cost > 0.0` 时渲染 `{¥/$}{:.4}`（符号按界面语言） | 依次渲染**非零账本**：`"{¥}{:.4}"`（若 `cost_cny > 0`）、`"{$}{:.4}"`（若 `cost_usd > 0`），两者以空格并列；符号取自 `lt_proto::Currency::symbol()`（**不再按界面语言**）；`!usage_known` 时在末尾追加弱色 ` · {stats_partial_unknown}` 并 `on_hover_text(stats_partial_unknown_hint)` |
 
 理由（避免自相矛盾显示）：会话累计口径下 `usage_known` 表示"本次运行**出现过**用量未知的调用"，
 若沿用旧的"未知即显示 —"，会出现"费用在涨而 token 显示 —"。既有测试需同步：
-`crates/lt-ui/src/state.rs:2937-2943`、`crates/lt-ui/src/windows/overlay.rs:1080-1095`。
+`crates/lt-ui/src/state.rs:2937-2943`、`crates/lt-ui/src/windows/overlay.rs:1080-1095`（含 `cost` 字段
+拆分后的构造点）。
 
 ### 4.10 交互状态机（无歧义清单）
 
@@ -650,15 +789,17 @@ preview }`：
 |---|---|---|---|
 | C1 | `docs(translator-probe): 方案定稿（D-85）` | 本文件 + `docs/README.md` 索引行 | 四守护脚本过（docs 变更仅路径卫生相关） |
 | C2 | `feat(probe-lt): lt-translate 可取消调用 + Cancelled 错误` | §4.2 全部 + §6.1 的 lt-translate 五项测试 | `cargo test -p lt-translate` 绿；clippy 零告警 |
-| C3 | `feat(probe): 连接测试迁移到独立线程（每行按钮 + 四态结果，D-85）` | §4.1 契约 + §4.3 probe + §4.4（params 单点 + `RunCtl` 签名改造，生产调用点传 `RunCtl::none()`）+ §4.7 shell + §4.8 UI + §4.9 键（probe 段） | 全量测试绿 + 四守护 + clippy |
+| C3 | `feat(probe): 连接测试迁移到独立线程 + 设置页职责收窄（每行按钮/四态结果/E，D-85）` | §4.1 契约（probe 段）+ §4.3 probe + §4.4（params 单点 + `RunCtl` 签名改造，生产调用点传 `RunCtl::none()`）+ §4.7 shell + §4.8 UI（**含行点击语义变更 = 只选中**）+ §4.9 键（probe/status 段） | 全量测试绿 + 四守护 + clippy |
 | C4 | `feat(hotswap): 切换回执/消费点提前/退休回执中性化（D-85/F）` | 本提交 = §4.5 四项（F1~F4）+ §4.8 字幕中性化 + 状态行与使用说明 | 全量测试绿 + 四守护 + clippy |
-| C5 | `feat(stats): 会话级累计（D-85/G）` | §4.6 + §4.9 的 `stats_partial_unknown(_hint)`（含 MonitorBar 两处判据改造与既有测试同步） | 全量测试绿 + 四守护 + clippy |
-| C6 | `feat(providers): 厂商预设 + 费用单位口径（D-85/N1-N2）` | §九 N1/N2（**待裁决**；获批才做） | 全量测试绿 + 四守护 + clippy |
+| C5 | `feat(stats): 会话级累计 + 双币种账本（D-85/G/H/I）` | §4.1 契约（`ModelConfig.currency` / `Currency` / `UpdateStats` 改型）+ §4.6 + §4.9 的 `stats_partial_unknown(_hint)` 与 `currency_*` 键（含 MonitorBar 两处判据改造与既有测试同步） | 全量测试绿 + 四守护 + clippy |
+| C6 | `feat(providers): 厂商预设 + 默认供应商改 DeepSeek（D-85/J/K）` | §十 预设常量表 + 编辑对话框下拉 + `ModelConfig::default()` 变更 + `config_warnings` 预设地址豁免 + i18n `preset_*` 键 + §6.1 预设测试 | 全量测试绿 + 四守护 + clippy |
 
-依赖关系：C2 独立可编译；C3 依赖 C2；C4/C5 依赖 C3（共用 `TranslatorSwitched` 与 UI 状态结构）。
+依赖关系：C2 独立可编译；C3 依赖 C2；C4 依赖 C3（共用 `TranslatorSwitched` 与 UI 状态结构）；
+C5 依赖 C3（`UpdateStats` 改型会同时触及 probe 结果路径无关，但 `OverlayStats` 结构与其测试同名）；
+C6 依赖 C5（预设要填 `currency` 字段）。
 C3 是最大提交（契约 + 编排 + shell + UI 需同步改，否则旧调用点编译不过）——允许拆为
-"C3a 契约 + 编排 + shell（旧按钮暂删）"与"C3b UI 每行按钮"两提交，但 C3a 必须在删除旧 UI 路径的
-同一提交内保证可编译。
+"C3a 契约 + 编排 + shell（旧按钮暂删）"与"C3b UI 每行按钮 + 行点击语义"两提交，但 C3a 必须在删除
+旧 UI 路径的同一提交内保证可编译。
 
 ---
 
@@ -695,18 +836,28 @@ C3 是最大提交（契约 + 编排 + shell + UI 需同步改，否则旧调用
 | `replace_rig_pushes_translator_switched` | 成功替换 → `UiEvent::TranslatorSwitched{name, model}` |
 | `drain_tl_switch_runs_before_segment_pop` | 段队列非空时仍消费到 `ReplaceRig`（F1 回归） |
 
-**lt-ui（C3/C4）**
+**lt-ui（C3/C4/C5/C6）**
 
 | 测试 | 断言 |
 |---|---|
+| `row_click_only_selects_no_switch_cmd` | **裁决 E 回归**：headless 点击第 1 行 → `model_selected == Some(1)`，且**未发出任何 `Cmd::SwitchTranslator`**、`settings.active_model` 不变 |
+| `row_context_menu_and_double_click_unchanged` | 双击行仍进编辑、四按钮（增/编/复制/删）目标 = 选中行（回归） |
+| `delete_active_row_still_switches_internally` | 删掉活动行 → 仍发 `Cmd::SwitchTranslator`（正确性保留，与 E 不冲突） |
 | `probe_row_button_sends_cmd_with_id` | headless 指针点击第 1 行「测试」→ 发出 `Cmd::TestTranslator{probe_id: 0}` 且 `running.row == 1` |
 | `probe_cancel_button_sends_cancel_and_settles_locally` | 在途时点击 → 发 `CancelTranslatorTest` + 本地 `Cancelled` + `running == None` |
 | `other_rows_disabled_while_running` | 在途时其他行按钮 `enabled == false` |
 | `stale_probe_result_ignored` | `probe_id` 不匹配的回执不改变状态 |
 | `probe_result_invalidated_on_config_change` | 改行配置后旧结果不渲染 |
-| `probe_watchdog_settles_inconclusive` | `started` 拨回 71 秒前 → 渲染一帧 → `running == None` + `Inconclusive` |
+| `probe_watchdog_settles_inconclusive` | `started` 拨回 21 秒前 → 渲染一帧 → `running == None` + `Inconclusive` |
 | `active_model_status_line_renders_name` | 状态行文本含当前模型名；收到 `TranslatorSwitched` 后追加「已切换生效」 |
+| `active_model_status_line_has_no_switch_control` | **裁决 E 回归**：状态行区域不含任何按钮/下拉（只读） |
 | `superseded_subtitle_line_is_neutral` | `failed = Some(Superseded)` 的行文本为 `err_subtitle_skipped` 且 `fail_kind == Some(Superseded)` |
+| `currency_symbol_follows_config_not_lang` | 同一份 `OverlayStats` 在 zh/en 界面下符号一致；`cost_cny>0` 显示 ¥、`cost_usd>0` 显示 $、两者皆非零并列显示 |
+| `price_unit_label_follows_currency` | 币种下拉选「人民币」→ 价格行单位键 = `price_unit_cny`；选「跟随界面语言」且界面 zh → 同 cny |
+| `preset_fills_all_fields` | 选「DeepSeek」→ `api_base` / `model` / `thinking_style` / `disable_thinking` / `currency` 与 §十 常量表逐字段一致 |
+| `preset_never_overwrites_user_data` | 已填 `api_key` / `temperature` / 价格 / 非空 `name` 后再选预设 → 这些字段**一字不变**；`name` 为空时才被填入 |
+| `preset_custom_fills_nothing` | 选「自定义」→ 五字段全部保持原值 |
+| `preset_api_base_skips_v1_warning` | `api_base = "https://api.deepseek.com"`（与预设一致）→ `config_warnings` 不含 `cfg_warn_api_base_v1`；手填 `"https://foo.example"` 仍含该提示（回归） |
 
 **lt-app（C3）**
 
@@ -716,18 +867,28 @@ C3 是最大提交（契约 + 编排 + shell + UI 需同步改，否则旧调用
 | `second_test_supersedes_in_flight` | 在途时再发一条：旧探测取消标志被置位、`probe_id` 换新、新线程已出生（**不拒绝**） |
 | `probe_exit_guard_keeps_newer_id` | 旧探测退出时不抹掉新探测的在途 id（`compare_exchange` 条件复位） |
 
+**lt-proto / lt-orchestrator（C5/C6）**
+
+| 测试 | 断言 |
+|---|---|
+| `effective_currency_follows_lang_then_explicit` | `None` + "zh" → `Cny`；`None` + "en" → `Usd`；`Some("usd")` + "zh" → `Usd`（显式优先） |
+| `default_model_is_deepseek_preset` | `ModelConfig::default()` 的 `api_base/model/thinking_style/currency` == §十 DeepSeek 预设行；`api_key` 为空串 |
+| `settings_without_currency_key_loads_as_none` | 老 `settings.json`（无 `currency` 键）反序列化后 `currency == None`（serde 默认兼容） |
+
 ### 6.2 实机走查清单（待用户，逐项勾）
 
-1. 每行「测试」：新增/复制/切换行后按钮仍在正确行、点击目标正确。
-2. 测试中点「中断」：界面 ≤1 秒恢复；日志确认请求已被掐断。
-3. 四态观感：绿 `✓ 连接成功`、红 `✖ 连接失败`（含中文原因）、灰 `⏱ 已中断`、黄 `？ 60 秒未定论`。
-4. 本地 LM Studio（模型未加载时首次请求慢）的实际表现：慢但最终成功，或落"未定论"且可重试。
-5. 三种典型失败：错地址（连接失败）、错密钥（401）、错模型名（404）的文案是否可执行。
-6. 测试期间正在翻译的字幕不中断、不丢句。
-7. 换模型时字幕不再出现红色"队列积压"，而是中性"已跳过（切换模型）"。
-8. 「当前使用：X」随切换更新；切换后出现"已切换生效"。
-9. 费用跨模型切换持续累加；退出重启后归零。
-10. 未提供用量的端点：费用旁出现「部分未知」。
+1. **设置页点行不再切换模型**：点任意一行，`当前使用：X` 不变、悬浮窗下拉不变、正在跑的翻译不受影响。
+2. **切换一律在悬浮窗**：悬浮窗「模型」下拉换一个 → 面板 `当前使用` 跟着更新并短暂显示「已切换生效」。
+3. 每行「测试」：新增/复制/删除行后按钮仍在正确行、点击目标正确。
+4. 测试中点「中断」：界面 ≤1 秒恢复；日志确认请求已被掐断。
+5. 四态观感：绿 `✓ 连接成功`、红 `✖ 连接失败`（含中文原因）、灰 `⏱ 已中断`、黄 `？ 10 秒未定论`。
+6. 新增供应商走厂商预设：选「DeepSeek」→ 地址/模型/币种自动填好，只需贴 Key；选「自定义」不覆盖手填内容。
+7. 三种典型失败：错地址（连接失败）、错密钥（401）、错模型名（404）的文案是否可执行。
+8. 测试期间正在翻译的字幕不中断、不丢句。
+9. 换模型时字幕不再出现红色"队列积压"，而是中性"已跳过（切换模型）"。
+10. 费用：换模型后继续累加、退出重启归零；用人民币供应商显示 ¥、美元供应商显示 $；两者都用过时并列显示。
+11. 未提供用量的端点：费用旁出现「部分未知」。
+12. 出厂默认配置：删掉 `settings.json` 后首启 → 翻译页是 DeepSeek 那条，贴 Key 即可用。
 
 ### 6.3 守卫与门禁（每次提交前）
 
@@ -737,7 +898,7 @@ powershell -File scripts/check_deps.ps1
 powershell -File scripts/check_guards.ps1
 powershell -File scripts/check_dead_contract.ps1
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace      # 基线 540+9 → 本方案预计 +20 左右
+cargo test --workspace      # 基线 540+9 → 本方案预计 +32 左右（C2~C6）
 ```
 
 ---
@@ -752,6 +913,9 @@ cargo test --workspace      # 基线 540+9 → 本方案预计 +20 左右
 | 探测线程 / 命令链路异常导致 UI 无回执 | UI 看门狗（70 秒）兜底落终态——不依赖任何回执；shell 侧不拒绝新请求（取代语义），避免"取消后立刻重测"被阻塞 |
 | 会话统计改造影响成产翻译统计 | `record_translation` 在既有 `finish_ok/fail` 调用点等价替换；`session_stats_accumulate_across_rig_replacement` 与既有统计测试双覆盖 |
 | 新 `FailureKind` 触发死契约守卫 | §4.1 已列引用点 ≥2；若 WARN 按脚本先例登记 |
+| 出厂默认配置改为 DeepSeek 影响老用户 | 仅影响"无 `settings.json` 或 models 为空"的全新用户；已有档案的 `models` 数组原样保留（`sanitize` 不触碰非空列表）。回滚 = 还原 `ModelConfig::default()` 一处 |
+| 币种改动影响老档案 | `currency` 为纯新增可选字段（`serde(default)`）：老档案反序列化得 `None` → 跟随界面语言，与旧行为（按语言显示符号）**等价**，不产生迁移 |
+| 设置页行点击语义变更（E）被误读为"功能退化" | 在分组内以 `models_group_hint` 明写"点行=选中；切换去悬浮窗下拉"；§6.1 有 `row_click_only_selects_no_switch_cmd` 回归测试钉住 |
 
 **回滚**：按提交粒度 `git revert`；契约回滚需 `PROTO_VERSION` 回到 5（与 C3 同批回滚）。
 
@@ -760,28 +924,120 @@ cargo test --workspace      # 基线 540+9 → 本方案预计 +20 左右
 ## 八、不在本次范围（记录备查）
 
 - 「切换前自动探针」：明确不做——换模型不得因网络变慢；验证权经每行「测试」按钮交给用户。
+- **设置页不提供任何模型切换控件**（用户裁决 E 的明确取舍）：不加"设为当前使用"按钮、不加单选列。
+  由此产生的已知边界：悬浮窗处于紧凑形态时行 2（含模型下拉）不显示（`overlay.rs:5/116`），悬浮窗
+  整体隐藏时亦不可达——两者都需先唤出/展开悬浮窗（托盘菜单「显示悬浮窗」）。**该边界被接受，
+  不在本次新增入口。**
 - 并发多探测、探测历史记录、探测结果持久化。
 - ASR 侧（引擎/模型/下载/零信任闸门）任何改动。
-- 模型编辑对话框字段与校验（`config_warnings`）改动。
+- 模型编辑对话框的字段校验逻辑（`config_warnings`）改动（仅新增"厂商预设"下拉与"币种"下拉两处控件）。
 - 费用跨进程持久化（重启必须清零）。
+- api_key 加密落盘（登记备忘：如需提升可接 Windows DPAPI `CryptProtectData`，见 §九 N3）。
 
 ---
 
-## 九、本次复核新增发现（不属原 A~G 范围，待裁决是否纳入）
+## 九、复核巡检的其余发现（登记，不在本次做）
 
-> 2026-09-10 文档复核时对翻译子系统做的二次巡检结果。N1/N2 建议**纳入本次**（代价小、与"多供应商可用"
-> 直接相关），N3~N5 建议登记备忘、不在本次做。
+> 2026-09-10 文档复核时对翻译子系统做的二次巡检，共 5 项：N1（无厂商预设）与 N2（费用单位口径）
+> **已提升为裁决 J/K/I 并纳入本次**（详见 §3、§十）；其余三项登记如下。
 
-| # | 发现 | 证据 | 建议 |
+| # | 发现 | 证据 | 处置 |
 |---|---|---|---|
-| **N1** | **没有厂商预设**：新增一个供应商必须手打 api_base + 模型名，且默认配置是"本机 LM Studio"（`http://127.0.0.1:1234/v1` + `hunyuan-mt-chimera-7b`，空密钥）——对绝大多数用户而言默认就不可用，多供应商的"添加"门槛偏高 | `lt-proto/settings.rs:452-475`（`ModelConfig::default`）；编辑对话框无预设入口（`translation.rs:596` 起 `editor_fields` 逐字段手填） | **纳入（建议）**：编辑对话框加「厂商预设」下拉，选中即填 `api_base` + 建议 `model` + `thinking_style`。候选集（与 `llm-api-round2.md` 的四家厂商参数对照表天然衔接）：OpenAI / DeepSeek / 智谱 GLM / Kimi / 阿里通义 / 火山方舟 / 本机 LM Studio / 本机 Ollama / 自定义。代价：一张常量表（建议放 `lt-proto`，纯新增豁免）+ 下拉 + i18n 键 + 3 条测试 |
-| **N2** | **费用单位口径不一致**：价格字段按"每 1M token 的**美元**价"计算（`compute_cost` 直接当作美元），中文界面却用 `¥` 符号显示——数字是美元、符号是人民币，约 7 倍口径误导；且价格输入行**完全没有单位说明**（i18n 里 `price_suffix`「 /1M tok」键**从未被使用**） | 计算：`lt-translate/src/lib.rs:34-45`；符号：`lt-ui/src/windows/overlay.rs:652-657`（`get_lang()=="zh" ? "¥" : "$"`）；输入行：`translation.rs:681-686`（无单位）；死键：`assets/i18n/zh.yaml:253` | **纳入（建议）**：① 费用统一以 `$` 显示（去掉按语言换符号）；② 价格输入行补「美元 / 1M tok」（启用或改写 `price_suffix`）；③ 悬停说明"费用按你填写的单价计算"。代价：3 行代码 + 2 个 i18n 键 |
-| **N3** | api_key 明文落盘（`settings.json`） | `lt-models` 设置落盘路径 | 登记备忘；如需提升可接 Windows DPAPI（`CryptProtectData`），不在本次 |
-| **N4** | 探测"已验证"状态不落盘：重启后无从判断哪个供应商验证过 | — | 不做（与"结果随配置失效"的设计一致性更高） |
-| **N5** | 无「测试全部」按钮：多供应商时逐个点 | — | 不做（一次只测一个是本次定案 D） |
+| **N3** | api_key 明文落盘（`settings.json`） | lt-models 设置落盘路径 | 登记备忘；本次不做 |
+| **N4** | 探测"已验证"状态不落盘：重启后无从判断哪个供应商验证过 | — | 不做（与"结果随配置变更即失效"的设计一致性更高） |
+| **N5** | 无「测试全部」按钮：多供应商时逐个点 | — | 不做（一次只测一个是定案 D） |
 
-若 N1/N2 获批，施工切分为追加提交 **C6 `feat(providers): 厂商预设 + 费用单位口径（D-85/N1-N2）`**，
-排在 C5 之后；测试追加 N1 的预设填充测试与 N2 的符号/单位渲染测试。
+历史证据留档（N1/N2 的原始病灶，供实现者理解动机）：
+
+- N1：`ModelConfig::default()` 原为"本机 LM Studio"（`http://127.0.0.1:1234/v1` +
+  `hunyuan-mt-chimera-7b`，空密钥，`lt-proto/settings.rs:452-475`）；编辑对话框无预设入口
+  （`translation.rs:596` 起 `editor_fields` 逐字段手填）。
+- N2：`compute_cost`（`lt-translate/src/lib.rs:34-45`）对价格无币种概念；费用符号按界面语言
+  （`overlay.rs:652-657` 原为 `get_lang()=="zh" ? "¥" : "$"`）；价格输入行无单位说明
+  （`translation.rs:681-686`）；i18n `price_suffix`（`zh.yaml:253`）**从未被使用**。
+
+---
+
+## 十、厂商预设常量表（裁决 J/K）
+
+**存放位置**：`crates/lt-proto/src/presets.rs`（纯新增文件 + 纯新增常量，冻结规则豁免评审）。
+
+```rust
+/// 一条厂商预设：选中后填入模型编辑对话框。
+pub struct ProviderPreset {
+    pub key: &'static str,        // "deepseek" —— 同时是 i18n 键后缀（preset_<key>）
+    pub api_base: &'static str,
+    pub model: &'static str,      // 建议模型 id（用户可改）
+    pub thinking_style: &'static str, // THINKING_STYLES 之一
+    pub disable_thinking: bool,
+    pub currency: Option<&'static str>, // Some("cny") / Some("usd") / None 跟随界面语言
+}
+pub const PROVIDER_PRESETS: &[ProviderPreset] = &[ /* 见下表 */ ];
+```
+
+**填充语义（无歧义）**：选中预设 → 覆盖 `api_base` / `model` / `thinking_style` / `disable_thinking` /
+`currency` 五个字段。
+
+**永不覆盖**：`api_key`（用户已贴的密钥）、`proxy` / `temperature` / `overrides` / `extra_body` /
+`input_price` / `output_price` / `context_turns` / `streaming` / `json_response` 等其余字段。
+
+**`name` 的特殊规则**：**仅当 `name` 当前为空**（新增配置的初始态）时填入预设的显示名；
+已有非空名称**绝不覆盖**（用户改过名就保留）。
+
+**选「自定义」** = 五个字段一个都不填（纯手工，与现状一致）。
+
+**本地预设的 `model` 为空串**（LM Studio / Ollama 不知道用户装了哪个模型）：对话框确定按钮的
+既有守卫（`name` 与 `model` 均非空才收，`translation.rs:570-572`）会拦住用户先填模型名——
+这是预期行为，不需要额外校验。
+
+**表格数值 = 官方文档核查结果**（2026-09-10 子代理逐家核对官方文档原文，URL 入表留痕）：
+
+| key | 供应商 | `api_base` | `model`（可改） | `thinking_style` | `disable_thinking` | `currency` |
+|---|---|---|---|---|---|---|
+| `deepseek` | 深度求索 DeepSeek | `https://api.deepseek.com`（官方形态**不带 `/v1`**） | `deepseek-flash` | `"deepseek"` | `true` | `Some("cny")` |
+| `openai` | OpenAI | `https://api.openai.com/v1` | `gpt-5.6-luna` | `"off"` | `true` | `Some("usd")` |
+| `zhipu` | 智谱 GLM | `https://open.bigmodel.cn/api/paas/v4` | `glm-4.6` | `"deepseek"` | `true` | `Some("cny")` |
+| `moonshot` | Kimi（月之暗面） | `https://api.moonshot.cn/v1` | `kimi-k2.6` | `"deepseek"` | `true` | `Some("cny")` |
+| `qwen` | 通义千问（阿里云百炼） | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen3.5-flash` | `"qwen"` | `true` | `Some("cny")` |
+| `ark` | 火山方舟（字节跳动） | `https://ark.cn-beijing.volces.com/api/v3` | `doubao-seed-2-0-lite-260215` | `"deepseek"` | `true` | `Some("cny")` |
+| `lmstudio` | 本机 LM Studio | `http://localhost:1234/v1` | `""`（用户填本机已加载模型） | `"openai"` | `true` | `None` |
+| `ollama` | 本机 Ollama | `http://localhost:11434/v1` | `""`（用户填 `ollama list` 的 id） | `"openai"` | `true` | `None` |
+| `custom` | 自定义 | —（不填充任何字段） | — | — | — | — |
+
+**填这些值的依据（逐条，实现者不必再查）**：
+
+- **`thinking_style` 列即"官方能接受且我们已支持"的姿态**，全部经官方文档确认不会 400：
+  - DeepSeek / GLM-4.6 / Kimi-k2.6 / 方舟：官方参数 `thinking:{"type":"disabled"}` ↔ 我们的
+    `NestedDisabled`（`thinking_style = "deepseek"`）。
+  - 通义：官方 `enable_thinking: false` ↔ 我们的 `EnableThinkingFalse`（`"qwen"`）。
+  - LM Studio / Ollama：官方（Ollama 明确、LM Studio 缺载但本仓库实测有效）
+    `reasoning_effort: "none"` ↔ 我们的 `ReasoningEffortNone`（`"openai"`）。
+  - **OpenAI 用 `"off"`（= 不发送任何关闭参数）**：`reasoning_effort: "none"` 在 OpenAI 是
+    **model-dependent**（部分新模型不支持 `none`，传了直接 400），保守不发是唯一稳的选择；
+    用户在「关闭方式」里显式选 `openai` 才会发（该选项仍在）。
+- **八家地址全部命中 `crates/lt-translate/src/thinking.rs` 既有路由表**（`deepseek` / `api.openai.com` /
+  `bigmodel` / `moonshot` / `dashscope`+`aliyuncs.com` / `volces` / 回环 `LOCAL_HOSTS`），
+  **无需为预设新增任何路由关键词**——预设与自动路由不会互相矛盾。
+- **价格一律留 0，不写进常量表**：各站价格随时变（且国内站人民币、国际站美元），写死会误导；
+  用户在自己供应商的定价页照抄即可，币种由 `currency` 字段决定。
+- **`temperature` 保持 `None`（不发送）**：Kimi 全系对 `temperature`/`top_p` 传入非官方值**直接报错**，
+  DeepSeek 思考模式忽略该参数——"默认不发送"是唯一通用安全解（与既有裁决一致，预设**不预填温度**）。
+
+**出厂默认配置（裁决 K）**：`ModelConfig::default()` 改为该表 **DeepSeek** 行 + `name: "DeepSeek"` +
+`api_key: String::new()`；其余字段沿用现有默认（`streaming: true`、`json_response: false`、
+`temperature: None`、`context_turns: 0`、价格 0）。原"本机 LM Studio"退化为预设项之一。
+空 `api_key` 首启会得到 401 中文提示「请检查 API Key 是否正确」——可执行，优于旧默认的连接被拒。
+
+**附带改动（1 处，避免预设一选就报警）**：`config_warnings` 的 `/v1` 软提示
+（`cfg_warn_api_base_v1`，`translation.rs:has_version_segment`）对**已知供应商的官方地址**放行：
+
+```rust
+// 地址与任一预设的 api_base 完全一致 → 该厂商自有路径，跳过"缺 /v1"提示
+if lt_proto::PROVIDER_PRESETS.iter().any(|p| p.api_base == base) { /* skip */ }
+```
+
+理由：DeepSeek 官方地址就是不带 `/v1` 的 `https://api.deepseek.com`，预设填完立刻弹黄条会被当成 bug；
+白名单来自预设表本身，不需要额外维护一份域名清单。
 
 ---
 
@@ -789,7 +1045,7 @@ cargo test --workspace      # 基线 540+9 → 本方案预计 +20 左右
 
 | 环节 | 状态 | 位置 |
 |---|---|---|
-| 面板点行切换 | ✓ | `translation.rs:268-277`（写 `active_model` + 立即发 `Cmd::SwitchTranslator`） |
+| 面板点行切换 | ✓（现状；**本方案按裁决 E 移除**，改为只选中） | `translation.rs:268-277`（写 `active_model` + 立即发 `Cmd::SwitchTranslator`） |
 | 悬浮窗模型下拉切换 | ✓ | `crates/lt-ui/src/windows/overlay.rs:369-402` |
 | 命令路由 | ✓（pipeline 为 None 时静默丢弃——**本方案由 §4.5 F4 补上可见回执**） | `shell.rs:239-244` |
 | 线程命令 | ✓ | `pipeline.rs:1278-1284` → `TlSwitch::ReplaceRig` |
