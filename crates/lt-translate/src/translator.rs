@@ -169,7 +169,19 @@ pub struct Translator {
     extra_body: Value,
     system_prompt_template: String,
     state: Arc<Mutex<MutableState>>,
+    /// D-85：调用方置位的取消令牌（None = 不可取消——生产翻译路径的默认态）。
+    ///
+    /// 置位后：流式读取循环在 ≤[`CANCEL_POLL`] 内返回
+    /// [`TranslateError::Cancelled`]（迭代器随即被丢弃 → `Drop` 里的 `abort()`
+    /// 关掉 HTTP 连接）；非流式的整体等待同样以 select 竞争该令牌。**不是请求
+    /// 参数**——`minimal()` 等白名单构造必须原样透传，否则退到最小请求的一步
+    /// 将不可中断。
+    cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
+
+/// 取消令牌的轮询粒度（D-85）：置位到察觉的最坏延迟。仅在 `cancel.is_some()`
+/// 时生效——生产路径（`cancel == None`）的等待时长与旧实现逐字节等价。
+const CANCEL_POLL: Duration = Duration::from_millis(150);
 
 impl Translator {
     pub fn new(params: TranslatorParams) -> Result<Self, TranslateError> {
@@ -251,6 +263,8 @@ impl Translator {
                 context_turns: 0,
                 history: BTreeMap::new(),
             })),
+            // 构造即"不可取消"；调用方按需 with_cancel（探测路径）
+            cancel: None,
         })
     }
 
@@ -317,6 +331,19 @@ impl Translator {
             extra_body: Value::Object(Map::new()),
             system_prompt_template: self.system_prompt_template.clone(),
             state: self.state.clone(),
+            // D-85：取消令牌不是请求参数——白名单构造也必须透传（否则退到
+            // "最小请求"的一步不可中断）
+            cancel: self.cancel.clone(),
+        }
+    }
+
+    /// D-85：挂上取消令牌（探测/一次性调用用；生产翻译路径不挂）。
+    /// 令牌置位后：流式读取 ≤[`CANCEL_POLL`] 内以 [`TranslateError::Cancelled`]
+    /// 收口；非流式等待同步中断。返回新装置（Builder 风格，不改自身）。
+    pub fn with_cancel(&self, flag: Arc<std::sync::atomic::AtomicBool>) -> Translator {
+        Translator {
+            cancel: Some(flag),
+            ..self.share_client()
         }
     }
 
@@ -336,6 +363,7 @@ impl Translator {
             extra_body: self.extra_body.clone(),
             system_prompt_template: self.system_prompt_template.clone(),
             state: self.state.clone(),
+            cancel: self.cancel.clone(),
         }
     }
 
@@ -547,10 +575,26 @@ impl Translator {
 
     /// 在共享运行时上执行带超时的 future（阻塞调用线程）
     /// W4：超时逐调用传入（设置总线 `tl.timeout` 生效值；不再存实例状态）
+    /// D-85：挂了取消令牌时改为 select 竞争——取消命中即丢弃请求 future
+    /// （连接随之关闭），返回 [`TranslateError::Cancelled`]；未挂令牌的路径
+    /// 与旧实现逐字节等价。
     fn timeout_block<F, T>(&self, fut: F, timeout_secs: u64) -> Result<T, TranslateError>
     where
         F: std::future::Future<Output = Result<T, async_openai::error::OpenAIError>>,
     {
+        let timeout_msg =
+            || TranslateError::Timeout(format!("Translation exceeded {timeout_secs}s total timeout"));
+        if let Some(flag) = self.cancel.clone() {
+            return runtime().block_on(async move {
+                tokio::select! {
+                    r = tokio::time::timeout(Duration::from_secs(timeout_secs), fut) => match r {
+                        Ok(inner) => inner.map_err(TranslateError::from),
+                        Err(_) => Err(timeout_msg()),
+                    },
+                    _ = wait_cancelled(flag) => Err(TranslateError::Cancelled),
+                }
+            });
+        }
         // timeout(...) 必须在 runtime 上下文内求值（Sleep 需要 timer 句柄）
         match runtime().block_on(async {
             tokio::time::timeout(Duration::from_secs(timeout_secs), fut).await
@@ -626,6 +670,7 @@ impl Translator {
                 text: text.to_string(),
                 timeout_secs: read_timeout.as_secs(),
                 handle,
+                cancel: self.cancel.clone(),
             },
             json_response: self.json_response,
             thinking: self.thinking,
@@ -763,7 +808,22 @@ enum StreamInner {
         /// （本机模型尤其重要：推理型模型一个 content 增量都不发，
         /// 旧实现要等它把整段生成完才能发现接收端已关闭）
         handle: tokio::task::JoinHandle<()>,
+        /// D-85：取消令牌快照（None = 生产路径，等待时长与旧实现等价）
+        cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
     },
+}
+
+/// 取消令牌是否已置位（令牌缺席恒 false）
+fn is_cancelled(flag: &Option<Arc<std::sync::atomic::AtomicBool>>) -> bool {
+    flag.as_ref()
+        .is_some_and(|f| f.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+/// 轮询等待取消置位（仅非流式路径使用；每 [`CANCEL_POLL`] 查一次）
+async fn wait_cancelled(flag: Arc<std::sync::atomic::AtomicBool>) {
+    while !flag.load(std::sync::atomic::Ordering::Relaxed) {
+        tokio::time::sleep(CANCEL_POLL).await;
+    }
 }
 
 /// translate_iter 的消费端迭代器
@@ -851,6 +911,7 @@ impl Iterator for TranslateStream {
                 deadline,
                 text,
                 timeout_secs,
+                cancel,
                 ..
             } => loop {
                 let now = Instant::now();
@@ -859,7 +920,20 @@ impl Iterator for TranslateStream {
                     self.finished = true;
                     return Some(Err(TranslateError::Timeout(timeout_msg)));
                 };
-                match rx.recv_timeout(remaining) {
+                // D-85：取消优先于继续等待——置位即以 Cancelled 收口，迭代器随
+                // 消费方丢弃 → Drop 里 abort() 关掉 HTTP 连接（服务端停止生成）。
+                if is_cancelled(cancel) {
+                    self.finished = true;
+                    return Some(Err(TranslateError::Cancelled));
+                }
+                // 取消令牌在挂时按 CANCEL_POLL 切片等待（以便及时察觉置位）；
+                // 未挂令牌（生产路径）时切片 == 剩余时长，与旧实现逐字节等价
+                let slice = if cancel.is_some() {
+                    CANCEL_POLL.min(remaining)
+                } else {
+                    remaining
+                };
+                match rx.recv_timeout(slice) {
                     Ok(StreamMsg::Delta(d)) => {
                         // W2/INV-F：先过思维链隔离器，再产出可见增量
                         let visible = self.stripper.push(&d);
@@ -901,8 +975,16 @@ impl Iterator for TranslateStream {
                         return Some(Err(e));
                     }
                     Err(mpsc::RecvTimeoutError::Timeout) => {
-                        self.finished = true;
-                        return Some(Err(TranslateError::Timeout(timeout_msg)));
+                        // 切片到期 ≠ 总超时：回到循环顶部重算 remaining 并复查
+                        // 取消（cancel 在挂时 slice ≤ CANCEL_POLL）。**若真的耗尽
+                        // 总 deadline**，顶部 `checked_duration_since` 会立刻以
+                        // Timeout 收口——语义与旧实现一致，只是多绕一圈。
+                        if cancel.is_none() {
+                            // 未挂令牌时 slice == remaining，走到这里即总超时
+                            self.finished = true;
+                            return Some(Err(TranslateError::Timeout(timeout_msg)));
+                        }
+                        continue;
                     }
                     Err(mpsc::RecvTimeoutError::Disconnected) => {
                         // pump 保证先发 End/Err 再退出，此分支仅防御
@@ -1223,6 +1305,79 @@ impl Translator {
             ..TranslatorParams::default()
         })
         .expect("测试客户端构建必成功")
+    }
+}
+
+#[cfg(test)]
+mod cancel_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    /// D-85：令牌在挂时，迭代器的第一跳就应察觉已置位——**不等网络**
+    /// （循环顶部的取消检查先于任何 `recv_timeout`）
+    #[test]
+    fn cancel_before_first_read_returns_immediately() {
+        let flag = Arc::new(AtomicBool::new(true));
+        // 黑洞地址：若实现错误地先等网络，这里会挂住（测试靠 elapsed 断言兜住）
+        let t = Translator::for_test("http://10.255.255.1:9/v1", "m", true, None, None)
+            .with_cancel(flag);
+        let t0 = Instant::now();
+        let mut it = t.translate_iter("hi", "en", "zh", 30, 0);
+        match it.next() {
+            Some(Err(TranslateError::Cancelled)) => {}
+            other => panic!("期望 Cancelled，实际 {other:?}"),
+        }
+        assert!(
+            t0.elapsed() < Duration::from_millis(200),
+            "取消应即时收口，实际 {:?}",
+            t0.elapsed()
+        );
+        assert!(it.next().is_none(), "结束标记后不再产出");
+    }
+
+    /// D-85：取消令牌不是请求参数——白名单构造（`minimal`）与共享构造
+    /// （`share_client`/`with_plan`/`with_max_tokens`）都必须原样透传，
+    /// 否则"退到最小请求"的一步将不可中断
+    #[test]
+    fn derived_translators_preserve_cancel_token() {
+        let flag = Arc::new(AtomicBool::new(false));
+        let base = Translator::for_test("http://127.0.0.1:1234/v1", "m", true, None, None)
+            .with_cancel(flag);
+        assert!(base.cancel.is_some(), "with_cancel 应挂上令牌");
+        assert!(base.minimal().cancel.is_some(), "minimal 必须透传令牌");
+        assert!(base.share_client().cancel.is_some(), "share_client 必须透传令牌");
+        assert!(
+            base.with_plan(ThinkingPlan::None).cancel.is_some(),
+            "with_plan 必须透传令牌"
+        );
+        assert!(
+            base.with_max_tokens(4096).cancel.is_some(),
+            "with_max_tokens 必须透传令牌"
+        );
+    }
+
+    /// 防回归：未显式挂令牌的装置（生产路径）must NOT 带令牌——
+    /// 带上了会让生产等待被 150ms 切片切碎（行为虽等价但白耗唤醒）
+    #[test]
+    fn plain_translator_has_no_cancel_token() {
+        let t = Translator::for_test("http://127.0.0.1:1234/v1", "m", true, None, None);
+        assert!(t.cancel.is_none());
+        assert!(!is_cancelled(&t.cancel));
+    }
+
+    /// 未置位的令牌不得误伤：迭代器照常发起（黑洞地址 → 读超时收口而非 Cancelled）
+    #[test]
+    fn unset_cancel_token_does_not_trigger_cancel() {
+        let flag = Arc::new(AtomicBool::new(false));
+        let t = Translator::for_test("http://10.255.255.1:9/v1", "m", true, None, None)
+            .with_cancel(flag);
+        // 1 秒总超时：黑洞地址不会回包 → 应以 Timeout 收口（而不是 Cancelled）
+        let mut it = t.translate_iter("hi", "en", "zh", 1, 0);
+        match it.next() {
+            Some(Err(TranslateError::Timeout(_))) => {}
+            other => panic!("期望 Timeout，实际 {other:?}"),
+        }
+        let _ = Ordering::Relaxed;
     }
 }
 

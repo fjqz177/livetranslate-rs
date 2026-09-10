@@ -22,6 +22,10 @@ pub enum TranslateError {
     /// 模型输出重复循环（RepetitionError）
     #[error("repetition loop detected: {0}")]
     Repetition(String),
+    /// 调用被取消（D-85：连接探测中断 / 迭代器被主动放弃）——**不是失败**：
+    /// 由调用方置位的取消令牌触发，UI 以"已中断"呈现，不计入错误统计
+    #[error("cancelled")]
+    Cancelled,
     /// 其他
     #[error("{0}")]
     Other(String),
@@ -49,6 +53,7 @@ impl TranslateError {
             TranslateError::Connection(_) => K::Connection,
             TranslateError::Timeout(_) => K::Timeout,
             TranslateError::Repetition(_) => K::Repetition,
+            TranslateError::Cancelled => K::Cancelled,
             TranslateError::Other(_) => K::Unknown,
         }
     }
@@ -183,6 +188,13 @@ mod tests {
     fn expected_classification() {
         assert!(TranslateError::Connection("x".into()).is_expected());
         assert!(TranslateError::Timeout("x".into()).is_expected());
+        // D-85：取消是用户意图，按"预期内"记 warning 而非 error
+        assert!(TranslateError::Cancelled.is_expected());
+        assert_eq!(
+            TranslateError::Cancelled.failure_kind(),
+            lt_proto::FailureKind::Cancelled
+        );
+        assert_eq!(TranslateError::Cancelled.ui_text(), "[error: cancelled]");
         assert!(TranslateError::Auth {
             code: 401,
             message: "x".into()

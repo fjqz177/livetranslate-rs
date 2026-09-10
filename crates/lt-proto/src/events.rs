@@ -199,6 +199,8 @@ impl FailureKind {
             FailureKind::Repetition => "error_repetition",
             FailureKind::Dropped => "err_dropped",
             FailureKind::NotReady => "err_not_ready",
+            FailureKind::Cancelled => "err_cancelled",
+            FailureKind::Superseded => "err_superseded",
             FailureKind::Unknown => "err_unknown",
         }
     }
@@ -239,6 +241,12 @@ pub enum FailureKind {
     /// 翻译装置未就绪（模型配置无效等）——旧实现把占位文案当**正常译文**下发，
     /// 字幕窗以译文样式显示，用户看不出这是错误（审计 R2：报错必须可辨）
     NotReady,
+    /// 用户中断（D-85：连接探测取消等；**不是错误**，UI 以弱色说明呈现）
+    Cancelled,
+    /// 装置被替换（D-85/F3：换模型时在队未翻译的段）——非错误，字幕窗中性展示，
+    /// 与"队列积压"（[`FailureKind::Dropped`]）区分开：后者是真丢件，前者是用户
+    /// 主动换模型导致的正常让位
+    Superseded,
     /// 其他未知错误
     Unknown,
 }

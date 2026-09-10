@@ -4,10 +4,11 @@
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use lt_translate::{Translator, TranslatorParams};
+use lt_translate::{TranslateError, Translator, TranslatorParams};
 use serde_json::{json, Value};
 
 /// 每连接一个 handler：读完整请求（头+体），按请求文本决定响应字节。
@@ -901,4 +902,141 @@ fn benchmark_blocking_against_mock() {
         "本地端点的关闭思考参数应随生产构造一并生效: {body}"
     );
     assert!(results[0].avg_total > 0.0);
+}
+
+// ── D-85：可取消调用（连接探测中断） ──
+
+/// 慢速 SSE 服务器：响应头与 `Content-Length` 一次写全，正文**逐条按 gap 下发**。
+/// 消费端因此会停在"等待下一片"的状态上——正好用来测中途置位取消。
+struct SlowSseServer {
+    base_url: String,
+}
+
+impl SlowSseServer {
+    fn start(events: Vec<String>, gap: Duration) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind 失败");
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for conn in listener.incoming() {
+                let Ok(mut stream) = conn else { break };
+                let events = events.clone();
+                std::thread::spawn(move || {
+                    if read_request(&mut stream).is_err() {
+                        return;
+                    }
+                    let mut body = String::new();
+                    for e in &events {
+                        body.push_str(&format!("data: {e}\n\n"));
+                    }
+                    body.push_str("data: [DONE]\n\n");
+                    let head = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = stream.write_all(head.as_bytes());
+                    let _ = stream.flush();
+                    for e in &events {
+                        std::thread::sleep(gap);
+                        let _ = stream.write_all(format!("data: {e}\n\n").as_bytes());
+                        let _ = stream.flush();
+                    }
+                    let _ = stream.write_all(b"data: [DONE]\n\n");
+                    let _ = stream.flush();
+                });
+            }
+        });
+        Self {
+            base_url: format!("http://127.0.0.1:{port}/v1"),
+        }
+    }
+}
+
+/// 挂令牌的翻译器（`streaming` 决定走流式还是非流式分支）
+fn translator_with_cancel(base_url: &str, streaming: bool, flag: Arc<AtomicBool>) -> Translator {
+    Translator::new(TranslatorParams {
+        api_base: base_url.into(),
+        api_key: "test-key".into(),
+        model: "test-model".into(),
+        streaming,
+        ..TranslatorParams::default()
+    })
+    .unwrap()
+    .with_cancel(flag)
+}
+
+/// 中途取消：消费端正等下一片时置位令牌，应在 `CANCEL_POLL` 量级内以
+/// `Cancelled` 收口（不是等满读超时，也不是假装成功）
+#[test]
+fn cancel_stops_streaming_within_poll_interval() {
+    let server = SlowSseServer::start(
+        vec![chunk_delta("第一片"), chunk_delta("第二片"), chunk_delta("第三片")],
+        Duration::from_millis(300),
+    );
+    let flag = Arc::new(AtomicBool::new(false));
+    let t = translator_with_cancel(&server.base_url, true, flag.clone());
+    let mut it = t.translate_iter("hello", "en", "zh", 30, 0);
+    // 第一片到达（~300ms）后停下，此刻消费端在等第二片
+    let first = it.next().expect("应产出第一片");
+    assert!(first.is_ok(), "首片应为 Ok，实际 {first:?}");
+    flag.store(true, Ordering::SeqCst);
+    let t0 = Instant::now();
+    match it.next() {
+        Some(Err(TranslateError::Cancelled)) => {}
+        other => panic!("期望 Cancelled，实际 {other:?}"),
+    }
+    assert!(
+        t0.elapsed() < Duration::from_millis(500),
+        "取消应在轮询粒度内收口，实际 {:?}",
+        t0.elapsed()
+    );
+}
+
+/// 非流式分支：整段请求被取消 → 立即返回 Cancelled（丢弃请求 future，连接关闭）
+#[test]
+fn cancel_works_on_sync_path() {
+    // 服务端读走请求后长时间不回包——不取消的话要等满 30s 超时
+    let server = MockServer::start(Arc::new(|_| {
+        std::thread::sleep(Duration::from_secs(10));
+        non_streaming_response("200 OK", &completion_response("迟到", 1, 1))
+    }));
+    let flag = Arc::new(AtomicBool::new(false));
+    let t = Arc::new(translator_with_cancel(&server.base_url, false, flag.clone()));
+    let f2 = flag.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(250));
+        f2.store(true, Ordering::SeqCst);
+    });
+    let t0 = Instant::now();
+    let r = t.translate("hello", "en", "zh", 30, 0);
+    assert!(
+        matches!(r, Err(TranslateError::Cancelled)),
+        "期望 Cancelled，实际 {r:?}"
+    );
+    assert!(
+        t0.elapsed() < Duration::from_secs(3),
+        "取消应立即收口，实际 {:?}",
+        t0.elapsed()
+    );
+}
+
+/// 回归：**未挂令牌**时超时语义不变（仍是 Timeout，不会变成 Cancelled）——
+/// 生产翻译路径的全部行为都由这条守住
+#[test]
+fn no_cancel_token_keeps_legacy_timeout_semantics() {
+    let server = MockServer::start(Arc::new(|_| {
+        std::thread::sleep(Duration::from_secs(5));
+        sse_response(&[chunk_delta("迟到")])
+    }));
+    let t = translator(&server.base_url);
+    let t0 = Instant::now();
+    let mut it = t.translate_iter("hello", "en", "zh", 1, 0);
+    match it.next() {
+        Some(Err(TranslateError::Timeout(_))) => {}
+        other => panic!("期望 Timeout，实际 {other:?}"),
+    }
+    let e = t0.elapsed();
+    assert!(
+        e >= Duration::from_millis(900) && e < Duration::from_secs(4),
+        "超时应≈1s，实际 {e:?}"
+    );
 }
