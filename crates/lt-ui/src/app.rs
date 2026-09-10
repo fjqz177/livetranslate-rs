@@ -904,6 +904,11 @@ impl MultiWindowApp {
                     if let Some(hw) = self.find_mut(WinId::Overlay) {
                         hw.window.request_redraw();
                     }
+                    // W4/方案 §2.5 规则 4（回执闭环）：真的翻出来了 = 装置已恢复，
+                    // 清掉翻译页的红字（此前只写不清，修好后横幅常驻误导用户）
+                    if self.app_state.panel.translator_error.take().is_some() {
+                        self.redraw(WinId::Panel);
+                    }
                     self.feed_subtitle(id, Some(&text));
                 }
                 // W2：同语言免翻译（显式结论；字幕窗喂原文，原版语义）
