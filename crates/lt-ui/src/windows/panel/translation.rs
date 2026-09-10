@@ -113,7 +113,13 @@ fn config_warnings(ed: &ModelEditState) -> Vec<String> {
         if !(lower.starts_with("http://") || lower.starts_with("https://")) {
             out.push(lt_i18n::t("cfg_warn_api_base_scheme"));
         }
-        if !has_version_segment(base) {
+        // D-85/J：地址与任一厂商预设**完全一致**时跳过"缺 /v1"提示——
+        // 那是人家官方的形态（DeepSeek 就是 https://api.deepseek.com），
+        // 预设填完立刻弹黄条会被当成 bug
+        let is_official_preset = lt_proto::PROVIDER_PRESETS
+            .iter()
+            .any(|p| !p.api_base.is_empty() && p.api_base == base);
+        if !has_version_segment(base) && !is_official_preset {
             out.push(lt_i18n::t("cfg_warn_api_base_v1"));
         }
     }
@@ -196,6 +202,29 @@ pub(crate) fn restore_translation_page(
 }
 
 // ── UI ──
+
+/// 应用厂商预设（D-85/J 填充语义）：
+/// - **覆盖**：`api_base` / `model` / 关闭姿态（`thinking_index` + `disable_thinking`）/ 币种
+/// - **仅当显示名为空**才填显示名（用户改过名就保留）
+/// - **绝不触碰**：`api_key` / 代理 / 温度 / 覆写 / 额外参数 / 价格 / 上下文数 / 传输开关
+/// - `custom` 项：一个字段都不填
+fn apply_preset(ed: &mut ModelEditState, p: &lt_proto::ProviderPreset) {
+    if p.is_custom() {
+        return;
+    }
+    ed.api_base = p.api_base.to_string();
+    ed.model = p.model.to_string();
+    ed.disable_thinking = p.disable_thinking;
+    // 关闭姿态：`THINKING_STYLES` 里的下标（认不出的值回落 auto=0，不 panic）
+    ed.thinking_index = lt_proto::THINKING_STYLES
+        .iter()
+        .position(|s| *s == p.thinking_style)
+        .unwrap_or(0);
+    ed.currency = p.currency.map(str::to_string);
+    if let Some(name) = p.name_for(&ed.name) {
+        ed.name = name.to_string();
+    }
+}
 
 /// 连接测试结果行（D-85 四态：成功/失败/已中断/未定论）。
 /// 颜色沿用页面既有的 ok/err/weak/warn，不新增主题色。
@@ -707,6 +736,30 @@ fn apply_editor_result(
 
 /// 对话框字段全集（Basic + Advanced，原版 QFormLayout 逐行）
 fn editor_fields(ui: &mut Ui, ed: &mut ModelEditState, pal: &Palette) {
+    // ── 厂商预设（D-85/J）：选中即填 5 个字段；不覆盖用户已填/已选的内容 ──
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(lt_i18n::t("preset_label")).color(pal.text));
+        let mut picked: Option<&'static lt_proto::ProviderPreset> = None;
+        egui::ComboBox::from_id_salt("model_edit_preset")
+            .selected_text(lt_i18n::t("preset_custom"))
+            .width(220.0)
+            .show_ui(ui, |ui| {
+                for p in lt_proto::PROVIDER_PRESETS.iter() {
+                    if ui
+                        .selectable_label(false, lt_i18n::t(&format!("preset_{}", p.key)))
+                        .clicked()
+                    {
+                        picked = Some(p);
+                    }
+                }
+            });
+        if let Some(p) = picked {
+            apply_preset(ed, p);
+        }
+        hint_line(ui, pal, &lt_i18n::t("preset_hint"));
+    });
+    ui.add_space(4.0);
+
     // ── Basic ──
     egui::Grid::new("model_edit_basic")
         .num_columns(2)
@@ -1307,8 +1360,10 @@ mod tests {
         // 无 scheme
         ed.api_base = "127.0.0.1:1234/v1".into();
         assert!(config_warnings(&ed).contains(&lt_i18n::t("cfg_warn_api_base_scheme")));
-        // 缺版本段 + 尾斜杠（两者可叠加；尾斜杠由原文判断）
-        ed.api_base = "https://api.deepseek.com/".into();
+        // 缺版本段 + 尾斜杠（两者可叠加；尾斜杠由原文判断）。
+        // 用非预设主机：厂商官方地址现已豁免该提示（D-85/J），
+        // 豁免行为另有 preset_api_base_skips_v1_warning 覆盖
+        ed.api_base = "https://api.example.com/".into();
         let w = config_warnings(&ed);
         assert!(w.contains(&lt_i18n::t("cfg_warn_api_base_v1")));
         assert!(w.contains(&lt_i18n::t("cfg_warn_api_base_slash")));
@@ -1553,7 +1608,6 @@ mod tests {
     /// 裁决 E 回归：点行**只选中**——不写 active_model、不发 SwitchTranslator
     #[test]
     fn row_click_only_selects_no_switch_cmd() {
-        let _ = lt_i18n::set_lang("zh");
         let ctx = egui::Context::default();
         let (tx, rx) = std::sync::mpsc::channel();
         let mut settings = Settings::default();
@@ -1597,7 +1651,6 @@ mod tests {
     /// 每行「测试」按钮：发号 + 置在途 + 携带该行配置（点哪测哪）
     #[test]
     fn probe_row_button_sends_cmd_with_id_and_config() {
-        let _ = lt_i18n::set_lang("zh");
         let ctx = egui::Context::default();
         let (tx, rx) = std::sync::mpsc::channel();
         let mut st = crate::state::AppUi::new(Settings::default());
@@ -1622,7 +1675,6 @@ mod tests {
     /// 在途时该行按钮变「中断」、其他行按钮禁用；点中断 → 发取消命令 + 本地立即落"已中断"
     #[test]
     fn probe_cancel_settles_locally_and_other_rows_disabled() {
-        let _ = lt_i18n::set_lang("zh");
         let ctx = egui::Context::default();
         let (tx, rx) = std::sync::mpsc::channel();
         let mut settings = Settings::default();
@@ -1670,7 +1722,6 @@ mod tests {
     /// 结果行按 id/配置身份失效：改行配置后旧结果不再渲染
     #[test]
     fn probe_result_invalidated_on_config_change() {
-        let _ = lt_i18n::set_lang("zh");
         let ctx = egui::Context::default();
         let mut st = crate::state::AppUi::new(Settings::default());
         st.panel.state.page = crate::state::PanelPage::Translation;
@@ -1702,7 +1753,6 @@ mod tests {
     /// 短暂追加「已切换生效」；**区域内不含任何切换控件**（裁决 E）
     #[test]
     fn active_model_status_line_renders_name_and_has_no_control() {
-        let _ = lt_i18n::set_lang("zh");
         let ctx = egui::Context::default();
         let mut st = crate::state::AppUi::new(Settings::default());
         st.panel.state.page = crate::state::PanelPage::Translation;
@@ -1734,6 +1784,100 @@ mod tests {
         assert!(
             find_by_key(&texts, "models_group_hint", "").is_some(),
             "模型组内应有使用说明行"
+        );
+    }
+
+    // ── D-85/J：预设填充语义 ──
+
+    /// 选预设 → 覆盖地址/模型/关闭姿态/币种；显示名仅在为空时填
+    #[test]
+    fn preset_fills_all_fields() {
+        let mut ed = ModelEditState::new_add();
+        assert!(ed.name.is_empty(), "新增时显示名为空");
+        apply_preset(&mut ed, lt_proto::preset_by_key("deepseek").unwrap());
+        let p = lt_proto::preset_by_key("deepseek").unwrap();
+        assert_eq!(ed.api_base, p.api_base);
+        assert_eq!(ed.model, p.model);
+        assert_eq!(ed.currency.as_deref(), p.currency);
+        assert_eq!(
+            lt_proto::THINKING_STYLES[ed.thinking_index],
+            p.thinking_style
+        );
+        assert_eq!(ed.name, "DeepSeek", "空名应被填上");
+    }
+
+    /// 用户已填的内容一律不覆盖（密钥/代理/温度/覆写/价格/上下文数），
+    /// 显示名非空也不覆盖
+    #[test]
+    fn preset_never_overwrites_user_data() {
+        let mut ed = ModelEditState::new_edit(
+            0,
+            &lt_proto::ModelConfig {
+                name: "我的自建".into(),
+                api_key: "sk-user".into(),
+                proxy: "http://127.0.0.1:7890".into(),
+                temperature: Some(0.7),
+                input_price: 3.0,
+                output_price: 6.0,
+                context_turns: 5,
+                ..lt_proto::ModelConfig::default()
+            },
+        );
+        ed.temperature_enabled = true;
+        ed.temperature_value = 0.7;
+        ed.proxy_index = 2;
+        ed.proxy_url = "http://127.0.0.1:7890".into();
+        let before = (
+            ed.api_key.clone(),
+            ed.proxy_index,
+            ed.proxy_url.clone(),
+            ed.temperature_value,
+            ed.input_price,
+            ed.output_price,
+            ed.context_turns,
+        );
+        apply_preset(&mut ed, lt_proto::preset_by_key("openai").unwrap());
+        assert_eq!(ed.api_key, before.0, "密钥绝不被覆盖");
+        assert_eq!(ed.proxy_index, before.1, "代理模式绝不被覆盖");
+        assert_eq!(ed.proxy_url, before.2, "代理地址绝不被覆盖");
+        assert_eq!(ed.temperature_value, before.3, "温度绝不被覆盖");
+        assert_eq!(ed.input_price, before.4, "价格绝不被覆盖");
+        assert_eq!(ed.output_price, before.5, "价格绝不被覆盖");
+        assert_eq!(ed.context_turns, before.6, "上下文数绝不被覆盖");
+        assert_eq!(ed.name, "我的自建", "非空显示名绝不被覆盖");
+        // 但目标字段确实换了
+        assert_eq!(ed.api_base, "https://api.openai.com/v1");
+    }
+
+    /// `custom` 项一个字段都不填
+    #[test]
+    fn preset_custom_fills_nothing() {
+        let mut ed = ModelEditState::new_add();
+        ed.api_base = "http://my.gateway/v1".into();
+        ed.model = "m".into();
+        apply_preset(&mut ed, lt_proto::preset_by_key("custom").unwrap());
+        assert_eq!(ed.api_base, "http://my.gateway/v1");
+        assert_eq!(ed.model, "m");
+        assert!(ed.name.is_empty());
+        assert_eq!(ed.currency, None);
+    }
+
+    /// 官方形态地址豁免"缺 /v1"软提示；自建地址仍提示（回归）
+    #[test]
+    fn preset_api_base_skips_v1_warning() {
+        let mut ed = ModelEditState::new_add();
+        apply_preset(&mut ed, lt_proto::preset_by_key("deepseek").unwrap());
+        let warns = config_warnings(&ed);
+        assert!(
+            !warns.iter().any(|w| w.contains(&lt_i18n::t_for_lang("zh", "cfg_warn_api_base_v1"))),
+            "预设的官方地址不该弹缺 /v1 提示：{warns:?}"
+        );
+        // 自建无版本段地址 → 仍提示
+        ed.api_base = "https://my.gateway.example".into();
+        let warns = config_warnings(&ed);
+        assert!(
+            warns.iter().any(|w| w.contains(&lt_i18n::t_for_lang("zh", "cfg_warn_api_base_v1"))),
+            "自建地址应保留提示：{warns:?}"
         );
     }
 }

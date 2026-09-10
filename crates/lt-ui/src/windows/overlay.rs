@@ -1141,7 +1141,6 @@ mod tests {
     /// 未知用量时追加"部分未知"
     #[test]
     fn monitor_bar_cost_uses_config_currency_not_lang() {
-        let _ = lt_i18n::set_lang("en"); // 故意用英文界面验证"符号不随语言"
         let ctx = egui::Context::default();
         let mut st = crate::state::AppUi::new(Settings::default());
         st.overlay.update_stats(crate::state::OverlayStats {
@@ -1180,7 +1179,6 @@ mod tests {
     /// "费用在涨、token 显示 —"的自相矛盾）；只有一次都没观测到才显示 "—"
     #[test]
     fn monitor_bar_tokens_show_accumulated_value_when_partially_unknown() {
-        let _ = lt_i18n::set_lang("zh");
         let ctx = egui::Context::default();
         let mut st = crate::state::AppUi::new(Settings::default());
         st.overlay.update_stats(crate::state::OverlayStats {

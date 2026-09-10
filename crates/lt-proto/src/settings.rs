@@ -190,7 +190,9 @@ impl Default for Settings {
             interim_interval: 2.0,
             audio_device: None,
             mic_device: None,
-            models: vec![ModelConfig::default()],
+            // D-85 决策 K：新装用户的首个模型 = DeepSeek 预设（老档案不受影响——
+            // 他们的 models 非空，不信这条）
+            models: vec![crate::presets::default_model_config()],
             active_model: 0,
             target_language: "zh".into(),
             // 为空时由 lt-translate 用 DEFAULT_PROMPT 填充
@@ -313,8 +315,8 @@ impl Settings {
             fixed.push("subtitle_font_family: 空 → 默认思源".into());
         }
         if self.models.is_empty() {
-            self.models.push(ModelConfig::default());
-            fixed.push("models: 空 → 填充默认占位模型".into());
+            self.models.push(crate::presets::default_model_config());
+            fixed.push("models: 空 → 填充默认厂商预设".into());
         }
         // legacy 显示名迁移（原版悬浮窗/托盘显示 name；旧占位 name="default"
         // 时代码以 model 字段为真名）→ name=="default" 且 model 有值时以 model 为准
@@ -513,6 +515,13 @@ pub struct ModelConfig {
 }
 
 impl Default for ModelConfig {
+    /// **零值构造**（不含任何厂商偏好）。
+    ///
+    /// 为什么不是 DeepSeek 预设：本类型带容器级 `#[serde(default)]`——
+    /// 反序列化时**缺失字段**会用本函数补齐。若这里返回厂商预设，老档案里
+    /// 没写 `thinking_style` 的模型会被悄悄注入 `"deepseek"`（对本来不接受
+    /// 该参数的端点就是一发 400）。厂商默认值放 [`Settings::default`]（见
+    /// [`crate::presets::default_model_config`]），只影响"新装用户的首个模型"。
     fn default() -> Self {
         Self {
             // 原版 _ensure_models：无已存模型时 name=model（悬浮窗/托盘显示模型名而非"default"）

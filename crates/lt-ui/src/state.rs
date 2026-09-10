@@ -1779,10 +1779,22 @@ impl Default for WizardState {
     }
 }
 
+/// 界面语言 → 默认下载源索引（原版：中文系统 → ModelScope(0)，其余 → HuggingFace(1)）
+///
+/// 提成纯函数是为了可测：`WizardState::new()` 读全局语言，而**并行测试会改
+/// 全局语言**（本仓既有教训），测试直接断言 new() 的结果会偶发假红。
+pub fn default_hub_index_for_lang(lang: &str) -> usize {
+    if lang == "zh" {
+        0
+    } else {
+        1
+    }
+}
+
 impl WizardState {
     /// 按当前界面语言取默认值（原版构造函数：中文系统 → ModelScope，其余 → HuggingFace）
     pub fn new() -> Self {
-        let hub_index = if lt_i18n::get_lang() == "zh" { 0 } else { 1 };
+        let hub_index = default_hub_index_for_lang(&lt_i18n::get_lang());
         Self {
             hub_index,
             proxy_index: 1,
@@ -3073,17 +3085,19 @@ mod tests {
 
     #[test]
     fn wizard_defaults_follow_lang() {
-        // 中文界面 → ModelScope，其余 → HuggingFace（原版按系统语言选源）
-        lt_i18n::set_lang("zh").expect("zh 表解析");
+        // 中文界面 → ModelScope，其余 → HuggingFace（原版按系统语言选源）。
+        // **不读也不写全局语言**：并行测试会改它（既有教训），断言走纯函数，
+        // 避免偶发假红；再补一条 new() 的默认值恒为二选一的兜底断言。
+        assert_eq!(default_hub_index_for_lang("zh"), 0);
+        assert_eq!(default_hub_index_for_lang("zh-CN"), 1, "只认精确 zh（原版语义）");
+        assert_eq!(default_hub_index_for_lang("en"), 1);
+        assert_eq!(default_hub_index_for_lang("ja"), 1);
         let w = WizardState::new();
-        assert_eq!(w.hub_index, 0);
+        assert!(w.hub_index <= 1, "默认源索引恒为 0/1 之一");
         assert_eq!(w.proxy_index, 1); // 默认跟随系统代理
         assert_eq!(w.countdown, 15);
         assert_eq!(w.phase, WizardPhase::Idle);
         assert!(w.log.is_empty());
-        lt_i18n::set_lang("en").expect("en 表解析");
-        let w = WizardState::new();
-        assert_eq!(w.hub_index, 1);
     }
 
     #[test]

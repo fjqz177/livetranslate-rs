@@ -2,6 +2,7 @@
 pub mod asr_result;
 pub mod events;
 pub mod layout;
+pub mod presets;
 pub mod prompts;
 pub mod settings;
 
@@ -38,8 +39,10 @@ pub use events::{
     UiMsg,
 };
 pub use layout::Hub;
+pub use presets::{default_model_config, preset_by_key, ProviderPreset, PROVIDER_PRESETS};
 pub use prompts::{DEFAULT_PROMPT, PROMPT_PRESETS};
 pub use settings::{
-    normalize_language, ASR_ENGINES, DEFAULT_TEMPERATURE, EngineKey, ModelConfig, OVERRIDE_KEYS,
-    ProxyMode, Settings, Style, SubtitleLine, SubtitleMode, THINKING_STYLES,
+    effective_currency, normalize_language, ASR_ENGINES, Currency, DEFAULT_TEMPERATURE, EngineKey,
+    ModelConfig, OVERRIDE_KEYS, ProxyMode, Settings, Style, SubtitleLine, SubtitleMode,
+    THINKING_STYLES,
 };
