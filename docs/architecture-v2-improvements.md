@@ -259,7 +259,7 @@ ADR-11 裁决后，本波由「删除」改为「**留空间的具象化**」：
 | WD-8 | 检查更新按钮 | **需要，更新源 = GitHub Releases**（2026-09-09 二轮裁决 a 案：发布走 GitHub，按钮查最新 tag；进 §8 路线图第一优先） |
 | PH-6 | 参考图 GPU 中性化重拍 | **不做**（用户立场：GPU 长期不支持，不值得投入） |
 | UX 三期 | 保存失败 UI 流/错误译文样式 | 缓，后续开发时考虑 |
-| whisper sha256 | 其余五档完整性校验值补齐 | **a 案：有网时段安排补齐**（届时提醒用户在真机跑一次登记脚本；AH-5 链路收尾） |
+| whisper sha256 | 其余五档完整性校验值补齐 | **已完成（2026-09-10）**：HF LFS oid 双源取证（tree API `lfs.oid` + resolve HEAD `X-Linked-Etag`，六档逐档一致）回填注册表；base 档经 hf-mirror 整档实机下载 + 独立复算哈希互证（真机缓存 tiny/base 实测值亦一致）；未逐档整下载——同一取证源，边际信息为零；真网络探针入 ignored 面 |
 | D-81 | E6 死契约清理 | **删除 `EngineError::WorkerExited`（全仓零构造零消费）与 `Cmd::SetTimeout`（零生产者，超时走 ApplySettings 重放）**；`Cmd::CancelBench` 零生产者为真功能缺口——W5f 取消链缺 UI 按钮，E6 补接线（基准窗运行中显示"取消基准"）；PROTO_VERSION=5。守卫校准发现的合法单边形态（`AppCommand.OverlayToggle` 经 from_menu_id 生产、`ThreadRole.LogBridge/ArteryBridge` 仅出生点命名）确认豁免 |
 | D-81 附 | E4 交付后复审修复 | **INV4 补封**：Backoff 到期重生循环缺 stopping 复查——停机落在「死亡已判定、等待退避」窗口（handle=None）时 monitor 会在 begin_shutdown 后补生且该线程永不 join（回归测试 `backoff_pending_respawn_cancelled_by_shutdown`）；死契约守卫解析段补 `-Encoding UTF8`（变体覆盖 47→93，新发现 `UiEvent.ModelLoadDone` 消费端孤悬——D-78 向导保留面白名单编目，实际关窗由 AsrDevice/AsrUnavailable 代偿）；453→454 测 |
 | 3~7 | D-79 改型 / E3 白名单 / D-80 Backoff / 死契约守卫严格度 / 写入点方向 | **全部按推荐案通过**（2026-09-09 二轮裁决）：③ D-79 执行；④ E3 白名单变更通过；⑤ D-80 接受、参数默认（500ms/30s/8 次/60s，动脉桥 Always）；⑥ A 硬 gate；⑦ A 案（后台写入点唯一） |
@@ -305,7 +305,7 @@ ADR-11 裁决后，本波由「删除」改为「**留空间的具象化**」：
 
 7. **第 4 个 ASR 引擎**（按 §5.1 落位表，模式已在 nano/qwen3 验证两轮，边际成本递减）；
 8. **多语言 UI 扩展**（i18n 体系现成，加语言 = 加 yaml + 键集测试自动守护）；
-9. **whisper 其余五档 sha256 补齐**（已裁决 a 案：有网时段执行——登记脚本 + 真机跑一遍五档下载，回填注册表校验值；到时提醒用户配合跑一次）。
+9. ~~**whisper 其余五档 sha256 补齐**~~ **已完成 2026-09-10**（值取自 HF LFS oid——文件内容 sha256 的权威来源——经 tree API 与 resolve HEAD 双源交叉；base 档整档实机下载独立复算互证；探针 `probe_whisper_download_via_hf_mirror` 可复跑）。
 
 **不建议现在排**：跨平台（硬约束维持）、GPU（用户长期立场）、流式 ASR worker（无需求拉动）。
 
@@ -326,5 +326,5 @@ ADR-11 裁决后，本波由「删除」改为「**留空间的具象化**」：
 - 行号锚基于 `1d608d2` 基线，施工时漂移以「锚点符号名 + grep 验收」为准（每卡验收列已按此写法）。
 - Backoff 参数、死契约守卫阈值未经实机/长期运行校准，走查批次留调参项。
 - E2-5 覆盖率测试只走查 Settings **顶层键**——嵌套结构（Style/SubtitleMode/ModelConfig 内部）新增字段不在断言面；该局限写入测试注释，嵌套面靠 ADR-14「收口两问」纪律兜底。
-- whisper sha256「到时提醒」是无定时的人工约定——登记为下一次有网会话的待办（§8 路线 9），不设自动提醒。
+- whisper sha256「到时提醒」是无定时的人工约定——登记为下一次有网会话的待办（§8 路线 9）；**已于 2026-09-10 的有网会话闭合**（该待办的存在方式即「人工约定」，无自动提醒机制，本次按约定执行）。
 - §8 路线为推荐非承诺，逐项开工前仍按本项目惯例立工作包文档。

@@ -316,7 +316,7 @@ C:\Users\<u>\.config\livetranslate\            ← config_dir() paths.rs:9-17；
 1. 仓库根 **README.md 不存在**（面向任何人都零说明）。
 2. distribution.md:91 卸载说明「删 exe + 删配置目录即彻底清除」——**漏 lnk**、**漏 models_dir 重定向情形**。
 3. distribution.md:30/:78「静态 CRT（无 VC 运行库依赖）/无运行库前置」——**被导入表推翻**（§3.2）。
-4. distribution.md:27「~59MB」过期（实测 75.8MB）；:31「无 sha256 校验」过期（AH-5 已加）；:32 行号漂移。
+4. distribution.md:27「~59MB」过期（实测 75.8MB）；:31「无 sha256 校验」过期（AH-5 已加，2026-09-10 whisper 五档补齐后注册表 20/20 全量登记——该句已随之刷新）；:32 行号漂移。
 5. 面向用户的「数据位置说明」（各子目录是什么/多大/可否单独删）完全缺失。
 6. AGENTS.md「onnxruntime.dll + silero_vad.onnx 内嵌，启动解压到配置目录」——后半句对 silero 不成立（内存直载）。
 
@@ -335,7 +335,7 @@ C:\Users\<u>\.config\livetranslate\            ← config_dir() paths.rs:9-17；
 | C7 | 数据页清理不覆盖游离文件 | data.rs:44-85 只扫注册 repo（jfk.wav 类） | 提示或忽略 | 低优先 |
 | C8 | **早期失败静默面** | ort 解压失败 main.rs:28 `?` 静默退（在 logging::init 前）；二次启动 bail 静默 | 最小可见反馈（MessageBox/落日志）；后者属 WD-5 范围 | 分发前值得补 |
 | C9 | settings.json.tmp 崩溃窗口 | remove+rename 非真原子，极窄窗口无配置（按默认重启，不损坏） | ReplaceFileW 或忽略 | 极低优先 |
-| C10 | distribution.md 数字漂移 | 59MB/无 sha256/行号 | 随 WD-2/WD-3 刷新 | 纯文档 |
+| C10 | distribution.md 数字漂移 | 59MB/无 sha256/行号 | 随 WD-2/WD-3 刷新（「无 sha256 校验」句已于 2026-09-10 随 whisper 五档补齐改为三通道完整性描述；59MB/行号仍待） | 纯文档 |
 | C11 | LIBCLANG_PATH 可移植性 | 固化本机绝对路径（§1.2）= clone 非零配置 | 文档化（CONTRIBUTING），可选改探测式/相对路径；顺带评估 rust-toolchain.toml 锁版 | 开发体验 |
 | C12 | AGENTS「5 个 ignored」滞后 | 实测 6 个（§2.2） | 更新计数 | 纯文档 |
 

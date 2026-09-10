@@ -820,7 +820,7 @@ mod tests {
 
 /// WP-A 演练探针（临时，不入常规测试面）：经 hf-mirror 用真实下载器把 nano
 /// 官方包（~1GB）拉到真实缓存，验证直链/续传/manifest 全链路并测速。
-/// 运行：cargo test -p lt-models probe_nano_download -- --ignored --nocapture
+/// 运行：cargo test -p lt-download probe_nano_download -- --ignored --nocapture
 #[cfg(test)]
 mod probe_nano_tmp {
     use super::{DownloadEvent, Downloader, FileSpec, Hub, ProxyMode};
@@ -908,5 +908,104 @@ mod probe_nano_tmp {
             total as f64 / 1_048_576.0 / el.as_secs_f64()
         );
         assert!(!cancel.load(Ordering::Relaxed));
+    }
+}
+
+/// whisper 档位真实下载探针：经 hf-mirror 用真实下载器 + 注册表清单（含
+/// sha256）下载一档 ggml 量化文件，验证「resolve 直链 → 流式写入 → 长度校验
+/// → sha256 内容校验 → rename 收尾 → manifest 探测」全链，并对产物**独立
+/// 复算**内容哈希与注册表登记值互证（不用被测代码自证）。
+/// 档位经 `LT_WHISPER_SIZE`（默认 base）；落盘位置 = `paths::models_dir`，
+/// 建议经 `LIVETRANSLATE_CONFIG_DIR` 指向临时目录，避免写真实缓存。
+/// 运行：`LT_WHISPER_SIZE=base cargo test -p lt-download probe_whisper -- --ignored --nocapture`
+#[cfg(test)]
+mod probe_whisper_tmp {
+    use super::{hub_chain, DownloadEvent, Downloader, FileSpec, Hub, ProxyMode};
+    use std::io::Read;
+    use std::sync::atomic::AtomicBool;
+    use std::time::Instant;
+
+    /// 独立复算（不复用下载器内部 sha256_file_hex——探针的意义是与实现互证）
+    fn sha256_hex(path: &std::path::Path) -> String {
+        use sha2::Digest;
+        let mut f = std::fs::File::open(path).expect("打开下载产物");
+        let mut h = sha2::Sha256::new();
+        let mut buf = [0u8; 64 * 1024];
+        loop {
+            let n = f.read(&mut buf).expect("读取下载产物");
+            if n == 0 {
+                break;
+            }
+            h.update(&buf[..n]);
+        }
+        format!("{:x}", h.finalize())
+    }
+
+    #[test]
+    #[ignore = "真实网络下载（hf-mirror，写 models_dir）；whisper 档位全链路 + sha256 实证用"]
+    fn probe_whisper_download_via_hf_mirror() {
+        let size = std::env::var("LT_WHISPER_SIZE").unwrap_or_else(|_| "base".into());
+        let entry = lt_models::registry::whisper_entry_for(&size).expect("合法 whisper 档位");
+        let md = lt_models::paths::models_dir(None).expect("models_dir 解析失败");
+        // 端点与生产 hub=ms 路径同源（hf_endpoint_for(Hub::Ms) = hf-mirror）
+        let dl = Downloader::new(&md, ProxyMode::None).with_hf_endpoint(super::HF_MIRROR_ENDPOINT);
+        let specs: Vec<FileSpec> = entry
+            .files
+            .iter()
+            .copied()
+            .zip(entry.files_min_bytes.iter().copied())
+            .zip(entry.files_sha256.iter().copied())
+            .map(|((f, min), sha)| (f, min, sha))
+            .collect();
+        let chain = hub_chain(Hub::Ms, entry.hf, entry.ms, entry.always_hf);
+        println!(
+            "models_dir = {}\n下载 {size}：chain={chain:?}\nspecs={specs:?}",
+            md.display()
+        );
+
+        let cancel = std::sync::Arc::new(AtomicBool::new(false));
+        let (tx, rx) = std::sync::mpsc::channel();
+        let t0 = Instant::now();
+        let worker = {
+            let cancel = cancel.clone();
+            std::thread::spawn(move || dl.download_model(&chain, &specs, &cancel, Some(&tx)))
+        };
+        while let Ok(ev) = rx.recv() {
+            match ev {
+                DownloadEvent::Progress {
+                    file, done, total, ..
+                } => println!("… {file}: {done}/{:?}  t={:?}", total, t0.elapsed()),
+                DownloadEvent::Log(m) => println!("… {m}"),
+                DownloadEvent::FileDone { file, .. } => {
+                    println!("✓ FileDone {file}  t={:?}", t0.elapsed())
+                }
+                DownloadEvent::Done { dir, .. } => println!("★ Done → {dir:?}  t={:?}", t0.elapsed()),
+            }
+        }
+        let snapshot = worker.join().expect("下载线程 panic").expect("下载失败（含校验）");
+        let el = t0.elapsed();
+
+        let path = snapshot.join(entry.files[0]);
+        let len = std::fs::metadata(&path).expect("产物存在").len();
+        let actual = sha256_hex(&path);
+        println!(
+            "产物 = {path:?}\nlen = {len}（注册表 estimated_bytes = {}）\nsha256 = {actual}\n注册表登记 = {}\n耗时 {el:?}，均速 {:.1} MB/s",
+            entry.estimated_bytes,
+            entry.files_sha256[0],
+            len as f64 / 1_048_576.0 / el.as_secs_f64()
+        );
+        // 独立复算 == 注册表登记值：whisper 档位 sha256 的实机凭据
+        assert_eq!(
+            actual, entry.files_sha256[0],
+            "产物内容与注册表 sha256 不一致（登记值有误或镜像内容被改写）"
+        );
+        assert_eq!(
+            len, entry.estimated_bytes,
+            "实测字节数与注册表 estimated_bytes 不一致（上游换档或登记值漂移）"
+        );
+        assert!(
+            lt_models::cache::dir_has_manifest(&snapshot, entry.files, entry.files_min_bytes),
+            "manifest 完整性复核失败"
+        );
     }
 }

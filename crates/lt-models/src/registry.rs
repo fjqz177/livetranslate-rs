@@ -24,10 +24,14 @@ pub struct ModelEntry {
     /// 实际值（假阴性 = 多下一次，可自愈；假阳性 = 判已缓存却加载失败）。
     pub files_min_bytes: &'static [u64],
     /// 每个清单文件的 sha256（十六进制小写，与 files 等长 zip；AH-5/H8）。
-    /// 空串 = 渐进登记未完成（无网络实机的档位），下载器跳过内容校验。
-    /// 已登记项在下载 finalize 前流式校验，不匹配按 Length 快速失败并删除
-    /// `.incomplete`。来源：本地真实缓存 sha256sum 实测（2026-09-08），qwen3
-    /// decoder 前缀与 docs/archive/asr-engine-expansion.md §4.2 记录交叉核对一致。
+    /// 空串 = 未登记，下载器跳过内容校验（当前全表已零空串，见
+    /// `files_sha256_parallel_and_wellformed` 的硬不变量断言）。
+    /// 已登记项在下载 finalize 前流式校验，不匹配按 Checksum 快速失败并删除
+    /// `.incomplete`。来源：本地真实缓存 sha256sum 实测（2026-09-08；sherpa
+    /// 三包 + whisper tiny），qwen3 decoder 前缀与
+    /// docs/archive/asr-engine-expansion.md §4.2 记录交叉核对一致；
+    /// whisper 其余五档 2026-09-10 经 HF LFS oid 补齐（tree API 与 resolve
+    /// HEAD 的 `X-Linked-Etag` 双源一致，且与 tiny 的本地实测互证）。
     pub files_sha256: &'static [&'static str],
 }
 
@@ -158,7 +162,9 @@ pub fn whisper_ggml_file(size: &str) -> Option<&'static str> {
 
 /// whisper 静态表（always HF；量化默认档）。
 /// estimated_bytes = 仓内实际文件字节数（HF API tree/main 实测，2026-09-06）；
-/// files_min_bytes = 实测半体积（完整下载必过阈）。
+/// files_min_bytes = 实测半体积（完整下载必过阈）；
+/// files_sha256 = 仓内 LFS oid（= 文件内容 sha256；2026-09-10 补齐，lfs.oid
+/// 与 resolve HEAD `X-Linked-Etag` 两路一致，六个档位字节数亦逐档吻合）。
 pub const WHISPER_ENTRIES: [ModelEntry; 6] = [
     ModelEntry {
         key: "tiny",
@@ -180,7 +186,7 @@ pub const WHISPER_ENTRIES: [ModelEntry; 6] = [
         estimated_bytes: 59_707_625,
         files: &["ggml-base-q5_1.bin"],
         files_min_bytes: &[29_853_812],
-        files_sha256: &[""],
+        files_sha256: &["422f1ae452ade6f30a004d7e5c6a43195e4433bc370bf23fac9cc591f01a8898"],
     },
     ModelEntry {
         key: "small",
@@ -191,7 +197,7 @@ pub const WHISPER_ENTRIES: [ModelEntry; 6] = [
         estimated_bytes: 190_085_487,
         files: &["ggml-small-q5_1.bin"],
         files_min_bytes: &[95_042_743],
-        files_sha256: &[""],
+        files_sha256: &["ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb"],
     },
     ModelEntry {
         key: "medium",
@@ -202,7 +208,7 @@ pub const WHISPER_ENTRIES: [ModelEntry; 6] = [
         estimated_bytes: 539_212_467,
         files: &["ggml-medium-q5_0.bin"],
         files_min_bytes: &[269_606_233],
-        files_sha256: &[""],
+        files_sha256: &["19fea4b380c3a618ec4723c3eef2eb785ffba0d0538cf43f8f235e7b3b34220f"],
     },
     ModelEntry {
         key: "large-v3",
@@ -213,7 +219,7 @@ pub const WHISPER_ENTRIES: [ModelEntry; 6] = [
         estimated_bytes: 1_081_140_203,
         files: &["ggml-large-v3-q5_0.bin"],
         files_min_bytes: &[540_570_101],
-        files_sha256: &[""],
+        files_sha256: &["d75795ecff3f83b5faa89d1900604ad8c780abd5739fae406de19f23ecd98ad1"],
     },
     ModelEntry {
         key: "turbo",
@@ -224,7 +230,7 @@ pub const WHISPER_ENTRIES: [ModelEntry; 6] = [
         estimated_bytes: 574_041_195,
         files: &["ggml-large-v3-turbo-q5_0.bin"],
         files_min_bytes: &[287_020_597],
-        files_sha256: &[""],
+        files_sha256: &["394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2"],
     },
 ];
 
@@ -421,9 +427,11 @@ mod tests {
 
     #[test]
     fn files_sha256_parallel_and_wellformed() {
-        // AH-5/H8：sha256 清单与 files 等长；已登记项必须为 64 位十六进制
-        //（空串=渐进登记未完成，下载器跳过内容校验）。三个 sherpa 包全量登记，
-        // whisper 除 tiny（本地缓存实测）外待有网络实机补齐。
+        // AH-5/H8：sha256 清单与 files 等长；已登记项必须为 64 位十六进制。
+        // 空串在机制上仍被允许（下载器跳过内容校验），但**当前全表已零空串**
+        //（2026-09-10 whisper 五档补齐）——下方硬不变量把「渐进登记」钉成
+        // 历史态：新增模型条目若不登记哈希，此测试即爆（要么补哈希，要么在
+        // 此显式放宽并留痕，不得静默落空串）。
         let all = [
             SENSEVOICE_SMALL.clone(),
             FUNASR_NANO.clone(),
@@ -441,18 +449,20 @@ mod tests {
                 );
             }
         }
-        // 三个 sherpa 包必须全量登记（本地缓存实测在档）
+        // 硬不变量：全部条目（三个 sherpa 包 + whisper 六档）逐文件登记哈希
         for e in [
             SENSEVOICE_SMALL.clone(),
             FUNASR_NANO.clone(),
             QWEN3_ASR.clone(),
-        ] {
+        ]
+        .into_iter()
+        .chain(WHISPER_ENTRIES.iter().cloned())
+        {
             assert!(
                 e.files_sha256.iter().all(|h| h.len() == 64),
-                "{} 应全量登记 sha256",
+                "{} 未登记 sha256（渐进登记期已结束：新条目必须带哈希或在此显式放宽）",
                 e.key
             );
         }
-        assert_eq!(WHISPER_ENTRIES[0].files_sha256[0].len(), 64, "tiny 已实测");
     }
 }

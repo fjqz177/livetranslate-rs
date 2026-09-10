@@ -31,7 +31,7 @@
 - 配置目录 = 字面 `~/.config/livetranslate`（非 %APPDATA%；`LIVETRANSLATE_CONFIG_DIR` 覆写）；子目录 `settings.json` / `models/` / `transcripts/` / `logs/` / `ort/`；`models_dir` 键可重定向模型缓存。
 - 单实例命名互斥体（`main.rs:67-95`）；日志落盘 `logs/livetrans_{时间戳}.log`（DEBUG，按次滚动）+ 应用内日志窗。
 - settings 原子写（tmp+rename）、300ms 防抖、`from_value_compatible` 兼容导入原版 `user_settings.json` 键名。
-- 模型下载：双 hub 统一下载器（断点续传 `.incomplete`+Range、3 次退避重试、代理三模式 none/system/URL）；无 sha256 校验（与原版一致）。
+- 模型下载：双 hub 统一下载器（断点续传 `.incomplete`+Range、3 次退避重试、代理三模式 none/system/URL）；**完整性三通道**（AH-5，2026-09-10 whisper 补齐后注册表 20/20 清单文件全量 sha256）——total 未知拒绝收尾 → 长度精确校验 → sha256 流式内容校验（不匹配删除 `.incomplete` 按 `Checksum` 快速失败），另下载前磁盘剩余空间预检。
 
 ## 3. 阶段一：本地分发（现在）
 
@@ -98,7 +98,7 @@
 | MS 第三方镜像仓缺档/停更（D-21「尽量」语义的边界） | 中 | WD-4 实测后只登记确认存在的档位；缺失档回落 HF+提示需代理；README 写明 |
 | 无 CI 阶段人工发布步骤出错（忘测/忘 sha256/带脏产物） | 低 | WD-1 脚本一键化 + §3.2 手册 checklist |
 | 检查更新依赖 api.github.com 大陆可达性（阶段二） | 低 | 失败静默降级，不打扰 |
-| 模型文件无哈希校验（与原版一致） | 低 | 后续可在 registry 渐进登记 sha256，非本阶段 |
+| 模型文件哈希校验缺失（AH-5 前状态） | 低 | **已闭环**：注册表 20/20 文件全量登记 sha256（2026-09-10 whisper 五档补齐，LFS oid 双源取证 + 实机下载复算互证），下载期内容校验落地 |
 | 第二实例"静默无反应"引发用户困惑 | 中 | WD-5 激活已有窗口 |
 
 ## 7. 偏差登记汇总（本计划产生）
