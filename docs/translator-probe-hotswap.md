@@ -19,6 +19,10 @@
 - **切换"当前用哪个模型翻译" = 悬浮窗（主界面）第二行的「模型」下拉**（既有功能，位置不变）。
 - 设置页列表上方有一行只读的 `当前使用：XXX`（告诉你现在用的是谁）+ 一句提示"要换模型请到悬浮窗的
   「模型」下拉里选"。
+- **悬浮窗不在完整形态时怎么切**（用户裁决 ①，2026-09-10）：先把它弄成完整形态，再选：
+  - 精简形态（一条窄条）→ 点窄条上的 **「完整」** 按钮展开；
+  - 整个隐藏了 → 右键**托盘**图标 → 点 **「显示悬浮窗」**。
+  这是**有意接受**的取舍（设置页不新增任何切换入口），不是缺陷；面板里的提示语会把这两步写出来。
 
 ### 0.2 测试按钮怎么用
 
@@ -589,14 +593,19 @@ Cmd::CancelTranslatorTest { probe_id } => {
 | "当前模型的上下文数"直达行（`translation.rs:397-420`） | 保持指向**活动模型**并 600ms 重建 | 原语义（只影响正在跑的那个） |
 | 悬浮窗「模型」下拉（`overlay.rs:369-402`） | 保持"选中即切换"（发 `SwitchTranslator` + `mark_settings_dirty`） | 这是**唯一**的用户可见切换入口（裁决 E） |
 
-**切换入口的唯一性与边界（明确写死，避免歧义）**：
+**切换入口的唯一性与边界（用户裁决 E + ①，2026-09-10 定案，明确写死）**：
 
 - 用户可见的切换入口 = **悬浮窗第二行「模型」下拉**。设置页**不提供**任何切换控件（不加"设为当前使用"
-  按钮、不加单选列）。
-- 悬浮窗处于**紧凑形态**时行 2（含该下拉）不显示（`overlay.rs:5/116`）——想切模型需先点悬浮窗的
-  形态切换按钮展开；悬浮窗整体隐藏时可经托盘菜单「显示悬浮窗」唤出。**这两条是已知且接受的边界，
-  不在本方案内新增入口**（用户裁决 E 的明确取舍）。
+  按钮、不加单选列）——用户明确选择"不加备用入口"。
+- 悬浮窗**精简形态**下 `row2_checks` / `row2_combos`（含该下拉）整体不渲染
+  （`overlay.rs:134-139`：`if !compact { … }`），悬浮窗整体隐藏时更不可达。
+  **回到完整形态的两条路径（文档与产品提示都按此写）**：
+  1. 点悬浮窗行 1 的 **「完整」** 按钮（i18n `mode_full`，`overlay.rs:249-261` 的 `toggle_mode`）；
+  2. 右键**托盘**图标 → **「显示悬浮窗」**（`AppCommand::OverlayToggle`）。
+  这是**有意接受**的边界，不在本方案内新增任何切换入口。
 - 设置页列表上方的 `当前使用：XXX` 是**只读**展示，不承担切换职责。
+- 该边界必须**在界面上自解释**：`models_group_hint` 的文案包含上面这两步（见 §4.9），
+  否则用户遇到"精简形态下无处可切"时会当成 bug。
 
 **状态（`crates/lt-ui/src/state.rs`，替换现有 `TestTranslatorState`）**：
 
@@ -720,7 +729,7 @@ preview }`：
 | `err_subtitle_skipped` | — 已跳过（切换模型） | — skipped (model switched) |
 | `status_active_model` | 当前使用：{name} | Active model: {name} |
 | `status_switched` | 已切换生效 | Switched |
-| `models_group_hint` | 点一行＝选中（用于编辑/复制/删除）；要换当前使用的模型请到悬浮窗的「模型」下拉里选。每行右侧的「测试」可验证该供应商是否可用。 | Clicking a row only selects it (for Edit/Duplicate/Remove). To change the active model, use the model dropdown on the floating window. The Test button on a row verifies that provider. |
+| `models_group_hint` | 点一行＝选中（用于编辑/复制/删除）；要换当前使用的模型请到悬浮窗的「模型」下拉里选——悬浮窗若是精简形态，先点它的「完整」按钮（隐藏了就右键托盘图标选「显示悬浮窗」）。每行右侧的「测试」可验证该供应商是否可用。 | Clicking a row only selects it (for Edit/Duplicate/Remove). To change the active model, use the model dropdown on the floating window — if it is in compact form click its "Full" button first (if hidden, right-click the tray icon and choose "Show overlay"). The Test button on a row verifies that provider. |
 | `stats_partial_unknown` | 部分未知 | partial |
 | `stats_partial_unknown_hint` | 本次运行中有调用未返回用量，金额可能偏低。 | Some calls this session returned no usage, so the total may be low. |
 | `currency_label` | 币种 | Currency |
@@ -889,6 +898,8 @@ C3 是最大提交（契约 + 编排 + shell + UI 需同步改，否则旧调用
 10. 费用：换模型后继续累加、退出重启归零；用人民币供应商显示 ¥、美元供应商显示 $；两者都用过时并列显示。
 11. 未提供用量的端点：费用旁出现「部分未知」。
 12. 出厂默认配置：删掉 `settings.json` 后首启 → 翻译页是 DeepSeek 那条，贴 Key 即可用。
+13. **裁决 ① 的边界自解释**：悬浮窗点「精简」→ 模型下拉消失；点「完整」能展开并切模型；
+    点「隐藏」后再右键托盘「显示悬浮窗」能找回——全程不需要翻文档、不会误判成 bug。
 
 ### 6.3 守卫与门禁（每次提交前）
 
@@ -924,10 +935,9 @@ cargo test --workspace      # 基线 540+9 → 本方案预计 +32 左右（C2~C
 ## 八、不在本次范围（记录备查）
 
 - 「切换前自动探针」：明确不做——换模型不得因网络变慢；验证权经每行「测试」按钮交给用户。
-- **设置页不提供任何模型切换控件**（用户裁决 E 的明确取舍）：不加"设为当前使用"按钮、不加单选列。
-  由此产生的已知边界：悬浮窗处于紧凑形态时行 2（含模型下拉）不显示（`overlay.rs:5/116`），悬浮窗
-  整体隐藏时亦不可达——两者都需先唤出/展开悬浮窗（托盘菜单「显示悬浮窗」）。**该边界被接受，
-  不在本次新增入口。**
+- **设置页不提供任何模型切换控件**（用户裁决 E + ① 的明确取舍，2026-09-10 定案"按①来"）：
+  不加"设为当前使用"按钮、不加单选列、不加托盘模型子菜单。已知边界与回到完整形态的两条路径
+  见 §4.8（点行 1 的「完整」按钮 / 托盘「显示悬浮窗」），并由 `models_group_hint` 在界面内自解释。
 - 并发多探测、探测历史记录、探测结果持久化。
 - ASR 侧（引擎/模型/下载/零信任闸门）任何改动。
 - 模型编辑对话框的字段校验逻辑（`config_warnings`）改动（仅新增"厂商预设"下拉与"币种"下拉两处控件）。
