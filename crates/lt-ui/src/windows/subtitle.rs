@@ -31,7 +31,7 @@ use crate::state::{
     EaseAnim, Easing, SessionView, Settings, SubtitleLineKey, SubtitleLineRender, SubtitleUi,
     SubtitleUiState, UiContext, WinAction, WinId,
 };
-use crate::style::{parse_color, FAILURE_OUTLINE, WARN_TEXT};
+use crate::style::{parse_color, FAILURE_OUTLINE, SKIP_TEXT, WARN_TEXT};
 use egui::{Align2, Color32, FontId, RichText, Sense, Stroke, Ui};
 use lt_proto::SubtitleLine;
 use std::collections::BTreeMap;
@@ -330,7 +330,7 @@ fn refresh_display(sub: &mut SubtitleUiState, lines: &[SubtitleLine]) {
             l.text.clear();
             l.wrapped.clear();
             l.cache_key = None;
-            l.failed = false;
+            l.fail_kind = None;
         }
         return;
     }
@@ -338,35 +338,43 @@ fn refresh_display(sub: &mut SubtitleUiState, lines: &[SubtitleLine]) {
         let Some(l) = sub.lines.get_mut(wi) else {
             break;
         };
-        let (text, failed) = if cfg.line_type == "original" {
+        let (text, fail_kind) = if cfg.line_type == "original" {
             let texts: Vec<String> = sub
                 .sentences
                 .iter()
                 .filter(|s| !s.original.is_empty())
                 .map(|s| s.original.clone())
                 .collect();
-            (join_texts(texts), false)
+            (join_texts(texts), None)
         } else {
             let lang = cfg.lang.as_deref().unwrap_or("");
-            let mut any_failed = false;
+            // 行级分类：错误一律优先于"让位"（有错就按错渲染）
+            let mut worst: Option<lt_proto::FailureKind> = None;
             let texts: Vec<String> = sub
                 .sentences
                 .iter()
                 .filter_map(|s| {
-                    if s.failed.is_some() {
-                        any_failed = true;
-                        // 失败句固定显示错误标记（不显示占位译文/原文——
-                        // "报错"不是"译文"，具体原因在悬浮窗悬停与日志）
-                        return Some(lt_i18n::t("err_subtitle_label"));
+                    if let Some(kind) = s.failed {
+                        worst = Some(match (worst, kind) {
+                            (Some(prev), lt_proto::FailureKind::Superseded) => prev,
+                            (_, k) => k,
+                        });
+                        // 失败句固定显示标记文案（不显示占位译文/原文——
+                        // "报错"不是"译文"，具体原因在悬浮窗悬停与日志）；
+                        // D-85/F3：换模型让位用中性文案（不是错误）
+                        return Some(lt_i18n::t(match kind {
+                            lt_proto::FailureKind::Superseded => "err_subtitle_skipped",
+                            _ => "err_subtitle_label",
+                        }));
                     }
                     pick_translation(lang, &s.translations)
                 })
                 .collect();
-            (join_texts(texts), any_failed)
+            (join_texts(texts), worst)
         };
-        if text != l.text || failed != l.failed {
+        if text != l.text || fail_kind != l.fail_kind {
             l.text = text;
-            l.failed = failed;
+            l.fail_kind = fail_kind;
             l.cache_key = None; // 文字变化 → 换行缓存失效（原版 _text_cache = None）
         }
     }
@@ -527,19 +535,33 @@ pub fn subtitle_ui(
                 // item 8/9：失败行整行换警示色（暖红 #FF6B5C，与译文白/金明显不同），
                 // 并按失败色画描边（无视用户描边开关，薄 1.5px）——浅背景上也读得清；
                 // 描边偏移 ≤1.5px 不参与布局，行高/换行/对齐与正常译文完全一致（零跳变）
-                let (fill, fail_outline) = if line.failed {
-                    let c = WARN_TEXT;
-                    (
+                // D-85/F3：`Superseded`（换模型让位）用中性灰说明，不占警示红、
+                // 不画 ⚠ 描边——它不是错误；其余失败仍是警示红 + 薄描边（item 8/9）
+                let (fill, fail_outline) = match line.fail_kind {
+                    // with_alpha 收 #RRGGBB 串；SKIP_TEXT 是 Color32 常量，此处按
+                    // 同一 alpha 公式就地合成
+                    Some(lt_proto::FailureKind::Superseded) => (
                         Color32::from_rgba_unmultiplied(
-                            c.r(),
-                            c.g(),
-                            c.b(),
+                            SKIP_TEXT.r(),
+                            SKIP_TEXT.g(),
+                            SKIP_TEXT.b(),
                             (k * 255.0).round() as u8,
                         ),
-                        Some(FAILURE_OUTLINE),
-                    )
-                } else {
-                    (with_alpha(&cfg.color, (k * 255.0).round() as u32), None)
+                        None,
+                    ),
+                    Some(_) => {
+                        let c = WARN_TEXT;
+                        (
+                            Color32::from_rgba_unmultiplied(
+                                c.r(),
+                                c.g(),
+                                c.b(),
+                                (k * 255.0).round() as u8,
+                            ),
+                            Some(FAILURE_OUTLINE),
+                        )
+                    }
+                    None => (with_alpha(&cfg.color, (k * 255.0).round() as u32), None),
                 };
                 let outline_col = with_alpha(&cfg.outline_color, (k * 255.0).round() as u32);
                 let mut ry = y + ow;
@@ -1154,14 +1176,14 @@ mod tests {
         refresh_display(&mut sub, &lines);
         // 原文行：照常显示原文，且不带失败标记
         assert_eq!(sub.lines[0].text, "识别到的原句");
-        assert!(!sub.lines[0].failed);
+        assert!(sub.lines[0].fail_kind.is_none());
         // 译文行：⚠ 标签（i18n 值）+ 失败标记（判据只看 failed 字段）
         assert_eq!(
             sub.lines[1].text,
             lt_i18n::t("err_subtitle_label"),
             "失败占译文行 = err_subtitle_label"
         );
-        assert!(sub.lines[1].failed);
+        assert_eq!(sub.lines[1].fail_kind, Some(lt_proto::FailureKind::Empty));
         assert!(
             sub.lines[1].text.contains('\u{26A0}'),
             "失败文案应带 ⚠ 标记（一眼前缀）"
@@ -1173,12 +1195,12 @@ mod tests {
         };
         refresh_display(&mut ok, &lines);
         assert_eq!(ok.lines[0].text, "same");
-        assert!(!ok.lines[1].failed, "Skipped 不产生失败标记");
+        assert!(ok.lines[1].fail_kind.is_none(), "Skipped 不产生失败标记");
         assert!(ok.lines[1].text.is_empty(), "无译文 → 译文行空（不是错误）");
         // 句子清空 → 失败标记随文本一并复位
         sub.sentences.clear();
         refresh_display(&mut sub, &lines);
-        assert!(!sub.lines[1].failed);
+        assert!(sub.lines[1].fail_kind.is_none());
     }
 
     /// item 8/9：失败色与正常译文色必须不同（防止后续重构把两者合一）
@@ -1630,5 +1652,56 @@ mod tests {
             )
             .expect("脏标记应在 300ms 防抖到期后被消费");
         assert!(!snap.subtitle_mode.enabled, "落盘快照中 enabled 应为 false");
+    }
+
+    /// D-85：`Superseded`（换模型让位）在字幕窗是**中性说明**——
+    /// 文案走 `err_subtitle_skipped`（无 ⚠ 失败标签），分类随行带给渲染层
+    /// （渲染层据分类选中性灰，见 `page` 的 fill 分支）
+    #[test]
+    fn superseded_subtitle_line_is_neutral() {
+        let _ = lt_i18n::set_lang("zh");
+        let mut sub = SubtitleUiState {
+            sentences: vec![
+                sentence("识别到的原句", &[("zh", "译文")]),
+                failed_sentence("被让位的原句", lt_proto::FailureKind::Superseded),
+            ],
+            ..Default::default()
+        };
+        let lines = vec![
+            SubtitleLine {
+                line_type: "original".into(),
+                ..Default::default()
+            },
+            SubtitleLine {
+                line_type: "translation".into(),
+                lang: Some("zh".into()),
+                ..Default::default()
+            },
+        ];
+        refresh_display(&mut sub, &lines);
+        assert_eq!(
+            sub.lines[1].fail_kind,
+            Some(lt_proto::FailureKind::Superseded),
+            "让位句必须打上 Superseded 标记（渲染层据此走中性灰）"
+        );
+        let skipped = lt_i18n::t_for_lang("zh", "err_subtitle_skipped");
+        let failed_label = lt_i18n::t_for_lang("zh", "err_subtitle_label");
+        assert!(
+            sub.lines[1].text.contains(&skipped),
+            "让位句应为中性说明，实际 {}",
+            sub.lines[1].text
+        );
+        assert!(
+            !sub.lines[1].text.contains(&failed_label),
+            "不得使用 ⚠ 失败标签"
+        );
+        // 真失败仍是失败标签（对照：改动没有把两类混为一谈）
+        let mut sub2 = SubtitleUiState {
+            sentences: vec![failed_sentence("坏了", lt_proto::FailureKind::Auth)],
+            ..Default::default()
+        };
+        refresh_display(&mut sub2, &lines);
+        assert_eq!(sub2.lines[1].fail_kind, Some(lt_proto::FailureKind::Auth));
+        assert!(sub2.lines[1].text.contains(&failed_label));
     }
 }

@@ -302,6 +302,30 @@ pub fn page(ui: &mut Ui, panel: &mut PanelUi, session: &mut SessionView, setting
             );
             ui.add_space(2.0);
         }
+        // D-85/F2：只读「当前使用」状态行 + 使用说明（设置页不提供切换控件——
+        // 切换入口唯一在悬浮窗「模型」下拉，见 docs §4.8）
+        {
+            let idx = settings.active_model.min(settings.models.len().saturating_sub(1));
+            let name = settings
+                .models
+                .get(idx)
+                .map(|m| m.name.clone())
+                .unwrap_or_else(|| "?".into());
+            let mut line = lt_i18n::t("status_active_model").replace("{name}", &name);
+            if let Some((note_name, at)) = &panel.state.active_model_note {
+                // 2 秒内且名字一致才显示"已切换生效"；过期即清（下一次重绘时）
+                if note_name == &name && at.elapsed().as_secs() < 2 {
+                    line.push_str(" · ");
+                    line.push_str(&lt_i18n::t("status_switched"));
+                } else if at.elapsed().as_secs() >= 2 {
+                    panel.state.active_model_note = None;
+                }
+            }
+            ui.label(RichText::new(line).size(12.0).color(pal.text));
+            hint_line(ui, pal, &lt_i18n::t("models_group_hint"));
+            ui.add_space(2.0);
+        }
+
         let active = settings.active_model;
         let count = settings.models.len();
         let mut select: Option<usize> = None;
@@ -1623,6 +1647,45 @@ mod tests {
         assert!(
             !texts.iter().any(|(_, t)| t.contains("你好")),
             "配置变更后旧结果必须失效"
+        );
+    }
+
+    /// D-85/F2：面板「当前使用：X」只读展示；收到 TranslatorSwitched 后
+    /// 短暂追加「已切换生效」；**区域内不含任何切换控件**（裁决 E）
+    #[test]
+    fn active_model_status_line_renders_name_and_has_no_control() {
+        let _ = lt_i18n::set_lang("zh");
+        let ctx = egui::Context::default();
+        let mut st = crate::state::AppUi::new(Settings::default());
+        st.panel.state.page = crate::state::PanelPage::Translation;
+        let texts = render_translation_page(&mut st, &ctx, vec![vec![], vec![]]);
+        let want = lt_i18n::t_for_lang("zh", "status_active_model")
+            .replace("{name}", &st.settings.models[0].name);
+        let row = texts
+            .iter()
+            .find(|(_, t)| t == &want)
+            .map(|(r, _)| *r)
+            .expect("状态行应显示「当前使用：<名字>」");
+        // 状态行右侧（同一行）不得有任何可点控件：用"文字图元"近似断言——
+        // 该行只有这一条文本，且其后无按钮文字（切换控件是下拉/按钮，必有文字）
+        let same_row: Vec<&str> = texts
+            .iter()
+            .filter(|(r, _)| (r.top() - row.top()).abs() < 10.0)
+            .map(|(_, t)| t.as_str())
+            .collect();
+        assert_eq!(same_row.len(), 1, "状态行应独占一行（只读），实际: {same_row:?}");
+        // 切换生效提示
+        st.panel.state.active_model_note = Some((st.settings.models[0].name.clone(), Instant::now()));
+        let texts = render_translation_page(&mut st, &ctx, vec![vec![], vec![]]);
+        let want_switched = format!("{want} · {}", lt_i18n::t_for_lang("zh", "status_switched"));
+        assert!(
+            texts.iter().any(|(_, t)| t == &want_switched),
+            "新鲜的回执应追加「已切换生效」"
+        );
+        // 使用说明在场（裁决 E 的现场指引）
+        assert!(
+            find_by_key(&texts, "models_group_hint", "").is_some(),
+            "模型组内应有使用说明行"
         );
     }
 }

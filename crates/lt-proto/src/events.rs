@@ -91,6 +91,10 @@ pub enum UiEvent {
     ModelLoadDone { ok: bool, error: Option<String> },
     /// 翻译装置构建失败（配置无效等）：整条翻译静默不可用的唯一用户可见通道
     TranslatorUnavailable { reason: String },
+    /// 翻译装置已切换生效（D-85/F2：`Cmd::SwitchTranslator` 成功后回执）——
+    /// 面板「当前使用」状态行据此给"已切换生效"的确认；切换入口在悬浮窗下拉，
+    /// 那里看不见面板，所以确认必须回流到面板
+    TranslatorSwitched { name: String, model: String },
     /// 连接探测结果（`Cmd::TestTranslator` 的回执，D-85 改型）
     TestTranslatorResult {
         /// 回执归属（UI 只采纳与在途探测 id 相同者——迟到/被取代的回执据此丢弃）
@@ -206,6 +210,7 @@ impl FailureKind {
             FailureKind::Dropped => "err_dropped",
             FailureKind::NotReady => "err_not_ready",
             FailureKind::Cancelled => "err_cancelled",
+            FailureKind::Superseded => "err_superseded",
             FailureKind::Unknown => "err_unknown",
         }
     }
@@ -267,6 +272,10 @@ pub enum FailureKind {
     NotReady,
     /// 用户中断（D-85：连接探测取消等；**不是错误**，UI 以弱色说明呈现）
     Cancelled,
+    /// 装置被替换（D-85/F3：换模型时在队未翻译的段）——非错误，字幕窗中性展示。
+    /// 与 [`FailureKind::Dropped`] 区分：后者是真丢件（队列积压），前者是用户主动
+    /// 换模型导致的正常让位，文案与配色都不同
+    Superseded,
     /// 其他未知错误
     Unknown,
 }

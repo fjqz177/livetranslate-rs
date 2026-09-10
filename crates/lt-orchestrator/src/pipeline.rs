@@ -73,6 +73,9 @@ struct TlJob {
     sink: EventSink,
     /// 停机中丢队的任务不再回执（事件无处可去，且不是"积压丢弃"语义）
     stopped: Arc<AtomicBool>,
+    /// 装置被替换（D-85/F3）：被替换时出队的在队任务按"换模型让位"回执，
+    /// 而不是"队列积压"——后者是假原因，用户只是换了个模型
+    superseded: Arc<AtomicBool>,
     run: Option<Box<dyn FnOnce() + Send>>,
 }
 
@@ -87,10 +90,19 @@ impl TlJob {
 impl Drop for TlJob {
     fn drop(&mut self) {
         if self.run.is_some() && !self.stopped.load(Ordering::Relaxed) {
+            let superseded = self.superseded.load(Ordering::Relaxed);
             self.sink.push(UiEvent::TranslationFailed {
                 id: self.id,
-                kind: FailureKind::Dropped,
-                detail: "队列积压，保留最新（本段已放弃）".into(),
+                kind: if superseded {
+                    FailureKind::Superseded
+                } else {
+                    FailureKind::Dropped
+                },
+                detail: if superseded {
+                    "已切换模型，本段未翻译".into()
+                } else {
+                    "队列积压，保留最新（本段已放弃）".into()
+                },
                 tl_ms: 0.0,
             });
         }
@@ -100,6 +112,9 @@ impl Drop for TlJob {
 struct JobPool {
     queue: Arc<BoundedDropQueue<TlJob>>,
     stopped: Arc<AtomicBool>,
+    /// 装置被替换标记（D-85/F3：retire 前置位 → 出队任务回执"已切换模型"而非
+    /// "队列积压"）。队列溢出路径不受影响（那时本标记仍为 false）
+    superseded: Arc<AtomicBool>,
     /// 存活 worker 计数（RAII 增减）：泄漏回归测试的观测面
     #[allow(dead_code)]
     alive_workers: Arc<AtomicUsize>,
@@ -113,6 +128,7 @@ impl JobPool {
     fn new(workers: usize, sup: &Supervisor, sink: EventSink) -> Self {
         let queue = Arc::new(BoundedDropQueue::<TlJob>::new(TL_QUEUE_CAP, "tl-job"));
         let stopped = Arc::new(AtomicBool::new(false));
+        let superseded = Arc::new(AtomicBool::new(false));
         let alive_workers = Arc::new(AtomicUsize::new(0));
         for i in 0..workers {
             let queue = queue.clone();
@@ -148,6 +164,7 @@ impl JobPool {
         Self {
             queue,
             stopped,
+            superseded,
             alive_workers,
             sink,
             reported: AtomicU64::new(0),
@@ -164,6 +181,7 @@ impl JobPool {
             id,
             sink: self.sink.clone(),
             stopped: self.stopped.clone(),
+            superseded: self.superseded.clone(),
             run: Some(Box::new(job)),
         });
         let dropped = self.queue.dropped_count();
@@ -187,6 +205,8 @@ impl JobPool {
     /// （在 `stopped` 置位前丢弃，[`TlJob::drop`] 才会回执）。停机路径不走这里
     /// ——停机时事件无处可去，也不该刷一堆失败。
     fn retire(&self) {
+        // 先声明"这是换模型让位"——出队任务的 Drop 回执据此改文案与分类
+        self.superseded.store(true, Ordering::Relaxed);
         while self.queue.try_pop().is_some() {
             // 出队即（在 stopped=false 下）Drop → 回执
         }
@@ -1269,7 +1289,17 @@ impl Pipeline {
             learned.clone(),
             degraded_notified.clone(),
         ) {
-            Ok(t) => t.map(Arc::new),
+            Ok(t) => {
+                // D-85/F2：启动即回执一次"当前使用"——面板状态行首帧就正确，
+                // 不必等用户切一次模型才有信息
+                if let Some(mc) = eff.raw.models.get(eff.raw.active_model) {
+                    sink.push(UiEvent::TranslatorSwitched {
+                        name: mc.name.clone(),
+                        model: mc.model.clone(),
+                    });
+                }
+                t.map(Arc::new)
+            }
             Err(reason) => {
                 sink.push(UiEvent::TranslatorUnavailable {
                     reason: reason.clone(),
@@ -1873,10 +1903,17 @@ fn route_translator_switch(
                     tracing::info!("翻译器已切换: {} ({})", config.name, config.model);
                     // 旧装置交给 Drop 之前先 retire：在队未跑的任务补发"已放弃"
                     // 回执——否则这些段落在字幕上永远停在「翻译中…」
+                    // D-85/F3：retire 前置"让位"标记 → 回执是"已切换模型"而非
+                    // "队列积压"（后者是假原因，用户只是换了个模型）
                     if let Some(old) = tl.take() {
                         old.pool.retire();
                     }
                     *tl = Some(Arc::new(rig));
+                    // D-85/F2：切换生效回执（面板状态行据此确认"已生效"）
+                    sink.push(UiEvent::TranslatorSwitched {
+                        name: config.name.clone(),
+                        model: config.model.clone(),
+                    });
                 }
                 Ok(None) => {
                     tracing::warn!("翻译器切换目标为空（models 空/越界），保持当前装置");
@@ -1888,6 +1925,141 @@ fn route_translator_switch(
             None
         }
         engine @ TlSwitch::ReplaceEngine { .. } => Some(engine),
+    }
+}
+
+
+/// 排空翻译器命令（D-85/F1）。
+///
+/// 提取自 ASR 主循环的空闲分支——**同一份实现**现在挂在主循环每轮开头：
+/// 换模型不必再等"段队列连续 500ms 空窗"，下一段边界即生效
+/// （旧实现只在空闲分支消费，连续说话时切换要排在转录之后）。
+///
+/// 待命循环**不用本函数**：那里 `ReplaceEngine` 的语义是"装配 worker 退出待命"，
+/// 与运行期的"热切换 + 回滚"完全不同，保持原样。
+///
+/// 方案偏离留痕（docs §4.5 F1）：文档写"逐个传引用 + allow(too_many_arguments)"，
+/// 实现改为把 9 个共享引用收进 [`SwitchDrain`]——参数从 14 降到 6，可读性更好，
+/// 语义与调用点不变。
+struct SwitchDrain<'a> {
+    tl_switch: &'a crossbeam_channel::Receiver<TlSwitch>,
+    bus: &'a Arc<SettingsBus>,
+    sink: &'a EventSink,
+    sup: &'a Arc<Supervisor>,
+    transcript: &'a Arc<lt_audio::transcript::TranscriptWriter>,
+    learned: &'a Learned,
+    degraded_notified: &'a Arc<Mutex<std::collections::HashSet<(String, String)>>>,
+    interim: &'a Arc<InterimControl>,
+    settings: &'a lt_proto::Settings,
+}
+
+fn drain_tl_switch(
+    tl: &mut Option<Arc<TlRig>>,
+    manager: &mut AsrManager,
+    current_display: &mut String,
+    asr_unavailable_notified: &mut bool,
+    interim_state: &mut InterimState,
+    ctx: &SwitchDrain<'_>,
+) {
+    while let Ok(sw) = ctx.tl_switch.try_recv() {
+        if let Some(TlSwitch::ReplaceEngine {
+            engine,
+            funasr_model,
+            whisper_model_size,
+            language,
+        }) = route_translator_switch(sw, tl, ctx.bus, ctx.sink, ctx.sup, ctx.transcript, ctx.learned, ctx.degraded_notified)
+        {
+            // R3/D-61：每次切换尝试重解析 models_dir（与待命臂一致；
+            // 运行中目录损坏时切换路径同样可恢复）
+            let Ok(models_dir) =
+                lt_models::paths::models_dir(ctx.settings.models_dir.as_deref())
+            else {
+                ctx.sink.push(UiEvent::AsrUnavailable);
+                tracing::warn!("引擎切换尝试：模型目录不可用，跳过本轮");
+                continue;
+            };
+            // 原版 _switch_asr_engine：装配新配置 → 加载对话框 →
+            // ensure_started（失败内部回滚旧 worker）→ 设备/不可用事件
+            let eff = ctx.bus.load();
+            match build_worker_config(
+                &models_dir,
+                &engine,
+                &funasr_model,
+                eff.asr_lang.sensevoice_pad,
+                &language,
+                &whisper_model_size,
+                eff.asr_lang.whisper_pad,
+            ) {
+                Some((config, display)) => {
+                    ctx.sink.push(UiEvent::ModelLoadStart(display.clone()));
+                    // D-83 零信任闸门（运行时切换路径）：不通过 → 坏文件
+                    // 已隔离 + 事件已发；恢复旧标签（旧引擎继续工作，P0-4）
+                    // 并中止本次切换——修复下载完成后 shell 会重发切换
+                    if !trust_gate(Some(&models_dir), &config, ctx.sink) {
+                        ctx.sink.push(UiEvent::AsrDevice(
+                            format!("{} [cpu]", current_display),
+                        ));
+                        tracing::warn!(
+                            "引擎切换中止：{} 未通过完整性校验（坏文件已隔离）",
+                            engine_model_key(&engine, &funasr_model, &whisper_model_size)
+                        );
+                        continue;
+                    }
+                    // D-83/DL-C：切换恒为显式重试（用户意图/修复后重载）
+                    if let Err(e) = manager.ensure_started_explicit(&config) {
+                        // D-83 §2.4：装载失败复验分流——文件被改过 → Hash
+                        // 故障（可修复）；指纹一致仍失败 → Unloadable（重下无解）
+                        report_load_failure(
+                            Some(&models_dir),
+                            &config,
+                            &e.to_string(),
+                            ctx.sink,
+                        );
+                        // 回滚后旧 worker 仍在工作：恢复旧标签而非
+                        // 发 AsrUnavailable（避免状态与行为矛盾，P0-4）
+                        ctx.sink.push(UiEvent::AsrDevice(
+                            format!("{} [cpu]", current_display),
+                        ));
+                        tracing::error!("引擎切换失败（已回滚）: {e}");
+                    } else {
+                        *current_display = display.clone();
+                        *asr_unavailable_notified = false;
+                        ctx.sink.push(UiEvent::AsrDevice(
+                            format!("{display} [cpu]"),
+                        ));
+                        // AH-3：切换后增量会话状态复位——旧引擎的
+                        // committed_tail/active 对新引擎输出无意义，且
+                        // 切换后首个收尾段经 commit_interim_final 绕过
+                        // 语言过滤，残留 active 会放行语言不符文本
+                        interim_state.reset();
+                        ctx.interim.last_interim_samples.store(0, Ordering::Relaxed);
+                        ctx.interim.last_check_ms.store(0, Ordering::Relaxed);
+                        // 日志按引擎打实际模型键（whisper 打 funasr_model 会误导诊断）
+                        let model_key =
+                            engine_model_key(&engine, &funasr_model, &whisper_model_size);
+                        // AH-8/D-28 + R18：段长钳制随总线发布派生生效——
+                        // shell 在引擎切换路径 publish 后，capture 下一轮
+                        // 读格应用（overlay 视图：raw 永不变、切离即恢复，
+                        // 替代旧"直接改共享 VAD + 用户下次应用恢复"写穿）
+                        tracing::info!("引擎已切换: {engine}/{model_key}");
+                    }
+                }
+                None => {
+                    // 未缓存/未知档：旧引擎继续运行——不发
+                    // AsrUnavailable（P0-4），恢复标签并落日志；
+                    // 面板侧缓存卡片「未缓存 + 下载按钮」给出下一步
+                    ctx.sink.push(UiEvent::AsrDevice(format!(
+                        "{} [cpu]",
+                        current_display
+                    )));
+                    let model_key =
+                        engine_model_key(&engine, &funasr_model, &whisper_model_size);
+                    tracing::warn!(
+                        "切换目标未缓存/未知，保持当前引擎: {engine}/{model_key}（去识别页下载）"
+                    );
+                }
+            }
+        }
     }
 }
 
@@ -2051,112 +2223,50 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
     }
 
     while !stop.load(Ordering::Relaxed) {
+        // D-85/F1：每轮循环开头先收翻译器命令——换模型在**下一段边界**即生效，
+        // 不再依赖"空闲分支"（旧实现要等段队列连续 500ms 空窗）
+        drain_tl_switch(
+            &mut tl,
+            &mut manager,
+            &mut current_display,
+            &mut asr_unavailable_notified,
+            &mut interim_state,
+            &SwitchDrain {
+                tl_switch: &tl_switch,
+                bus: &bus,
+                sink: &sink,
+                sup: &sup,
+                transcript: &transcript,
+                learned: &learned,
+                degraded_notified: &degraded_notified,
+                interim: &interim,
+                settings,
+            },
+        );
         // 取段：capture 线程直塞的 (source, audio)（source 目前仅 VadFlush，
         // M6 interim 接入后再分流）
         let Some((source, audio)) = segment_queue.pop_timeout(Duration::from_millis(500)) else {
             // 空闲分支：RSS 回收（原版 _asr_loop queue.Empty）+ 翻译器切换命令
             // （AH-1：翻译器三臂经 route_translator_switch 与待命循环共享）
             manager.maybe_recycle_if_idle();
-            while let Ok(sw) = tl_switch.try_recv() {
-                if let Some(TlSwitch::ReplaceEngine {
-                    engine,
-                    funasr_model,
-                    whisper_model_size,
-                    language,
-                }) = route_translator_switch(sw, &mut tl, &bus, &sink, &sup, &transcript, &learned, &degraded_notified)
-                {
-                    // R3/D-61：每次切换尝试重解析 models_dir（与待命臂一致；
-                    // 运行中目录损坏时切换路径同样可恢复）
-                    let Ok(models_dir) =
-                        lt_models::paths::models_dir(settings.models_dir.as_deref())
-                    else {
-                        sink.push(UiEvent::AsrUnavailable);
-                        tracing::warn!("引擎切换尝试：模型目录不可用，跳过本轮");
-                        continue;
-                    };
-                    // 原版 _switch_asr_engine：装配新配置 → 加载对话框 →
-                    // ensure_started（失败内部回滚旧 worker）→ 设备/不可用事件
-                    let eff = bus.load();
-                    match build_worker_config(
-                        &models_dir,
-                        &engine,
-                        &funasr_model,
-                        eff.asr_lang.sensevoice_pad,
-                        &language,
-                        &whisper_model_size,
-                        eff.asr_lang.whisper_pad,
-                    ) {
-                        Some((config, display)) => {
-                            sink.push(UiEvent::ModelLoadStart(display.clone()));
-                            // D-83 零信任闸门（运行时切换路径）：不通过 → 坏文件
-                            // 已隔离 + 事件已发；恢复旧标签（旧引擎继续工作，P0-4）
-                            // 并中止本次切换——修复下载完成后 shell 会重发切换
-                            if !trust_gate(Some(&models_dir), &config, &sink) {
-                                sink.push(UiEvent::AsrDevice(
-                                    format!("{} [cpu]", current_display),
-                                ));
-                                tracing::warn!(
-                                    "引擎切换中止：{} 未通过完整性校验（坏文件已隔离）",
-                                    engine_model_key(&engine, &funasr_model, &whisper_model_size)
-                                );
-                                continue;
-                            }
-                            // D-83/DL-C：切换恒为显式重试（用户意图/修复后重载）
-                            if let Err(e) = manager.ensure_started_explicit(&config) {
-                                // D-83 §2.4：装载失败复验分流——文件被改过 → Hash
-                                // 故障（可修复）；指纹一致仍失败 → Unloadable（重下无解）
-                                report_load_failure(
-                                    Some(&models_dir),
-                                    &config,
-                                    &e.to_string(),
-                                    &sink,
-                                );
-                                // 回滚后旧 worker 仍在工作：恢复旧标签而非
-                                // 发 AsrUnavailable（避免状态与行为矛盾，P0-4）
-                                sink.push(UiEvent::AsrDevice(
-                                    format!("{} [cpu]", current_display),
-                                ));
-                                tracing::error!("引擎切换失败（已回滚）: {e}");
-                            } else {
-                                current_display = display.clone();
-                                asr_unavailable_notified = false;
-                                sink.push(UiEvent::AsrDevice(
-                                    format!("{display} [cpu]"),
-                                ));
-                                // AH-3：切换后增量会话状态复位——旧引擎的
-                                // committed_tail/active 对新引擎输出无意义，且
-                                // 切换后首个收尾段经 commit_interim_final 绕过
-                                // 语言过滤，残留 active 会放行语言不符文本
-                                interim_state.reset();
-                                interim.last_interim_samples.store(0, Ordering::Relaxed);
-                                interim.last_check_ms.store(0, Ordering::Relaxed);
-                                // 日志按引擎打实际模型键（whisper 打 funasr_model 会误导诊断）
-                                let model_key =
-                                    engine_model_key(&engine, &funasr_model, &whisper_model_size);
-                                // AH-8/D-28 + R18：段长钳制随总线发布派生生效——
-                                // shell 在引擎切换路径 publish 后，capture 下一轮
-                                // 读格应用（overlay 视图：raw 永不变、切离即恢复，
-                                // 替代旧"直接改共享 VAD + 用户下次应用恢复"写穿）
-                                tracing::info!("引擎已切换: {engine}/{model_key}");
-                            }
-                        }
-                        None => {
-                            // 未缓存/未知档：旧引擎继续运行——不发
-                            // AsrUnavailable（P0-4），恢复标签并落日志；
-                            // 面板侧缓存卡片「未缓存 + 下载按钮」给出下一步
-                            sink.push(UiEvent::AsrDevice(format!(
-                                "{} [cpu]",
-                                current_display
-                            )));
-                            let model_key =
-                                engine_model_key(&engine, &funasr_model, &whisper_model_size);
-                            tracing::warn!(
-                                "切换目标未缓存/未知，保持当前引擎: {engine}/{model_key}（去识别页下载）"
-                            );
-                        }
-                    }
-                }
-            }
+            drain_tl_switch(
+                &mut tl,
+                &mut manager,
+                &mut current_display,
+                &mut asr_unavailable_notified,
+                &mut interim_state,
+                &SwitchDrain {
+                    tl_switch: &tl_switch,
+                    bus: &bus,
+                    sink: &sink,
+                    sup: &sup,
+                    transcript: &transcript,
+                    learned: &learned,
+                    degraded_notified: &degraded_notified,
+                    interim: &interim,
+                    settings,
+                },
+            );
             continue;
         };
         // W4：每段生效视图一次 load（语言过滤/同语言判定/翻译提交全部据此）
@@ -3245,7 +3355,8 @@ mod tests {
             }
             for ev in batch.iter() {
                 if let UiEvent::TranslationFailed { id, kind, .. } = ev {
-                    assert_eq!(*kind, FailureKind::Dropped);
+                    // D-85/F3：retire = 换模型让位（与"队列积压"区分开）
+                    assert_eq!(*kind, FailureKind::Superseded);
                     dropped_ids.push(*id);
                 }
             }
@@ -3552,5 +3663,184 @@ mod tests {
                 .is_none()
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// D-85/F3 回归：**队列溢出**路径仍是 `Dropped`（真丢件），
+    /// 不得被"换模型让位"的改动串味
+    #[test]
+    fn queue_overflow_still_reports_dropped() {
+        let sup = test_sup();
+        let sink = EventArtery::new();
+        let pool = JobPool::new(0, &sup, sink.clone());
+        // 队列容量 TL_QUEUE_CAP：塞满再多推一条 → 丢最旧（Drop 补 Dropped 回执）
+        for id in 0..(TL_QUEUE_CAP as u64 + 1) {
+            pool.submit(id, || {});
+        }
+        let mut batch = Vec::new();
+        let mut kinds = Vec::new();
+        loop {
+            if !sink.drain_batch(&mut batch, Duration::from_millis(20)) {
+                break;
+            }
+            for ev in batch.iter() {
+                if let UiEvent::TranslationFailed { kind, .. } = ev {
+                    kinds.push(*kind);
+                }
+            }
+        }
+        assert!(
+            kinds.iter().all(|k| *k == FailureKind::Dropped),
+            "溢出丢弃必须仍是 Dropped，实际 {kinds:?}"
+        );
+        assert!(!kinds.is_empty(), "至少应有一条被丢弃的回执");
+        pool.shutdown();
+        sup.join_all();
+    }
+
+    /// D-85/F3：装置被替换时的在队任务按"换模型让位"回执——不能报"队列积压"
+    ///（后者是假原因：用户只是换了个模型）
+    #[test]
+    fn retired_pool_marks_superseded_not_dropped() {
+        let sup = test_sup();
+        let sink = EventArtery::new();
+        let pool = JobPool::new(0, &sup, sink.clone());
+        for id in 0..2u64 {
+            pool.submit(id, || {});
+        }
+        pool.retire();
+        let mut batch = Vec::new();
+        let mut kinds = Vec::new();
+        loop {
+            if !sink.drain_batch(&mut batch, Duration::from_millis(20)) {
+                break;
+            }
+            for ev in batch.iter() {
+                if let UiEvent::TranslationFailed { kind, detail, .. } = ev {
+                    kinds.push((*kind, detail.clone()));
+                }
+            }
+        }
+        assert_eq!(kinds.len(), 2, "两条在队任务都应回执");
+        for (kind, detail) in kinds {
+            assert_eq!(kind, FailureKind::Superseded, "换模型让位不是'积压丢弃'");
+            assert!(detail.contains("切换模型"), "文案应说明真因：{detail}");
+        }
+        sup.join_all();
+    }
+
+    /// D-85/F2：切换成功后回执 TranslatorSwitched（面板状态行据此确认"已生效"）
+    #[test]
+    fn replace_rig_pushes_translator_switched() {
+        let sup = test_sup();
+        let sink = EventArtery::new();
+        let bus = test_bus(lt_proto::Settings::default());
+        let mut tl = None;
+        let sw = TlSwitch::ReplaceRig {
+            config: Box::new(lt_proto::Settings::default().models[0].clone()),
+        };
+        let _ = route_translator_switch(
+            sw,
+            &mut tl,
+            &bus,
+            &sink,
+            &sup,
+            &test_transcript(),
+            &test_learned(),
+            &test_degraded_notified(),
+        );
+        assert!(tl.is_some(), "替换后应装上新装置");
+        let mut batch = Vec::new();
+        let mut seen = false;
+        while sink.drain_batch(&mut batch, Duration::from_millis(20)) {
+            for ev in batch.iter() {
+                if let UiEvent::TranslatorSwitched { name, .. } = ev {
+                    assert!(!name.is_empty());
+                    seen = true;
+                }
+            }
+        }
+        assert!(seen, "切换成功必须回执 TranslatorSwitched");
+        if let Some(rig) = tl.take() {
+            rig.pool.shutdown();
+        }
+        sup.join_all();
+    }
+
+    /// D-85/F1：`drain_tl_switch` 不依赖"空闲分支状态"——提取后可在主循环
+    /// 每轮开头直接调用（旧实现只在段队列 500ms 空窗时才消费切换命令）
+    #[test]
+    fn drain_tl_switch_is_callable_from_anywhere() {
+        let sup = test_sup();
+        let sink = EventArtery::new();
+        let bus = test_bus(lt_proto::Settings::default());
+        let (tx, rx) = crossbeam_channel::unbounded::<TlSwitch>();
+        let settings = lt_proto::Settings::default();
+        let mut tl = None;
+        let mut manager = AsrManager::new();
+        let mut display = String::from("old");
+        let mut notified = false;
+        let mut interim_state = InterimState::default();
+        let interim = Arc::new(InterimControl::default());
+        let learned = test_learned();
+        let degraded = test_degraded_notified();
+        let transcript = test_transcript();
+
+        // 队列里有 ReplaceRig → 一次调用即装上新装置 + 回执 TranslatorSwitched
+        tx.send(TlSwitch::ReplaceRig {
+            config: Box::new(settings.models[0].clone()),
+        })
+        .unwrap();
+        drain_tl_switch(
+            &mut tl,
+            &mut manager,
+            &mut display,
+            &mut notified,
+            &mut interim_state,
+            &SwitchDrain {
+                tl_switch: &rx,
+                bus: &bus,
+                sink: &sink,
+                sup: &sup,
+                transcript: &transcript,
+                learned: &learned,
+                degraded_notified: &degraded,
+                interim: &interim,
+                settings: &settings,
+            },
+        );
+        assert!(tl.is_some(), "主循环开头的一次调用就该完成切换");
+        let mut batch = Vec::new();
+        let mut switched = false;
+        while sink.drain_batch(&mut batch, Duration::from_millis(20)) {
+            for ev in batch.iter() {
+                if matches!(ev, UiEvent::TranslatorSwitched { .. }) {
+                    switched = true;
+                }
+            }
+        }
+        assert!(switched, "切换生效回执必须随切换一并到达");
+        // 空队列再调一次：无副作用（幂等）
+        drain_tl_switch(
+            &mut tl,
+            &mut manager,
+            &mut display,
+            &mut notified,
+            &mut interim_state,
+            &SwitchDrain {
+                tl_switch: &rx,
+                bus: &bus,
+                sink: &sink,
+                sup: &sup,
+                transcript: &transcript,
+                learned: &learned,
+                degraded_notified: &degraded,
+                interim: &interim,
+                settings: &settings,
+            },
+        );
+        if let Some(rig) = tl.take() {
+            rig.pool.shutdown();
+        }
+        sup.join_all();
     }
 }

@@ -604,9 +604,11 @@ pub struct SubtitleLineRender {
     pub wrapped: Vec<String>,
     /// 上次换行的缓存 key（原版 _text_cache；None = 需重排）
     pub cache_key: Option<SubtitleLineKey>,
-    /// 本行是否承载**失败**文案（item 8/9：警示色渲染 + ⚠ 标记；
-    /// 仅译文行可能为 true，原文行恒 false——原文照常保留）
-    pub failed: bool,
+    /// 本行承载的**失败/让位**分类（item 8/9 + D-85/F3）：
+    /// `None` = 正常译文；`Some(其余)` = 警示红 + ⚠ 标记；
+    /// `Some(Superseded)` = **中性灰**说明（换模型让位，不是错误）。
+    /// 仅译文行可能非 None，原文行恒 None——原文照常保留
+    pub fail_kind: Option<lt_proto::FailureKind>,
 }
 
 /// 字幕窗 UI 伴生状态（原版 SubtitleWindow 的时序字段 + 各行渲染缓存）

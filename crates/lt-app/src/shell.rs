@@ -251,10 +251,28 @@ impl AppShell {
             // E6/D-81：Cmd::SetTimeout 处理臂随契约变体删除（零生产者，
             // 超时改动经 ApplySettings 整体重放）
             Cmd::SwitchTranslator(config) => {
-                if let Some(p) = self.pipeline.as_mut() {
-                    p.switch_translator(&config);
+                // D-85/F4：管道未装配时不得静默——设置改了、装置没换是"界面与实际
+                // 不一致"的典型形态；翻译页红字复用既有的 TranslatorUnavailable 形态
+                match self.pipeline.as_mut() {
+                    Some(p) => {
+                        p.switch_translator(&config);
+                        tracing::info!(
+                            "Switching translator: {} ({})",
+                            config.name,
+                            config.model
+                        );
+                    }
+                    None => {
+                        tracing::warn!(
+                            "管道未启动，模型切换未生效：{} ({})",
+                            config.name,
+                            config.model
+                        );
+                        self.artery.push(UiEvent::TranslatorUnavailable {
+                            reason: lt_i18n::t("translator_switch_no_pipeline"),
+                        });
+                    }
                 }
-                tracing::info!("Switching translator: {} ({})", config.name, config.model);
                 self.publish_settings();
                 self.persist_settings();
             }

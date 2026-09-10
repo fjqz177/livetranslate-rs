@@ -1076,6 +1076,12 @@ impl MultiWindowApp {
                         usage_known,
                     });
                 }
+                // 翻译装置切换生效（D-85/F2）：面板「当前使用」状态行给一次确认
+                lt_proto::UiEvent::TranslatorSwitched { name, .. } => {
+                    self.app_state.panel.state.active_model_note =
+                        Some((name, Instant::now()));
+                    self.redraw(WinId::Panel);
+                }
                 // ASR 设备标签（悬浮窗 MonitorBar device 段）；同时视作加载框关闭信号
                 //（原版 App.model_load_done 在设备就绪/不可用时都会被调用）
                 lt_proto::UiEvent::AsrDevice(label) => {

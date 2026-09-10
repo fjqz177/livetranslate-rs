@@ -246,6 +246,9 @@ pub const WARN_TEXT: Color32 = Color32::from_rgb(0xff, 0x6b, 0x5c);
 /// 失败文案专用薄描边（字幕窗失败行恒开、宽 1.5px；浅背景可读性的保障；
 /// 只作绘制偏移，不参与换行/行高/对齐计算 → 布局零跳变）
 pub const FAILURE_OUTLINE: Color32 = Color32::from_rgb(0x3a, 0x0d, 0x0a);
+/// "已跳过/让位"说明文案的中性灰（D-85/F3：换模型导致本段未翻译——不是错误，
+/// 不占警示红、不画失败描边）
+pub const SKIP_TEXT: Color32 = Color32::from_rgb(0x9a, 0xa0, 0xa6);
 
 /// #RRGGBB → Color32；解析失败回退 fallback（原版 _hex_to_rgba 的容错路径）
 pub fn parse_color(s: &str, fallback: Color32) -> Color32 {
