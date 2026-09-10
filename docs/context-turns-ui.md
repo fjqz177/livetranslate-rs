@@ -48,21 +48,27 @@ Rust 版新增面板直达行——理由是面板是本应用改翻译参数的
 
 - `context_hint_sits_in_model_group_not_network_group`：无头渲染翻译页，断言说明文本
   **只出现一次**且坐标满足「模型配置组标题 < 标签 < 说明 < 网络配置组标题」，
-  并断言标签同一行右侧存在数值控件（回归本次错位）。
+  并断言标签同一行右侧存在数值控件、该行落在面板首屏内（回归本次错位）。
 - `panel_context_drag_writes_active_model_and_schedules_rebuild`：无头指针拖拽该行
   （悬停 → 按下 → 单帧横拖 15px → 抬起，`speed=1.0`）→ 断言
   `context_turns == 15`、`prompt_apply_due` 已登记、`PromptApply` 节拍已排、
   `settings_apply_pending` 已置（端到端证明入口可用）。
+- 两条用例均按**真实面板视口 535×781**（`app.rs` 实测尺寸）渲染：控件若被挤出
+  可视区，egui 的 clip rect 命中失败 → 拖拽无反应/文本缺失，用例即失败——
+  因此同时钉住「入口在真实窗口里真实可用」，而非仅"渲染出了图元"。
 - i18n 竞争：两条用例一律用 `lt_i18n::t_for_lang` 取 zh/en 双候选匹配（并行测试
   线程会切全局语言，`t()` 断言会被打飞——实测过一次失败后修正）。
 - 全量：**540+9 测全绿**（基线 538+9，净增 2）+ `cargo clippy --workspace --all-targets -D warnings`
-  零告警 + 三守护脚本（`check_personal_paths` / `check_deps` / `check_guards`）过。
+  零告警 + 三守护脚本（`check_personal_paths` / `check_deps` / `check_guards`）过
+  + `cargo build --release -p lt-app` 出单 exe（75.9MB）。
 - 零 lt-proto 契约变更（无新字段、无新命令）。
 
 ## 4. 待实机走查（用户）
 
 1. 翻译页「模型配置」组看到「上下文数: [0]」+ 说明行；拖拽/单击改值；
-2. 改为 n>0 后翻译两段以上文本，第二段起请求应携带前 n 条原文/译文
-   （可在日志或端点侧观察 messages 含历史对）；
+2. 改为 n>0 后翻译两段以上文本，第二段起请求应携带前 n 条原文/译文——
+   自定义提示词含 `{context}` 占位时上下文并入 system prompt，否则按
+   user/assistant 消息对追加（两者均在请求体中可见；`no_system_role` 勾选时
+   上下文不携带，与原版 `translator.py:306-318` 行为一致）；
 3. 切到另一模型行（或改模型编辑对话框的值）→ 面板行数值随之刷新，两处一致；
 4. 「恢复本页」应把上下文数一并归 0（`restore_translation_page` 重置 models）。
