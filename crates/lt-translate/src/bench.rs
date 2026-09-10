@@ -150,7 +150,7 @@ fn test_model(
     // 与生产**同一套请求构造**（第二轮评审 ⑫/方案 §2.5 规则 6）：关闭思考参数与
     // 高级参数政策（默认不发温度/输出上限）都由 Translator 决定——基准不再自建
     // JSON（旧实现硬编码 max_tokens:256 / temperature:0.3，思考模型上数据系统性失真）
-    let translator = crate::Translator::new(crate::TranslatorParams {
+    let base = crate::Translator::new(crate::TranslatorParams {
         api_base: m.api_base.clone(),
         api_key: m.api_key.clone(),
         model: m.model.clone(),
@@ -161,10 +161,19 @@ fn test_model(
         ..Default::default()
     })
     .map_err(|e| e.to_string())?;
-    let client = translator.client().clone();
+    let client = base.client().clone();
     let read_timeout = std::time::Duration::from_secs(timeout_s as u64);
-    let mut rounds = Vec::new();
-    for text in sentences {
+    // 与生产**同一条回退阶梯**（第三轮复核）：强制思考模型（GLM-5.3 / kimi-k3 等）
+    // 会对关闭参数回 400，生产里阶梯能退级跑通——基准若只试一种形态就会显示
+    // FAILED，给出与生产相反的结论。首句被"参数类"拒绝即退一级、整组重测。
+    let mut step = crate::first_step(base.thinking_plan());
+    'steps: loop {
+        let translator = match step {
+            crate::RequestStep::Plan(p) => base.with_plan(p),
+            crate::RequestStep::Minimal => base.minimal(),
+        };
+        let mut rounds = Vec::new();
+        for (idx, text) in sentences.iter().enumerate() {
         let streaming_body = translator.build_request_body(prompt, text, true, false, 0);
         let t0 = Instant::now();
         let streamed = crate::runtime().block_on(async {
@@ -178,7 +187,7 @@ fn test_model(
             )
             .await
         });
-        let outcome: Result<BenchRound, String> = match streamed {
+        let outcome: Result<BenchRound, BenchErr> = match streamed {
             Ok(Ok(mut s)) => {
                 use futures::StreamExt;
                 let mut ttft: Option<f64> = None;
@@ -198,13 +207,15 @@ fn test_model(
                                 }
                             }
                         }
-                        Ok(Some(Err(e))) => break Err(e.to_string()),
+                        Ok(Some(Err(e))) => break Err(param_err(e)),
                         Ok(None) => {
                             let total_ms = t0.elapsed().as_secs_f64() * 1000.0;
                             let text = stripper.finish().trim().to_string();
                             break Ok((ttft.unwrap_or(total_ms), total_ms, text));
                         }
-                        Err(_) => break Err(format!("timed out after {timeout_s}s")),
+                        Err(_) => break Err(BenchErr::msg(format!(
+                            "timed out after {timeout_s}s"
+                        ))),
                     }
                 }
             }
@@ -223,8 +234,8 @@ fn test_model(
                         )
                         .await
                     })
-                    .map_err(|_| format!("timed out after {timeout_s}s"))
-                    .and_then(|r| r.map_err(|e| e.to_string()))
+                    .map_err(|_| BenchErr::msg(format!("timed out after {timeout_s}s")))
+                    .and_then(|r| r.map_err(param_err))
                     .map(|resp| {
                         let total_ms = t0.elapsed().as_secs_f64() * 1000.0;
                         let text = crate::reasoning::strip_reasoning(
@@ -243,13 +254,49 @@ fn test_model(
         match outcome {
             Ok(round) => rounds.push(round),
             Err(e) => {
+                // 首句即被"参数类"拒绝 → 退一级重测整组（与生产阶梯同判据）
+                if e.param_rejected && idx == 0 {
+                    if let Some(next) = crate::next_step(step) {
+                        step = next;
+                        continue 'steps;
+                    }
+                }
                 // 截断规则与原版一致（str(e) 首行、120 字符）
-                let first_line = e.lines().next().unwrap_or("");
+                let first_line = e.msg.lines().next().unwrap_or("");
                 return Err(first_line.chars().take(120).collect());
             }
         }
+        }
+        return Ok(rounds);
     }
-    Ok(rounds)
+}
+
+/// 基准侧错误（带"参数被拒"标记：只有它才触发退级，超时/网络/鉴权不白试）
+struct BenchErr {
+    msg: String,
+    param_rejected: bool,
+}
+
+impl BenchErr {
+    fn msg(msg: String) -> Self {
+        Self {
+            msg,
+            param_rejected: false,
+        }
+    }
+}
+
+/// 服务端以 400/422 拒绝（多半是"不认识我们注入的参数"）→ 允许退级
+fn param_err(e: async_openai::error::OpenAIError) -> BenchErr {
+    let rejected = matches!(
+        &e,
+        async_openai::error::OpenAIError::ApiError(r)
+            if matches!(r.status_code.as_u16(), 400 | 422)
+    );
+    BenchErr {
+        msg: e.to_string(),
+        param_rejected: rejected,
+    }
 }
 
 /// 阻塞版基准：每模型一个线程并行测试，返回全部结果（供测试/自定义 UI 复用）。

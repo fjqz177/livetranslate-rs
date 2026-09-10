@@ -118,7 +118,14 @@ impl JobPool {
             let queue = queue.clone();
             let stopped = stopped.clone();
             let alive_workers = alive_workers.clone();
-            sup.spawn(ThreadRole::TlWorker, format!("lt-tl-{i}"), Policy::backoff(), move || {
+            // spawn_retirable：池被替换/停机时 worker 是**正常退出**，交给监督器
+            // 的"预期退役"信号静默收割——否则每次换模型都刷 8 条假错误日志
+            sup.spawn_retirable(
+                ThreadRole::TlWorker,
+                format!("lt-tl-{i}"),
+                Policy::backoff(),
+                stopped.clone(),
+                move || {
                 let queue = queue.clone();
                 let stopped = stopped.clone();
                 let alive_workers = alive_workers.clone();
@@ -135,7 +142,8 @@ impl JobPool {
                         }
                     }
                 })
-            });
+                },
+            );
         }
         Self {
             queue,

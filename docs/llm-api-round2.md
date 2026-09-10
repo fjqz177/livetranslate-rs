@@ -159,7 +159,7 @@ seed 三行，编辑器状态仍原样回写。后果：老档案里的 `max_tok
 
 ## 五、实施状态（2026-09-10 收口）
 
-**测试基线**：`cargo test --workspace` = **522 通过 / 7 ignored / 0 失败**（本轮前 483+7）；`cargo clippy --workspace --all-targets -- -D warnings` **零告警**；
+**测试基线**：`cargo test --workspace` = **527 通过 / 7 ignored / 0 失败**（本轮前 483+7）；`cargo clippy --workspace --all-targets -- -D warnings` **零告警**；
 四守护脚本（个人路径 / 依赖白名单 / 源码禁令 / 死契约）**全过**（108 契约变体，0 死）。
 
 **逐条落地**：
@@ -212,17 +212,20 @@ seed 三行，编辑器状态仍原样回写。后果：老档案里的 `max_tok
 | R2-21 | 装置未就绪被当**正常译文**下发（占位文案走译文样式，用户看不出是报错） | P2 | ✗ 修：新增 `FailureKind::NotReady` + i18n `err_not_ready`，以失败结论下发（字幕窗走警示样式） |
 | R2-22 | 用量未知标志初值 `true` → 只失败的端点显示 0 冒充真实值 | P3 | ✗ 修：初值改 `false`（未观测 ≠ 已知为零） |
 | R2-23 | 换模型时在队任务静默丢弃（⑬d 只覆盖了溢出路径）→ 字幕停在「翻译中…」 | P2 | ✗ 修：`JobPool::retire()` 在替换前出队并逐条补回执；测试 `retired_pool_emits_receipts_for_queued_jobs`（含停机路径保持静默的断言） |
+| R2-24 | **换模型/测试连接刷一屏假错误日志**：翻译池 8 个 worker 正常退役被监督器判为"未停机即退出（异常）"→ 8 条 `ThreadDied` + 8 次退避重生 + 8 条"已放弃重启"（实证：`supervisor.rs` 对 Backoff 策略的非 panic 退出一律判异常） | P2（既有缺陷） | ✗ 修：新增 `Supervisor::spawn_retirable` + Entry 的"**预期退役**"信号位（置位的正常退出静默收割，panic 仍上报重生）；翻译池改用它；测试 `retirable_normal_exit_is_silent` / `retirable_panic_still_reported` |
+| R2-25 | **基准页不做阶梯**：强制思考模型（GLM-5.3 / kimi-k3）在基准页显示 FAILED，而生产阶梯能跑通——与⑫"基准必须测生产实际会发的请求"半途而废 | P2 | ✗ 修：基准接入同一条阶梯（首句被 400/422 拒绝即退一级重测整组）；测试 `benchmark_degrades_like_production_on_param_rejection` |
+| R2-26 | 方案 §2.5 规则 6「预览 == 实发」缺守卫测试 | P3 | ✗ 修：`preview_matches_actual_body`——把实发请求的 system prompt 回灌同一构造函数，逐键比对 |
 
 **复核发现但本轮未修（登记在案，需要时再裁决）**：
 
-1. **换模型/测试连接会刷假错误日志**：翻译池 worker 以 `Policy::backoff()` 出生，装置被替换
-   时正常退出被监督器判为"异常退出"→ 8 条 `ThreadDied` + 1 条"已放弃重启"。**既有缺陷**
-   （非本轮引入），修它要动监督器语义（区分"预期退役"与"异常死亡"），风险与收益需另行评估。
-2. **字幕窗隐藏期间的失败被丢弃**（`feed_subtitle` 早退，沿用原版"仅可见时更新"语义）：
-   中途打开字幕窗看到的是开启前的旧句。
-3. **基准页不做阶梯**：强制思考模型（GLM-5.3 / kimi-k3）在基准页显示 FAILED，而生产里
-   阶梯能跑通——数据从"统一失败"变成"部分失真"。
-4. ⑬c 仍是节流实现（未引入快照格）；⑬a 请求体预览仍未做（同"有意未做"清单）。
+1. **字幕窗隐藏期间的失败被丢弃**（`feed_subtitle` 早退，沿用原版"仅可见时更新"语义）：
+   中途打开字幕窗看到的是开启前的旧句。改成"打开时补喂最新句"是产品语义决定。
+2. **⑬a 请求体预览的 UI 面**：契约与编排域通道（`Cmd::PreviewRequest` / `UiEvent::RequestPreview`）
+   未做；其**安全价值**已由 `preview_matches_actual_body` 守卫测试兑现（逐键一致），
+   剩下的是"给用户看的预览面板"这一 UI 功能。
+3. **⑬c** 仍是节流实现（未引入 ArcSwap 快照格）——队列压力已显著缓解，若仍见丢事件再升级。
+4. `Supervisor` 的 Arc 环（ASR factory 捕获 `Arc<Supervisor>`）：进程级一次性内存滞留，
+   非用户可感，登记待后续。
 
 **子代理核实为正确的部分（不再重复）**：锁纪律（无持锁跨 await / 无 if-let 同锁自死锁）、
 隔离器终止性可证、历史按序号取"更早句"且裁剪不会留下小 seq、`wire` 未漏生产依赖字段、

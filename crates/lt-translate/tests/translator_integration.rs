@@ -791,6 +791,77 @@ fn missing_usage_is_reported_as_unknown() {
 
 // ── bench 冒烟（mock 服务器） ──
 
+/// 方案 §2.5 规则 6（第三轮复核补齐）：**预览 == 实发**——预览体必须由与真实
+/// 请求同一个构造函数产出，逐键一致（含关闭思考参数、高级参数政策、流式选项）
+#[test]
+fn preview_matches_actual_body() {
+    let server = MockServer::start(Arc::new(|_| {
+        sse_response(&[chunk_delta("好"), chunk_usage(3, 1)])
+    }));
+    let t = Translator::new(TranslatorParams {
+        api_base: server.base_url.clone(),
+        model: "test-model".into(),
+        temperature: Some(0.7),
+        ..TranslatorParams::default()
+    })
+    .unwrap();
+    let mut it = t.translate_iter("hello", "en", "zh", 10, 1);
+    while it.next().is_some() {}
+
+    let actual = request_body(&server.requests()[0]);
+    // 预览：用实发请求里的 system prompt 回灌同一构造函数（键集与全部非消息字段
+    // 必须逐键一致——任何"只在一侧加参数"的漂移都会被这条挡下）
+    let sys = actual["messages"][0]["content"].as_str().unwrap().to_string();
+    let preview = t.build_request_body(&sys, "hello", true, true, 1);
+    assert_eq!(preview, actual, "预览体与实发体不一致");
+    // 顺带钉住参数面：关闭思考参数在、温度照发、无输出上限
+    assert_eq!(actual["reasoning_effort"], "none");
+    assert_eq!(actual["temperature"], 0.7);
+    assert!(actual.get("max_tokens").is_none());
+    assert_eq!(actual["stream_options"]["include_usage"], true);
+}
+
+/// 基准与生产同判据（第三轮复核）：强制思考模型（对关闭参数回 400）在基准页
+/// 不该显示 FAILED——按同一条阶梯退级后必须测出数据
+#[test]
+fn benchmark_degrades_like_production_on_param_rejection() {
+    let server = MockServer::start(Arc::new(|req| {
+        if req.contains("reasoning_effort") {
+            error_response(400, "Unknown field: reasoning_effort")
+        } else if req.contains("\"stream\":true") || req.contains("\"stream\": true") {
+            sse_response(&[chunk_delta("答"), chunk_delta("案"), chunk_usage(2, 2)])
+        } else {
+            non_streaming_response("200 OK", &completion_response("答案", 2, 2))
+        }
+    }));
+    let model = lt_translate::bench::BenchModel {
+        name: "forced-thinking".into(),
+        api_base: server.base_url.clone(),
+        api_key: "k".into(),
+        model: "test-model".into(),
+        proxy: "none".into(),
+        no_system_role: false,
+        disable_thinking: true,
+        thinking_style: None,
+    };
+    let results = lt_translate::bench::run_benchmark_blocking(&[model], "en", 5, "translate: {text}");
+    assert_eq!(results.len(), 1);
+    assert!(
+        results[0].error.is_none(),
+        "参数被拒时应退级重测而非直接 FAILED: {:?}",
+        results[0].error
+    );
+    assert_eq!(results[0].rounds.len(), 5);
+    // 退级后的请求不再带关闭参数（第二级形状）
+    let bodies: Vec<Value> = server
+        .requests()
+        .iter()
+        .map(|r| request_body(r))
+        .filter(|b| b.get("enable_thinking").is_some())
+        .collect();
+    assert!(!bodies.is_empty(), "应发出退级后的请求");
+}
+
 #[test]
 fn benchmark_blocking_against_mock() {
     let server = MockServer::start(Arc::new(|req| {

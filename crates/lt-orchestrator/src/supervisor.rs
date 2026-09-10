@@ -75,6 +75,9 @@ struct Entry {
     next_eligible: Option<Instant>,
     /// 最近一次出生时刻（健康窗判定基准）
     last_born: Instant,
+    /// "预期退役"信号位（`spawn_retirable` 专用）：置位后该线程的正常退出
+    /// 视为设计内收尾（静默收割，不报 ThreadDied、不重生）；panic 仍按策略处理
+    expected_exit: Option<Arc<AtomicBool>>,
 }
 
 /// 死亡上报出口（生产 = proxy 发 UiEvent::ThreadDied；测试 = 通道收集）
@@ -139,6 +142,46 @@ impl Supervisor {
             consecutive: 0,
             next_eligible: None,
             last_born: Instant::now(),
+            expected_exit: None,
+        });
+    }
+
+    /// 与 [`Supervisor::spawn`] 同义，但额外接受一个"**预期退役**"信号位：
+    /// 线程因自身生命周期结束（如翻译池被替换、池已置停止标志）而正常退出时，
+    /// 由该位显式声明"这是设计内收尾"——监督器据此静默收割（不报 ThreadDied、
+    /// 不重生），取代旧的"未停机即退出（异常）"判定。
+    ///
+    /// 背景（第三轮复核实证）：翻译池 8 个 worker 以 Backoff 策略出生，装置被
+    /// 替换时它们**正常退出**，却被判为异常 → 每次换模型/测试连接都刷 8 条
+    /// 假错误 + 8 条"已放弃重启"。panic（真实异常）仍照常上报与重生。
+    pub fn spawn_retirable(
+        &self,
+        role: ThreadRole,
+        name: impl Into<String>,
+        policy: Policy,
+        expected_exit: Arc<AtomicBool>,
+        factory: impl Fn() -> Box<dyn FnOnce() + Send + 'static> + Send + 'static,
+    ) {
+        if self.stopping.load(Ordering::SeqCst) {
+            tracing::error!("Supervisor::spawn_retirable 停机后被调用（{role:?}）——已拒绝（INV4）");
+            return;
+        }
+        let name = name.into();
+        let run = factory();
+        let handle = std::thread::Builder::new()
+            .name(name.clone())
+            .spawn(run)
+            .expect("被监督线程创建失败");
+        self.entries.lock().unwrap().push(Entry {
+            role,
+            name,
+            handle: Some(handle),
+            policy,
+            factory: Box::new(factory),
+            consecutive: 0,
+            next_eligible: None,
+            last_born: Instant::now(),
+            expected_exit: Some(expected_exit),
         });
     }
 
@@ -248,6 +291,17 @@ impl Supervisor {
                     } else {
                         tracing::debug!("{} 正常退出（Never 策略静默收割）", e.name);
                     }
+                    reap.push(i);
+                    continue;
+                }
+                // 预期退役（如翻译池被替换）：正常退出是设计内收尾——静默收割。
+                // 只有 panic 才算异常（仍上报并按策略重生）。
+                let expected_exit = e
+                    .expected_exit
+                    .as_ref()
+                    .is_some_and(|f| f.load(Ordering::Relaxed));
+                if expected_exit && !panicked {
+                    tracing::debug!("{} 正常退役（预期退出信号已置位，静默收割）", e.name);
                     reap.push(i);
                     continue;
                 }
@@ -570,6 +624,64 @@ mod tests {
             "重生间隔 {gap}ms 应 ≥ base 500ms（调度容差 50ms）"
         );
         stop.store(true, Ordering::SeqCst);
+        sup.join_all();
+    }
+
+    /// 第三轮复核回归：**预期退役**的正常退出必须静默（不报 ThreadDied、不重生）
+    /// ——旧实现把它判为"未停机即退出（异常）"，导致每次换模型/测试连接刷一屏
+    /// 假错误日志 + "已放弃重启"
+    #[test]
+    fn retirable_normal_exit_is_silent() {
+        let (sup, rx) = setup();
+        let exit_flag = Arc::new(AtomicBool::new(false));
+        let flag = exit_flag.clone();
+        sup.spawn_retirable(
+            ThreadRole::TlWorker,
+            "retirable-test",
+            Policy::backoff(),
+            exit_flag.clone(),
+            move || {
+                let flag = flag.clone();
+                Box::new(move || {
+                    // 模拟翻译池被替换：置"预期退役"后正常结束
+                    flag.store(true, Ordering::Relaxed);
+                })
+            },
+        );
+        // 让 monitor 观察到退出与重生窗口
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < deadline {
+            match rx.try_recv() {
+                Ok(d) => panic!("预期退役不得上报 ThreadDied: {d:?}"),
+                Err(_) => std::thread::sleep(Duration::from_millis(30)),
+            }
+            if sup.is_thread_finished("retirable-test") {
+                break;
+            }
+        }
+        assert!(sup.is_thread_finished("retirable-test"));
+        assert!(rx.try_recv().is_err(), "预期退役全过程不得有任何死亡事件");
+        sup.begin_shutdown();
+        sup.join_all();
+    }
+
+    /// panic 仍按策略处理（预期退役信号不得掩盖真实异常）
+    #[test]
+    fn retirable_panic_still_reported() {
+        let (sup, rx) = setup();
+        let exit_flag = Arc::new(AtomicBool::new(true)); // 即使信号已置位
+        sup.spawn_retirable(
+            ThreadRole::TlWorker,
+            "retirable-panic",
+            Policy::Never,
+            exit_flag,
+            || Box::new(|| panic!("boom")),
+        );
+        let d = rx
+            .recv_timeout(Duration::from_secs(3))
+            .expect("panic 必须上报");
+        assert!(d.detail.contains("panic"), "actual: {d:?}");
+        sup.begin_shutdown();
         sup.join_all();
     }
 
