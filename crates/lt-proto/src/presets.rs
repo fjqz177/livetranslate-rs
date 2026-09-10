@@ -77,9 +77,14 @@ pub const PROVIDER_PRESETS: &[ProviderPreset] = &[
         api_base: "https://api.openai.com/v1",
         model: "gpt-5.6-luna",
         // `reasoning_effort:"none"` 在 OpenAI 是 model-dependent（部分模型传了 400），
-        // 保守用 "off"（不发任何关闭参数）；用户可在「关闭方式」里显式选 openai
+        // 保守用 "off"（不发任何关闭参数）；用户可在「关闭方式」里显式选 openai。
+        //
+        // **`disable_thinking: false` 是 "off" 的规范编码**（2026-09-11 评审修复）：
+        // W1/§2.3 起 "off" 不是活值——[`crate::Settings::sanitize`] 一律把它归一化为
+        // 总开关 false（"不发"），对话框也只能表达这个形态。"true + off" 是旧词汇表
+        // 的残影，落盘即被 sanitize 改写，故预设直接给规范化后的组合。
         thinking_style: "off",
-        disable_thinking: true,
+        disable_thinking: false,
         currency: Some("usd"),
     },
     ProviderPreset {
@@ -146,6 +151,14 @@ pub fn preset_by_key(key: &str) -> Option<&'static ProviderPreset> {
     PROVIDER_PRESETS.iter().find(|p| p.key == key)
 }
 
+/// 按"地址 + 模型名"反查预设（编辑器打开既有配置时的选中态推断；
+/// `custom` 不参与——它不是一种可识别的厂商）
+pub fn preset_matching(api_base: &str, model: &str) -> Option<&'static ProviderPreset> {
+    PROVIDER_PRESETS
+        .iter()
+        .find(|p| !p.is_custom() && p.api_base == api_base && p.model == model)
+}
+
 /// 出厂默认模型配置（D-85 决策 K：由"本机 LM Studio"改为 DeepSeek）。
 ///
 /// 依据：默认那条对本机没装 LM Studio 的用户永远不通，且报错（连接被拒）不如
@@ -165,6 +178,8 @@ pub fn default_model_config() -> ModelConfig {
     }
 }
 
+#[cfg(test)]
+mod tests {
     // ── D-85/J：厂商预设 ──
 
     /// 预设表自洽：key 唯一、字段非空（custom 除外）、关闭姿态在值域内、
@@ -199,6 +214,15 @@ pub fn default_model_config() -> ModelConfig {
                     p.key
                 );
             }
+            // D-85 评审修复："off" 不是活值（sanitize 归一化为总开关 false）——
+            // 预设若写成 "off + true"，对话框无法表达、落盘即被改写
+            if p.thinking_style == "off" {
+                assert!(
+                    !p.disable_thinking,
+                    "{}：\"off\" 的规范编码是 disable_thinking=false（旧词汇表不允许回流）",
+                    p.key
+                );
+            }
         }
         // 官方形态核对（防手滑改错地址）
         assert_eq!(
@@ -230,3 +254,22 @@ pub fn default_model_config() -> ModelConfig {
         assert_eq!(blank.currency, None);
         assert_eq!(blank.api_base, "http://127.0.0.1:1234/v1");
     }
+
+    /// 预设反查（编辑器选中态推断）：命中官方地址+模型；custom 永不参与
+    #[test]
+    fn preset_matching_finds_official_rows_only() {
+        let p = crate::preset_matching("https://api.deepseek.com", "deepseek-flash")
+            .expect("官方 DeepSeek 行应命中");
+        assert_eq!(p.key, "deepseek");
+        // custom 行（空地址/空模型）不是可识别厂商
+        assert!(crate::preset_matching("http://127.0.0.1:9999/v1", "x").is_none());
+        assert!(crate::preset_matching("", "").is_none());
+        // 出厂默认那行应能反查出 DeepSeek（编辑器打开即显示正确预设名）
+        let d = crate::Settings::default();
+        let m = &d.models[0];
+        assert_eq!(
+            crate::preset_matching(&m.api_base, &m.model).map(|p| p.key),
+            Some("deepseek")
+        );
+    }
+}

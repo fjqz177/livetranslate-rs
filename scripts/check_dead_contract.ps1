@@ -40,6 +40,11 @@ $ReservedWhitelist = @(
 #     FailureKind::i18n_key()（定义同文件，被本守卫的"定义文件"规则排除），
 #     再由编排层（测试连接文案）与 lt-ui（failure_text）取用。属"单边引用"
 #     的合法形态：文案键的单一事实源刻意与枚举同处一文件。
+#   FailureKind.Cancelled —— 同型（failure_kind() 单点生产 + i18n_key）；
+#     连接探测的取消结论走 ProbeOutcome::Cancelled，不经该变体渲染
+#     （2026-09-11 评审登记）。注：本变体的裸名计数会被
+#     TranslateError::Cancelled 的大量出现刷过阈值，属守卫已知粗粒度，
+#     不影响其余变体判定的有效性。
 # 新增同类单边形态时在此登记，其余 WARN 仍需人工定性
 
 # 扫描面：lt-proto 契约枚举所在文件（events/layout/asr_result；settings.rs 的

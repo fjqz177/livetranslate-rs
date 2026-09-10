@@ -39,7 +39,9 @@ pub use events::{
     UiMsg,
 };
 pub use layout::Hub;
-pub use presets::{default_model_config, preset_by_key, ProviderPreset, PROVIDER_PRESETS};
+pub use presets::{
+    default_model_config, preset_by_key, preset_matching, ProviderPreset, PROVIDER_PRESETS,
+};
 pub use prompts::{DEFAULT_PROMPT, PROMPT_PRESETS};
 pub use settings::{
     effective_currency, normalize_language, ASR_ENGINES, Currency, DEFAULT_TEMPERATURE, EngineKey,

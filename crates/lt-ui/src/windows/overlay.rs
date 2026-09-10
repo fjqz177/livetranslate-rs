@@ -838,19 +838,32 @@ fn message_block(
                     );
                 }
                 TranslationView::Failed { kind, detail } => {
-                    // item 8/9：失败行 = ⚠ 标签 + 警示暖红（style::WARN_TEXT，
-                    // 与字幕窗同源）——渲染上与正常译文明显不同，且能看出是"报错"
-                    ui.label(
-                        RichText::new(format!(
-                            "> {} {}",
-                            lt_i18n::t("err_subtitle_label"),
-                            failure_text(*kind)
-                        ))
-                        .font(trans_font.clone())
-                        .italics()
-                        .color(o(style::WARN_TEXT)),
-                    )
-                    .on_hover_text(detail.clone());
+                    // D-85/F3（2026-09-11 评审修复）：换模型让位是"跳过"而非失败——
+                    // 与字幕窗同源的**中性弱色**（SKIP_TEXT）、无 ⚠ 失败标签；
+                    // 旧实现在这里仍按失败渲染，同一条让位句字幕窗中性、悬浮窗红色
+                    if *kind == lt_proto::FailureKind::Superseded {
+                        ui.label(
+                            RichText::new(format!("> {}", lt_i18n::t("err_superseded")))
+                                .font(trans_font.clone())
+                                .italics()
+                                .color(o(style::SKIP_TEXT)),
+                        )
+                        .on_hover_text(detail.clone());
+                    } else {
+                        // item 8/9：失败行 = ⚠ 标签 + 警示暖红（style::WARN_TEXT，
+                        // 与字幕窗同源）——渲染上与正常译文明显不同，且能看出是"报错"
+                        ui.label(
+                            RichText::new(format!(
+                                "> {} {}",
+                                lt_i18n::t("err_subtitle_label"),
+                                failure_text(*kind)
+                            ))
+                            .font(trans_font.clone())
+                            .italics()
+                            .color(o(style::WARN_TEXT)),
+                        )
+                        .on_hover_text(detail.clone());
+                    }
                 }
             })
         });
@@ -1135,6 +1148,56 @@ mod tests {
         });
         run(&mut st);
         assert!(st.overlay.stats.usage_known);
+    }
+
+    /// D-85/F3（2026-09-11 评审修复）：换模型让位在悬浮窗也是**中性跳过**，
+    /// 不得出现 ⚠ 失败标签（旧实现只改了字幕窗，同一条让位句悬浮窗仍是红色失败）
+    #[test]
+    fn superseded_overlay_line_is_neutral() {
+        let ctx = egui::Context::default();
+        let mut st = crate::state::AppUi::new(lt_proto::Settings::default());
+        let msg = |id: u64, kind: lt_proto::FailureKind| OverlayMessage {
+            id,
+            timestamp: "00:00:00".into(),
+            original: "hello".into(),
+            lang: "en".into(),
+            asr_ms: 1.0,
+            translation: TranslationView::Failed {
+                kind,
+                detail: "diag detail".into(),
+            },
+            tl_ms: 0.0,
+        };
+        st.overlay
+            .push_message(msg(1, lt_proto::FailureKind::Superseded));
+        let texts = render_overlay_stats(&ctx, &mut st);
+        let skipped: Vec<String> = ["zh", "en"]
+            .iter()
+            .map(|l| lt_i18n::t_for_lang(l, "err_superseded"))
+            .collect();
+        let label: Vec<String> = ["zh", "en"]
+            .iter()
+            .map(|l| lt_i18n::t_for_lang(l, "err_subtitle_label"))
+            .collect();
+        assert!(
+            texts
+                .iter()
+                .any(|t| skipped.iter().any(|s| t.contains(s))),
+            "让位句应显示中性文案，实际 {texts:?}"
+        );
+        assert!(
+            !texts.iter().any(|t| label.iter().any(|l| t.contains(l))),
+            "让位句不得出现 ⚠ 失败标签，实际 {texts:?}"
+        );
+        // 对照：真失败仍是失败标签（两类不得混为一谈）
+        st.overlay.messages.clear();
+        st.overlay
+            .push_message(msg(2, lt_proto::FailureKind::Timeout));
+        let texts = render_overlay_stats(&ctx, &mut st);
+        assert!(
+            texts.iter().any(|t| label.iter().any(|l| t.contains(l))),
+            "真失败行仍应显示失败标签，实际 {texts:?}"
+        );
     }
 
     /// D-85/H/I：费用段按**配置币种**显示（符号不随界面语言）、两账本并列；

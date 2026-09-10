@@ -164,8 +164,12 @@ pub(crate) fn run_probe_with_budget(
     //    不该被算成"未定论"）
     let text = out.attempt.text.clone().unwrap_or_default();
     if out.attempt.succeeded() && !text.trim().is_empty() {
+        // 空白归一（换行/CRLF → 单空格、去首尾）后按**字符**截断：
+        // 旧实现把 \n 与 \r 各自替换成空格，CRLF 会产出双空格
         let preview: String = text
-            .replace(['\n', '\r'], " ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
             .chars()
             .take(PROBE_PREVIEW_MAX_CHARS)
             .collect();
@@ -314,6 +318,20 @@ Content-Length: {}
 Connection: close
 
 {body}",
+            body.len()
+        )
+        .into_bytes()
+    }
+
+    /// 空正文 + finish_reason=length（体检 EmptyTruncated：触发"补发上限重试"）
+    fn sse_empty_truncated() -> Vec<u8> {
+        let chunk = serde_json::json!({
+            "id":"c","object":"chat.completion.chunk","created":1,"model":"m",
+            "choices":[{"index":0,"delta":{},"finish_reason":"length"}]
+        });
+        let body = format!("data: {chunk}\n\ndata: [DONE]\n\n");
+        format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
         )
         .into_bytes()
@@ -529,6 +547,72 @@ Connection: close
             "取消应立即收口，实际 {:?}",
             t0.elapsed()
         );
+    }
+
+    /// D-85 评审修复：截断补发（同轮内的第二次尝试）**吃剩余预算**，不是裸单步超时。
+    /// 服务端首个请求返回"空+截断"、第二个请求永不回包：探测必须在 ~1 秒预算内
+    /// 收口为 Inconclusive，且 attempted = 2（补发那次也计数）。
+    /// 旧实现在此会以裸 timeout（5s）跑第二次请求 → 探测突破 10 秒封顶、
+    /// attempted 少报 1。
+    #[test]
+    fn probe_truncation_retry_respects_remaining_budget() {
+        use std::sync::atomic::AtomicU64;
+        let hits = Arc::new(AtomicU64::new(0));
+        let h = hits.clone();
+        let base = start_server(Arc::new(move |_| {
+            if h.fetch_add(1, Ordering::SeqCst) == 0 {
+                sse_empty_truncated()
+            } else {
+                // 补发请求永不回包：只有"按剩余预算钳制"才能在预算内收口
+                std::thread::sleep(Duration::from_secs(30));
+                sse_empty_truncated()
+            }
+        }));
+        let t0 = Instant::now();
+        let ev = run_with_budget(
+            &test_config(&base),
+            Arc::new(AtomicBool::new(false)),
+            Duration::from_secs(1),
+        );
+        assert_eq!(hits.load(Ordering::SeqCst), 2, "截断补发应真的发起一次");
+        match outcome_of(&ev).0.clone() {
+            ProbeOutcome::Inconclusive { attempted } => {
+                assert_eq!(attempted, 2, "补发那次也要计入 attempted（方案 §4.4 计数口径）");
+            }
+            other => panic!("期望 Inconclusive，实际 {other:?}"),
+        }
+        assert!(
+            t0.elapsed() < Duration::from_secs(3),
+            "补发必须吃剩余预算（≤~1s），不得用满单步超时，实际 {:?}",
+            t0.elapsed()
+        );
+    }
+
+    /// 回归：预算充足时截断补发仍然照常工作（修 halt 检查不得把补发功能关掉）
+    #[test]
+    fn probe_truncation_retry_still_succeeds_within_budget() {
+        use std::sync::atomic::AtomicU64;
+        let hits = Arc::new(AtomicU64::new(0));
+        let h = hits.clone();
+        let base = start_server(Arc::new(move |_| {
+            if h.fetch_add(1, Ordering::SeqCst) == 0 {
+                sse_empty_truncated()
+            } else {
+                sse_ok("补发成功")
+            }
+        }));
+        let ev = run(&test_config(&base), Arc::new(AtomicBool::new(false)));
+        match outcome_of(&ev).0 {
+            ProbeOutcome::Ok => {}
+            other => panic!("期望 Ok，实际 {other:?}"),
+        }
+        assert_eq!(hits.load(Ordering::SeqCst), 2, "补发应发生且成功");
+        match &ev {
+            UiEvent::TestTranslatorResult { preview, .. } => {
+                assert_eq!(preview.as_deref(), Some("补发成功"));
+            }
+            _ => unreachable!(),
+        }
     }
 
     /// 探测只读（不接收 learned/degraded/transcript——签名即保证）：

@@ -1171,22 +1171,11 @@ impl MultiWindowApp {
                     step_note,
                     preview,
                 } => {
-                    let running_id = self
-                        .app_state
-                        .panel
-                        .probe
-                        .running
-                        .as_ref()
-                        .map(|r| r.id);
-                    if running_id == Some(probe_id) {
-                        self.app_state
-                            .panel
-                            .probe
-                            .settle(name, outcome, ms, step_note, preview);
-                    } else {
-                        tracing::debug!(
-                            "丢弃过期连接测试回执 #{probe_id}（在途 {running_id:?}）"
-                        );
+                    let adopted = self.app_state.panel.probe.settle_from_receipt(
+                        probe_id, name, outcome, ms, step_note, preview,
+                    );
+                    if !adopted {
+                        tracing::debug!("丢弃过期连接测试回执 #{probe_id}");
                     }
                     self.redraw(WinId::Panel);
                 }

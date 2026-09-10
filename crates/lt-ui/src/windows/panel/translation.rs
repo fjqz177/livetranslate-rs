@@ -14,10 +14,15 @@
 //!   （原版仅做越界钳制，行前移会错位指向别的模型——有意修正）。
 
 use super::{group_card, hint_line, mark_settings_dirty, Palette, schedule_prompt_apply};
-use crate::state::{ModalUi, ModelEditState, PanelUi, SessionView, Settings};
+use crate::state::{
+    ModalUi, ModelEditState, PanelUi, SessionView, Settings, TickKind, WinId,
+};
 use egui::{RichText, Ui};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use lt_proto::ModelConfig;
+
+/// 连接测试走秒/看门狗节拍间隔（D-85 §4.8：宿主节拍驱动，非 egui 自动重绘）
+const PROBE_TICK_MS: u64 = 100;
 
 /// prompt 预设下拉 i18n 键（daily/esports/anime/webid/custom；顺序同
 /// lt_proto::PROMPT_PRESETS，末位 custom）
@@ -209,20 +214,36 @@ pub(crate) fn restore_translation_page(
 /// - **绝不触碰**：`api_key` / 代理 / 温度 / 覆写 / 额外参数 / 价格 / 上下文数 / 传输开关
 /// - `custom` 项：一个字段都不填
 fn apply_preset(ed: &mut ModelEditState, p: &lt_proto::ProviderPreset) {
+    ed.preset_key = Some(p.key);
     if p.is_custom() {
         return;
     }
     ed.api_base = p.api_base.to_string();
     ed.model = p.model.to_string();
     ed.disable_thinking = p.disable_thinking;
-    // 关闭姿态：`THINKING_STYLES` 里的下标（认不出的值回落 auto=0，不 panic）
-    ed.thinking_index = lt_proto::THINKING_STYLES
+    // 关闭姿态：**对话框可选值域**（`thinking_methods()`，5 项）里取下标——
+    // 2026-09-11 评审修复：旧实现按完整 `THINKING_STYLES`（6 项）取下标，
+    // `"off"` 得到 5，保存时被钳到 4（= "openai"，会发 `reasoning_effort:"none"`）。
+    // "off" 的语义是"不发送"（= 总开关 false，见 presets.rs 注），不在可选值域内
+    // 时回落 auto=0；对 OpenAI 端点 auto 路由同样是"不发"。
+    ed.thinking_index = crate::state::thinking_methods()
         .iter()
         .position(|s| *s == p.thinking_style)
         .unwrap_or(0);
     ed.currency = p.currency.map(str::to_string);
     if let Some(name) = p.name_for(&ed.name) {
         ed.name = name.to_string();
+    }
+}
+
+/// 「厂商预设」下拉的显示标签（D-85 评审修复：custom 项与样式页 `preset_custom`
+/// 撞键——同名键在 yaml 里重复定义、后写覆盖，样式页标签会被污染成"（不填充）"；
+/// 此处改用专属键 `preset_provider_custom`）
+fn preset_label(p: &lt_proto::ProviderPreset) -> String {
+    if p.is_custom() {
+        lt_i18n::t("preset_provider_custom")
+    } else {
+        lt_i18n::t(&format!("preset_{}", p.key))
     }
 }
 
@@ -363,6 +384,8 @@ pub fn page(ui: &mut Ui, panel: &mut PanelUi, session: &mut SessionView, setting
         let mut probe_click: Option<usize> = None;
         let mut cancel_click = false;
         let now = Instant::now();
+        // 在途目标行是否仍可寻址（行号 + 配置身份双校验命中过至少一行）
+        let mut my_row_rendered = false;
         for i in 0..count {
             let text = model_row_text(i, active, &settings.models[i]);
             let mut rich = RichText::new(&text).monospace().size(12.0);
@@ -392,11 +415,19 @@ pub fn page(ui: &mut Ui, panel: &mut PanelUi, session: &mut SessionView, setting
                 if resp.clicked() {
                     select = Some(i);
                 }
-                // 双击行 = 编辑（原版 itemDoubleClicked → _on_model_double_clicked）
+                // 双击行 = 直接进入编辑（原版 itemDoubleClicked →
+                // _on_model_double_clicked 打开对话框）。2026-09-11 评审修复：
+                // 旧实现只记 `edit_row`（"武装"底部编辑按钮），双击本身不开
+                // 对话框——与注释/原版语义不符
                 if resp.double_clicked() {
                     edit_row = Some(i);
+                    if i < settings.models.len() {
+                        let cfg = settings.models[i].clone();
+                        panel.state.model_editor = Some(ModelEditState::new_edit(i, &cfg));
+                    }
                 }
                 if is_my_row {
+                    my_row_rendered = true;
                     if ui
                         .add(
                             egui::Button::new(
@@ -436,17 +467,48 @@ pub fn page(ui: &mut Ui, panel: &mut PanelUi, session: &mut SessionView, setting
             }
         }
 
+        // 在途目标行被删除/编辑（双校验全行失配）时，「中断」入口不能消失——
+        // 给一个与行解耦的兜底按钮；否则所有行按钮因"有在途"禁用、又无中断可点，
+        // 用户只能干等到回执（2026-09-11 评审修复）
+        if panel.probe.running.is_some() && !my_row_rendered {
+            if let Some(run) = &panel.probe.running {
+                let secs = now.saturating_duration_since(run.started).as_secs_f32();
+                ui.label(
+                    RichText::new(format!("{} {secs:.1}s", lt_i18n::t("probe_running")))
+                        .size(11.0)
+                        .color(pal.weak),
+                );
+            }
+            if ui
+                .add(
+                    egui::Button::new(RichText::new(lt_i18n::t("probe_cancel")).size(12.0))
+                        .corner_radius(6.0),
+                )
+                .clicked()
+            {
+                cancel_click = true;
+            }
+        }
+
         // 行选中只改"选中"（D-85 裁决 E：设置页只管配置，不切换运行中的模型）
         if let Some(i) = select {
             panel.state.model_selected = Some(i);
         }
 
-        // 「测试」：发号 + 置在途 + 发命令（目标就是这一行，无静默回落）
+        // 「测试」：发号 + 置在途 + 排节拍 + 发命令（目标就是这一行，无静默回落）
         if let Some(i) = probe_click {
             if let Some(cfg) = settings.models.get(i).cloned() {
                 let id = panel
                     .probe
                     .begin(i, crate::state::cfg_key(&cfg), now);
+                // D-85 评审修复：走秒与看门狗都挂在 `TickKind::ProbeTick` 上，
+                // 而该节拍**只有自续拍**——首次排班必须由这里发出，否则
+                // on_probe_tick 永不被调用（走秒冻结、看门狗永不触发）
+                session.schedule_tick(
+                    WinId::Panel,
+                    TickKind::ProbeTick,
+                    now + Duration::from_millis(PROBE_TICK_MS),
+                );
                 session.send_cmd(lt_proto::Cmd::TestTranslator {
                     config: Box::new(cfg),
                     probe_id: id,
@@ -740,13 +802,19 @@ fn editor_fields(ui: &mut Ui, ed: &mut ModelEditState, pal: &Palette) {
     ui.horizontal(|ui| {
         ui.label(RichText::new(lt_i18n::t("preset_label")).color(pal.text));
         let mut picked: Option<&'static lt_proto::ProviderPreset> = None;
+        // 选中态反映"最近一次选择/反查命中"的预设（未命中 → 自定义项）
+        let selected = ed
+            .preset_key
+            .and_then(lt_proto::preset_by_key)
+            .map(preset_label)
+            .unwrap_or_else(|| lt_i18n::t("preset_provider_custom"));
         egui::ComboBox::from_id_salt("model_edit_preset")
-            .selected_text(lt_i18n::t("preset_custom"))
+            .selected_text(selected)
             .width(220.0)
             .show_ui(ui, |ui| {
                 for p in lt_proto::PROVIDER_PRESETS.iter() {
                     if ui
-                        .selectable_label(false, lt_i18n::t(&format!("preset_{}", p.key)))
+                        .selectable_label(ed.preset_key == Some(p.key), preset_label(p))
                         .clicked()
                     {
                         picked = Some(p);
@@ -850,6 +918,7 @@ fn editor_fields(ui: &mut Ui, ed: &mut ModelEditState, pal: &Palette) {
             ui.horizontal(|ui| {
                 // D-85：币种下拉（跟随界面语言 / 人民币 / 美元）——价格单位与
                 // 费用显示符号都取它；旧实现没有单位说明、符号还按界面语言切
+                ui.label(lt_i18n::t("currency_label"));
                 let cur = lt_proto::effective_currency(
                     ed.currency.as_deref(),
                     &lt_i18n::get_lang(),
@@ -1662,14 +1731,35 @@ mod tests {
 
         let run = st.panel.probe.running.as_ref().expect("应进入在途态");
         assert_eq!(run.row, 0, "默认单行配置 → 第 0 行");
-        assert_eq!(run.id, 0, "首个探测号应为 0");
+        assert_eq!(run.id, 1, "首个探测号应为 1（0 是 shell 侧无在途哨兵）");
         match rx.try_recv() {
             Ok(lt_proto::Cmd::TestTranslator { config, probe_id }) => {
-                assert_eq!(probe_id, 0);
+                assert_eq!(probe_id, 1);
                 assert_eq!(config.model, st.settings.models[0].model);
             }
             other => panic!("期望 TestTranslator，实际 {other:?}"),
         }
+        // D-85 评审修复：点击必须**首次排班**走秒/看门狗节拍——ProbeTick 只有
+        // 自续拍，缺首排则 on_probe_tick 永不被调用（走秒冻结、看门狗死）
+        assert!(
+            st.session
+                .ticks
+                .iter()
+                .any(|t| t.kind == TickKind::ProbeTick),
+            "点击「测试」应排入 ProbeTick 节拍"
+        );
+    }
+
+    /// 号源回归：前两个探测号是 1、2（永不发 0），旧结果 `id` 随之
+    #[test]
+    fn probe_ids_start_at_one() {
+        let mut st = crate::state::ProbeUiState::default();
+        let t0 = Instant::now();
+        let key = ("a".to_string(), "b".to_string(), "c".to_string(), "d".to_string());
+        let first = st.begin(0, key.clone(), t0);
+        st.running = None;
+        let second = st.begin(0, key, t0);
+        assert_eq!((first, second), (1, 2), "号源从 1 起且单调递增");
     }
 
     /// 在途时该行按钮变「中断」、其他行按钮禁用；点中断 → 发取消命令 + 本地立即落"已中断"
@@ -1685,7 +1775,8 @@ mod tests {
         st.session.cmd_tx = Some(tx);
         st.panel.state.page = crate::state::PanelPage::Translation;
         // 直接置在途（等价于点过测试）
-        st.panel
+        let running_id = st
+            .panel
             .probe
             .begin(0, crate::state::cfg_key(&st.settings.models[0]), Instant::now());
 
@@ -1699,7 +1790,18 @@ mod tests {
             texts.iter().any(|(_, t)| t.starts_with(&lt_i18n::t_for_lang("zh", "probe_running"))),
             "在途行下应有「测试中… N.Ns」"
         );
-        // 第 1 行的「测试」按钮仍在（其他行禁用靠 add_enabled，不做像素断言）
+        // 其他行的「测试」按钮虽渲染但在**行为上禁用**：点它不得发出新探测
+        // （2026-09-11 评审补齐 §6.1 other_rows_disabled_while_running——
+        // 像素断言不可行，改以"点击无效"的行为断言）
+        let other_btn = click_at(&texts, "probe_btn", "");
+        render_translation_page(&mut st, &ctx, vec![click_events(other_btn), vec![]]);
+        assert_eq!(
+            st.panel.probe.running.as_ref().map(|r| r.id),
+            Some(running_id),
+            "在途期间点其他行的「测试」不得启动新探测"
+        );
+        // 该行按钮此时变「中断」——点中断：发取消命令 + 本地立即落"已中断"
+        let texts = render_translation_page(&mut st, &ctx, vec![vec![], vec![]]);
         let cancel = click_at(&texts, "probe_cancel", "");
         render_translation_page(&mut st, &ctx, vec![click_events(cancel), vec![]]);
 
@@ -1714,8 +1816,148 @@ mod tests {
         }
         assert!(
             cmds.iter()
-                .any(|c| matches!(c, lt_proto::Cmd::CancelTranslatorTest { probe_id: 0 })),
-            "应发出取消命令，实际: {cmds:?}"
+                .any(|c| matches!(c, lt_proto::Cmd::CancelTranslatorTest { probe_id } if *probe_id == running_id)),
+            "应携带在途号发出取消命令（在途 #{running_id}），实际: {cmds:?}"
+        );
+        assert!(
+            !cmds
+                .iter()
+                .any(|c| matches!(c, lt_proto::Cmd::TestTranslator { .. })),
+            "被禁用的「测试」不得发出 TestTranslator，实际: {cmds:?}"
+        );
+    }
+
+    /// 2026-09-11 评审补齐 §6.1：双击行仍进编辑、四按钮目标 = 选中行（回归）。
+    /// 双击 = 相邻两帧各一次点击（egui 无显式时钟时按 ~1/60s 递推，
+    /// 必落在双击间隔内）。
+    #[test]
+    fn row_double_click_opens_editor_and_buttons_target_selection() {
+        let ctx = egui::Context::default();
+        let mut settings = Settings::default();
+        let mut second = settings.models[0].clone();
+        second.name = "second".into();
+        settings.models.push(second);
+        let mut st = crate::state::AppUi::new(settings);
+        st.panel.state.page = crate::state::PanelPage::Translation;
+        let texts = render_translation_page(&mut st, &ctx, vec![vec![], vec![]]);
+        let row = texts
+            .iter()
+            .find(|(_, t)| t.contains("second"))
+            .map(|(r, _)| r.center())
+            .expect("第二行应可见");
+
+        // 双击 → 编辑该行（is_new=false，index=1）
+        render_translation_page(&mut st, &ctx, vec![click_events(row), click_events(row)]);
+        let ed = st
+            .panel
+            .state
+            .model_editor
+            .as_ref()
+            .expect("双击行应打开编辑对话框");
+        assert!(!ed.is_new, "双击既有行应进编辑而非新建");
+        assert_eq!(ed.index, 1, "应编辑被双击的那一行");
+
+        // 关掉对话框，选中第 1 行后点「复制」→ 复制的是选中行
+        st.panel.state.model_editor = None;
+        st.panel.state.model_selected = Some(1);
+        let texts = render_translation_page(&mut st, &ctx, vec![vec![], vec![]]);
+        let dup = click_at(&texts, "btn_duplicate", "");
+        render_translation_page(&mut st, &ctx, vec![click_events(dup)]);
+        assert_eq!(st.settings.models.len(), 3, "复制应作用于选中行");
+        assert_eq!(
+            st.settings.models[2].name, "second (copy)",
+            "复制行 = 选中行 + \" (copy)\" 后缀（原版 _dup_model）"
+        );
+    }
+
+    /// 2026-09-11 评审补齐 §6.1：删除**正在使用**的行仍须内部切换翻译器
+    /// （与裁决 E 不冲突：正确性保留，见方案 §4.8 表格）
+    #[test]
+    fn delete_active_row_still_switches_internally() {
+        let ctx = egui::Context::default();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut settings = Settings::default();
+        let mut second = settings.models[0].clone();
+        second.name = "second".into();
+        settings.models.push(second);
+        settings.active_model = 0;
+        let mut st = crate::state::AppUi::new(settings);
+        st.session.cmd_tx = Some(tx);
+        st.panel.state.page = crate::state::PanelPage::Translation;
+        st.panel.state.model_selected = Some(0);
+
+        let texts = render_translation_page(&mut st, &ctx, vec![vec![], vec![]]);
+        let del = click_at(&texts, "btn_remove", "");
+        render_translation_page(&mut st, &ctx, vec![click_events(del), vec![]]);
+
+        assert_eq!(st.settings.models.len(), 1, "删除后应只剩一行");
+        assert_eq!(st.settings.models[0].name, "second");
+        assert_eq!(st.settings.active_model, 0, "活动模型钳制到存活行");
+        let mut cmds = Vec::new();
+        while let Ok(c) = rx.try_recv() {
+            cmds.push(c);
+        }
+        assert!(
+            cmds.iter()
+                .any(|c| matches!(c, lt_proto::Cmd::SwitchTranslator(_))),
+            "删掉活动行后必须按钳制结果重建翻译器，实际: {cmds:?}"
+        );
+    }
+
+    /// 2026-09-11 评审补齐 §6.1：价格行单位随**生效币种**（D-85/I），
+    /// 指定币种即按指定显示（不随界面语言）
+    #[test]
+    fn price_unit_label_follows_currency() {
+        for (cur, key) in [
+            (Some("cny"), "price_unit_cny"),
+            (Some("usd"), "price_unit_usd"),
+        ] {
+            let ctx = egui::Context::default();
+            let mut st = crate::state::AppUi::new(Settings::default());
+            st.panel.state.page = crate::state::PanelPage::Translation;
+            let mut cfg = st.settings.models[0].clone();
+            cfg.currency = cur.map(str::to_string);
+            let mut ed = ModelEditState::new_edit(0, &cfg);
+            ed.currency = cur.map(str::to_string);
+            st.panel.state.model_editor = Some(ed);
+            let texts = render_translation_page(&mut st, &ctx, vec![vec![], vec![]]);
+            let variants = text_variants(key, "");
+            assert!(
+                texts
+                    .iter()
+                    .any(|(_, t)| variants.iter().any(|v| t == v)),
+                "币种 {cur:?} 的价格单位应为 {key}，实际 {texts:?}"
+            );
+        }
+    }
+
+    /// 目标行被删/改后双校验全行失配：仍须有可点的「中断」（兜底入口不与行绑定）
+    #[test]
+    fn probe_target_row_lost_keeps_cancel_affordance() {
+        let ctx = egui::Context::default();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut st = crate::state::AppUi::new(Settings::default());
+        st.session.cmd_tx = Some(tx);
+        st.panel.state.page = crate::state::PanelPage::Translation;
+        // 在途目标行号越界（模拟：探测期间目标行被删除）
+        let id = st.panel.probe.begin(
+            9,
+            ("x".into(), "y".into(), "z".into(), "w".into()),
+            Instant::now(),
+        );
+        let texts = render_translation_page(&mut st, &ctx, vec![vec![], vec![]]);
+        let cancel = click_at(&texts, "probe_cancel", "");
+        render_translation_page(&mut st, &ctx, vec![click_events(cancel), vec![]]);
+
+        assert!(st.panel.probe.running.is_none(), "兜底中断后应退出在途态");
+        let mut cmds = Vec::new();
+        while let Ok(c) = rx.try_recv() {
+            cmds.push(c);
+        }
+        assert!(
+            cmds.iter()
+                .any(|c| matches!(c, lt_proto::Cmd::CancelTranslatorTest { probe_id } if *probe_id == id)),
+            "兜底中断应发出携带在途号的取消命令，实际: {cmds:?}"
         );
     }
 
@@ -1789,21 +2031,80 @@ mod tests {
 
     // ── D-85/J：预设填充语义 ──
 
-    /// 选预设 → 覆盖地址/模型/关闭姿态/币种；显示名仅在为空时填
+    /// 选预设 → 覆盖地址/模型/关闭姿态/币种；显示名仅在为空时填。
+    /// **断言走 `build()`（真实保存路径）**——2026-09-11 评审修复：旧测试直接
+    /// `THINKING_STYLES[索引]` 读回，恰好绕开"对话框值域 5 项"的钳制行为
     #[test]
     fn preset_fills_all_fields() {
         let mut ed = ModelEditState::new_add();
         assert!(ed.name.is_empty(), "新增时显示名为空");
         apply_preset(&mut ed, lt_proto::preset_by_key("deepseek").unwrap());
         let p = lt_proto::preset_by_key("deepseek").unwrap();
-        assert_eq!(ed.api_base, p.api_base);
-        assert_eq!(ed.model, p.model);
-        assert_eq!(ed.currency.as_deref(), p.currency);
-        assert_eq!(
-            lt_proto::THINKING_STYLES[ed.thinking_index],
-            p.thinking_style
-        );
+        let saved = ed.build().expect("默认草稿应可保存");
+        assert_eq!(saved.api_base, p.api_base);
+        assert_eq!(saved.model, p.model);
+        assert_eq!(saved.currency.as_deref(), p.currency);
+        assert_eq!(saved.thinking_style.as_deref(), Some(p.thinking_style));
+        assert_eq!(saved.disable_thinking, p.disable_thinking);
         assert_eq!(ed.name, "DeepSeek", "空名应被填上");
+        assert_eq!(ed.preset_key, Some("deepseek"), "下拉选中态应跟随");
+    }
+
+    /// 每个预设经保存路径落出的关闭姿态 = 预设意图（2026-09-11 评审修复：
+    /// OpenAI 的 `"off"` 曾被值域钳成 `"openai"` → 保存后实际发送
+    /// `reasoning_effort:"none"`，正是方案 §十 明令避免的形态）
+    #[test]
+    fn preset_saved_config_matches_intended_posture() {
+        for p in lt_proto::PROVIDER_PRESETS.iter().filter(|p| !p.is_custom()) {
+            let mut ed = ModelEditState::new_add();
+            apply_preset(&mut ed, p);
+            let saved = ed.build().expect("预设草稿应可保存");
+            if p.thinking_style == "off" {
+                // "off" 的规范编码：总开关 false（= 不发送任何关闭参数，见 presets.rs 注）
+                assert!(
+                    !saved.disable_thinking,
+                    "{} 预设不得尝试发送关闭参数",
+                    p.key
+                );
+                assert_eq!(
+                    saved.thinking_style, None,
+                    "{}：\"off\" 不落盘（sanitize 归一语义）",
+                    p.key
+                );
+            } else {
+                assert_eq!(
+                    saved.thinking_style.as_deref(),
+                    Some(p.thinking_style),
+                    "{} 的关闭姿态应原样落盘",
+                    p.key
+                );
+                assert!(saved.disable_thinking, "{} 应勾选关闭思考", p.key);
+            }
+            assert_eq!(
+                ed.preset_key,
+                Some(p.key),
+                "{} 下拉选中态应跟随最近选择",
+                p.key
+            );
+        }
+    }
+
+    /// 关闭方式下拉索引永远落在对话框值域内（5 项）——越界会被 `build()` 钳到
+    /// 邻居项（旧 bug 的机制）；此处对全部预设逐一钉住
+    #[test]
+    fn preset_thinking_index_stays_within_dialog_domain() {
+        let n = crate::state::thinking_methods().len();
+        for p in lt_proto::PROVIDER_PRESETS.iter().filter(|p| !p.is_custom()) {
+            let mut ed = ModelEditState::new_add();
+            apply_preset(&mut ed, p);
+            assert!(
+                ed.thinking_index < n,
+                "{} 的关闭方式索引 {} 越出对话框值域 {}",
+                p.key,
+                ed.thinking_index,
+                n
+            );
+        }
     }
 
     /// 用户已填的内容一律不覆盖（密钥/代理/温度/覆写/价格/上下文数），
@@ -1860,6 +2161,18 @@ mod tests {
         assert_eq!(ed.model, "m");
         assert!(ed.name.is_empty());
         assert_eq!(ed.currency, None);
+        assert_eq!(ed.preset_key, Some("custom"), "选中态应落在 custom 项");
+        // 专属键不得与样式页 `preset_custom` 撞名（yaml 重复键曾静默覆盖）
+        assert_ne!(
+            lt_i18n::t_for_lang("zh", "preset_provider_custom"),
+            "preset_provider_custom",
+            "厂商预设 custom 标签键缺失"
+        );
+        assert_eq!(
+            lt_i18n::t_for_lang("zh", "preset_custom"),
+            "自定义",
+            "样式页既有标签不得被厂商预设键污染"
+        );
     }
 
     /// 官方形态地址豁免"缺 /v1"软提示；自建地址仍提示（回归）

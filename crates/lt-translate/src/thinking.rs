@@ -519,4 +519,34 @@ mod tests {
             json!({"reasoning_effort": "none"})
         );
     }
+
+    /// D-85/J 预设姿态 → 请求层实际形态（2026-09-11 评审修复补强）：预设表声明
+    /// 的"官方能接受且我们已支持"的姿态必须落到预期 plan。OpenAI 行是 `"off"`
+    /// 的规范编码（总开关 false = 不发任何关闭参数）——**不是** `reasoning_effort:"none"`。
+    #[test]
+    fn provider_presets_resolve_to_intended_plans() {
+        for p in lt_proto::PROVIDER_PRESETS.iter().filter(|p| !p.is_custom()) {
+            let plan = resolve_thinking_plan(
+                p.disable_thinking,
+                false,
+                Some(p.thinking_style),
+                p.api_base,
+                p.model,
+            );
+            let want = match p.key {
+                "deepseek" | "zhipu" | "moonshot" | "ark" => ThinkingPlan::NestedDisabled,
+                "qwen" => ThinkingPlan::EnableThinkingFalse,
+                "lmstudio" | "ollama" => ThinkingPlan::ReasoningEffortNone,
+                "openai" => ThinkingPlan::None,
+                other => panic!("未登记的新预设 {other}：请在此补预期形态"),
+            };
+            assert_eq!(plan, want, "{} 预设的实际关闭形态不符", p.key);
+        }
+        // 对话框落盘形态（disable=false）在 OpenAI 端点同样是"不发"
+        assert_eq!(
+            resolve_thinking_plan(false, false, None, "https://api.openai.com/v1", "gpt-x"),
+            ThinkingPlan::None,
+            "OpenAI 端点：不勾选关闭 = 不发送任何参数"
+        );
+    }
 }

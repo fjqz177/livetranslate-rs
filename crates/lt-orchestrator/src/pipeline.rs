@@ -71,6 +71,10 @@ const TL_QUEUE_CAP: usize = 64;
 struct TlJob {
     id: u64,
     sink: EventSink,
+    /// 转录句柄（2026-09-11 评审修复）：任务从未执行就被丢弃时，`write_original`
+    /// 已把原文放进 `pending`，但无人 finalize → 该段原文在 all 转录文件里永久
+    /// 消失。丢弃回执与收尾共用同一条件（非停机），保证"有回执就有落盘"。
+    transcript: Arc<lt_audio::transcript::TranscriptWriter>,
     /// 停机中丢队的任务不再回执（事件无处可去，且不是"积压丢弃"语义）
     stopped: Arc<AtomicBool>,
     /// 装置被替换（D-85/F3）：被替换时出队的在队任务按"换模型让位"回执，
@@ -90,6 +94,8 @@ impl TlJob {
 impl Drop for TlJob {
     fn drop(&mut self) {
         if self.run.is_some() && !self.stopped.load(Ordering::Relaxed) {
+            // 段从未翻译：转录 all 文件补一个"无译文"块（原文不丢；与回执同条件）
+            self.transcript.finalize_no_translation(self.id);
             let superseded = self.superseded.load(Ordering::Relaxed);
             self.sink.push(UiEvent::TranslationFailed {
                 id: self.id,
@@ -112,6 +118,8 @@ impl Drop for TlJob {
 struct JobPool {
     queue: Arc<BoundedDropQueue<TlJob>>,
     stopped: Arc<AtomicBool>,
+    /// 转录句柄（随任务下发：丢弃路径补 finalize，见 [`TlJob`]）
+    transcript: Arc<lt_audio::transcript::TranscriptWriter>,
     /// 装置被替换标记（D-85/F3：retire 前置位 → 出队任务回执"已切换模型"而非
     /// "队列积压"）。队列溢出路径不受影响（那时本标记仍为 false）
     superseded: Arc<AtomicBool>,
@@ -125,7 +133,12 @@ struct JobPool {
 }
 
 impl JobPool {
-    fn new(workers: usize, sup: &Supervisor, sink: EventSink) -> Self {
+    fn new(
+        workers: usize,
+        sup: &Supervisor,
+        sink: EventSink,
+        transcript: Arc<lt_audio::transcript::TranscriptWriter>,
+    ) -> Self {
         let queue = Arc::new(BoundedDropQueue::<TlJob>::new(TL_QUEUE_CAP, "tl-job"));
         let stopped = Arc::new(AtomicBool::new(false));
         let superseded = Arc::new(AtomicBool::new(false));
@@ -164,6 +177,7 @@ impl JobPool {
         Self {
             queue,
             stopped,
+            transcript,
             superseded,
             alive_workers,
             sink,
@@ -180,6 +194,7 @@ impl JobPool {
         self.queue.push(TlJob {
             id,
             sink: self.sink.clone(),
+            transcript: self.transcript.clone(),
             stopped: self.stopped.clone(),
             superseded: self.superseded.clone(),
             run: Some(Box::new(job)),
@@ -587,7 +602,7 @@ pub(crate) fn run_ladder(
     let mut truncation_retried = false;
     let mut attempted: u8 = 0;
     loop {
-        // 提前中止检查（每次尝试之前；含补发重试那一轮）
+        // 提前中止检查（每次尝试之前；补发重试在同轮内另有一次检查，见下）
         if let Some(halt) = halt_reason(ctl) {
             return LadderOutcome {
                 attempt: Attempt::halted(halt),
@@ -629,6 +644,19 @@ pub(crate) fn run_ladder(
                 Some(lt_translate::ResponseVerdict::EmptyTruncated)
             )
         {
+            // 补发是"同轮内的第二次尝试"：与循环顶同款的提前中止检查必须在这里
+            // 再走一遍（2026-09-11 评审修复——旧实现漏掉此检查，取消置位后仍会
+            // 多放一次请求、探测总预算也可被超出一次单步超时，违反裁决 B 的
+            // 10 秒封顶；方案 §4.4 明令"两次尝试都要走同一套检查"）
+            if let Some(halt) = halt_reason(ctl) {
+                return LadderOutcome {
+                    attempt: Attempt::halted(halt),
+                    step,
+                    usage: total,
+                    halted: Some(halt),
+                    attempted,
+                };
+            }
             tracing::info!("体检：输出被截断，补发输出上限重试一次（{step:?}）");
             let retry = translator_for_step(base, step).with_max_tokens(4096);
             truncation_retried = true;
@@ -637,12 +665,15 @@ pub(crate) fn run_ladder(
                 text,
                 source_lang,
                 target,
-                timeout,
+                // 超时同样按剩余预算钳制（与循环顶 `attempt_timeout` 同源）
+                ctl.attempt_timeout(timeout),
                 sink,
                 id,
                 seq,
                 push_partials,
             );
+            // 计数口径与方案一致：每调用一次 run_attempt 就 +1（含补发）
+            attempted = attempted.saturating_add(1);
             total.0 += second.usage.0;
             total.1 += second.usage.1;
             if second.succeeded() {
@@ -926,7 +957,7 @@ impl TlRig {
             stats: session_stats.clone(),
             prices: (mc.input_price, mc.output_price),
             currency: lt_proto::effective_currency(mc.currency.as_deref(), ui_lang),
-            pool: JobPool::new(TL_POOL_WORKERS, sup, sink),
+            pool: JobPool::new(TL_POOL_WORKERS, sup, sink, transcript.clone()),
             transcript,
             bus: bus.clone(),
             learned,
@@ -1425,6 +1456,7 @@ impl Pipeline {
             let tl_switch_rx = tl_switch_rx.clone();
             let msg_asr = msg.clone();
             let transcript_asr = transcript.clone();
+            let session_stats_asr = session_stats.clone();
             // INV3：经监督器出生；panic 重生 = 待命/装配路径干净重启（INV5）
             sup.spawn(ThreadRole::AsrMain, "lt-asr-main", Policy::backoff(), move || {
                 let stop = stop.clone();
@@ -1441,6 +1473,7 @@ impl Pipeline {
                 let transcript = transcript_asr.clone();
                 let learned = learned.clone();
                 let degraded_notified = degraded_notified.clone();
+                let session_stats = session_stats_asr.clone();
                 Box::new(move || {
                     run_asr_thread(
                         &settings,
@@ -1457,6 +1490,7 @@ impl Pipeline {
                             msg,
                             learned,
                             degraded_notified,
+                            session_stats,
                         },
                         tl,
                     );
@@ -1922,6 +1956,9 @@ struct AsrThreadCtx {
     transcript: Arc<lt_audio::transcript::TranscriptWriter>,
     /// 用户可见文案服务（i18n 注入；错误占位/测试连接回执经此取）
     msg: Msg,
+    /// 会话级累计器（D-85/G：`Pipeline::start` 建一次，装置替换时传承——
+    /// 线程侧持有同一句柄，替代旧的"从旧装置借用/无装置时自建"回退路径）
+    session_stats: Arc<TlStats>,
 }
 
 /// 翻译器域命令的共享路由（AH-1/H1）：待命循环与主循环空闲分支共用的三臂
@@ -1942,15 +1979,15 @@ fn route_translator_switch(
     msg: &Msg,
     learned: &Learned,
     degraded_notified: &Arc<Mutex<std::collections::HashSet<(String, String)>>>,
+    // 会话级累计器句柄（D-85/G 评审修复：**唯一创建点在 Pipeline::start**——
+    // 旧实现在"无装置"分支自建新账本，会把会话累计静默清零）
+    session_stats: &Arc<TlStats>,
 ) -> Option<TlSwitch> {
     match sw {
         TlSwitch::ReplaceRig { config } => {
             let eff = bus.load();
             // 会话统计与界面语言随装置传承（替换不换账本；语言取当前注入）
-            let (session_stats, ui_lang) = match tl.as_ref() {
-                Some(rig) => (rig.stats.clone(), msg.lang()),
-                None => (Arc::new(TlStats::new()), msg.lang()),
-            };
+            let ui_lang = msg.lang();
             match TlRig::from_effective(
                 &config,
                 &eff,
@@ -1960,7 +1997,7 @@ fn route_translator_switch(
                 transcript.clone(),
                 learned.clone(),
                 degraded_notified.clone(),
-                &session_stats,
+                session_stats,
                 &ui_lang,
             ) {
                 Ok(Some(rig)) => {
@@ -2017,6 +2054,8 @@ struct SwitchDrain<'a> {
     settings: &'a lt_proto::Settings,
     /// 文案 + 界面语言注入（币种默认值的语言回退在编排域算）
     msg: &'a Msg,
+    /// 会话级累计器（替换装置时传承同一账本，见 route_translator_switch）
+    session_stats: &'a Arc<TlStats>,
 }
 
 fn drain_tl_switch(
@@ -2033,8 +2072,18 @@ fn drain_tl_switch(
             funasr_model,
             whisper_model_size,
             language,
-        }) = route_translator_switch(sw, tl, ctx.bus, ctx.sink, ctx.sup, ctx.transcript, ctx.msg, ctx.learned, ctx.degraded_notified)
-        {
+        }) = route_translator_switch(
+            sw,
+            tl,
+            ctx.bus,
+            ctx.sink,
+            ctx.sup,
+            ctx.transcript,
+            ctx.msg,
+            ctx.learned,
+            ctx.degraded_notified,
+            ctx.session_stats,
+        ) {
             // R3/D-61：每次切换尝试重解析 models_dir（与待命臂一致；
             // 运行中目录损坏时切换路径同样可恢复）
             let Ok(models_dir) =
@@ -2129,6 +2178,20 @@ fn drain_tl_switch(
     }
 }
 
+/// 主循环一轮的取段：**先排空翻译器命令，再取段**（D-85/F1 的位置不变量）。
+///
+/// 抽成函数让"切换在**下一段边界**生效"这一位置关系有唯一实现点与直接测试面：
+/// 旧实现把消费点放在空闲分支，连续识别（队列一直非空）时切换要排到很久之后
+/// （等 500ms 空窗）。`drain` 闭包收在这里执行——测试用 `next_segment`
+/// 即可钉住"队列非空也先消费切换"这一语义本身。
+fn next_segment(
+    queue: &Arc<BoundedDropQueue<(SegmentSource, Vec<f32>)>>,
+    drain: impl FnOnce(),
+) -> Option<(SegmentSource, Vec<f32>)> {
+    drain();
+    queue.pop_timeout(Duration::from_millis(500))
+}
+
 /// ASR 线程：模型就绪则循环识别；未缓存则发 AsrUnavailable 后待命
 fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Option<Arc<TlRig>>) {
     let AsrThreadCtx {
@@ -2144,6 +2207,7 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
         msg,
         learned,
         degraded_notified,
+        session_stats,
     } = ctx;
     // 增量识别会话状态（原版 _interim_* 字段；跨段存活，vad_flush 复位）
     let mut interim_state = InterimState::default();
@@ -2220,7 +2284,18 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
                 funasr_model,
                 whisper_model_size,
                 language,
-            }) = route_translator_switch(sw, &mut tl, &bus, &sink, &sup, &transcript, &msg, &learned, &degraded_notified)
+            }) = route_translator_switch(
+                sw,
+                &mut tl,
+                &bus,
+                &sink,
+                &sup,
+                &transcript,
+                &msg,
+                &learned,
+                &degraded_notified,
+                &session_stats,
+            )
             else {
                 continue;
             };
@@ -2289,30 +2364,31 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
     }
 
     while !stop.load(Ordering::Relaxed) {
-        // D-85/F1：每轮循环开头先收翻译器命令——换模型在**下一段边界**即生效，
-        // 不再依赖"空闲分支"（旧实现要等段队列连续 500ms 空窗）
-        drain_tl_switch(
-            &mut tl,
-            &mut manager,
-            &mut current_display,
-            &mut asr_unavailable_notified,
-            &mut interim_state,
-            &SwitchDrain {
-                tl_switch: &tl_switch,
-                bus: &bus,
-                sink: &sink,
-                sup: &sup,
-                transcript: &transcript,
-                learned: &learned,
-                degraded_notified: &degraded_notified,
-                interim: &interim,
-                settings,
-                msg: &msg,
-            },
-        );
-        // 取段：capture 线程直塞的 (source, audio)（source 目前仅 VadFlush，
-        // M6 interim 接入后再分流）
-        let Some((source, audio)) = segment_queue.pop_timeout(Duration::from_millis(500)) else {
+        // D-85/F1：取段**之前**先收翻译器命令（`next_segment` 内建该顺序）——
+        // 换模型在**下一段边界**即生效，不再依赖"空闲分支"（旧实现要等段队列
+        // 连续 500ms 空窗；位置不变量与回归测试见 `next_segment`）
+        let Some((source, audio)) = next_segment(&segment_queue, || {
+            drain_tl_switch(
+                &mut tl,
+                &mut manager,
+                &mut current_display,
+                &mut asr_unavailable_notified,
+                &mut interim_state,
+                &SwitchDrain {
+                    tl_switch: &tl_switch,
+                    bus: &bus,
+                    sink: &sink,
+                    sup: &sup,
+                    transcript: &transcript,
+                    learned: &learned,
+                    degraded_notified: &degraded_notified,
+                    interim: &interim,
+                    settings,
+                    msg: &msg,
+                    session_stats: &session_stats,
+                },
+            );
+        }) else {
             // 空闲分支：RSS 回收（原版 _asr_loop queue.Empty）+ 翻译器切换命令
             // （AH-1：翻译器三臂经 route_translator_switch 与待命循环共享）
             manager.maybe_recycle_if_idle();
@@ -2333,6 +2409,7 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
                     interim: &interim,
                     settings,
                     msg: &msg,
+                    session_stats: &session_stats,
                 },
             );
             continue;
@@ -3398,7 +3475,7 @@ mod tests {
     fn job_pool_drops_jobs_after_shutdown() {
         use std::sync::atomic::AtomicU64;
         let sup = test_sup();
-        let pool = JobPool::new(2, &sup, EventArtery::new());
+        let pool = JobPool::new(2, &sup, EventArtery::new(), test_transcript());
         pool.shutdown();
         sup.join_all();
         // shutdown 之后的提交不执行（submit 侧短路 + worker 侧双重检查）
@@ -3417,7 +3494,7 @@ mod tests {
     fn retired_pool_emits_receipts_for_queued_jobs() {
         let sup = test_sup();
         let sink = EventArtery::new();
-        let pool = JobPool::new(0, &sup, sink.clone());
+        let pool = JobPool::new(0, &sup, sink.clone(), test_transcript());
         for id in 0..3u64 {
             pool.submit(id, || {});
         }
@@ -3438,7 +3515,7 @@ mod tests {
         }
         assert_eq!(dropped_ids, vec![0, 1, 2], "替换时在队任务必须逐条回执");
         // 停机路径（不 retire）保持静默：事件无处可去，也不该刷失败
-        let pool2 = JobPool::new(0, &sup, sink.clone());
+        let pool2 = JobPool::new(0, &sup, sink.clone(), test_transcript());
         for id in 10..12u64 {
             pool2.submit(id, || {});
         }
@@ -3462,7 +3539,7 @@ mod tests {
         let sup = test_sup();
         let sink = EventArtery::new();
         // worker 数为 0：任务只进队、不消费，灌满即丢最旧
-        let pool = JobPool::new(0, &sup, sink.clone());
+        let pool = JobPool::new(0, &sup, sink.clone(), test_transcript());
         let ran = Arc::new(AtomicU64::new(0));
         for id in 0..(TL_QUEUE_CAP as u64 + 3) {
             let r = ran.clone();
@@ -3746,7 +3823,7 @@ mod tests {
     fn queue_overflow_still_reports_dropped() {
         let sup = test_sup();
         let sink = EventArtery::new();
-        let pool = JobPool::new(0, &sup, sink.clone());
+        let pool = JobPool::new(0, &sup, sink.clone(), test_transcript());
         // 队列容量 TL_QUEUE_CAP：塞满再多推一条 → 丢最旧（Drop 补 Dropped 回执）
         for id in 0..(TL_QUEUE_CAP as u64 + 1) {
             pool.submit(id, || {});
@@ -3778,7 +3855,7 @@ mod tests {
     fn retired_pool_marks_superseded_not_dropped() {
         let sup = test_sup();
         let sink = EventArtery::new();
-        let pool = JobPool::new(0, &sup, sink.clone());
+        let pool = JobPool::new(0, &sup, sink.clone(), test_transcript());
         for id in 0..2u64 {
             pool.submit(id, || {});
         }
@@ -3823,6 +3900,7 @@ mod tests {
             &Msg::new(|k| k.to_string(), || "zh".into()),
             &test_learned(),
             &test_degraded_notified(),
+            &test_session_stats(),
         );
         assert!(tl.is_some(), "替换后应装上新装置");
         let mut batch = Vec::new();
@@ -3883,6 +3961,7 @@ mod tests {
                 interim: &interim,
                 settings: &settings,
                 msg: &Msg::new(|k| k.to_string(), || "zh".into()),
+                session_stats: &test_session_stats(),
             },
         );
         assert!(tl.is_some(), "主循环开头的一次调用就该完成切换");
@@ -3914,6 +3993,7 @@ mod tests {
                 interim: &interim,
                 settings: &settings,
                 msg: &Msg::new(|k| k.to_string(), || "zh".into()),
+                session_stats: &test_session_stats(),
             },
         );
         if let Some(rig) = tl.take() {
@@ -3922,19 +4002,159 @@ mod tests {
         sup.join_all();
     }
 
+    /// D-85/F1 位置不变量（2026-09-11 评审修复）：取段**之前**先排空切换命令——
+    /// **队列非空也先消费**。旧实现只在空闲分支消费，连续识别时切换要排到很久
+    /// 之后（等 500ms 空窗）；`next_segment` 是生产主循环该环节的唯一实现点
+    #[test]
+    fn next_segment_drains_switch_before_pop() {
+        let sup = test_sup();
+        let sink = EventArtery::new();
+        let bus = test_bus(lt_proto::Settings::default());
+        let settings = lt_proto::Settings::default();
+        let (tx, rx) = crossbeam_channel::unbounded::<TlSwitch>();
+        let mut tl = None;
+        let mut manager = AsrManager::new();
+        let mut display = String::from("old");
+        let mut notified = false;
+        let mut interim_state = InterimState::default();
+        let interim = Arc::new(InterimControl::default());
+        let learned = test_learned();
+        let degraded = test_degraded_notified();
+        let transcript = test_transcript();
+        // 段队列**非空**（连续识别场景）：切换命令必须仍在本轮被消费
+        let queue =
+            Arc::new(BoundedDropQueue::<(SegmentSource, Vec<f32>)>::new(8, "seg-test"));
+        queue.push((SegmentSource::VadFlush, vec![0.0f32; 16]));
+        tx.send(TlSwitch::ReplaceRig {
+            config: Box::new(settings.models[0].clone()),
+        })
+        .unwrap();
+
+        let seg = next_segment(&queue, || {
+            drain_tl_switch(
+                &mut tl,
+                &mut manager,
+                &mut display,
+                &mut notified,
+                &mut interim_state,
+                &SwitchDrain {
+                    tl_switch: &rx,
+                    bus: &bus,
+                    sink: &sink,
+                    sup: &sup,
+                    transcript: &transcript,
+                    learned: &learned,
+                    degraded_notified: &degraded,
+                    interim: &interim,
+                    settings: &settings,
+                    msg: &Msg::new(|k| k.to_string(), || "zh".into()),
+                    session_stats: &test_session_stats(),
+                },
+            );
+        });
+        assert!(seg.is_some(), "队列里的段应被取出");
+        assert!(
+            tl.is_some(),
+            "取段之前必须先完成切换（队列非空也不例外）"
+        );
+        if let Some(rig) = tl.take() {
+            rig.pool.shutdown();
+        }
+        sup.join_all();
+    }
+
+    /// 2026-09-11 评审修复：任务从未执行就被丢弃时，转录 all 文件必须补上
+    /// "无译文"块——`write_original` 已登记 pending，若无人 finalize，该段原文
+    /// 从 all 文件永久消失（F3 让位路径把该缺口从"溢出罕见"变成"换模型常规"）
+    #[test]
+    fn retired_jobs_finalize_transcript_original() {
+        let sup = test_sup();
+        let sink = EventArtery::new();
+        let dir = tmp_models_dir("transcript-drop");
+        let transcript = Arc::new(lt_audio::transcript::TranscriptWriter::new(&dir));
+        let pool = JobPool::new(0, &sup, sink.clone(), transcript.clone());
+        for id in 0..2u64 {
+            transcript.write_original(id, "00:00:01", &format!("原文{id}"));
+            pool.submit(id, || {});
+        }
+        pool.retire();
+        let mut batch = Vec::new();
+        while sink.drain_batch(&mut batch, Duration::from_millis(20)) {}
+        transcript.close();
+        let all_path = transcript
+            .session_paths()
+            .get("all")
+            .cloned()
+            .expect("all 转录文件应已开");
+        let text = std::fs::read_to_string(&all_path).unwrap();
+        assert!(
+            text.contains("原文0") && text.contains("原文1"),
+            "让位/丢弃段的原文必须落 all 转录，实际：{text}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        sup.join_all();
+    }
+
     // ── D-85/G/H：会话级累计 + 双币种 ──
 
-    /// 会话统计跨装置重建不清零；金额按**每笔当时的单价与币种**归账
+    /// 会话统计跨装置重建不清零；金额按**每笔当时的单价与币种**归账。
+    ///
+    /// 2026-09-11 评审修复补强：旧测试只对 `TlStats` 手工记三笔、从不建第二个
+    /// 装置——把共享点改回"每个装置自建"测试照样绿。本版**真建三个装置**并
+    /// 断言共享同一账本（`Arc::ptr_eq`）+ 端到端金额归账。
     #[test]
     fn session_stats_accumulate_across_rig_replacement() {
-        let stats = TlStats::new();
+        let sup = test_sup();
+        let bus = test_bus(lt_proto::Settings::default());
+        let sink = EventArtery::new();
+        let session_stats = test_session_stats();
+        let transcript = test_transcript();
+        let learned = test_learned();
+        let degraded = test_degraded_notified();
+        let eff = bus.load();
+        let base = eff.raw.models[eff.raw.active_model].clone();
+
+        let build = |name: &str, inp: f64, outp: f64, cur: &str| {
+            let mut mc = base.clone();
+            mc.name = name.into();
+            mc.input_price = inp;
+            mc.output_price = outp;
+            mc.currency = Some(cur.into());
+            TlRig::from_effective(
+                &mc,
+                &eff,
+                &bus,
+                &sup,
+                sink.clone(),
+                transcript.clone(),
+                learned.clone(),
+                degraded.clone(),
+                &session_stats,
+                "zh",
+            )
+            .expect("配置应可构建")
+            .expect("models 非空应产出装置")
+        };
+
         // 第一笔：人民币供应商 ¥1/¥2 每 1M
-        stats.record_translation(1_000_000, 0, true, (1.0, 2.0), lt_proto::Currency::Cny);
-        // 第二笔：换成美元供应商 $0.5/$1.0（模拟换模型）
-        stats.record_translation(0, 1_000_000, true, (0.5, 1.0), lt_proto::Currency::Usd);
-        // 第三笔：又切回人民币供应商
-        stats.record_translation(0, 1_000_000, true, (1.0, 2.0), lt_proto::Currency::Cny);
-        match stats.snapshot_event() {
+        let rig1 = build("cny-1", 1.0, 2.0, "cny");
+        rig1.stats
+            .record_translation(1_000_000, 0, true, rig1.prices, rig1.currency);
+        // 换成美元供应商 $0.5/$1.0（新装置）
+        let rig2 = build("usd-1", 0.5, 1.0, "usd");
+        assert!(
+            Arc::ptr_eq(&rig1.stats, &rig2.stats),
+            "换装置必须共享同一账本（唯一创建点在 Pipeline::start）"
+        );
+        rig2.stats
+            .record_translation(0, 1_000_000, true, rig2.prices, rig2.currency);
+        // 又切回人民币供应商
+        let rig3 = build("cny-2", 1.0, 2.0, "cny");
+        assert!(Arc::ptr_eq(&rig1.stats, &rig3.stats), "账本跨多次替换保持");
+        rig3.stats
+            .record_translation(0, 1_000_000, true, rig3.prices, rig3.currency);
+
+        match session_stats.snapshot_event() {
             UiEvent::UpdateStats {
                 tl_n,
                 cost_cny,
@@ -3949,6 +4169,10 @@ mod tests {
             }
             other => panic!("期望 UpdateStats，实际 {other:?}"),
         }
+        for rig in [rig1, rig2, rig3] {
+            rig.pool.shutdown();
+        }
+        sup.join_all();
     }
 
     /// 出现一次"用量未知"→ 快照 usage_known=false（费用可能偏低），

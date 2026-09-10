@@ -1685,6 +1685,17 @@ mod tests {
         );
         let skipped = lt_i18n::t_for_lang("zh", "err_subtitle_skipped");
         let failed_label = lt_i18n::t_for_lang("zh", "err_subtitle_label");
+        // 2026-09-11 评审修复：该键此前从未进 yaml，断言与显示同取"缺键回退值"
+        // 而空转（裸键名照样 contains 命中）。先钉住键真实存在，再钉渲染。
+        assert_ne!(
+            skipped, "err_subtitle_skipped",
+            "err_subtitle_skipped 键缺失（会显示裸键名）"
+        );
+        assert_ne!(
+            lt_i18n::t_for_lang("en", "err_subtitle_skipped"),
+            "err_subtitle_skipped",
+            "en 表同样不得缺键"
+        );
         assert!(
             sub.lines[1].text.contains(&skipped),
             "让位句应为中性说明，实际 {}",
@@ -1702,5 +1713,39 @@ mod tests {
         refresh_display(&mut sub2, &lines);
         assert_eq!(sub2.lines[1].fail_kind, Some(lt_proto::FailureKind::Auth));
         assert!(sub2.lines[1].text.contains(&failed_label));
+    }
+
+    /// 失败分类 → i18n 键必须两表都在（2026-09-11 评审修复：`err_subtitle_skipped`
+    /// 曾整键缺失、字幕直接显示裸键名；`i18n_key()` 内的 match 兼作穷举防线——
+    /// 新增变体时编译器会先在这里报 E0004，强制同步登记）
+    #[test]
+    fn failure_kind_i18n_keys_exist_in_both_langs() {
+        use lt_proto::FailureKind as K;
+        let all: &[K] = &[
+            K::Empty,
+            K::Truncated,
+            K::Timeout,
+            K::Auth,
+            K::NotFound,
+            K::RateLimited,
+            K::ServerError,
+            K::Connection,
+            K::Repetition,
+            K::Dropped,
+            K::NotReady,
+            K::Cancelled,
+            K::Superseded,
+            K::Unknown,
+        ];
+        for k in all {
+            let key = k.i18n_key();
+            for lang in ["zh", "en"] {
+                assert_ne!(
+                    lt_i18n::t_for_lang(lang, key),
+                    key,
+                    "{lang} 表缺键 {key}（会显示裸键名）"
+                );
+            }
+        }
     }
 }

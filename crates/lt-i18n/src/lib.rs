@@ -157,6 +157,18 @@ mod tests {
         assert_eq!(zh_map.len(), en_map.len(), "键数应一致");
     }
 
+    /// 两表内**不得有重复键**（2026-09-11 评审修复）：`HashMap` 反序列化对重复键
+    /// 静默 last-wins——厂商预设的 custom 项曾与样式页 `preset_custom` 撞名，
+    /// 把样式页标签覆盖成"自定义（不填充）"且全流程无告警。`serde_yaml::Value`
+    /// 走 `Mapping` 路径会检出错（`duplicate entry`），故用它做守卫。
+    #[test]
+    fn yaml_has_no_duplicate_keys() {
+        for (name, text) in [("zh.yaml", ZH_YAML), ("en.yaml", EN_YAML)] {
+            serde_yaml::from_str::<serde_yaml::Value>(text)
+                .unwrap_or_else(|e| panic!("{name} 含重复键或非法结构: {e}"));
+        }
+    }
+
     /// 切换语言后 t() 应查到对应语言的译文
     #[test]
     fn set_lang_switches_table() {

@@ -418,20 +418,16 @@ impl AppShell {
     ///
     /// **取代语义（不是拒绝）**：已有在途时先置位**旧探测**的取消标志再启动新的
     /// ——旧线程退出可滞后一个轮询周期（流式 ≤150ms），拒绝会把"中断后立刻重测"
-    /// 这一正常操作变成 70 秒空等。旧探测的迟到回执因 `probe_id` 不符必然被 UI 丢弃。
+    /// 变成最长一次尝试超时的空等。旧探测的迟到回执因 `probe_id` 不符必然被 UI 丢弃。
+    /// 簿记本身是 [`crate::shell_helpers::begin_probe_slot`]（纯函数，直接可测）。
     fn start_probe(&mut self, config: lt_proto::ModelConfig, probe_id: u64) {
-        let old = self.probe_id.load(std::sync::atomic::Ordering::SeqCst);
-        if old != 0 {
-            self.probe_cancel
-                .store(true, std::sync::atomic::Ordering::SeqCst);
-            tracing::warn!("连接测试被新请求取代：#{old} → #{probe_id}");
-        }
-        self.probe_cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        self.probe_id
-            .store(probe_id, std::sync::atomic::Ordering::SeqCst);
+        let cancel = crate::shell_helpers::begin_probe_slot(
+            &self.probe_id,
+            &mut self.probe_cancel,
+            probe_id,
+        );
         let artery = self.artery.clone();
         let bus = self.bus.clone();
-        let cancel = self.probe_cancel.clone();
         let msg = self.msg.clone();
         let id_cell = self.probe_id.clone();
         self.sup.spawn(

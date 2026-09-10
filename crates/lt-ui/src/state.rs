@@ -978,6 +978,9 @@ pub struct ModelEditState {
     pub overrides: [OverrideRow; 6],
     /// extra_body JSON 文本（空 = 不设置；非法 = 禁止确定）
     pub extra_body_text: String,
+    /// 「厂商预设」下拉的选中态（D-85 评审修复：旧实现标题恒显示 custom 项）。
+    /// `None` = 未由预设填充且不属于任何厂商行 → 显示"自定义（不填充）"
+    pub preset_key: Option<&'static str>,
 }
 
 /// extra_body 文本框的形态分类（方案 §4.7 就地提示用；**类型化**——
@@ -1024,6 +1027,7 @@ impl ModelEditState {
             output_price: 0.0,
             overrides: std::array::from_fn(|_| OverrideRow::default()),
             extra_body_text: String::new(),
+            preset_key: None,
         }
     }
 
@@ -1057,6 +1061,8 @@ impl ModelEditState {
                 value: ADV_DEFAULTS[i],
             }),
             extra_body_text: String::new(),
+            // 下拉选中态按"官方地址 + 建议模型"反查（未命中 = 自定义）
+            preset_key: lt_proto::preset_matching(&cfg.api_base, &cfg.model).map(|p| p.key),
         };
         // 原版 populate：非 none/system 且非空 → custom + URL
         if st.proxy_index == 2 {
@@ -1554,7 +1560,7 @@ pub struct ProbeResult {
 /// 连接测试的 UI 侧状态（D-85：一次至多一个在途；任何异常路径都收敛到终态）
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ProbeUiState {
-    /// 号源（单调递增）
+    /// 号源（单调递增；记录**已发出**的号，初值 0 = 尚未发过）
     pub next_id: u64,
     /// 在途探测（None = 无在途）
     pub running: Option<ProbeRun>,
@@ -1563,10 +1569,14 @@ pub struct ProbeUiState {
 }
 
 impl ProbeUiState {
-    /// 分配新号并进入在途态（返回号供命令载荷使用）
+    /// 分配新号并进入在途态（返回号供命令载荷使用）。
+    ///
+    /// **号从 1 起，永不发 0**（2026-09-11 评审修复）：shell 侧 `probe_id == 0`
+    /// 是"无在途"哨兵（`probe_cancel_matches` / `ProbeExitGuard` 都按它判），
+    /// 旧实现首个探测发 0 → 中断/取代在后台被当成过期请求静默忽略。
     pub fn begin(&mut self, row: usize, cfg_key: CfgKey, now: Instant) -> u64 {
-        let id = self.next_id;
-        self.next_id = self.next_id.wrapping_add(1);
+        let id = self.next_id.wrapping_add(1).max(1);
+        self.next_id = id;
         self.running = Some(ProbeRun {
             id,
             row,
@@ -1574,6 +1584,25 @@ impl ProbeUiState {
             started: now,
         });
         id
+    }
+
+    /// 回执归位（D-85 §4.8，2026-09-11 评审提取以便直接测试）：**仅当在途号一致**
+    /// 才落结果——迟到/被取代探测的回执一律丢弃。返回是否采纳。
+    #[allow(clippy::too_many_arguments)]
+    pub fn settle_from_receipt(
+        &mut self,
+        probe_id: u64,
+        name: String,
+        outcome: lt_proto::ProbeOutcome,
+        ms: u64,
+        step_note: Option<String>,
+        preview: Option<String>,
+    ) -> bool {
+        if self.running.as_ref().map(|r| r.id) != Some(probe_id) {
+            return false;
+        }
+        self.settle(name, outcome, ms, step_note, preview);
+        true
     }
 
     /// 收敛到终态：落结果并退出在途（回执 / 本地中断 / 看门狗三条路径共用）
@@ -3798,13 +3827,40 @@ mod tests {
         let mut st = ProbeUiState::default();
         let t0 = Instant::now();
         let key = ("a".to_string(), "b".to_string(), "c".to_string(), "d".to_string());
-        st.begin(0, key.clone(), t0);
+        let id = st.begin(0, key.clone(), t0);
         // 「中断」本地收敛后，旧回执到达：running 已清 → settle 是空操作
         let running_id = st.running.as_ref().map(|r| r.id);
-        assert_eq!(running_id, Some(0));
+        assert_eq!(running_id, Some(id));
         st.settle("被中断的那次".into(), lt_proto::ProbeOutcome::Cancelled, 5, None, None);
         let before = st.result.clone();
         st.settle("陈旧回执".into(), lt_proto::ProbeOutcome::Ok, 9, None, None);
         assert_eq!(st.result, before, "无在途时 settle 不得改写已有结果");
+
+        // §6.1 `stale_probe_result_ignored`：**在途号不一致**的回执必须丢弃
+        // （app.rs 回执臂经 settle_from_receipt 归位，决策在此直接可测）
+        let id2 = st.begin(0, key, t0);
+        assert!(
+            !st.settle_from_receipt(
+                id2 + 1,
+                "别的探测".into(),
+                lt_proto::ProbeOutcome::Ok,
+                3,
+                None,
+                None
+            ),
+            "号不符的回执不得被采纳"
+        );
+        assert!(st.running.is_some(), "丢弃陈旧回执不得清在途态");
+        assert_eq!(st.result, before, "丢弃陈旧回执不得改写已有结果");
+        // 号一致 → 采纳
+        assert!(st.settle_from_receipt(
+            id2,
+            "本探测".into(),
+            lt_proto::ProbeOutcome::Cancelled,
+            4,
+            None,
+            None
+        ));
+        assert!(st.running.is_none(), "采纳后退出在途态");
     }
 }
