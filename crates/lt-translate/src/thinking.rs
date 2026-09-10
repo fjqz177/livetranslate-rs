@@ -7,11 +7,23 @@
 //!   只用该一种。
 //!
 //! W1 期 auto 的首选 = 顶层 `reasoning_effort: "none"`——事实标准（OpenAI 5.1+ 谱系、
-//! Azure、xAI、Ollama、OpenRouter、vLLM 自动映射为 `enable_thinking=false`、llama.cpp
-//! 官方 README 明载 "If `none`, reasoning/thinking is disabled"；本机 LM Studio 实测
-//! 由 43.7s 降至 0.46s）。W3 补"无效/被拒 → 依次降级"的链式兜底与会话内记忆。
+//! Azure、Ollama 在册、OpenRouter、vLLM 官方记载自动映射为 `enable_thinking=false`、
+//! llama.cpp server 文档明载 "If `none`, reasoning/thinking is disabled"）。
+//! 2026-09-11 溯源复核的边界（docs/translator-probe-hotswap.md §十"官方来源"表）：
+//! - **xAI 不在列**：官方无 `none` 且明载 "Reasoning cannot be disabled"；
+//! - **LM Studio 官方未文档化** `reasoning_effort`（native 在册是 `reasoning:"off"`），
+//!   本仓实测有效（43.7s→0.46s）——经验证据，保留；
+//! - "在册"≠"零推理 token 保证"；静默忽略（Anthropic 兼容层、Ollama gpt-oss）只能靠
+//!   体检/阶梯部分发现。
 //!
-//! 官方 OpenAI/xAI/Anthropic 端点**保守不发**：这些端点对不支持的参数直接 400。
+//! W3 补"无效/被拒 → 依次降级"的链式兜底与会话内记忆。
+//!
+//! 官方 OpenAI / xAI / Anthropic 端点**保守不发**（不是"都会 400"——2026-09-11 勘正）：
+//! OpenAI 侧有官方 400 实例（GPT-6 Astra + `none`），xAI 官方"推理无法禁用"、Anthropic
+//! 兼容层对 `reasoning_effort` 标注 **Ignored** 且官方明载未知字段静默忽略而非报错——
+//! 三家共同点是**本应用可发送的参数无法可靠关闭思维链**，"不发"（吃模型默认）是唯一
+//! 不赌兼容性的选择；要真关须各家原生机制（`thinking:{type:"disabled"}` 等），
+//! 经 OpenAI 兼容端点不可达；拒不掉的内容由 [`crate::reasoning`] 兜住不外泄。
 //!
 //! **回退阶梯（2026-09-10 第二轮评审/用户裁决）**：关闭形态按 [`next_step`] 逐级
 //! 下退（reasoning_effort → enable_thinking → chat_template_kwargs →
@@ -22,17 +34,26 @@
 
 use serde_json::{json, Value};
 
-/// 对"不认识的参数"会直接报错的官方端点（W1 保守不发；W3 由降级链接管）
+/// 官方 OpenAI / xAI / Anthropic 端点：**保守不发**（W1；W3 由降级链接管）。
+/// 2026-09-11 溯源勘正理由：并非"都会对未知参数 400"——OpenAI 有 400 实例
+/// （GPT-6 Astra + `none`，官方明载），xAI 官方"推理无法禁用"，Anthropic 兼容层
+/// 对 `reasoning_effort` 标注 Ignored 且官方明载未知字段**静默忽略**；三家共同点是
+/// 本应用可发送的参数无法可靠关闭思维链，"不发"是唯一不赌兼容的选择。
 pub const PARAMLESS_ENDPOINTS: [&str; 3] = ["api.openai.com", "api.x.ai", "api.anthropic.com"];
 
 /// 本机/回环端点：LM Studio / Ollama / llama.cpp / 自建 vLLM 的共同形态，
-/// 实测与官方文档均支持顶层 `reasoning_effort:"none"`（W1 最可靠的首选路径）
+/// 发顶层 `reasoning_effort:"none"`（W1 最可靠的首选路径）。官方依据分档：
+/// Ollama 在册、llama.cpp server 文档明载 none=关闭、vLLM 官方记载自动映射
+/// `enable_thinking=false`；**LM Studio 官方未文档化**该字段（native 在册为
+/// `reasoning:"off"`），本仓实测有效。
 const LOCAL_HOSTS: [&str; 4] = ["127.0.0.1", "localhost", "[::1]", "0.0.0.0"];
 
 /// 用嵌套 `thinking` 对象关闭的厂商（旧行为保留，避免回归）。
 /// Moonshot/Kimi 于 2026-09-10 第二轮评审补入：官方文档明载 kimi-k2.6 用
 /// `thinking:{"type":"disabled"}`；k3/k2.7-code 强制思考（传该参数会报错），
-/// 由回退阶梯兜住并标注（见 [`next_step`]）。
+/// 由回退阶梯兜住并标注（见 [`next_step`]）。2026-09-11 溯源复核：DeepSeek /
+/// 智谱 / 火山官方同字段同语义；**智谱 GLM-5.3 / 5.3-FLASH 亦为强制思考**
+/// （官方明载传 disabled 报错）——同一兜底路径覆盖。
 const NESTED_THINKING_MODELS: [&str; 4] = ["deepseek", "glm", "kimi", "moonshot"];
 const NESTED_THINKING_ENDPOINTS: [&str; 6] = [
     "deepseek",
@@ -86,7 +107,7 @@ impl ThinkingPlan {
 /// | 端点/模型 | 形态 | 依据 |
 /// |---|---|---|
 /// | 本机回环（`127.0.0.1`/`localhost`/…） | `reasoning_effort:"none"` | 本机 LM Studio 实测 0.46s；vLLM/Ollama/llama.cpp 官方文档均认 |
-/// | 官方端点 [`PARAMLESS_ENDPOINTS`] | 不发 | 对不支持的参数直接 400 |
+/// | 官方端点 [`PARAMLESS_ENDPOINTS`] | 不发 | 无可靠关闭手段（OpenAI 有 400 实例 / xAI 不可禁用 / Anthropic 兼容层静默忽略），不发 = 吃模型默认 |
 /// | deepseek/glm/kimi(moonshot) 家族 | `thinking:{type:disabled}` | 该族官方关闭参数 |
 /// | dashscope/siliconflow | `enable_thinking:false` | 阿里/硅基官方关闭参数 |
 /// | 其余（自建 vLLM/SGLang、网关、未知） | `reasoning_effort:"none"` | vLLM 官方会将 none 映射为 `enable_thinking=false` |

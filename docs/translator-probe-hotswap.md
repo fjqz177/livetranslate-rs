@@ -1104,8 +1104,8 @@ pub const PROVIDER_PRESETS: &[ProviderPreset] = &[ /* 见下表 */ ];
 既有守卫（`name` 与 `model` 均非空才收，`translation.rs:570-572`）会拦住用户先填模型名——
 这是预期行为，不需要额外校验。
 
-**表格数值 = 官方文档核查结果**（2026-09-10 子代理逐家核对官方文档原文；核查来源未存档 URL，
-复核请查各厂商官方 API 参考——2026-09-11 评审勘正："URL 入表留痕"的说法不实）：
+**表格数值 = 官方文档核查结果**（2026-09-10 初查 + **2026-09-11 逐条溯源复
+核，来源 URL 见本节末"官方来源"表**）：
 
 | key | 供应商 | `api_base` | `model`（可改） | `thinking_style` | `disable_thinking` | `currency` |
 |---|---|---|---|---|---|---|
@@ -1121,14 +1121,19 @@ pub const PROVIDER_PRESETS: &[ProviderPreset] = &[ /* 见下表 */ ];
 
 **填这些值的依据（逐条，实现者不必再查）**：
 
-- **`thinking_style` 列即"官方能接受且我们已支持"的姿态**，全部经官方文档确认不会 400：
+- **`thinking_style` 列即"官方能接受且我们已支持"的姿态**——**各预设行给出的地址+模型组合**
+  均有官方文档依据（2026-09-11 逐条溯源，URL 见本节末"官方来源"表）：
   - DeepSeek / GLM-4.6 / Kimi-k2.6 / 方舟：官方参数 `thinking:{"type":"disabled"}` ↔ 我们的
-    `NestedDisabled`（`thinking_style = "deepseek"`）。
-  - 通义：官方 `enable_thinking: false` ↔ 我们的 `EnableThinkingFalse`（`"qwen"`）。
-  - LM Studio / Ollama：官方（Ollama 明确、LM Studio 缺载但本仓库实测有效）
-    `reasoning_effort: "none"` ↔ 我们的 `ReasoningEffortNone`（`"openai"`）。
-  - **OpenAI 用 `"off"`（= 不发送任何关闭参数）**：`reasoning_effort: "none"` 在 OpenAI 是
-    **model-dependent**（部分新模型不支持 `none`，传了直接 400），保守不发是唯一稳的选择；
+    `NestedDisabled`（`thinking_style = "deepseek"`）。四家官方语义：DeepSeek "use non-thinking
+    model"、火山 "模型不输出思维链内容"、智谱 "禁用思考，直接给出回答"、Kimi k2.6 "禁用思考能力"。
+  - 通义：官方 `enable_thinking: false` ↔ 我们的 `EnableThinkingFalse`（`"qwen"`）；官方原文
+    "设为 false：模型直接回复"。
+  - LM Studio / Ollama：Ollama 官方在册 `reasoning_effort: "none"`；**LM Studio 官方文档没有
+    `reasoning_effort`**（native 端在册字段是 `reasoning: "off"`）——本仓库实测有效（43.7s→0.46s），
+    属未文档化行为，保留但知其为经验证据。
+  - **OpenAI 用 `"off"`（= 不发送任何关闭参数）**：`reasoning_effort: "none"` 在 OpenAI
+    **model-dependent**——官方在册（gpt-5.1 起，5.1 默认即 none），但官方同时明载
+    **GPT-6 Astra 等型号传 `none` 直接返回 HTTP 400**，保守不发是唯一稳的选择；
     用户在「关闭方式」里显式选 `openai` 才会发（该选项仍在）。
     **注（2026-09-11 评审修复）**：`"off"` 的**规范编码是 `disable_thinking = false`**——
     W1/§2.3 起 `"off"` 不是活值（`Settings::sanitize` 一律归一化为总开关 false），对话框
@@ -1136,6 +1141,9 @@ pub const PROVIDER_PRESETS: &[ProviderPreset] = &[ /* 见下表 */ ];
     `"off"` 钳成 `"openai"`（实际发送 `reasoning_effort:"none"`，正是本节要避免的形态）。
     修正后：预设 → 保存 = 总开关 false → 请求不含任何关闭参数；`lt-translate` 侧有
     `provider_presets_resolve_to_intended_plans` 按请求层 plan 逐行钉住。
+    **取舍提醒**：不发 = 吃模型默认（5.1 默认 none 即"不思考"；5.5/5.6 默认 medium 则会思考）。
+    想要 OpenAI 上完全不思考，须用户显式选 `openai` 方式发 `none`（5.1+ 谱系官方支持；
+    若遇 400 型型号，回退阶梯会逐级降级兜底）。
 - **八家地址全部命中 `crates/lt-translate/src/thinking.rs` 既有路由表**（`deepseek` / `api.openai.com` /
   `bigmodel` / `moonshot` / `dashscope`+`aliyuncs.com` / `volces` / 回环 `LOCAL_HOSTS`），
   **无需为预设新增任何路由关键词**——预设与自动路由不会互相矛盾。
@@ -1143,6 +1151,37 @@ pub const PROVIDER_PRESETS: &[ProviderPreset] = &[ /* 见下表 */ ];
   用户在自己供应商的定价页照抄即可，币种由 `currency` 字段决定。
 - **`temperature` 保持 `None`（不发送）**：Kimi 全系对 `temperature`/`top_p` 传入非官方值**直接报错**，
   DeepSeek 思考模式忽略该参数——"默认不发送"是唯一通用安全解（与既有裁决一致，预设**不预填温度**）。
+
+**官方来源（2026-09-11 逐条溯源核查；URL 均为实抓成功页）**
+
+| 关闭形态 | 厂商/端点 | 官方字段（原文形态） | 来源 URL | 官方语义强度 | 不能关的型号（官方点名） |
+|---|---|---|---|---|---|
+| `thinking.type` | DeepSeek | `thinking:{"type":"enabled\|disabled"}`（另有 `reasoning_effort: none`） | https://api-docs.deepseek.com/api/create-chat-completion ；https://api-docs.deepseek.com/guides/thinking_mode | **明确**："If set to disabled, then use non-thinking model / none disables thinking mode" | 未点名（型号：deepseek-flash / deepseek-v4-pro） |
+| `thinking.type` | 智谱 GLM | 同上（国际站同字段） | https://docs.bigmodel.cn/cn/guide/capabilities/thinking-mode.md ；https://docs.z.ai/guides/capabilities/thinking-mode | **明确**："禁用思考，直接给出回答" | **GLM-5.3 / 5.3-FLASH**：传 disabled 直接报错（官方："强制思考不能关闭"） |
+| `thinking.type` | Kimi（月之暗面） | 同上（文档域已迁 platform.kimi.com，API 端点仍 api.moonshot.cn） | https://platform.kimi.com/docs/guide/kimi-k2-6-quickstart ；https://platform.kimi.com/docs/api/chat | **明确**（k2.6）："提供禁用思考能力的选项" | **kimi-k2.7-code**（传 disabled 报错）、**kimi-k3**（不应传 thinking，始终推理） |
+| `thinking.type` | 火山方舟（豆包） | 同上（另有 `auto` 三值） | https://docs.volcengine.com/docs/82379/1449737 ；https://docs.volcengine.com/docs/82379/1494384 | **最明确**："模型不输出思维链内容" | 支持表全部型号均列明支持 disabled |
+| `enable_thinking:false` | 阿里云百炼（通义） | 顶层字段（非 OpenAI 标准，SDK 经 extra_body） | https://help.aliyun.com/zh/model-studio/deep-thinking | **明确**："设为 false：模型直接回复" | 仅思考模式型号：qwen3-*-thinking-2507 / qwq / deepseek-r1 等（官方点名"无法关闭"） |
+| `enable_thinking:false` | SiliconFlow | 顶层字段（boolean） | https://docs.siliconflow.cn/cn/api-reference/chat-completions/chat-completions ；https://docs.siliconflow.cn/cn/userguide/capabilities/reasoning | 模式切换（未承诺零 token） | 未点名（"适用于大多数推理模型"） |
+| `chat_template_kwargs` | vLLM | `chat_template_kwargs:{"enable_thinking":false}`；**`reasoning_effort:"none"` → 自动注入 `enable_thinking=false` 亦有官方记载** | https://docs.vllm.ai/en/latest/features/reasoning_outputs.html | **明确**（Qwen3）："you must pass `enable_thinking=False` in your `chat_template_kwargs`" | 模板未声明该键的模型注入被过滤（文档举例 DeepSeek R1） |
+| `chat_template_kwargs` | SGLang | 同上 | https://docs.sglang.io/docs/basic_usage/openai_api_completions | **明确**："Setting `enable_thinking: False` disables reasoning for Qwen3" | Qwen3-Thinking 系列（"do not support the enable_thinking parameter"）、Kimi、Gpt-Oss |
+| `reasoning_effort:"none"` | OpenAI | `reasoning_effort`（或无值 `none` 在册的型号） | https://platform.openai.com/docs/guides/reasoning ；模型页（gpt-5.1 / gpt-5.5） | 在册（5.1 起，5.1 默认即 none） | **GPT-6 Astra**：官方明载传 `none` 返回 **HTTP 400** |
+| `reasoning_effort:"none"` | Ollama | OpenAI 兼容端点支持字段清单含 `none`（native 为 `think:false`） | https://docs.ollama.com/api/openai-compatibility ；https://docs.ollama.com/capabilities/thinking | 在册 | gpt-oss 忽略 true/false（trace 不能完全关） |
+| `reasoning_effort:"none"` | llama.cpp | server 文档原文（**非仓库根 README**） | https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md | **明确**："If `none`, reasoning/thinking is disabled" | — |
+| （不发） | xAI | 无 `none`；官方："Reasoning cannot be disabled" | https://docs.x.ai/docs/guides/reasoning | — | **grok 全系不可关**——本应用"不发"= 吃默认思考 |
+| （不发） | Anthropic | OpenAI 兼容层 `reasoning_effort` = **Ignored**；官方："Most unsupported fields are silently ignored rather than producing errors" | https://platform.claude.com/docs/en/api/openai-sdk ；https://platform.claude.com/docs/en/build-with-claude/thinking | — | 原生 `thinking:{type:"disabled"}` 仅部分型号允许（Fable/Mythos 5 拒绝），兼容层不可达 |
+
+**核查发现的三条硬约束（应用侧已知边界，不改行为、如实登记）**：
+
+1. **"官方在册"≠"零推理 token 的保证"**：没有任何一家给出 token 级承诺；最强语义是火山
+   （"不输出思维链内容"）与 SGLang（`reasoning_content` stays empty）。vLLM 文档还专门区分
+   "隐藏 ≠ 关闭"（`include_reasoning=false` 仍生成推理 token）。
+2. **静默忽略是最大盲区**：Anthropic 兼容层明载忽略未知字段、Ollama gpt-oss 忽略
+   `think:true/false`；另有一条第三方讨论（未证实）称 z.ai 实测忽略 `thinking.type=disabled`。
+   应用侧只能靠"体检"（空文本+推理 token → 阶梯降级）发现**一部分**——边想边出正文的
+   静默失效不会被报告（只有耗时变长）。
+3. **xAI / Anthropic 经本应用的关闭手段不可达**：官方"不能禁用"（xAI）与兼容层忽略
+   （Anthropic）叠加，二者只能靠思维链隔离器兜住内容不外泄；"保守不发"对这两家的实际
+   效果 = "不尝试关闭"，与 OpenAI 侧"避免 400"的理由不同（代码注释已同步勘正）。
 
 **出厂默认配置（裁决 K）**：`ModelConfig::default()` 改为该表 **DeepSeek** 行 + `name: "DeepSeek"` +
 `api_key: String::new()`；其余字段沿用现有默认（`streaming: true`、`json_response: false`、
@@ -1263,6 +1302,27 @@ release 构建过 + `--version` 正常（76.0 MB）。
 
 **遗留（仍待用户）**：§6.2 十三项实机走查；`FailureKind::Cancelled` 属"类型化分类的单边
 合法形态"（probe 走 `ProbeOutcome::Cancelled`），已登记进 `check_dead_contract.ps1` 注释块。
+
+### 11.4 关闭思考四形态：官方文档溯源核查（2026-09-11，用户要求）
+
+**问题**：四种关闭形态（`thinking.type` / `enable_thinking` / `chat_template_kwargs` /
+`reasoning_effort:"none"`）是否都有官方文档明确写出字段配置、且能让支持的模型真的不思考？
+
+**结论**：**四形态均有官方依据，且多数写明"关闭"语义**；但"参数在册"≠"零推理 token 保证"，
+且存在官方点名的**不能关型号**与**静默忽略**两类边界。逐条来源 URL、官方原文语义强度、
+不能关型号清单见 §十「官方来源」表（本次实抓页面；另 §十 已勘正 OpenAI 取舍说明与
+LM Studio 未文档化标注）。三条硬约束（如实登记，不改行为）：
+
+1. 无一家给出 token 级"零思考"保证；火山（"不输出思维链内容"）与 SGLang（`reasoning_content`
+   stays empty）表述最强；vLLM 官方明确区分"隐藏 ≠ 关闭"（`include_reasoning=false` 仍生成）。
+2. 静默忽略是最大盲区：Anthropic 兼容层忽略 `reasoning_effort`（官方原文）、Ollama gpt-oss
+   忽略 `think`；应用只能靠体检/阶梯部分发现（边想边出正文不报告）。
+3. xAI / Anthropic 经本应用无可靠关闭手段（官方"不可禁用"/兼容层忽略）——思维链隔离器兜底。
+
+**代码注释同步勘正**（`crates/lt-translate/src/thinking.rs` 模块注释与路由表）：
+"这些端点对不支持的参数直接 400"不成立（Anthropic 官方明载静默忽略；xAI 无 400 依据），
+改为"三家共同点是本应用可发送的参数无法可靠关闭"；llama.cpp 引文位置勘正为
+`tools/server/README.md`（非仓库根 README）。**行为零变更**（仅注释/文档）。
 
 ---
 
