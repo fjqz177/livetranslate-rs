@@ -1128,7 +1128,8 @@ if lt_proto::PROVIDER_PRESETS.iter().any(|p| p.api_base == base) { /* skip */ }
 | `6761fdd` | **C6** 厂商预设表 + 默认供应商改 DeepSeek + `/v1` 提示豁免 | 全量 **586+9** 全绿（连跑两次稳定） |
 
 收工门禁：`cargo test --workspace` 586+9 / `cargo clippy --workspace --all-targets -- -D warnings`
-零告警 / 四守护脚本（个人路径·依赖白名单·源码禁令·死契约）全过。
+零告警 / 四守护脚本（个人路径·依赖白名单·源码禁令·死契约）全过 / `cargo build --release -p lt-app` 过 +
+`livetranslate.exe --version` 正常（76.0 MB）。
 
 ### 11.1 施工中的方案偏离（留痕）
 
