@@ -11,7 +11,7 @@
 
 use crate::state::{
     push_log_line, initial_visibility, AppUi, ConfirmKind, DownloadUiState, OverlayMessage,
-    OverlayMode, PanelPage, StartupFlow, TickKind, WinAction, WinId,
+    OverlayMode, PanelPage, StartupFlow, SubtitleFeed, TickKind, WinAction, WinId,
 };
 use crate::tray::{self, Tray};
 use crate::windows;
@@ -909,7 +909,7 @@ impl MultiWindowApp {
                     if self.app_state.panel.translator_error.take().is_some() {
                         self.redraw(WinId::Panel);
                     }
-                    self.feed_subtitle(id, Some(&text));
+                    self.feed_subtitle(id, SubtitleFeed::Translation(&text));
                 }
                 // W2：同语言免翻译（显式结论；字幕窗喂原文，原版语义）
                 lt_proto::UiEvent::TranslationSkipped { id, reason } => {
@@ -917,10 +917,10 @@ impl MultiWindowApp {
                     if let Some(hw) = self.find_mut(WinId::Overlay) {
                         hw.window.request_redraw();
                     }
-                    self.feed_subtitle(id, None);
+                    self.feed_subtitle(id, SubtitleFeed::Skipped);
                 }
-                // W2：失败/无输出（带原因；字幕窗喂占位文案而**不喂原文**——
-                // 不给"没翻出来"伪装成翻译成功的机会）
+                // W2：失败/无输出（带原因；字幕窗按失败态渲染 ⚠ + 警示色而
+                // **不喂原文**——不给"没翻出来"伪装成翻译成功的机会）
                 lt_proto::UiEvent::TranslationFailed {
                     id,
                     kind,
@@ -933,8 +933,7 @@ impl MultiWindowApp {
                     if let Some(hw) = self.find_mut(WinId::Overlay) {
                         hw.window.request_redraw();
                     }
-                    let placeholder = crate::state::failure_text(kind);
-                    self.feed_subtitle(id, Some(&placeholder));
+                    self.feed_subtitle(id, SubtitleFeed::Failed(kind));
                 }
                 // 翻译/用量统计（原版 update_stats）
                 lt_proto::UiEvent::UpdateStats {
@@ -943,6 +942,7 @@ impl MultiWindowApp {
                     prompt_tokens,
                     completion_tokens,
                     cost,
+                    usage_known,
                 } => {
                     self.app_state.overlay.update_stats(crate::state::OverlayStats {
                         asr_n,
@@ -950,6 +950,7 @@ impl MultiWindowApp {
                         prompt_tokens,
                         completion_tokens,
                         cost,
+                        usage_known,
                     });
                 }
                 // ASR 设备标签（悬浮窗 MonitorBar device 段）；同时视作加载框关闭信号
@@ -984,6 +985,48 @@ impl MultiWindowApp {
                 lt_proto::UiEvent::TranslatorUnavailable { reason } => {
                     self.app_state.panel.translator_error = Some(reason);
                     self.redraw(WinId::Panel);
+                }
+                // 翻译装置运行期降级回执（2026-09-10 第二轮评审 item 5 / 用户裁决）：
+                // 回退阶梯试完全部关闭形态仍关不掉思维链 → 界面按"一比一"取消该模型
+                // 的「关闭模型思考」勾选、写入持久化标记 `thinking_unavailable`，
+                // 并落盘走既有设置链路（mark_settings_dirty → 宿主 about_to_wait
+                // register_panel_apply 300ms 防抖 → Cmd::ApplySettings → shell 保存）。
+                // 阶梯最终成功关闭（cannot_disable_thinking=false）→ 不动（裁决 5）。
+                lt_proto::UiEvent::TranslatorDegraded {
+                    name,
+                    api_base,
+                    model,
+                    actual,
+                    cannot_disable_thinking,
+                } => {
+                    tracing::warn!(
+                        "翻译装置降级: {name}（{api_base} / {model}）实际在用 {actual}，\
+                         关不掉思考={cannot_disable_thinking}"
+                    );
+                    if cannot_disable_thinking {
+                        // (api_base, model) 双键定位（同名模型不误伤）——纯函数在
+                        // state.rs，带回执落点单测
+                        let matched = crate::state::apply_translator_degraded(
+                            &mut self.app_state.settings,
+                            &api_base,
+                            &model,
+                        );
+                        // 编辑器打开中且指向同一条目 → 草稿同步（否则"确定"一次会把
+                        // 标记与取消勾选一并抹掉，回执闭环失效）
+                        if let Some(ed) = self.app_state.panel.state.model_editor.as_mut() {
+                            if ed.api_base.trim() == api_base.trim()
+                                && ed.model.trim() == model.trim()
+                            {
+                                ed.apply_thinking_unavailable();
+                            }
+                        }
+                        if matched {
+                            crate::windows::panel::mark_settings_dirty(
+                                &mut self.app_state.session,
+                            );
+                        }
+                        self.redraw(WinId::Panel);
+                    }
                 }
                 // 翻译配置「测试连接」回执
                 lt_proto::UiEvent::TestTranslatorResult {
@@ -1282,9 +1325,10 @@ impl MultiWindowApp {
     }
 
     /// 字幕窗文本喂入（原版 pipeline 仅 `_subwin.isVisible()` 时 update_text）。
-    /// W2/方案 §4.4：按**呈现态**取值——`Some(text)` 喂该文本（成功译文 / 失败占位），
-    /// `None` 喂原文（同语言免翻译，原版语义）。
-    fn feed_subtitle(&mut self, id: u64, text: Option<&str>) {
+    /// W2/方案 §4.4 + 2026-09-10 item 8/9：按**呈现态**取类型化三态值
+    /// （[`SubtitleFeed`]）——成功喂译文；同语言免翻译喂原文（原版语义）；
+    /// 失败喂失败标记（译文行渲染 ⚠ + 警示色，见 subtitle::refresh_display）。
+    fn feed_subtitle(&mut self, id: u64, feed: SubtitleFeed<'_>) {
         if !*self.visible.get(&WinId::Subtitle).unwrap_or(&false) {
             return;
         }
@@ -1299,14 +1343,24 @@ impl MultiWindowApp {
         else {
             return;
         };
-        let value = text.unwrap_or(&original).to_string();
         let mut tl = std::collections::BTreeMap::new();
-        tl.insert(self.app_state.settings.target_language.clone(), value);
+        let failed = match feed {
+            SubtitleFeed::Translation(text) => {
+                tl.insert(self.app_state.settings.target_language.clone(), text.to_string());
+                None
+            }
+            SubtitleFeed::Skipped => {
+                tl.insert(self.app_state.settings.target_language.clone(), original.clone());
+                None
+            }
+            SubtitleFeed::Failed(kind) => Some(kind),
+        };
         self.app_state.subtitle.update_text(
             &mut self.app_state.session,
             &self.app_state.settings,
             original,
             tl,
+            failed,
         );
         self.redraw(WinId::Subtitle);
     }

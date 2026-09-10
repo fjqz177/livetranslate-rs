@@ -333,6 +333,21 @@ impl Settings {
                 fixed.push("thinking_style: 'off' → disable_thinking=false".into());
             }
         }
+        // 2026-09-10 第二轮评审 ②：界面已撤下的覆写键从档案里**清除**——
+        // 界面看不见的键绝不允许影响实际请求（温度已升为一等字段、输出上限应用
+        // 不再发送——旧值留着会反杀"不再发送 max_tokens"的修复、seed 冷门）
+        for m in &mut self.models {
+            if let Some(ov) = m.overrides.as_mut() {
+                for k in OVERRIDE_KEYS_HIDDEN {
+                    if ov.remove(k).is_some() {
+                        fixed.push(format!("overrides: 清除已撤出界面的键 '{k}'"));
+                    }
+                }
+                if ov.is_empty() {
+                    m.overrides = None;
+                }
+            }
+        }
         if self.active_model >= self.models.len() {
             fixed.push(format!("active_model: {} 越界 → 0", self.active_model));
             self.active_model = 0;
@@ -350,12 +365,16 @@ impl Settings {
 /// 值域内不再出现；界面只呈现前五项（自动 + 四种方式）。
 pub const THINKING_STYLES: [&str; 6] = ["auto", "deepseek", "qwen", "vllm", "openai", "off"];
 
-/// 默认采样温度（W1/方案 §2.1）：构造点原先硬编码 `0.3`，现为该字段的默认值。
+/// 温度控件的预填值（2026-09-10 裁决：高级参数**默认不发送**——温度字段默认
+/// `None`；用户界面上勾选启用时的预填就是这个值）
 pub const DEFAULT_TEMPERATURE: f64 = 0.3;
 
 /// 可覆写的采样参数键（E3/ADR-10：自 lt-translate 上移——本清单是
-/// [`ModelConfig.overrides`] 的键域单一事实源：lt-translate 构造期按此
-/// 剔除 null 键，lt-ui 编辑对话框按此渲染行）
+/// [`ModelConfig.overrides`] 的**历史键域**，用于解析旧档案）。
+///
+/// 2026-09-10 第二轮评审 ②：前三个键已撤出界面（温度升为一等字段、输出上限
+/// 应用不再发送、seed 冷门）——[`Settings::sanitize`] 会从档案里清除它们，
+/// lt-translate 构造期还有第二道闸；界面只渲染后三个。
 pub const OVERRIDE_KEYS: [&str; 6] = [
     "temperature",
     "top_p",
@@ -364,6 +383,12 @@ pub const OVERRIDE_KEYS: [&str; 6] = [
     "presence_penalty",
     "seed",
 ];
+
+/// 已撤出界面、**不再参与请求**的覆写键（与 lt-translate 的构造期闸门同源）
+pub const OVERRIDE_KEYS_HIDDEN: [&str; 3] = ["temperature", "max_tokens", "seed"];
+
+/// 界面仍在渲染的覆写键（高级区三行）
+pub const OVERRIDE_KEYS_VISIBLE: [&str; 3] = ["top_p", "frequency_penalty", "presence_penalty"];
 
 /// 翻译模型配置 —— 序列化形状与原版 ModelEditDialog.get_data() 逐键一致。
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -388,9 +413,14 @@ pub struct ModelConfig {
     /// 与 `streaming` 同款：默认值不写盘，仅 false 时写。
     #[serde(skip_serializing_if = "is_true")]
     pub disable_thinking: bool,
-    /// 采样温度（W1/方案 §2.1）：None = **不发送**该参数（供拒绝 temperature 的
-    /// 端点使用）；默认 [`DEFAULT_TEMPERATURE`]，等于默认值时省略写盘。
-    #[serde(skip_serializing_if = "is_default_temperature")]
+    /// 该模型已确认**无法关闭思维链**（2026-09-10 第二轮评审 item 5，默认 false，
+    /// 仅 true 时写盘）：运行期回退阶梯试完全部关闭形态仍关不掉时由界面写入。
+    /// true → 不再尝试注入关闭参数（翻译照常，思考由隔离器兜底不外泄）。
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub thinking_unavailable: bool,
+    /// 采样温度（2026-09-10 裁决）：**默认 None = 不发送**；高级参数默认一律不
+    /// 发送，只有用户在界面上手动指定才发（None 不写盘）
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f64>,
     /// 默认 true；仅 false 时写盘（键名对齐原版 `streaming: false`）
     #[serde(skip_serializing_if = "is_true")]
@@ -403,7 +433,7 @@ pub struct ModelConfig {
     pub input_price: f64, // 美元 / 1M tokens
     #[serde(skip_serializing_if = "is_zero_f64")]
     pub output_price: f64,
-    /// 仅勾选的键（原版 Advanced "checkbox+value" 行）
+    /// 仅勾选的键（原版 Advanced "checkbox+value" 行；界面只剩 top_p 与两个惩罚项）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub overrides: Option<BTreeMap<String, Value>>,
     /// 用户自定义 extra_body（JSON object）
@@ -423,7 +453,8 @@ impl Default for ModelConfig {
             no_system_role: false,
             thinking_style: None,
             disable_thinking: true,
-            temperature: Some(DEFAULT_TEMPERATURE),
+            thinking_unavailable: false,
+            temperature: None,
             streaming: true,
             json_response: false,
             context_turns: 0,
@@ -443,9 +474,6 @@ fn skip_thinking_auto(v: &Option<String>) -> bool {
 }
 fn is_true(b: &bool) -> bool {
     *b
-}
-fn is_default_temperature(v: &Option<f64>) -> bool {
-    *v == Some(DEFAULT_TEMPERATURE)
 }
 fn is_zero_u32(v: &u32) -> bool {
     *v == 0
@@ -721,6 +749,34 @@ mod tests {
         assert!(out["models"][0].get("thinking_style").is_none());
     }
 
+    /// 2026-09-10 第二轮评审 ②：界面已撤下的覆写键（温度/输出上限/seed）在
+    /// sanitize 中被**清除**——旧值留着会反杀"不再发送 max_tokens"的修复
+    #[test]
+    fn hidden_override_keys_are_migrated_out() {
+        let mut s: Settings = serde_json::from_value(serde_json::json!({
+            "models": [{
+                "name": "a", "model": "m",
+                "overrides": {"temperature": 0.7, "max_tokens": 256, "seed": 42, "top_p": 0.9}
+            }]
+        }))
+        .unwrap();
+        let fixed = s.sanitize();
+        let ov = s.models[0].overrides.as_ref().expect("top_p 应保留");
+        assert!(!ov.contains_key("temperature"), "隐藏温度应被清除");
+        assert!(!ov.contains_key("max_tokens"), "隐藏上限应被清除");
+        assert!(!ov.contains_key("seed"), "隐藏 seed 应被清除");
+        assert_eq!(ov.get("top_p"), Some(&serde_json::json!(0.9)));
+        // 清除留有痕迹（供调用方记日志）
+        assert!(fixed.iter().any(|f| f.contains("max_tokens")));
+        // 全部被清空时整个 overrides 折叠为 None（写回档案不再出现空对象）
+        let mut s: Settings = serde_json::from_value(serde_json::json!({
+            "models": [{"name": "a", "model": "m", "overrides": {"max_tokens": 256}}]
+        }))
+        .unwrap();
+        s.sanitize();
+        assert!(s.models[0].overrides.is_none());
+    }
+
     /// W1：缺键的旧档案 → 新字段走默认（开关开 = 关思考；温度 0.3）
     #[test]
     fn missing_new_keys_use_defaults() {
@@ -729,7 +785,8 @@ mod tests {
         }))
         .unwrap();
         assert!(s.models[0].disable_thinking);
-        assert_eq!(s.models[0].temperature, Some(DEFAULT_TEMPERATURE));
+        assert_eq!(s.models[0].temperature, None, "高级参数默认不发送");
+        assert!(!s.models[0].thinking_unavailable);
         s.sanitize();
         assert!(s.models[0].disable_thinking);
     }
@@ -749,6 +806,7 @@ mod tests {
             no_system_role: true,
             thinking_style: Some("qwen".into()),
             disable_thinking: false,
+            thinking_unavailable: true,
             temperature: Some(0.7),
             streaming: false,
             json_response: true,
@@ -776,7 +834,8 @@ mod tests {
             ("no_system_role", "请求构造（messages 组装）"),
             ("thinking_style", "请求构造（关闭方式，§2.3 规则 3）"),
             ("disable_thinking", "请求构造（关闭总开关，§2.3 规则 1/2）"),
-            ("temperature", "请求构造（采样温度，None=不发）"),
+            ("thinking_unavailable", "请求构造（已确认关不掉：不再注入关闭参数）/ UI 提示"),
+            ("temperature", "请求构造（采样温度，None=不发——默认即不发）"),
             ("streaming", "请求构造（stream 开关）"),
             ("json_response", "请求构造（response_format；W1 起界面不再暴露）"),
             ("context_turns", "请求构造（上下文历史条数）"),
@@ -867,7 +926,8 @@ mod tests {
             "no_system_role",
             "thinking_style",
             "disable_thinking", // W1：默认 true（关思考）不写盘
-            "temperature",      // W1：默认 0.3 不写盘
+            "temperature",      // 默认不发送（None）不写盘
+            "thinking_unavailable",
             "streaming",
             "json_response",
             "context_turns",

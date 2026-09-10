@@ -31,10 +31,15 @@ fn main() {
     let t0 = Instant::now();
     print!("译文: ");
     let mut last = String::new();
-    for item in translator.translate_iter(text, "en", "zh", 10) {
+    // 迭代器的最后一个值即最终译文；用量随迭代器返回（不再经共享态）
+    let mut it = translator.translate_iter(text, "en", "zh", 10, 0);
+    #[allow(clippy::while_let_on_iterator)]
+    // while let 是刻意的：跑完还要读 verdict()/usage()（方案 §4）
+    while let Some(item) = it.next() {
         match item {
             Ok(partial) => {
-                let fresh = &partial[last.len()..];
+                // 前缀切片必须按字符边界（译文含多字节字符时按字节切会 panic）
+                let fresh = partial.strip_prefix(&last).unwrap_or(&partial);
                 print!("{fresh}");
                 use std::io::Write;
                 std::io::stdout().flush().ok();
@@ -46,9 +51,14 @@ fn main() {
             }
         }
     }
-    let (pt, ct) = translator.last_usage();
+    let (pt, ct) = it.usage();
+    let usage_note = if it.usage_known() {
+        String::new()
+    } else {
+        "（该端点未返回用量统计）".to_string()
+    };
     println!(
-        "\n完成：{:.0}ms，usage pt={pt} ct={ct}",
+        "\n完成：{:.0}ms，usage pt={pt} ct={ct}{usage_note}",
         t0.elapsed().as_secs_f64() * 1000.0
     );
 }

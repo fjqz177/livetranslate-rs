@@ -92,6 +92,60 @@ pub fn prompt_preset_index(text: &str) -> usize {
     4
 }
 
+/// 模型配置就地校验提示（方案 §4.7 未落地项；2026-09-10 补齐）。
+/// 语义边界：**只提示不阻断保存**、**绝不改写用户填的地址**——判断用
+/// `trim` + 去尾斜杠后的副本，写回仍是用户原文。返回本地化提示文案
+/// （空 = 无告警）。
+fn config_warnings(ed: &ModelEditState) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    // ── API 地址 ──
+    let raw = ed.api_base.trim();
+    if raw.is_empty() {
+        out.push(lt_i18n::t("cfg_warn_api_base_empty"));
+    } else {
+        // 尾斜杠提示（原文判断；判断副本去尾斜杠以免与 /v1 提示叠加）
+        if raw.ends_with('/') {
+            out.push(lt_i18n::t("cfg_warn_api_base_slash"));
+        }
+        let base = raw.trim_end_matches('/');
+        let lower = base.to_ascii_lowercase();
+        if !(lower.starts_with("http://") || lower.starts_with("https://")) {
+            out.push(lt_i18n::t("cfg_warn_api_base_scheme"));
+        }
+        if !has_version_segment(base) {
+            out.push(lt_i18n::t("cfg_warn_api_base_v1"));
+        }
+    }
+    // ── 模型名 ──
+    if ed.model.trim().is_empty() {
+        out.push(lt_i18n::t("cfg_warn_model_empty"));
+    }
+    // ── extra_body（类型化形态判定，不解析错误字符串）──
+    match ed.extra_body_shape() {
+        crate::state::ExtraBodyShape::Empty | crate::state::ExtraBodyShape::Object => {}
+        crate::state::ExtraBodyShape::NonObject => {
+            out.push(lt_i18n::t("cfg_warn_extra_body_nonobject"))
+        }
+        crate::state::ExtraBodyShape::Invalid => {
+            out.push(lt_i18n::t("cfg_warn_extra_body_invalid"))
+        }
+    }
+    out
+}
+
+/// 地址末段是否已是版本段（`/v1`、`/v4`、`/v1beta`…）。避免对厂商自有路径
+/// （如 GLM `/api/paas/v4`）误报"缺 /v1"；不匹配时给软提示（不阻断）。
+fn has_version_segment(base: &str) -> bool {
+    let Some(seg) = base.rsplit('/').next() else {
+        return false;
+    };
+    let mut chars = seg.chars();
+    match chars.next() {
+        Some('v' | 'V') => chars.next().is_some_and(|c| c.is_ascii_digit()),
+        _ => false,
+    }
+}
+
 /// 删除选中模型（原版 _remove_model：仅一行时不删；active 越界钳制；
 /// Rust 增量：被删行在 active 之前时 active 前移，保持指向同一模型）。
 /// 返回是否删除。
@@ -556,23 +610,45 @@ fn editor_fields(ui: &mut Ui, ed: &mut ModelEditState, pal: &Palette) {
             );
             ui.end_row();
 
-            // W1（方案 §2.3）：关闭模型思考总开关——默认勾选，勾选即发送关闭字段
+            // W1（方案 §2.3）：关闭模型思考总开关——默认勾选，勾选即发送关闭字段。
+            // item 5（2026-09-10）：已确认"关不掉"的模型显示为**未勾选** + 提示；
+            // 用户手动重新勾选 = 明确要求再试一次 → 清除持久化标记（正常走后端阶梯）
             ui.label(lt_i18n::t("label_thinking_switch"));
-            ui.checkbox(&mut ed.disable_thinking, lt_i18n::t("thinking_switch_on"))
-                .on_hover_text(lt_i18n::t("thinking_switch_hint"));
+            ui.horizontal(|ui| {
+                let mut checked = ed.disable_thinking && !ed.thinking_unavailable;
+                let resp = ui
+                    .checkbox(&mut checked, lt_i18n::t("thinking_switch_on"))
+                    .on_hover_text(lt_i18n::t("thinking_switch_hint"));
+                if resp.changed() {
+                    ed.disable_thinking = checked;
+                    if checked {
+                        ed.thinking_unavailable = false;
+                    }
+                }
+                if ed.thinking_unavailable {
+                    ui.label(
+                        RichText::new(lt_i18n::t("thinking_unavailable_hint"))
+                            .size(11.0)
+                            .color(pal.warn),
+                    )
+                    .on_hover_text(lt_i18n::t("thinking_unavailable_hint_tip"));
+                }
+            });
             ui.end_row();
 
-            // W1（方案 §2.1）：温度——勾选才发送；不勾选 = 请求中不出现该参数
+            // W1（方案 §2.1）：温度——勾选才发送（勾选前连数值控件都不显示）；
+            // 不勾选 = 请求中不出现该参数（2026-09-10 附裁决：默认不勾选）
             ui.label(lt_i18n::t("label_temperature"));
             ui.horizontal(|ui| {
                 ui.checkbox(&mut ed.temperature_enabled, lt_i18n::t("send_param"))
                     .on_hover_text(lt_i18n::t("temperature_hint"));
-                ui.add_enabled(
-                    ed.temperature_enabled,
-                    egui::DragValue::new(&mut ed.temperature_value)
-                        .range(0.0..=2.0)
-                        .speed(0.05),
-                );
+                if ed.temperature_enabled {
+                    ui.add(
+                        egui::DragValue::new(&mut ed.temperature_value)
+                            .range(0.0..=2.0)
+                            .speed(0.05),
+                    );
+                }
             });
             ui.end_row();
 
@@ -587,6 +663,15 @@ fn editor_fields(ui: &mut Ui, ed: &mut ModelEditState, pal: &Palette) {
             ui.end_row();
 
         });
+
+    // 方案 §4.7 就地校验（软提示：**不阻断保存**、**不擅自改用户填的地址**——
+    // 判断只 trim + 去尾斜杠；文案只提示，保存仍按用户原文）
+    for w in config_warnings(ed) {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new("\u{26A0}").size(11.0).color(pal.warn));
+            ui.label(RichText::new(w).size(11.0).color(pal.warn));
+        });
+    }
 
     // 行为复选（W1/方案 §2.4：json_response 移出界面——翻译不需要 JSON 模式且
     // 兼容面窄；no_system_role 移入高级区；上下文数移入高级区）
@@ -986,5 +1071,87 @@ mod tests {
         }
         // 确定按钮不在帧内点击；编辑器保持打开（状态未被意外消费）
         assert!(st.panel.state.model_editor.is_some());
+    }
+
+    /// item 5 + §4.7 的新 UI 分支无头渲染冒烟：关不掉提示行与就地校验提示
+    /// 同帧共存时不 panic（两处都是纯展示，不阻断保存）
+    #[test]
+    fn model_editor_smoke_with_unavailable_and_warnings() {
+        let ctx = egui::Context::default();
+        let mut st = crate::state::AppUi::new(lt_proto::Settings::default());
+        st.panel.state.page = crate::state::PanelPage::Translation;
+        let mut ed = ModelEditState::new_edit(0, &st.settings.models[0]);
+        ed.apply_thinking_unavailable(); // 未勾选 + 提示行
+        ed.api_base = String::new(); // 空地址告警
+        ed.model = String::new(); // 空模型名告警
+        ed.extra_body_text = "[1,2]".into(); // 非 object 告警
+        st.panel.state.model_editor = Some(ed);
+        for _ in 0..2 {
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                crate::windows::dispatch(crate::state::WinId::Panel, ui, &mut st)
+            });
+            assert!(!out.shapes.is_empty());
+            out.textures_delta.clear();
+        }
+        assert!(st.panel.state.model_editor.is_some());
+    }
+
+    /// §4.7 就地校验：空/无 scheme/缺版本段/尾斜杠/非 object 各自成提示；
+    /// 合规配置零告警（不阻断保存、不改写用户输入——本函数只读）
+    #[test]
+    fn config_warnings_cover_shape_and_url_issues() {
+        // 合规样例：/v1 + 无尾斜杠 → 零告警
+        let mut ed = ModelEditState::new_add();
+        ed.api_base = "http://127.0.0.1:1234/v1".into();
+        ed.model = "qwen2.5".into();
+        assert!(config_warnings(&ed).is_empty(), "{:?}", config_warnings(&ed));
+        // 厂商自有版本段（GLM /api/paas/v4）不报"缺 /v1"
+        ed.api_base = "https://open.bigmodel.cn/api/paas/v4".into();
+        assert!(config_warnings(&ed).is_empty());
+        // 空地址 + 空模型名
+        ed.api_base = "   ".into();
+        ed.model = "".into();
+        let w = config_warnings(&ed);
+        assert!(w.contains(&lt_i18n::t("cfg_warn_api_base_empty")));
+        assert!(w.contains(&lt_i18n::t("cfg_warn_model_empty")));
+        assert!(!w.contains(&lt_i18n::t("cfg_warn_api_base_v1")), "空地址不叠加");
+        // 无 scheme
+        ed.api_base = "127.0.0.1:1234/v1".into();
+        assert!(config_warnings(&ed).contains(&lt_i18n::t("cfg_warn_api_base_scheme")));
+        // 缺版本段 + 尾斜杠（两者可叠加；尾斜杠由原文判断）
+        ed.api_base = "https://api.deepseek.com/".into();
+        let w = config_warnings(&ed);
+        assert!(w.contains(&lt_i18n::t("cfg_warn_api_base_v1")));
+        assert!(w.contains(&lt_i18n::t("cfg_warn_api_base_slash")));
+        // 尾斜杠不误报"缺版本段"（判断副本去尾斜杠）
+        ed.api_base = "http://127.0.0.1:1234/v1/".into();
+        let w = config_warnings(&ed);
+        assert!(!w.contains(&lt_i18n::t("cfg_warn_api_base_v1")));
+        assert!(w.contains(&lt_i18n::t("cfg_warn_api_base_slash")));
+        // extra_body 形态（类型化判定）
+        ed.api_base = "http://127.0.0.1:1234/v1".into();
+        ed.model = "qwen2.5".into();
+        ed.extra_body_text = "[1,2]".into();
+        assert!(config_warnings(&ed).contains(&lt_i18n::t("cfg_warn_extra_body_nonobject")));
+        ed.extra_body_text = "{oops".into();
+        assert!(config_warnings(&ed).contains(&lt_i18n::t("cfg_warn_extra_body_invalid")));
+        ed.extra_body_text = "{\"a\": 1}".into();
+        assert!(config_warnings(&ed).is_empty());
+        // 提示函数只读——不改写用户填的地址（trim 只用于本地判断）
+        ed.api_base = "  http://127.0.0.1:1234/v1/  ".into();
+        let _ = config_warnings(&ed);
+        assert_eq!(ed.api_base, "  http://127.0.0.1:1234/v1/  ", "不得改写输入");
+        assert_eq!(ed.extra_body_shape(), crate::state::ExtraBodyShape::Object);
+    }
+
+    /// 版本段判定（避免对厂商自有路径误报）
+    #[test]
+    fn version_segment_detection_is_conservative() {
+        assert!(has_version_segment("http://x/v1"));
+        assert!(has_version_segment("https://x/api/paas/v4"));
+        assert!(has_version_segment("http://x/v1beta"));
+        assert!(!has_version_segment("https://api.deepseek.com"));
+        assert!(!has_version_segment("http://x/compatible-mode"));
+        assert!(!has_version_segment(""));
     }
 }

@@ -150,8 +150,19 @@ fn chunk_usage_detailed(pt: u64, ct: u64, reasoning: u64) -> String {
     .to_string()
 }
 
-fn non_streaming_response(status_line: &str, body: &Value) -> Vec<u8> {
-    let body = body.to_string();
+/// 结束标记 chunk（只有 finish_reason，不含 content 与 usage）
+fn chunk_finish(reason: &str) -> String {
+    json!({
+        "id": "chatcmpl-test",
+        "object": "chat.completion.chunk",
+        "created": 1,
+        "model": "test-model",
+        "choices": [{"index": 0, "delta": {}, "finish_reason": reason}],
+    })
+    .to_string()
+}
+
+fn non_streaming_response(status_line: &str, body: &Value) -> Vec<u8> {    let body = body.to_string();
     format!(
         "HTTP/1.1 {status_line}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
@@ -200,6 +211,7 @@ fn request_body(req: &str) -> Value {
 
 // ── 流式全链路 ──
 
+#[allow(clippy::while_let_on_iterator)]
 #[test]
 fn streaming_yields_partials_then_final_with_usage() {
     let server = MockServer::start(Arc::new(|_| {
@@ -213,7 +225,8 @@ fn streaming_yields_partials_then_final_with_usage() {
     let t = translator(&server.base_url);
     let mut partials = Vec::new();
     let mut final_text = String::new();
-    for item in t.translate_iter("hello world", "en", "zh", 10) {
+    let mut it = t.translate_iter("hello world", "en", "zh", 10, 0);
+    while let Some(item) = it.next() {
         match item {
             Ok(p) => {
                 final_text = p.clone();
@@ -228,15 +241,18 @@ fn streaming_yields_partials_then_final_with_usage() {
     assert_eq!(partials[1], "你好，");
     assert_eq!(partials[2], "你好，世界");
     assert_eq!(final_text, "你好，世界");
-    assert_eq!(t.last_usage(), (11, 7));
+    // 用量随迭代器返回（不再经共享态回传）
+    assert_eq!(it.usage(), (11, 7));
+    assert!(it.usage_known(), "服务端回了 usage，应标记为已知");
     // 请求体形状
     let body = request_body(&server.requests()[0]);
     assert_eq!(body["model"], "test-model");
     assert_eq!(body["stream"], true);
     assert_eq!(body["stream_options"]["include_usage"], true);
-    // W1/方案 §2.1：默认不发送长度上限；温度默认 0.3
+    // W1/方案 §2.1 + 2026-09-10 裁决：默认不发送长度上限，**也不发送温度**
+    // （高级参数默认全部不发送，只有用户手动指定才发）
     assert!(body.get("max_tokens").is_none(), "默认不应发送 max_tokens");
-    assert_eq!(body["temperature"], 0.3);
+    assert!(body.get("temperature").is_none(), "默认不应发送 temperature");
     assert_eq!(body["messages"][0]["role"], "system");
     assert_eq!(body["messages"].as_array().unwrap().len(), 2);
 }
@@ -260,7 +276,7 @@ fn streaming_strips_inline_reasoning_never_leaks() {
     }));
     let t = translator(&server.base_url);
     let mut partials = Vec::new();
-    let mut it = t.translate_iter("hello", "en", "zh", 10);
+    let mut it = t.translate_iter("hello", "en", "zh", 10, 0);
     // 必须用 while let（for 会移走迭代器，之后读不到体检结论）
     while let Some(item) = it.next() {
         match item {
@@ -286,7 +302,7 @@ fn verdict_reports_reasoning_budget_burn() {
         sse_response(&[chunk_usage_detailed(142, 256, 256), chunk_delta("")])
     }));
     let t = translator(&server.base_url);
-    let mut it = t.translate_iter("hello", "en", "zh", 10);
+    let mut it = t.translate_iter("hello", "en", "zh", 10, 0);
     let mut last: Option<Result<String, _>> = None;
     while let Some(item) = it.next() {
         last = Some(item);
@@ -311,10 +327,15 @@ fn stream_options_retracted_when_rejected() {
         }
     }));
     let t = translator(&server.base_url);
-    let result: Result<String, lt_translate::TranslateError> = t.translate("hello", "en", "zh", 10);
-    let text = result.expect("重试后应成功");
+    let mut it = t.translate_iter("hello", "en", "zh", 10, 0);
+    let mut text = String::new();
+    #[allow(clippy::while_let_on_iterator)]
+    // while let 是刻意的：跑完还要读 verdict()/usage()（方案 §4）
+    while let Some(item) = it.next() {
+        text = item.expect("重试后应成功");
+    }
     assert_eq!(text, "ok");
-    assert_eq!(t.last_usage(), (3, 2));
+    assert_eq!(it.usage(), (3, 2));
     let reqs = server.requests();
     assert_eq!(reqs.len(), 2, "应发起两次请求: {reqs:?}");
     assert!(request_body(&reqs[0]).get("stream_options").is_some());
@@ -336,7 +357,7 @@ fn json_response_mode_yields_only_final() {
         ..TranslatorParams::default()
     })
     .unwrap();
-    let items: Vec<_> = t.translate_iter("hello", "en", "zh", 10).collect();
+    let items: Vec<_> = t.translate_iter("hello", "en", "zh", 10, 0).collect();
     assert_eq!(items.len(), 1, "json 模式只产最终值: {items:?}");
     assert_eq!(items.into_iter().next().unwrap().unwrap(), "译文内容");
 }
@@ -352,9 +373,16 @@ fn sync_translate_returns_content_and_usage() {
         ..TranslatorParams::default()
     })
     .unwrap();
-    let text = t.translate("hello", "en", "zh", 10).unwrap();
+    let mut it = t.translate_iter("hello", "en", "zh", 10, 0);
+    let mut text = String::new();
+    #[allow(clippy::while_let_on_iterator)]
+    // while let 是刻意的：跑完还要读 verdict()/usage()（方案 §4）
+    while let Some(item) = it.next() {
+        text = item.expect("非流式应成功");
+    }
     assert_eq!(text, "你好世界"); // trim 语义
-    assert_eq!(t.last_usage(), (20, 10));
+    assert_eq!(it.usage(), (20, 10));
+    assert!(it.usage_known(), "响应带 usage → 已知");
     let body = request_body(&server.requests()[0]);
     // 原版 kwargs：stream=false 时不写 stream 键（SDK 默认非流式）
     assert!(body.get("stream").is_none());
@@ -369,7 +397,7 @@ fn timeout_classified_when_server_stalls() {
     }));
     let t = translator(&server.base_url);
     // W4：超时逐调用传入（设置总线 tl.timeout 生效值）
-    let err = t.translate("hello", "en", "zh", 1).expect_err("应超时");
+    let err = t.translate("hello", "en", "zh", 1, 0).expect_err("应超时");
     assert!(
         matches!(err, lt_translate::TranslateError::Timeout(_)),
         "实际: {err:?}"
@@ -389,7 +417,7 @@ fn repetition_error_detected() {
         sse_response(&[chunk_delta(&loop_text), chunk_usage(9, 9)])
     }));
     let t = translator(&server.base_url);
-    let err = t.translate("hello", "en", "zh", 10).expect_err("应检出重复");
+    let err = t.translate("hello", "en", "zh", 10, 0).expect_err("应检出重复");
     assert!(
         matches!(err, lt_translate::TranslateError::Repetition(_)),
         "实际: {err:?}"
@@ -400,7 +428,7 @@ fn repetition_error_detected() {
 fn auth_error_classified() {
     let server = MockServer::start(Arc::new(|_| error_response(401, "Invalid API key")));
     let t = translator(&server.base_url);
-    let err = t.translate("hello", "en", "zh", 10).expect_err("应失败");
+    let err = t.translate("hello", "en", "zh", 10, 0).expect_err("应失败");
     assert!(
         matches!(err, lt_translate::TranslateError::Auth { code: 401, .. }),
         "实际: {err:?}"
@@ -421,8 +449,8 @@ fn context_history_appended_to_messages() {
     })
     .unwrap();
     t.set_context_turns(2);
-    t.translate("第一句", "en", "zh", 10).unwrap();
-    t.translate("第二句", "en", "zh", 10).unwrap();
+    t.translate("第一句", "en", "zh", 10, 1).unwrap();
+    t.translate("第二句", "en", "zh", 10, 2).unwrap();
     let body = request_body(&server.requests()[1]);
     let msgs = body["messages"].as_array().unwrap();
     // system + (user=第一句, assistant=译文) + user=第二句
@@ -446,7 +474,7 @@ fn no_system_role_merges_prompt_into_user() {
         ..TranslatorParams::default()
     })
     .unwrap();
-    t.translate("hello", "en", "zh", 10).unwrap();
+    t.translate("hello", "en", "zh", 10, 0).unwrap();
     let body = request_body(&server.requests()[0]);
     let msgs = body["messages"].as_array().unwrap();
     assert_eq!(msgs.len(), 1);
@@ -466,7 +494,7 @@ fn language_display_names_in_prompt() {
         ..TranslatorParams::default()
     })
     .unwrap();
-    t.translate("hello", "ja", "zh", 10).unwrap();
+    t.translate("hello", "ja", "zh", 10, 0).unwrap();
     let body = request_body(&server.requests()[0]);
     let sys = body["messages"][0]["content"].as_str().unwrap();
     assert!(
@@ -483,12 +511,12 @@ fn target_language_per_call_affects_request() {
         sse_response(&[chunk_delta("x"), chunk_usage(1, 1)])
     }));
     let t = translator(&server.base_url);
-    t.translate("hello", "en", "ja", 10).unwrap();
+    t.translate("hello", "en", "ja", 10, 0).unwrap();
     let body = request_body(&server.requests()[0]);
     let sys = body["messages"][0]["content"].as_str().unwrap();
     assert!(sys.contains("into Japanese"), "system prompt: {sys}");
     // 下一次调用传回 zh → 不复用上一调的 ja
-    t.translate("hallo", "en", "zh", 10).unwrap();
+    t.translate("hallo", "en", "zh", 10, 1).unwrap();
     let body = request_body(&server.requests()[1]);
     let sys = body["messages"][0]["content"].as_str().unwrap();
     assert!(sys.contains("into Chinese"), "system prompt: {sys}");
@@ -496,8 +524,10 @@ fn target_language_per_call_affects_request() {
 
 // ── overrides / response_format ──
 
+/// 第二轮评审 ②：界面已撤下的覆写键（温度/输出上限/seed）**一律不参与请求**——
+/// 老档案里的残值不得偷偷改行为（否则"不再发送 max_tokens"的修复会被旧值反杀）
 #[test]
-fn overrides_appear_in_request_body() {
+fn hidden_override_keys_are_ignored() {
     let server = MockServer::start(Arc::new(|_| {
         sse_response(&[chunk_delta("x"), chunk_usage(1, 1)])
     }));
@@ -515,12 +545,31 @@ fn overrides_appear_in_request_body() {
         ..TranslatorParams::default()
     })
     .unwrap();
-    t.translate("hello", "en", "zh", 10).unwrap();
+    t.translate("hello", "en", "zh", 10, 0).unwrap();
+    let body = request_body(&server.requests()[0]);
+    // 仍在界面上的键照发
+    assert_eq!(body["top_p"], 0.9);
+    // 已撤出界面的键一律不发（温度走一等字段，默认未指定）
+    assert!(body.get("temperature").is_none(), "隐藏温度不得反杀: {body}");
+    assert!(body.get("max_tokens").is_none(), "隐藏上限不得反杀: {body}");
+    assert!(body.get("seed").is_none(), "隐藏 seed 不得参与: {body}");
+}
+
+/// 一等字段是温度的**唯一**生效路径（用户手动指定才发）
+#[test]
+fn first_class_temperature_wins_over_nothing() {
+    let server = MockServer::start(Arc::new(|_| {
+        sse_response(&[chunk_delta("x"), chunk_usage(1, 1)])
+    }));
+    let t = Translator::new(TranslatorParams {
+        api_base: server.base_url.clone(),
+        temperature: Some(0.7),
+        ..TranslatorParams::default()
+    })
+    .unwrap();
+    t.translate("hello", "en", "zh", 10, 0).unwrap();
     let body = request_body(&server.requests()[0]);
     assert_eq!(body["temperature"], 0.7);
-    assert_eq!(body["top_p"], 0.9);
-    assert_eq!(body["max_tokens"], 128);
-    assert_eq!(body["seed"], 42);
 }
 
 #[test]
@@ -534,7 +583,7 @@ fn json_response_sends_json_schema_format() {
         ..TranslatorParams::default()
     })
     .unwrap();
-    t.translate("hello", "en", "zh", 10).unwrap();
+    t.translate("hello", "en", "zh", 10, 0).unwrap();
     let body = request_body(&server.requests()[0]);
     let sys = body["messages"][0]["content"].as_str().unwrap();
     assert!(
@@ -557,33 +606,37 @@ fn thinking_body_merged_into_request() {
         ..TranslatorParams::default()
     })
     .unwrap();
-    let body = t.build_request_body("system", "text", true, false);
+    let body = t.build_request_body("system", "text", true, false, 0);
     assert_eq!(body["reasoning_effort"], "none");
     assert!(body.get("enable_thinking").is_none(), "不得再盲发 enable_thinking");
 }
 
 #[test]
 fn request_body_omits_optional_params_when_absent() {
-    // W1/方案 §2.1：长度上限默认不发送（应用强加上限会把"先想再答"的模型憋死）
+    // W1/方案 §2.1 + 2026-09-10 裁决：长度上限与温度**默认都不发送**
+    // （应用强加上限会把"先想再答"的模型憋死；高级参数默认全部不发）
     let t = Translator::new(TranslatorParams {
         api_base: "http://127.0.0.1:1/v1".into(),
         ..TranslatorParams::default()
     })
     .unwrap();
-    let body = t.build_request_body("system", "text", true, false);
+    let body = t.build_request_body("system", "text", true, false, 0);
     assert!(body.get("max_tokens").is_none(), "默认不应发送 max_tokens");
-    assert_eq!(body["temperature"], 0.3, "温度默认 0.3");
+    assert!(
+        body.get("temperature").is_none(),
+        "默认不应发送 temperature（高级参数默认关闭）"
+    );
 
-    // 温度为 None（留空）→ 不发送该键；显式上限则照发
+    // 用户手动指定 → 照发
     let t = Translator::new(TranslatorParams {
         api_base: "http://127.0.0.1:1/v1".into(),
-        temperature: None,
+        temperature: Some(0.2),
         max_tokens: Some(1024),
         ..TranslatorParams::default()
     })
     .unwrap();
-    let body = t.build_request_body("system", "text", true, false);
-    assert!(body.get("temperature").is_none(), "留空 = 不发送温度");
+    let body = t.build_request_body("system", "text", true, false, 0);
+    assert_eq!(body["temperature"], 0.2);
     assert_eq!(body["max_tokens"], 1024);
 
     // 总开关关（= 旧 "off" 语义）→ 不发任何推理参数
@@ -593,13 +646,54 @@ fn request_body_omits_optional_params_when_absent() {
         ..TranslatorParams::default()
     })
     .unwrap();
-    let body = t.build_request_body("system", "text", true, false);
+    let body = t.build_request_body("system", "text", true, false, 0);
     assert!(body.get("reasoning_effort").is_none());
     assert!(body.get("enable_thinking").is_none());
+
+    // 已确认关不掉的模型（持久化标记）→ 同样不发
+    let t = Translator::new(TranslatorParams {
+        api_base: "http://127.0.0.1:1234/v1".into(),
+        thinking_unavailable: true,
+        ..TranslatorParams::default()
+    })
+    .unwrap();
+    let body = t.build_request_body("system", "text", true, false, 0);
+    assert!(body.get("reasoning_effort").is_none());
+    assert!(body.get("thinking").is_none());
 }
 
+/// 最小请求：只剩「模型 + 系统提示词 + 文本 + 流式」，可选参数一个不带
 #[test]
-fn share_client_preserves_config_but_fresh_state() {
+fn minimal_request_drops_every_optional_field() {
+    let t = Translator::new(TranslatorParams {
+        api_base: "http://127.0.0.1:1234/v1".into(),
+        model: "test-model".into(),
+        temperature: Some(0.7),
+        max_tokens: Some(512),
+        extra_body: Some(json!({"top_k": 5})),
+        ..TranslatorParams::default()
+    })
+    .unwrap();
+    let normal = t.build_request_body("system", "text", true, false, 0);
+    assert_eq!(normal["temperature"], 0.7);
+
+    let minimal = t.minimal();
+    let body = minimal.build_request_body("system", "text", true, false, 0);
+    assert!(body.get("temperature").is_none(), "最小请求不带温度: {body}");
+    assert!(body.get("max_tokens").is_none(), "最小请求不带输出上限");
+    assert!(body.get("top_k").is_none(), "最小请求不带用户额外参数");
+    assert!(body.get("reasoning_effort").is_none(), "最小请求不带推理参数");
+    assert!(body.get("thinking").is_none());
+    // 翻译所必需的三件仍在：模型名 + 系统提示词 + 待译文本
+    assert_eq!(body["model"], "test-model");
+    assert_eq!(body["messages"][0]["role"], "system");
+    assert_eq!(body["messages"][1]["content"], "text");
+}
+
+/// 第二轮评审 ①（回归守卫）：派生副本（回退阶梯每级一个）必须**共享会话记忆**——
+/// 旧实现给每次提交派生"空白状态"的副本，导致「上下文数」整体失效
+#[test]
+fn derived_translator_shares_conversation_memory() {
     let server = MockServer::start(Arc::new(|_| {
         non_streaming_response("200 OK", &completion_response("译文", 2, 3))
     }));
@@ -610,16 +704,61 @@ fn share_client_preserves_config_but_fresh_state() {
     })
     .unwrap();
     t.set_context_turns(2);
-    t.translate("hi", "en", "zh", 10).unwrap();
-    // W4：with_target_language 的目标语言面随镜像退役 → share_client
-    // （共享 client 配置；历史/用量清零；目标语言逐调用传入）
-    let clone = t.share_client();
-    assert_eq!(clone.last_usage(), (0, 0), "克隆后用量清零");
-    // 原实例历史不受克隆影响，克隆历史为空
-    clone.translate("bonjour", "en", "fr", 10).unwrap();
+    t.translate("hi", "en", "zh", 10, 1).unwrap();
+    // 派生副本（share_client / 阶梯每级）看得见原实例的历史
+    let clone = t.with_plan(lt_translate::ThinkingPlan::None);
+    clone.translate("bonjour", "en", "fr", 10, 2).unwrap();
     let body = request_body(&server.requests()[1]);
     let msgs = body["messages"].as_array().unwrap();
-    assert_eq!(msgs.len(), 2, "克隆实例无历史: {msgs:?}");
+    assert_eq!(msgs.len(), 4, "派生副本应带上历史: {msgs:?}");
+    assert_eq!(msgs[1]["content"], "hi");
+    assert_eq!(msgs[2]["content"], "译文");
+}
+
+/// 并发语义（第二轮评审 ①）：上下文只取**提交序号更早**的句子，
+/// 绝不把后提交的"未来句"当上下文
+#[test]
+fn context_never_uses_later_sequences() {
+    let server = MockServer::start(Arc::new(|_| {
+        non_streaming_response("200 OK", &completion_response("译文", 1, 1))
+    }));
+    let t = Translator::new(TranslatorParams {
+        api_base: server.base_url.clone(),
+        streaming: false,
+        ..TranslatorParams::default()
+    })
+    .unwrap();
+    t.set_context_turns(2);
+    // 乱序完成：先落 3 号（"第三句"），再翻 2 号
+    t.translate("第三句", "en", "zh", 10, 3).unwrap();
+    t.translate("第二句", "en", "zh", 10, 2).unwrap();
+    let body = request_body(&server.requests()[1]);
+    let msgs = body["messages"].as_array().unwrap();
+    assert_eq!(
+        msgs.len(),
+        2,
+        "3 号是本次(2 号)之后的句子，不得作为上下文: {msgs:?}"
+    );
+}
+
+/// 第二轮评审 ⑩：服务端完全不给 usage 时，用量标记为"未知"（界面据此显示"—"）
+#[test]
+fn missing_usage_is_reported_as_unknown() {
+    let server = MockServer::start(Arc::new(|_| {
+        // 无 usage 分片：只有正文与结束标记
+        sse_response(&[chunk_delta("译文"), chunk_finish("stop")])
+    }));
+    let t = translator(&server.base_url);
+    let mut it = t.translate_iter("hello", "en", "zh", 10, 0);
+    let mut last = String::new();
+    #[allow(clippy::while_let_on_iterator)]
+    // while let 是刻意的：跑完还要读 verdict()/usage()（方案 §4）
+    while let Some(item) = it.next() {
+        last = item.expect("应成功");
+    }
+    assert_eq!(last, "译文");
+    assert!(!it.usage_known(), "服务端未返回 usage → 未知");
+    assert_eq!(it.usage(), (0, 0));
 }
 
 // ── bench 冒烟（mock 服务器） ──
@@ -640,6 +779,8 @@ fn benchmark_blocking_against_mock() {
         model: "test-model".into(),
         proxy: "none".into(),
         no_system_role: false,
+        disable_thinking: true,
+        thinking_style: None,
     };
     let results = lt_translate::bench::run_benchmark_blocking(
         &[model],
@@ -650,5 +791,15 @@ fn benchmark_blocking_against_mock() {
     assert_eq!(results.len(), 1);
     assert!(results[0].error.is_none(), "error: {:?}", results[0].error);
     assert_eq!(results[0].rounds.len(), 5, "5 轮句组");
+    assert!(results[0].avg_total > 0.0);
+    // 第二轮评审 ⑫：基准必须走与生产**同一套请求构造**——不再硬编码
+    // max_tokens:256 / temperature:0.3，且本地端点应带上关闭思考参数
+    let body = request_body(&server.requests()[0]);
+    assert!(body.get("max_tokens").is_none(), "基准不得自带输出上限: {body}");
+    assert!(body.get("temperature").is_none(), "基准不得自带温度: {body}");
+    assert_eq!(
+        body["reasoning_effort"], "none",
+        "本地端点的关闭思考参数应随生产构造一并生效: {body}"
+    );
     assert!(results[0].avg_total > 0.0);
 }

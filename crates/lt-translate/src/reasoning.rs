@@ -118,23 +118,30 @@ impl ReasoningStripper {
         &self.visible
     }
 
-    /// 喂入增量，返回清洗后的**累积**可见文本
+    /// 喂入增量，返回清洗后的**累积**可见文本。
+    ///
+    /// **无步数上限**：跑到没有进展为止——`step` 每次返回 true 都严格消费掉
+    /// pending 的前缀（find_open / find_close / 块内闭标签三路皆然），因此必然
+    /// 终止；旧实现的上限 8 步会在"单次喂入 ≥5 个配对块"时把剩余原文连同思考
+    /// 一起当正文交出去（实测复现），违反 INV-F。
     pub fn push(&mut self, delta: &str) -> String {
         self.pending.push_str(delta);
-        for _ in 0..8 {
-            // 有界重试：正常文本一轮即稳定（上限防构造嵌套）
-            if !self.step() {
-                break;
-            }
-        }
+        while self.step() {}
         self.visible.clone()
     }
 
-    /// 流结束：丢弃未闭合块，flush 合法尾巴，返回最终可见文本
+    /// 流结束：丢弃未闭合块与未成形的标签残尾，返回最终可见文本。
+    ///
+    /// 收尾时 `pending` 若仍非空，**只可能**是某个标签的前缀（`step` ④ 的尾巴
+    /// 缓冲只保留"可能是标签开头"的后缀，其余全部已并入 visible）——一律丢弃：
+    /// 宁可少一个孤立的 `<`/`◁`，也绝不把"看起来像标签"的东西当译文输出。
     pub fn finish(mut self) -> String {
         if self.open_block.is_none() {
             let tail = std::mem::take(&mut self.pending);
-            self.visible.push_str(&tail);
+            debug_assert!(
+                tail.is_empty() || TAGS.iter().any(|(o, c)| o.starts_with(&tail) || c.starts_with(&tail)),
+                "收尾残尾不是标签前缀（strip 语义已被破坏）: {tail:?}"
+            );
         }
         self.visible
     }
@@ -152,17 +159,27 @@ impl ReasoningStripper {
             self.pending = self.pending[keep..].to_string();
             return false;
         }
-        // ② 见开标签：其前文本可见，进入块内
-        if let Some((at, olen, close)) = find_open(&self.pending) {
-            self.visible.push_str(&self.pending[..at]);
-            self.pending = self.pending[at + olen..].to_string();
-            self.open_block = Some(close);
-            return true;
-        }
-        // ③ 游离闭标签：删到该标签（含）——答案在其后
-        if let Some((at, close)) = find_close(&self.pending) {
-            self.pending = self.pending[at + close.len()..].to_string();
-            return true;
+        // ② 开标签与游离闭标签：**先看谁在前**——闭标签在前时按"游离闭标签"
+        // 删到该处（答案在其后），否则才进入推理块。旧实现无条件先处理开标签，
+        // 导致 `答案</think>正文<think>S</think>尾` 里的孤立闭标签漏进译文。
+        let open = find_open(&self.pending);
+        let close = find_close(&self.pending);
+        match (open, close) {
+            (Some((oat, _, _)), Some((cat, cclose))) if cat < oat => {
+                self.pending = self.pending[cat + cclose.len()..].to_string();
+                return true;
+            }
+            (Some((at, olen, close_tag)), _) => {
+                self.visible.push_str(&self.pending[..at]);
+                self.pending = self.pending[at + olen..].to_string();
+                self.open_block = Some(close_tag);
+                return true;
+            }
+            (None, Some((at, cclose))) => {
+                self.pending = self.pending[at + cclose.len()..].to_string();
+                return true;
+            }
+            (None, None) => {}
         }
         // ④ 普通文本：保留可能构成标签开头的尾巴
         let keep = maybe_any_tag_start(&self.pending);
@@ -285,8 +302,7 @@ mod tests {
     }
 
     #[test]
-    fn streaming_matches_batch_on_same_input() {
-        let raw = format!("a {0}r1{1} b {0}r2{1} c", THINK.0, THINK.1);
+    fn streaming_matches_batch_on_same_input() {        let raw = format!("a {0}r1{1} b {0}r2{1} c", THINK.0, THINK.1);
         let mut s = ReasoningStripper::new();
         let mut streamed = Vec::new();
         for ch in raw.chars() {
@@ -297,5 +313,51 @@ mod tests {
         assert_eq!(last, "a  b  c");
         // 最后一个增量即最终结果（尾巴已 flush，无未闭合块）
         assert_eq!(streamed.last().map(String::as_str), Some("a  b  c"));
+    }
+
+    // ── 上限/形态回归（2026-09-10 第二轮评审实证复现的三类泄漏） ──
+
+    /// 单次喂入 5 个配对块（非流式路径 / 服务端一次下发整段）——旧实现 8 步上限
+    /// 会在第 5 个块中途放弃，把 `…SECRET5</think>译文` 原样交出（已实测复现）
+    #[test]
+    fn many_paired_blocks_in_one_push_are_all_stripped() {
+        let raw = format!(
+            "{o}S1{c}{o}S2{c}{o}S3{c}{o}S4{c}{o}S5{c}译文",
+            o = THINK.0,
+            c = THINK.1
+        );
+        assert_eq!(strip_reasoning(&raw), "译文");
+        // 流式：单片喂入整段同样不得泄漏（finish 是最终结果的来源）
+        let mut s = ReasoningStripper::new();
+        let _ = s.push(&raw);
+        assert_eq!(s.finish(), "译文");
+    }
+
+    /// 单次喂入多个游离闭标签——不得因步数预算而残留（剥离规则是"删到该闭
+    /// 标签（含）"，其之前的片段按定义属于思考预览，一并删除）
+    #[test]
+    fn many_stray_closes_in_one_push_are_all_stripped() {
+        let raw = format!("AAA{}BBB", THINK.1.repeat(9));
+        assert_eq!(strip_reasoning(&raw), "BBB");
+    }
+
+    /// 游离闭标签出现在开标签**之前**：旧实现先匹配开标签，把前段（含闭标签）
+    /// 原样并入可见文本；正确语义是按"删到该闭标签（含）"处理
+    #[test]
+    fn stray_close_before_open_is_stripped() {
+        let raw = format!("答案{c}正文{o}S{c}尾", o = THINK.0, c = THINK.1);
+        assert_eq!(strip_reasoning(&raw), "正文尾");
+    }
+
+    /// 收尾残尾（未成形的标签前缀）不得被当成正文——即使正文看起来像标签开头
+    #[test]
+    fn dangling_tag_prefix_is_not_flushed_as_text() {
+        let mut s = ReasoningStripper::new();
+        let _ = s.push("译文<thi");
+        assert_eq!(s.finish(), "译文");
+        // 正常结束的正文不受影响
+        let mut s = ReasoningStripper::new();
+        let _ = s.push("译文");
+        assert_eq!(s.finish(), "译文");
     }
 }

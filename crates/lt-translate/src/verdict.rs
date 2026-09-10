@@ -61,37 +61,14 @@ pub fn classify_response(
     ResponseVerdict::EmptyNoOutput
 }
 
-/// 原始字符串 → [`FinishKind`]（供未来接入其它协议/日志复盘使用）
+/// 原始字符串 → [`FinishKind`]（流式/非流式统一入口；第二轮评审 ⑧：
+/// 服务端返回陌生取值时落 `Other`，**绝不**让解码失败打死整段响应）
 pub fn finish_kind(raw: Option<&str>) -> Option<FinishKind> {
     raw.map(|s| match s {
         "stop" => FinishKind::Stop,
         "length" => FinishKind::Length,
         _ => FinishKind::Other,
     })
-}
-
-/// 非流式结束原因 → [`FinishKind`]
-impl From<&async_openai::types::chat::CompletionFinishReason> for FinishKind {
-    fn from(v: &async_openai::types::chat::CompletionFinishReason) -> Self {
-        use async_openai::types::chat::CompletionFinishReason as R;
-        match v {
-            R::Stop => FinishKind::Stop,
-            R::Length => FinishKind::Length,
-            R::ContentFilter => FinishKind::Other,
-        }
-    }
-}
-
-/// 流式结束原因 → [`FinishKind`]
-impl From<&async_openai::types::chat::FinishReason> for FinishKind {
-    fn from(v: &async_openai::types::chat::FinishReason) -> Self {
-        use async_openai::types::chat::FinishReason as R;
-        match v {
-            R::Stop => FinishKind::Stop,
-            R::Length => FinishKind::Length,
-            _ => FinishKind::Other,
-        }
-    }
 }
 
 #[cfg(test)]

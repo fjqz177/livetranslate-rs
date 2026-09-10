@@ -542,7 +542,11 @@ fn stats_line(ui: &mut Ui, overlay: &OverlayUi, opa_pct: u32) {
     let m = overlay.monitor;
     let stats = overlay.stats;
     let total_tokens = stats.prompt_tokens + stats.completion_tokens;
-    let tokens_str = if total_tokens >= 1000 {
+    // 2026-09-10 第二轮评审 ⑩：端点不提供用量时显示 "—"（+ 悬停说明），
+    // 不把 0 冒充真实值；此时也隐藏 (p↑c↓) 明细（同为不可信数据）
+    let tokens_str = if !stats.usage_known {
+        lt_i18n::t("stats_usage_unknown")
+    } else if total_tokens >= 1000 {
         format!("{:.1}k", total_tokens as f64 / 1000.0)
     } else {
         format!("{total_tokens}")
@@ -626,21 +630,25 @@ fn stats_line(ui: &mut Ui, overlay: &OverlayUi, opa_pct: u32) {
                 .size(10.5)
                 .color(Color32::from_rgb(0xcc, 0x99, 0xcc)),
         );
-        ui.label(
+        let tok_resp = ui.label(
             RichText::new(tokens_str)
                 .monospace()
                 .size(10.5)
                 .color(o(STATS_VAL)),
         );
-        ui.label(
-            RichText::new(format!(
-                "({}\u{2191}{}\u{2193})",
-                stats.prompt_tokens, stats.completion_tokens
-            ))
-            .monospace()
-            .size(10.5)
-            .color(o(Color32::from_rgb(0x66, 0x66, 0x66))),
-        );
+        if !stats.usage_known {
+            tok_resp.on_hover_text(lt_i18n::t("stats_usage_unknown_hint"));
+        } else {
+            ui.label(
+                RichText::new(format!(
+                    "({}\u{2191}{}\u{2193})",
+                    stats.prompt_tokens, stats.completion_tokens
+                ))
+                .monospace()
+                .size(10.5)
+                .color(o(Color32::from_rgb(0x66, 0x66, 0x66))),
+            );
+        }
         // cost 在统计行末尾（原版 _refresh_stats 的 cost_str）
         if stats.cost > 0.0 {
             let symbol = if lt_i18n::get_lang() == "zh" {
@@ -812,11 +820,17 @@ fn message_block(
                     );
                 }
                 TranslationView::Failed { kind, detail } => {
+                    // item 8/9：失败行 = ⚠ 标签 + 警示暖红（style::WARN_TEXT，
+                    // 与字幕窗同源）——渲染上与正常译文明显不同，且能看出是"报错"
                     ui.label(
-                        RichText::new(format!("> {}", failure_text(*kind)))
-                            .font(trans_font.clone())
-                            .italics()
-                            .color(o(style::ERROR)),
+                        RichText::new(format!(
+                            "> {} {}",
+                            lt_i18n::t("err_subtitle_label"),
+                            failure_text(*kind)
+                        ))
+                        .font(trans_font.clone())
+                        .italics()
+                        .color(o(style::WARN_TEXT)),
                     )
                     .on_hover_text(detail.clone());
                 }
@@ -1020,5 +1034,64 @@ mod tests {
             has(crate::state::WinAction::OverlayDragEnd),
             "释放应入队 OverlayDragEnd"
         );
+    }
+
+    /// item 8/9 + ⑩：失败行（⚠ 标签 + 警示色）与用量未知（Tok 段 "—"）两处
+    /// 新渲染分支的无头冒烟——两态各跑一帧不 panic 且产出图元
+    #[test]
+    fn overlay_renders_failed_line_and_unknown_usage_headless() {
+        let ctx = egui::Context::default();
+        let mut st = crate::state::AppUi::new(lt_proto::Settings::default());
+        st.overlay.push_message(OverlayMessage {
+            id: 1,
+            timestamp: "00:00:00".into(),
+            original: "hello".into(),
+            lang: "en".into(),
+            asr_ms: 1.0,
+            translation: TranslationView::Failed {
+                kind: lt_proto::FailureKind::Empty,
+                detail: "provider detail".into(),
+            },
+            tl_ms: 0.0,
+        });
+        let run = |st: &mut crate::state::AppUi| {
+            let ri = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(620.0, 500.0),
+                )),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(ri, |ui| {
+                overlay_ui(
+                    ui,
+                    &mut st.overlay,
+                    &mut st.session,
+                    &mut st.settings,
+                    &mut st.modal,
+                    &mut st.ctx,
+                )
+            });
+            out.textures_delta.clear();
+            assert!(!out.shapes.is_empty(), "悬浮窗应产出图元");
+        };
+        // 用量未知（默认态）：Tok 段 "—" + hover 提示
+        st.overlay.update_stats(crate::state::OverlayStats {
+            usage_known: false,
+            ..Default::default()
+        });
+        run(&mut st);
+        assert!(!st.overlay.stats.usage_known);
+        // 用量已知：数值 + (p↑c↓) 明细路径
+        st.overlay.update_stats(crate::state::OverlayStats {
+            asr_n: 3,
+            tl_n: 2,
+            prompt_tokens: 1200,
+            completion_tokens: 600,
+            cost: 0.001,
+            usage_known: true,
+        });
+        run(&mut st);
+        assert!(st.overlay.stats.usage_known);
     }
 }

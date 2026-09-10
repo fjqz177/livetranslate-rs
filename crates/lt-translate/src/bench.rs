@@ -4,9 +4,6 @@
 
 use std::time::Instant;
 
-use serde_json::json;
-
-use crate::translator::make_openai_client;
 
 pub const BENCH_SENTENCES: &[(&str, [&str; 5])] = &[
     (
@@ -80,6 +77,10 @@ pub struct BenchModel {
     pub model: String,
     pub proxy: String,
     pub no_system_role: bool,
+    /// 该模型条目的关闭思考开关与方式（第二轮评审 ⑫：基准必须测"生产里实际会发"
+    /// 的请求——否则思考模型上测出的"首字延迟"是把推理时间算成了出字时间）
+    pub disable_thinking: bool,
+    pub thinking_style: Option<String>,
 }
 
 /// 单轮结果：(ttft_ms, total_ms, 结果文本前 60 字符由输出层截取)
@@ -146,33 +147,34 @@ fn test_model(
     timeout_s: u32,
     prompt: &str,
 ) -> Result<Vec<BenchRound>, String> {
-    let client =
-        make_openai_client(&m.api_base, &m.api_key, &m.proxy).map_err(|e| e.to_string())?;
+    // 与生产**同一套请求构造**（第二轮评审 ⑫/方案 §2.5 规则 6）：关闭思考参数与
+    // 高级参数政策（默认不发温度/输出上限）都由 Translator 决定——基准不再自建
+    // JSON（旧实现硬编码 max_tokens:256 / temperature:0.3，思考模型上数据系统性失真）
+    let translator = crate::Translator::new(crate::TranslatorParams {
+        api_base: m.api_base.clone(),
+        api_key: m.api_key.clone(),
+        model: m.model.clone(),
+        proxy: m.proxy.clone(),
+        no_system_role: m.no_system_role,
+        disable_thinking: m.disable_thinking,
+        thinking_style: m.thinking_style.clone(),
+        ..Default::default()
+    })
+    .map_err(|e| e.to_string())?;
+    let client = translator.client().clone();
     let read_timeout = std::time::Duration::from_secs(timeout_s as u64);
     let mut rounds = Vec::new();
     for text in sentences {
-        let messages = if m.no_system_role {
-            json!([{ "role": "user", "content": format!("{prompt}\n{text}") }])
-        } else {
-            json!([
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": text},
-            ])
-        };
-        let streaming_body = json!({
-            "model": m.model,
-            "messages": messages,
-            "max_tokens": 256,
-            "temperature": 0.3,
-            "stream": true,
-        });
+        let streaming_body = translator.build_request_body(prompt, text, true, false, 0);
         let t0 = Instant::now();
         let streamed = crate::runtime().block_on(async {
             tokio::time::timeout(
                 read_timeout,
-                client.chat().create_stream_byot::<serde_json::Value, async_openai::types::chat::CreateChatCompletionStreamResponse>(
-                    streaming_body.clone(),
-                ),
+                client
+                    .chat()
+                    .create_stream_byot::<serde_json::Value, crate::translator::wire::ChatChunk>(
+                        streaming_body.clone(),
+                    ),
             )
             .await
         });
@@ -180,32 +182,27 @@ fn test_model(
             Ok(Ok(mut s)) => {
                 use futures::StreamExt;
                 let mut ttft: Option<f64> = None;
-                let mut chunks = Vec::new();
+                // 思维链隔离器：思考内容不得进基准输出；未闭合块不产出"可见"文本
+                let mut stripper = crate::reasoning::ReasoningStripper::new();
                 loop {
                     let next = crate::runtime()
                         .block_on(async { tokio::time::timeout(read_timeout, s.next()).await });
                     match next {
                         Ok(Some(Ok(chunk))) => {
-                            if ttft.is_none() {
-                                ttft = Some(t0.elapsed().as_secs_f64() * 1000.0);
-                            }
-                            if let Some(delta) = chunk
-                                .choices
-                                .first()
-                                .and_then(|c| c.delta.content.as_deref())
-                                .filter(|d| !d.is_empty())
-                            {
-                                chunks.push(delta.to_string());
+                            if let Some(delta) = chunk.delta_content().filter(|d| !d.is_empty()) {
+                                let visible = stripper.push(delta);
+                                // TTFT 只认**首个可见增量**（旧实现记首个任意 chunk，
+                                // 思考模型上把推理起点算成了首字）
+                                if ttft.is_none() && !visible.is_empty() {
+                                    ttft = Some(t0.elapsed().as_secs_f64() * 1000.0);
+                                }
                             }
                         }
                         Ok(Some(Err(e))) => break Err(e.to_string()),
                         Ok(None) => {
                             let total_ms = t0.elapsed().as_secs_f64() * 1000.0;
-                            break Ok((
-                                ttft.unwrap_or(total_ms),
-                                total_ms,
-                                chunks.join("").trim().to_string(),
-                            ));
+                            let text = stripper.finish().trim().to_string();
+                            break Ok((ttft.unwrap_or(total_ms), total_ms, text));
                         }
                         Err(_) => break Err(format!("timed out after {timeout_s}s")),
                     }
@@ -213,18 +210,16 @@ fn test_model(
             }
             // 流式被拒/超时 → 非流式兜底（TTFT=总耗时，原版语义）
             Ok(Err(_)) | Err(_) => {
-                let plain = json!({
-                    "model": m.model,
-                    "messages": messages,
-                    "max_tokens": 256,
-                    "temperature": 0.3,
-                    "stream": false,
-                });
+                let plain = translator.build_request_body(prompt, text, false, false, 0);
                 crate::runtime()
                     .block_on(async {
                         tokio::time::timeout(
                             read_timeout,
-                            client.chat().create_byot::<serde_json::Value, async_openai::types::chat::CreateChatCompletionResponse>(plain),
+                            client
+                                .chat()
+                                .create_byot::<serde_json::Value, crate::translator::wire::ChatResponse>(
+                                    plain,
+                                ),
                         )
                         .await
                     })
@@ -232,13 +227,15 @@ fn test_model(
                     .and_then(|r| r.map_err(|e| e.to_string()))
                     .map(|resp| {
                         let total_ms = t0.elapsed().as_secs_f64() * 1000.0;
-                        let text = resp
-                            .choices
-                            .first()
-                            .and_then(|c| c.message.content.clone())
-                            .unwrap_or_default()
-                            .trim()
-                            .to_string();
+                        let text = crate::reasoning::strip_reasoning(
+                            &resp
+                                .choices
+                                .first()
+                                .and_then(|c| c.message.content.clone())
+                                .unwrap_or_default(),
+                        )
+                        .trim()
+                        .to_string();
                         (total_ms, total_ms, text)
                     })
             }
@@ -457,6 +454,8 @@ mod tests {
                 model: "d".into(),
                 proxy: "none".into(),
                 no_system_role: false,
+                disable_thinking: true,
+                thinking_style: None,
             }],
             "en",
             "zh",

@@ -163,6 +163,31 @@ pub fn failure_text(kind: lt_proto::FailureKind) -> String {
     lt_i18n::t(kind.i18n_key())
 }
 
+/// `UiEvent::TranslatorDegraded` 的条目定位（用户裁决 item 5）：按
+/// `(api_base, model)` **双键**匹配——同名模型不误伤。返回命中行号。
+pub fn find_model_by_endpoint(
+    models: &[lt_proto::ModelConfig],
+    api_base: &str,
+    model: &str,
+) -> Option<usize> {
+    models
+        .iter()
+        .position(|m| m.api_base.trim() == api_base.trim() && m.model.trim() == model.trim())
+}
+
+/// 应用"关不掉思维链"回执到设置（item 5）：命中条目置 `thinking_unavailable=true`
+/// 并取消 `disable_thinking`；返回是否命中。**幂等**——同模型重复回执只写一次结果。
+/// 落盘不由本函数负责（宿主走既有 `mark_settings_dirty` 防抖链路）。
+pub fn apply_translator_degraded(settings: &mut Settings, api_base: &str, model: &str) -> bool {
+    let Some(idx) = find_model_by_endpoint(&settings.models, api_base, model) else {
+        return false;
+    };
+    let m = &mut settings.models[idx];
+    m.thinking_unavailable = true;
+    m.disable_thinking = false;
+    true
+}
+
 /// 翻译/用量统计（UpdateStats 事件；MonitorBar stats 段渲染，M4 完备）
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct OverlayStats {
@@ -171,6 +196,10 @@ pub struct OverlayStats {
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
     pub cost: f64,
+    /// 端点是否提供用量（2026-09-10 第二轮评审 ⑩：false = 服务端从不返回
+    /// usage → MonitorBar Tok 段显示 "—" 而非误导性的 0；默认 false 同样
+    /// 让"首个事件到达前"不把 0 冒充真实值）
+    pub usage_known: bool,
 }
 
 /// UI → 宿主的窗口动作（egui 无窗口句柄；由 UI 帧入队、宿主在帧后执行）
@@ -496,6 +525,24 @@ pub struct SubtitleSentence {
     pub original: String,
     /// lang 码 → 译文；空键 "" 为原版 update_text(str) 兼容形态（包装为 {"": text}）
     pub translations: std::collections::BTreeMap<String, String>,
+    /// 失败标记（2026-09-10 第二轮评审 item 8/9）：`Some(kind)` = 该句译文缺失
+    /// 且原因是**错误**——译文行必须按失败样式渲染（警示色 + ⚠ 标记）。
+    /// 类型化判据，禁靠"文本前缀/是否为空"猜语义（仓库字符串协议禁令）。
+    /// `None` = 正常（含同语言免翻译：Skipped 不算失败，原文照常显示）。
+    pub failed: Option<lt_proto::FailureKind>,
+}
+
+/// 字幕窗喂入态（2026-09-10 第二轮评审 item 8/9：成功/同语言/失败三态类型化）。
+/// 宿主 `feed_subtitle` 据此装配 `SubtitleSentence`——禁止用"文本是否为空/
+/// 带没带前缀"反推语义（仓库字符串协议禁令）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SubtitleFeed<'a> {
+    /// 成功译文（喂该文本）
+    Translation(&'a str),
+    /// 同语言免翻译（`SkipReason` 场景）：**原文照常显示**——不是失败
+    Skipped,
+    /// 翻译失败/无输出：译文行显示错误标记（⚠ + 警示色），不喂原文也不喂占位译文
+    Failed(lt_proto::FailureKind),
 }
 
 /// 缓动曲线（原版 QEasingCurve.Type.OutCubic / InCubic）
@@ -554,6 +601,9 @@ pub struct SubtitleLineRender {
     pub wrapped: Vec<String>,
     /// 上次换行的缓存 key（原版 _text_cache；None = 需重排）
     pub cache_key: Option<SubtitleLineKey>,
+    /// 本行是否承载**失败**文案（item 8/9：警示色渲染 + ⚠ 标记；
+    /// 仅译文行可能为 true，原文行恒 false——原文照常保留）
+    pub failed: bool,
 }
 
 /// 字幕窗 UI 伴生状态（原版 SubtitleWindow 的时序字段 + 各行渲染缓存）
@@ -611,12 +661,14 @@ impl SubtitleUiState {
         translations: std::collections::BTreeMap<String, String>,
         sm: &SubtitleMode,
         now: Instant,
+        failed: Option<lt_proto::FailureKind>,
     ) -> Option<Instant> {
         // _cancel_pending_segments：新更新永远取代旧的待插入
         self.pending = None;
         let sentence = SubtitleSentence {
             original,
             translations,
+            failed,
         };
         // base_delay = max(0, 1500 - elapsed)（原版 _on_update_text；首句 last_insert=0 → 0）
         let base_delay = match self.last_insert {
@@ -902,6 +954,10 @@ pub struct ModelEditState {
     pub temperature_enabled: bool,
     /// W1：温度值（`temperature_enabled` 为 false 时不参与请求）
     pub temperature_value: f64,
+    /// 该模型已确认**无法关闭思维链**（2026-09-10 第二轮评审 item 5，映射
+    /// `ModelConfig.thinking_unavailable`）：true → 总开关显示未勾选 + 提示；
+    /// 用户手动重新勾选即清除（明确要求再试一次，正常走后端阶梯）
+    pub thinking_unavailable: bool,
     pub no_system_role: bool,
     pub streaming: bool,
     pub json_response: bool,
@@ -914,6 +970,21 @@ pub struct ModelEditState {
     pub overrides: [OverrideRow; 6],
     /// extra_body JSON 文本（空 = 不设置；非法 = 禁止确定）
     pub extra_body_text: String,
+}
+
+/// extra_body 文本框的形态分类（方案 §4.7 就地提示用；**类型化**——
+/// 提示层不得靠解析错误字符串猜原因）。判定语义与 [`ModelEditState::parse_extra_body`]
+/// 一致（空=不设置；`{…}`=object；合法 JSON 但非 object；非法 JSON）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExtraBodyShape {
+    /// 空文本（= 不设置 extra_body）
+    Empty,
+    /// 合法 JSON object
+    Object,
+    /// 合法 JSON 但非 object（数组/标量）
+    NonObject,
+    /// 非法 JSON
+    Invalid,
 }
 
 impl ModelEditState {
@@ -930,10 +1001,12 @@ impl ModelEditState {
             proxy_index: 0,
             proxy_url: String::new(),
             thinking_index: 0,
-            // W1/裁决 1：默认关闭模型思考；温度默认发送 0.3
+            // W1/裁决 1：默认关闭模型思考；温度默认**不发送**（2026-09-10 附裁决：
+            // 高级参数默认一律不发送，勾选才发——勾选后预填默认值）
             disable_thinking: true,
-            temperature_enabled: true,
+            temperature_enabled: false,
             temperature_value: lt_proto::DEFAULT_TEMPERATURE,
+            thinking_unavailable: false,
             no_system_role: false,
             streaming: true,
             json_response: false,
@@ -962,6 +1035,7 @@ impl ModelEditState {
             disable_thinking: cfg.disable_thinking,
             temperature_enabled: cfg.temperature.is_some(),
             temperature_value: cfg.temperature.unwrap_or(lt_proto::DEFAULT_TEMPERATURE),
+            thinking_unavailable: cfg.thinking_unavailable,
             no_system_role: cfg.no_system_role,
             streaming: cfg.streaming,
             json_response: cfg.json_response,
@@ -977,6 +1051,12 @@ impl ModelEditState {
         // 原版 populate：非 none/system 且非空 → custom + URL
         if st.proxy_index == 2 {
             st.proxy_url = cfg.proxy.clone();
+        }
+        // item 5 不变式：`thinking_unavailable` 与勾选互斥（界面显示未勾选 = 实际
+        // 不发送关闭参数）——手改档案造出"两者并存"时也按标记归一，避免
+        // "界面看到未勾选、保存却仍写勾选"
+        if st.thinking_unavailable {
+            st.disable_thinking = false;
         }
         if let Some(map) = &cfg.overrides {
             for (i, key) in lt_proto::OVERRIDE_KEYS.iter().enumerate() {
@@ -1044,6 +1124,9 @@ impl ModelEditState {
                 v => Some(v.to_string()),
             },
             disable_thinking: self.disable_thinking,
+            // item 5：标记只在"仍未勾选"时保留——用户重新勾选（= 明确要求
+            // 再试一次）即清除；两者互斥，避免落盘出现"勾选 + 关不掉"的自相矛盾
+            thinking_unavailable: self.thinking_unavailable && !self.disable_thinking,
             // W1/方案 §2.1：未勾选 = None = 不发送该参数
             temperature: self
                 .temperature_enabled
@@ -1060,6 +1143,27 @@ impl ModelEditState {
             },
             extra_body,
         })
+    }
+
+    /// extra_body 文本的形态分类（方案 §4.7 就地提示；不改变解析/保存行为）
+    pub fn extra_body_shape(&self) -> ExtraBodyShape {
+        let text = self.extra_body_text.trim();
+        if text.is_empty() {
+            return ExtraBodyShape::Empty;
+        }
+        match serde_json::from_str::<serde_json::Value>(text) {
+            Ok(v) if v.is_object() => ExtraBodyShape::Object,
+            Ok(_) => ExtraBodyShape::NonObject,
+            Err(_) => ExtraBodyShape::Invalid,
+        }
+    }
+
+    /// item 5 回执应用（`UiEvent::TranslatorDegraded`）：置"关不掉"标记 +
+    /// 取消勾选（与后端认识一致：该模型已确认无法关闭思维链）。
+    /// 用户手动重新勾选即清除标记（明确要求再试一次，正常走后端阶梯）。
+    pub fn apply_thinking_unavailable(&mut self) {
+        self.thinking_unavailable = true;
+        self.disable_thinking = false;
     }
 
     /// 代理三模式 → 契约字符串（原版 get_data proxy 分支：custom 且空白回退 none）
@@ -2072,6 +2176,8 @@ impl SubtitleUi {
 
     /// 字幕窗文本更新入口（原版 SubtitleWindow.update_text → _on_update_text；
     /// 宿主由 UpdateTranslation 事件换算 original + {lang: translation}）。
+    /// `failed` = 该句为失败文案的机器可读标记（item 8/9；`None` = 正常译文/
+    /// 同语言免翻译——两者渲染与语义不同，判据不得靠文本内容）。
     /// pending 进队时安排 SubtitlePending 节拍；立即插入路径同步自动隐藏节拍。
     pub fn update_text(
         &mut self,
@@ -2079,9 +2185,13 @@ impl SubtitleUi {
         settings: &Settings,
         original: String,
         translations: std::collections::BTreeMap<String, String>,
+        failed: Option<lt_proto::FailureKind>,
     ) {
         let now = Instant::now();
-        if let Some(at) = self.state.update_text(original, translations, &settings.subtitle_mode, now) {
+        if let Some(at) =
+            self.state
+                .update_text(original, translations, &settings.subtitle_mode, now, failed)
+        {
             self.schedule_tick(session, TickKind::SubtitlePending, at);
         } else {
             self.sync_auto_hide_tick(session);
@@ -2727,9 +2837,13 @@ mod tests {
             prompt_tokens: 1000,
             completion_tokens: 500,
             cost: 0.002,
+            usage_known: true,
         });
         assert_eq!(st.overlay.stats.asr_n, 10);
         assert_eq!(st.overlay.stats.cost, 0.002);
+        assert!(st.overlay.stats.usage_known, "用量可用如实落格");
+        // 默认（首个事件到达前 / 无用量端点）不得把 0 冒充真实用量
+        assert!(!OverlayStats::default().usage_known);
     }
 
     #[test]
@@ -2980,6 +3094,8 @@ mod tests {
             // W1：总开关 + 温度一等字段（与 legacy overrides 中的同名键共存，
             // 验证"旧值保留 + 新字段如实往返"）
             disable_thinking: false,
+            // item 5：已确认关不掉的持久化标记（与 disable_thinking=false 共存）
+            thinking_unavailable: true,
             temperature: Some(0.7),
             streaming: false,
             json_response: true,
@@ -3004,8 +3120,9 @@ mod tests {
         assert!(!st.disable_thinking, "总开关关闭如实回填");
         assert!(st.temperature_enabled);
         assert_eq!(st.temperature_value, 0.7);
+        assert!(st.thinking_unavailable, "关不掉标记如实回填");
         let built = st.build().expect("extra_body 合法");
-        assert_eq!(built, cfg);
+        assert_eq!(built, cfg, "含 thinking_unavailable 的全字段往返");
     }
 
     /// 代理三模式映射：none/system/custom+空白回退（原版 get_data proxy 分支）
@@ -3244,13 +3361,25 @@ mod tests {
         assert_eq!(lt_proto::THINKING_STYLES.len(), 6);
     }
 
-    /// W1（方案 §2.3/§2.1）：编辑器默认 = 关思考 + 温度 0.3；两处均 1:1 落到契约字段
+    /// W1（方案 §2.3/§2.1）：编辑器默认 = 关思考 + **温度不发送**（2026-09-10
+    /// 附裁决：高级参数默认一律不发送）；两处均 1:1 落到契约字段
     #[test]
     fn editor_defaults_map_to_contract_fields() {
-        let cfg = ModelEditState::new_add().build().unwrap();
+        let mut st = ModelEditState::new_add();
+        assert_eq!(st.temperature_value, lt_proto::DEFAULT_TEMPERATURE, "数值预填默认温度");
+        assert!(!st.temperature_enabled, "默认未勾选 = 不发送");
+        assert!(!st.thinking_unavailable);
+        let cfg = st.build().unwrap();
         assert!(cfg.disable_thinking, "默认勾选关闭模型思考");
-        assert_eq!(cfg.temperature, Some(lt_proto::DEFAULT_TEMPERATURE));
+        assert_eq!(cfg.temperature, None, "默认 = 请求中不出现 temperature");
         assert_eq!(cfg.thinking_style, None, "默认方式 = auto");
+        assert!(!cfg.thinking_unavailable, "默认不带关不掉标记");
+        // 勾选后才发送（值沿用预填的 DEFAULT_TEMPERATURE）
+        st.temperature_enabled = true;
+        assert_eq!(
+            st.build().unwrap().temperature,
+            Some(lt_proto::DEFAULT_TEMPERATURE)
+        );
     }
 
     /// W1：关掉总开关 / 取消温度发送 → 契约字段如实反映（UI 与后端一比一）
@@ -3272,5 +3401,129 @@ mod tests {
         assert!(!st2.temperature_enabled);
         assert_eq!(st2.temperature_value, lt_proto::DEFAULT_TEMPERATURE, "未启用时回填默认值");
         assert_eq!(st2.thinking_index, 3);
+    }
+
+    /// item 5：`TranslatorDegraded` 回执落点——(api_base, model) 双键定位，
+    /// 同名模型不误伤；命中即置标记 + 取消勾选；幂等；未命中不改动
+    #[test]
+    fn translator_degraded_receipt_updates_matching_entry_only() {
+        let mk = |name: &str, api_base: &str, model: &str| lt_proto::ModelConfig {
+            name: name.into(),
+            api_base: api_base.into(),
+            model: model.into(),
+            ..Default::default()
+        };
+        let mut s = Settings {
+            models: vec![
+                mk("same", "http://a:1234/v1", "m1"),
+                // 同名但端点不同（双键定位的第二键 = api_base）
+                mk("same", "http://b:1234/v1", "m1"),
+                mk("other", "http://a:1234/v1", "m2"),
+            ],
+            ..Default::default()
+        };
+        assert!(apply_translator_degraded(
+            &mut s,
+            "http://b:1234/v1",
+            "m1"
+        ));
+        assert!(!s.models[0].thinking_unavailable, "同端点不同模型不误伤");
+        assert!(s.models[1].thinking_unavailable, "命中条目置标记");
+        assert!(!s.models[1].disable_thinking, "命中条目取消勾选");
+        assert!(!s.models[2].thinking_unavailable, "同名不同端点不误伤");
+        assert!(s.models[0].disable_thinking, "未命中条目不动");
+        // 幂等：重复回执结果一致
+        assert!(apply_translator_degraded(
+            &mut s,
+            "http://b:1234/v1",
+            "m1"
+        ));
+        assert!(s.models[1].thinking_unavailable && !s.models[1].disable_thinking);
+        let snapshot = s.models.clone();
+        // 首尾空白容错（用户手填地址可能带空格）
+        s.models[0].api_base = "  http://a:1234/v1 ".into();
+        assert!(apply_translator_degraded(
+            &mut s,
+            "http://a:1234/v1",
+            "m1"
+        ));
+        assert!(s.models[0].thinking_unavailable, "首尾空白不阻断定位");
+        // 幽灵回执（端点/模型名不存在）→ false 且不改任何条目
+        assert!(!apply_translator_degraded(&mut s, "http://ghost/v1", "m1"));
+        assert!(!apply_translator_degraded(&mut s, "http://b:1234/v1", "nope"));
+        assert_eq!(s.models[1], snapshot[1]);
+    }
+
+    /// item 5：`thinking_unavailable` 往返 + 手动重新勾选清除标记。
+    /// （缺此往返则"编辑一次模型 = 标记被抹掉"，回执闭环失效。）
+    #[test]
+    fn model_edit_thinking_unavailable_roundtrip() {
+        // ① 读入：已确认关不掉的档案 → 编辑器如实回填
+        let cfg = lt_proto::ModelConfig {
+            disable_thinking: false,
+            thinking_unavailable: true,
+            ..Default::default()
+        };
+        let st = ModelEditState::new_edit(0, &cfg);
+        assert!(st.thinking_unavailable);
+        assert!(!st.disable_thinking, "关不掉 = 总开关未勾选");
+        // ② 未触碰其他字段直接确定 → 标记原样写回（不被抹掉）
+        assert_eq!(st.build().unwrap(), cfg);
+        // ③ 后端回执路径（apply_thinking_unavailable）与编辑器同语义
+        let mut fresh = ModelEditState::new_add();
+        fresh.apply_thinking_unavailable();
+        assert!(fresh.thinking_unavailable && !fresh.disable_thinking);
+        // ④ 用户手动重新勾选（= 明确要求再试一次）→ 清除标记 + 落盘勾选
+        fresh.disable_thinking = true;
+        fresh.thinking_unavailable = false;
+        let rebuilt = fresh.build().unwrap();
+        assert!(rebuilt.disable_thinking);
+        assert!(!rebuilt.thinking_unavailable, "重新勾选后不再带关不掉标记");
+        // ⑤ 反例护栏：勾选与标记并存时 build 不得同时写出（互斥归一）
+        let mut inconsistent = ModelEditState::new_edit(0, &cfg);
+        inconsistent.disable_thinking = true;
+        assert!(
+            !inconsistent.build().unwrap().thinking_unavailable,
+            "勾选态下标记必须归一为 false"
+        );
+        // ⑥ 手改档案造出"两者并存"：读入即按标记归一（显示未勾选 = 不发送）
+        let contradictory = lt_proto::ModelConfig {
+            disable_thinking: true,
+            thinking_unavailable: true,
+            ..Default::default()
+        };
+        let loaded = ModelEditState::new_edit(0, &contradictory);
+        assert!(!loaded.disable_thinking, "读入即归一为未勾选");
+        assert!(loaded.thinking_unavailable);
+        let rebuilt = loaded.build().unwrap();
+        assert!(!rebuilt.disable_thinking && rebuilt.thinking_unavailable);
+    }
+
+    /// item 5 / 温度：编辑器草稿 ↔ 契约字段的双向往返（未勾选 → None；
+    /// 勾选 → 数值）——两条路径都要钉住，防止回写时把用户意图丢掉
+    #[test]
+    fn model_edit_temperature_checkbox_roundtrip() {
+        // 未勾选 → None（默认态）
+        let st = ModelEditState::new_add();
+        assert_eq!(st.build().unwrap().temperature, None);
+        // 勾选 → 数值
+        let mut st = ModelEditState::new_add();
+        st.temperature_enabled = true;
+        st.temperature_value = 1.25;
+        let cfg = st.build().unwrap();
+        assert_eq!(cfg.temperature, Some(1.25));
+        // 回填：Some → 勾选 + 值；None → 未勾选 + 预填默认
+        let back = ModelEditState::new_edit(0, &cfg);
+        assert!(back.temperature_enabled);
+        assert_eq!(back.temperature_value, 1.25);
+        assert_eq!(back.build().unwrap(), cfg);
+        let none_cfg = lt_proto::ModelConfig {
+            temperature: None,
+            ..Default::default()
+        };
+        let back_none = ModelEditState::new_edit(0, &none_cfg);
+        assert!(!back_none.temperature_enabled);
+        assert_eq!(back_none.temperature_value, lt_proto::DEFAULT_TEMPERATURE);
+        assert_eq!(back_none.build().unwrap(), none_cfg);
     }
 }

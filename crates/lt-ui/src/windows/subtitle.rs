@@ -22,7 +22,8 @@
 //! - 描边为 8 方向偏移近似（原版为圆头描边、宽 2×outline_width）；
 //! - auto_hide_animation 的 slide_down 以 fade 近似（设置面板仅暴露 none/fade/slide_down）；
 //! - 翻译失败文案会进入字幕（原版 pipeline 在 error 路径不调 update_text；
-//!   本版事件流 UpdateTranslation 无法区分错误与成功文本）；
+//!   2026-09-10 item 8/9 起失败由 `SubtitleSentence::failed` 类型化标记驱动，
+//!   译文行渲染 ⚠ 标记 + 警示色，与正常译文明显不同——判据不靠文本内容）；
 //! - 多屏判定用 winit 全显示器尺寸（原版 availableGeometry 剔除任务栏）；
 //! - 行级 entry/exit 文本切换动画未做（默认 none，不在 M4.2 清单）。
 
@@ -30,7 +31,7 @@ use crate::state::{
     EaseAnim, Easing, SessionView, Settings, SubtitleLineKey, SubtitleLineRender, SubtitleUi,
     SubtitleUiState, UiContext, WinAction, WinId,
 };
-use crate::style::parse_color;
+use crate::style::{parse_color, FAILURE_OUTLINE, WARN_TEXT};
 use egui::{Align2, Color32, FontId, RichText, Sense, Stroke, Ui};
 use lt_proto::SubtitleLine;
 use std::collections::BTreeMap;
@@ -314,7 +315,10 @@ fn join_texts(texts: Vec<String>) -> String {
     }
 }
 
-/// 重排各行显示文本（原版 _refresh_display：启用行逐一取句拼接并失效换行缓存）
+/// 重排各行显示文本（原版 _refresh_display：启用行逐一取句拼接并失效换行缓存）。
+/// item 8/9（2026-09-10）：失败句的译文行改渲染 `err_subtitle_label`（含 ⚠）并
+/// 打上类型化 `failed` 标记——判据只看 `SubtitleSentence::failed`，不看文本内容；
+/// 原文行不受影响（失败只占译文行）。
 fn refresh_display(sub: &mut SubtitleUiState, lines: &[SubtitleLine]) {
     let enabled: Vec<&SubtitleLine> = lines.iter().filter(|l| l.enabled).collect();
     // 行配置数变化 → 重建渲染行（原版 _rebuild_text_widgets / apply_settings 重建）
@@ -326,6 +330,7 @@ fn refresh_display(sub: &mut SubtitleUiState, lines: &[SubtitleLine]) {
             l.text.clear();
             l.wrapped.clear();
             l.cache_key = None;
+            l.failed = false;
         }
         return;
     }
@@ -333,25 +338,35 @@ fn refresh_display(sub: &mut SubtitleUiState, lines: &[SubtitleLine]) {
         let Some(l) = sub.lines.get_mut(wi) else {
             break;
         };
-        let text = if cfg.line_type == "original" {
+        let (text, failed) = if cfg.line_type == "original" {
             let texts: Vec<String> = sub
                 .sentences
                 .iter()
                 .filter(|s| !s.original.is_empty())
                 .map(|s| s.original.clone())
                 .collect();
-            join_texts(texts)
+            (join_texts(texts), false)
         } else {
             let lang = cfg.lang.as_deref().unwrap_or("");
+            let mut any_failed = false;
             let texts: Vec<String> = sub
                 .sentences
                 .iter()
-                .filter_map(|s| pick_translation(lang, &s.translations))
+                .filter_map(|s| {
+                    if s.failed.is_some() {
+                        any_failed = true;
+                        // 失败句固定显示错误标记（不显示占位译文/原文——
+                        // "报错"不是"译文"，具体原因在悬浮窗悬停与日志）
+                        return Some(lt_i18n::t("err_subtitle_label"));
+                    }
+                    pick_translation(lang, &s.translations)
+                })
                 .collect();
-            join_texts(texts)
+            (join_texts(texts), any_failed)
         };
-        if text != l.text {
+        if text != l.text || failed != l.failed {
             l.text = text;
+            l.failed = failed;
             l.cache_key = None; // 文字变化 → 换行缓存失效（原版 _text_cache = None）
         }
     }
@@ -509,7 +524,23 @@ pub fn subtitle_ui(
             if !line.text.is_empty() {
                 // 行不透明度 = 配置 opacity × 窗级淡入淡出系数（原版 setAlpha × painter opacity）
                 let k = (cfg.opacity.min(255) as f32 / 255.0 * opacity).clamp(0.0, 1.0);
-                let fill = with_alpha(&cfg.color, (k * 255.0).round() as u32);
+                // item 8/9：失败行整行换警示色（暖红 #FF6B5C，与译文白/金明显不同），
+                // 并按失败色画描边（无视用户描边开关，薄 1.5px）——浅背景上也读得清；
+                // 描边偏移 ≤1.5px 不参与布局，行高/换行/对齐与正常译文完全一致（零跳变）
+                let (fill, fail_outline) = if line.failed {
+                    let c = WARN_TEXT;
+                    (
+                        Color32::from_rgba_unmultiplied(
+                            c.r(),
+                            c.g(),
+                            c.b(),
+                            (k * 255.0).round() as u8,
+                        ),
+                        Some(FAILURE_OUTLINE),
+                    )
+                } else {
+                    (with_alpha(&cfg.color, (k * 255.0).round() as u32), None)
+                };
                 let outline_col = with_alpha(&cfg.outline_color, (k * 255.0).round() as u32);
                 let mut ry = y + ow;
                 for row_text in &line.wrapped {
@@ -521,6 +552,25 @@ pub fn subtitle_ui(
                         _ => (content_left + content_right - tw) * 0.5,
                     };
                     let pos = egui::pos2(lx, ry);
+                    // 失败行专用底描边（薄、恒开；先画底色再画用户描边与填充）
+                    if let Some(oc) = fail_outline {
+                        let r = 1.5;
+                        let col = Color32::from_rgba_unmultiplied(
+                            oc.r(),
+                            oc.g(),
+                            oc.b(),
+                            (k * 255.0).round() as u8,
+                        );
+                        for (dx, dy) in OUTLINE_DIRS {
+                            ui.painter().text(
+                                pos + egui::vec2(dx * r, dy * r),
+                                Align2::LEFT_TOP,
+                                row_text.as_str(),
+                                font.clone(),
+                                col,
+                            );
+                        }
+                    }
                     // 两遍绘制之一：8 方向偏移描边（原版 QPainterPath 圆头描边宽 2×ow 的近似）
                     if cfg.outline_enabled && cfg.outline_width > 0 {
                         let r = cfg.outline_width as f32;
@@ -777,6 +827,16 @@ mod tests {
                 .iter()
                 .map(|(k, v)| (k.to_string(), v.to_string()))
                 .collect(),
+            failed: None,
+        }
+    }
+
+    /// 失败句（item 8/9：类型化标记，渲染走警示样式）
+    fn failed_sentence(original: &str, kind: lt_proto::FailureKind) -> SubtitleSentence {
+        SubtitleSentence {
+            original: original.into(),
+            translations: BTreeMap::new(),
+            failed: Some(kind),
         }
     }
 
@@ -868,7 +928,7 @@ mod tests {
         let mut sub = SubtitleUiState::default();
         let t0 = Instant::now();
         // 首句 last_insert=0 → base_delay=0 → 立即插入
-        let pending = sub.update_text("你好".into(), BTreeMap::new(), &sub_cfg(1, 5), t0);
+        let pending = sub.update_text("你好".into(), BTreeMap::new(), &sub_cfg(1, 5), t0, None);
         assert!(pending.is_none());
         assert_eq!(sub.sentences.len(), 1);
         assert!(sub.display_dirty);
@@ -882,10 +942,10 @@ mod tests {
         let mut sub = SubtitleUiState::default();
         let cfg1 = sub_cfg(1, 0);
         let t0 = Instant::now();
-        sub.update_text("第一句".into(), BTreeMap::new(), &cfg1, t0);
+        sub.update_text("第一句".into(), BTreeMap::new(), &cfg1, t0, None);
         // 500ms 后的更新：距 1500ms 最小显示还差 1000ms → 进 pending 队列
         let t1 = t0 + Duration::from_millis(500);
-        let pending = sub.update_text("第二句".into(), BTreeMap::new(), &cfg1, t1);
+        let pending = sub.update_text("第二句".into(), BTreeMap::new(), &cfg1, t1, None);
         assert_eq!(pending, Some(t1 + Duration::from_millis(1000)));
         assert_eq!(sub.sentences.len(), 1, "排队期不插入");
         // 到点消费（原版 timer.timeout → _insert_sentence）；max=1 → 截断只留最新
@@ -902,11 +962,11 @@ mod tests {
         let mut sub = SubtitleUiState::default();
         let cfg2 = sub_cfg(2, 0);
         let t0 = Instant::now();
-        sub.update_text("第一句".into(), BTreeMap::new(), &cfg2, t0);
+        sub.update_text("第一句".into(), BTreeMap::new(), &cfg2, t0, None);
         let t1 = t0 + Duration::from_millis(200);
-        sub.update_text("第二句".into(), BTreeMap::new(), &cfg2, t1);
+        sub.update_text("第二句".into(), BTreeMap::new(), &cfg2, t1, None);
         let t2 = t0 + Duration::from_millis(400);
-        sub.update_text("第三句".into(), BTreeMap::new(), &cfg2, t2);
+        sub.update_text("第三句".into(), BTreeMap::new(), &cfg2, t2, None);
         assert_eq!(sub.pending.as_ref().unwrap().1.original, "第三句");
         // 旧第二句的到点时刻（t1+1300 = t0+1500）之前不插入，且待插入仍是第三句
         assert!(!sub.flush_pending(&cfg2, t0 + Duration::from_millis(1000)));
@@ -1070,6 +1130,67 @@ mod tests {
             .lines
             .iter()
             .all(|l| l.text.is_empty() && l.wrapped.is_empty()));
+    }
+
+    /// item 8/9：失败句占**译文行** + 类型化 failed 标记 + ⚠ 标签文案；
+    /// 原文行照常保留原文（失败不是译文，也不吞原文）；标记在清空后复位
+    #[test]
+    fn refresh_display_marks_failed_lines_and_keeps_original() {
+        let mut sub = SubtitleUiState {
+            sentences: vec![failed_sentence("识别到的原句", lt_proto::FailureKind::Empty)],
+            ..Default::default()
+        };
+        let lines = vec![
+            SubtitleLine {
+                line_type: "original".into(),
+                ..Default::default()
+            },
+            SubtitleLine {
+                line_type: "translation".into(),
+                lang: Some("zh".into()),
+                ..Default::default()
+            },
+        ];
+        refresh_display(&mut sub, &lines);
+        // 原文行：照常显示原文，且不带失败标记
+        assert_eq!(sub.lines[0].text, "识别到的原句");
+        assert!(!sub.lines[0].failed);
+        // 译文行：⚠ 标签（i18n 值）+ 失败标记（判据只看 failed 字段）
+        assert_eq!(
+            sub.lines[1].text,
+            lt_i18n::t("err_subtitle_label"),
+            "失败占译文行 = err_subtitle_label"
+        );
+        assert!(sub.lines[1].failed);
+        assert!(
+            sub.lines[1].text.contains('\u{26A0}'),
+            "失败文案应带 ⚠ 标记（一眼前缀）"
+        );
+        // 同语言免翻译（failed=None + 有原文）不算失败：原文照常、标记清除
+        let mut ok = SubtitleUiState {
+            sentences: vec![sentence("same", &[])],
+            ..Default::default()
+        };
+        refresh_display(&mut ok, &lines);
+        assert_eq!(ok.lines[0].text, "same");
+        assert!(!ok.lines[1].failed, "Skipped 不产生失败标记");
+        assert!(ok.lines[1].text.is_empty(), "无译文 → 译文行空（不是错误）");
+        // 句子清空 → 失败标记随文本一并复位
+        sub.sentences.clear();
+        refresh_display(&mut sub, &lines);
+        assert!(!sub.lines[1].failed);
+    }
+
+    /// item 8/9：失败色与正常译文色必须不同（防止后续重构把两者合一）
+    #[test]
+    fn failure_color_differs_from_normal_translation_palette() {
+        let gold = parse_color("#FFD700", Color32::WHITE);
+        let white = Color32::WHITE;
+        assert_ne!(WARN_TEXT, gold);
+        assert_ne!(WARN_TEXT, white);
+        assert_ne!(WARN_TEXT, FAILURE_OUTLINE);
+        // 暖色（红通道最高）——"警示"语感
+        assert!(WARN_TEXT.r() > WARN_TEXT.g() && WARN_TEXT.g() >= WARN_TEXT.b());
     }
 
     // ── 多屏钳制（原版 _is_pos_visible / _clamp_to_screen 用例）──

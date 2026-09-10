@@ -65,8 +65,40 @@ const TL_QUEUE_CAP: usize = 64;
 /// 旧池 worker 必须退出——若无人置 stopped，worker 仅凭 500ms 空转循环永不结束
 /// （BoundedDropQueue 无信道关闭语义），旧池线程将永久泄漏并阻断
 /// Pipeline::stop 的 join_all）
+/// 队列任务：被丢弃时**自动补回执**（第二轮评审 ⑬d）——队列满丢最旧、停机清队
+/// 都会走 `Drop`，旧实现下被丢任务不产生任何事件，字幕永远停在"翻译中…"。
+/// 正常执行时闭包被取走（`run` 变 None），Drop 无副作用。
+struct TlJob {
+    id: u64,
+    sink: EventSink,
+    /// 停机中丢队的任务不再回执（事件无处可去，且不是"积压丢弃"语义）
+    stopped: Arc<AtomicBool>,
+    run: Option<Box<dyn FnOnce() + Send>>,
+}
+
+impl TlJob {
+    fn run(mut self) {
+        if let Some(f) = self.run.take() {
+            f();
+        }
+    }
+}
+
+impl Drop for TlJob {
+    fn drop(&mut self) {
+        if self.run.is_some() && !self.stopped.load(Ordering::Relaxed) {
+            self.sink.push(UiEvent::TranslationFailed {
+                id: self.id,
+                kind: FailureKind::Dropped,
+                detail: "队列积压，保留最新（本段已放弃）".into(),
+                tl_ms: 0.0,
+            });
+        }
+    }
+}
+
 struct JobPool {
-    queue: Arc<BoundedDropQueue<Box<dyn FnOnce() + Send>>>,
+    queue: Arc<BoundedDropQueue<TlJob>>,
     stopped: Arc<AtomicBool>,
     /// 存活 worker 计数（RAII 增减）：泄漏回归测试的观测面
     #[allow(dead_code)]
@@ -79,10 +111,7 @@ struct JobPool {
 
 impl JobPool {
     fn new(workers: usize, sup: &Supervisor, sink: EventSink) -> Self {
-        let queue = Arc::new(BoundedDropQueue::<Box<dyn FnOnce() + Send>>::new(
-            TL_QUEUE_CAP,
-            "tl-job",
-        ));
+        let queue = Arc::new(BoundedDropQueue::<TlJob>::new(TL_QUEUE_CAP, "tl-job"));
         let stopped = Arc::new(AtomicBool::new(false));
         let alive_workers = Arc::new(AtomicUsize::new(0));
         for i in 0..workers {
@@ -101,7 +130,7 @@ impl JobPool {
                     // panic 由监督器重生（干净循环状态，INV5）
                     while !stopped.load(Ordering::Relaxed) {
                         match queue.pop_timeout(Duration::from_millis(500)) {
-                            Some(job) => job(),
+                            Some(job) => job.run(),
                             None => continue,
                         }
                     }
@@ -117,13 +146,18 @@ impl JobPool {
         }
     }
 
-    /// 提交翻译任务：队列满时丢最旧（R15①/D-64）。停止后仍可能有在途提交
-    /// ——worker 已退出不再消费，任务滞留队列随 Pipeline 释放（与原
-    /// 「停止后排队的任务直接丢弃」语义一致）。
+    /// 提交翻译任务：队列满时丢最旧（R15①/D-64），被丢的那条由 [`TlJob::drop`]
+    /// 自动补一条"已放弃"回执（⑬d）。停止后仍可能有在途提交——worker 已退出
+    /// 不再消费，任务滞留队列随 Pipeline 释放（其时 stopped 已置位，不补回执）。
     /// R15②：丢弃达上报节拍（≥200 条）即发 [`UiEvent::QueuePressure`]——
     /// 与 BoundedDropQueue 告警节奏同源的类型化水位信号
-    fn submit(&self, job: impl FnOnce() + Send + 'static) {
-        self.queue.push(Box::new(job));
+    fn submit(&self, id: u64, job: impl FnOnce() + Send + 'static) {
+        self.queue.push(TlJob {
+            id,
+            sink: self.sink.clone(),
+            stopped: self.stopped.clone(),
+            run: Some(Box::new(job)),
+        });
         let dropped = self.queue.dropped_count();
         let reported = self.reported.load(Ordering::Relaxed);
         if dropped >= 200 && dropped - reported >= 200 {
@@ -171,6 +205,8 @@ pub(crate) struct TlStats {
     tl_count: AtomicU64,
     prompt_tokens: AtomicU64,
     completion_tokens: AtomicU64,
+    /// 服务端是否提供用量统计（第二轮评审 ⑩：不提供时界面显示"—"而不是 0）
+    usage_known: AtomicBool,
     input_price: f64,
     output_price: f64,
 }
@@ -182,6 +218,7 @@ impl TlStats {
             tl_count: AtomicU64::new(0),
             prompt_tokens: AtomicU64::new(0),
             completion_tokens: AtomicU64::new(0),
+            usage_known: AtomicBool::new(true),
             input_price,
             output_price,
         }
@@ -203,6 +240,7 @@ impl TlStats {
             prompt_tokens: self.prompt_tokens.load(Ordering::Relaxed),
             completion_tokens: self.completion_tokens.load(Ordering::Relaxed),
             cost: self.cost(),
+            usage_known: self.usage_known.load(Ordering::Relaxed),
         }
     }
 }
@@ -213,6 +251,8 @@ struct Attempt {
     error: Option<lt_translate::TranslateError>,
     verdict: Option<lt_translate::ResponseVerdict>,
     usage: (u64, u64),
+    /// 服务端是否返回了用量统计（⑩：不返回时界面显示"—"）
+    usage_known: bool,
 }
 
 impl Attempt {
@@ -226,7 +266,13 @@ impl Attempt {
     }
 }
 
-/// 跑一次翻译：逐增量推送事件，返回结论与用量（失败时保留 provider 错误）
+/// 部分结果的推送节流间隔（第二轮评审 ⑬c）：每个增量都推"累积全文"是
+/// O(n²) 字节，长输出会挤占动脉容量；节流后 UI 仍平滑，队列不再被单一
+/// 句子灌满。最终译文由 [`UiEvent::UpdateTranslation`] 单独送达，不失真。
+const PARTIAL_THROTTLE: Duration = Duration::from_millis(50);
+
+/// 跑一次翻译：逐增量推送事件（节流），返回结论与用量（失败时保留 provider 错误）
+#[allow(clippy::too_many_arguments)] // 局部参数面：装置/文本/语言/超时/出口/标识
 fn run_attempt(
     translator: &Translator,
     text: &str,
@@ -235,17 +281,25 @@ fn run_attempt(
     timeout: u32,
     sink: &EventSink,
     id: u64,
+    seq: u64,
+    // 是否向 UI 推送流式增量（测试连接用 false——它的探测不该在界面上
+    // 留下一条幽灵的"翻译中"消息）
+    push_partials: bool,
 ) -> Attempt {
     let mut text_out: Option<String> = None;
+    let mut last_push = Instant::now() - PARTIAL_THROTTLE;
     // W2/方案 §4.4：必须 while let——`for` 会移走迭代器，之后读不到结论/用量
-    let mut it = translator.translate_iter(text, source_lang, target, timeout);
+    let mut it = translator.translate_iter(text, source_lang, target, timeout, seq);
     while let Some(item) = it.next() {
         match item {
             Ok(partial) => {
-                sink.push(UiEvent::UpdateStreaming {
-                    id,
-                    partial: partial.clone(),
-                });
+                if push_partials && last_push.elapsed() >= PARTIAL_THROTTLE {
+                    sink.push(UiEvent::UpdateStreaming {
+                        id,
+                        partial: partial.clone(),
+                    });
+                    last_push = Instant::now();
+                }
                 text_out = Some(partial);
             }
             Err(e) => {
@@ -259,6 +313,7 @@ fn run_attempt(
                     error: Some(e),
                     verdict: it.verdict(),
                     usage: it.usage(),
+                    usage_known: it.usage_known(),
                 };
             }
         }
@@ -268,36 +323,134 @@ fn run_attempt(
         error: None,
         verdict: it.verdict(),
         usage: it.usage(),
+        usage_known: it.usage_known(),
     }
 }
 
-/// W3/方案 §4.4：按体检结论决定是否兜底，并给出兜底装置。
-///
-/// | 结论 | 动作 |
-/// |---|---|
-/// | `EmptyReasoningBudget` | 推进自动链下一个关闭形态（链尾则放弃） |
-/// | `EmptyTruncated` | 显式补发 `max_tokens = 4096` |
-/// | 其余（含 `EmptyNoOutput`、请求层错误） | 不兜底 |
-///
-/// 用户显式选定关闭方式（非 auto）时不推进链——尊重用户选择（方案 §2.3 规则 3）。
-fn heal_translator(
+/// 台阶 → 装置：普通台阶只换关闭形态（会话记忆共享），最小请求另清空全部可选参数
+fn translator_for_step(base: &Translator, step: lt_translate::RequestStep) -> Translator {
+    match step {
+        lt_translate::RequestStep::Plan(p) => base.with_plan(p),
+        lt_translate::RequestStep::Minimal => base.minimal(),
+    }
+}
+
+/// 这一台阶失败后是否应**再退一级**（第二轮评审 ③/④）：
+/// - 请求被拒且是"参数类"错误（400/422）→ 退（服务端不认我们注入的参数）；
+///   其余错误（网络/鉴权/404）与参数无关，退级只会白试；
+/// - 体检显示"预算被思考吃光"且用户没显式指定方式 → 退（换一种关闭形态）。
+///   `disable_thinking = false` 时起点已是链尾，`next_step` 自然无下一级。
+fn should_advance(step: lt_translate::RequestStep, attempt: &Attempt, allow_verdict: bool) -> bool {
+    use lt_translate::TranslateError as E;
+    if let Some(e) = &attempt.error {
+        return matches!(
+            e,
+            E::Status { code: 400, .. } | E::Status { code: 422, .. }
+        );
+    }
+    allow_verdict
+        && matches!(
+            attempt.verdict,
+            Some(lt_translate::ResponseVerdict::EmptyReasoningBudget)
+        )
+        && !matches!(step, lt_translate::RequestStep::Minimal)
+}
+
+/// 一次翻译的完整产出：末次尝试 + 实际打赢的台阶 + 跨尝试累计用量
+struct LadderOutcome {
+    attempt: Attempt,
+    step: lt_translate::RequestStep,
+    usage: (u64, u64),
+}
+
+/// 回退阶梯（第二轮评审 ③/④/⑤）：按 [`lt_translate::next_step`] 逐级下退，
+/// **成功即停**；`EmptyTruncated` 时在同一台阶补发输出上限重试一次（方案 §4.4）。
+/// 阶梯由构造保证有限（每级严格前进、端点即 `Minimal`），不会成环。
+#[allow(clippy::too_many_arguments)]
+fn run_ladder(
     base: &Translator,
-    attempt: &Attempt,
-) -> Option<lt_translate::Translator> {
-    use lt_translate::ResponseVerdict as V;
-    match attempt.verdict {
-        Some(V::EmptyReasoningBudget) => {
-            let plan = base.thinking_plan();
-            match lt_translate::next_plan(plan) {
-                Some(next) => Some(base.with_overrides(next, None)),
-                None => {
-                    tracing::warn!("自动链已到链尾，无法再降级（当前 {:?}）", plan);
-                    None
-                }
-            }
+    start: lt_translate::RequestStep,
+    allow_verdict_advance: bool,
+    text: &str,
+    source_lang: &str,
+    target: &str,
+    timeout: u32,
+    sink: &EventSink,
+    id: u64,
+    seq: u64,
+    push_partials: bool,
+) -> LadderOutcome {
+    let mut step = start;
+    let mut total = (0u64, 0u64);
+    loop {
+        let device = translator_for_step(base, step);
+        let attempt = run_attempt(
+            &device,
+            text,
+            source_lang,
+            target,
+            timeout,
+            sink,
+            id,
+            seq,
+            push_partials,
+        );
+        total.0 += attempt.usage.0;
+        total.1 += attempt.usage.1;
+        if attempt.succeeded() {
+            return LadderOutcome {
+                attempt,
+                step,
+                usage: total,
+            };
         }
-        Some(V::EmptyTruncated) => Some(base.with_overrides(base.thinking_plan(), Some(4096))),
-        _ => None,
+        // 体检判定"被截断且没有正文"：同一台阶补发输出上限重试一次
+        // （只做一次——两个分支都在此收束，不会回到循环）
+        if attempt.error.is_none()
+            && matches!(
+                attempt.verdict,
+                Some(lt_translate::ResponseVerdict::EmptyTruncated)
+            )
+        {
+            tracing::info!("体检：输出被截断，补发输出上限重试一次（{step:?}）");
+            let retry = translator_for_step(base, step).with_max_tokens(4096);
+            let second = run_attempt(
+                &retry,
+                text,
+                source_lang,
+                target,
+                timeout,
+                sink,
+                id,
+                seq,
+                push_partials,
+            );
+            total.0 += second.usage.0;
+            total.1 += second.usage.1;
+            // 补发上限只做一次：无论成败都在此收束（不再下退台阶——
+            // 截断与"关不掉思考"是两件事）
+            return LadderOutcome {
+                attempt: second,
+                step,
+                usage: total,
+            };
+        }
+        if !should_advance(step, &attempt, allow_verdict_advance) {
+            return LadderOutcome {
+                attempt,
+                step,
+                usage: total,
+            };
+        }
+        let Some(next) = lt_translate::next_step(step) else {
+            return LadderOutcome {
+                attempt,
+                step,
+                usage: total,
+            };
+        };
+        tracing::info!("翻译降级：{:?} → {:?}", step, next);
+        step = next;
     }
 }
 
@@ -318,6 +471,10 @@ fn finish_ok(
     stats.tl_count.fetch_add(1, Ordering::Relaxed);
     stats.prompt_tokens.fetch_add(pt, Ordering::Relaxed);
     stats.completion_tokens.fetch_add(ct, Ordering::Relaxed);
+    // ⑩：端点是否提供用量（最后一次成功尝试为准）——不提供时界面显示"—"
+    stats
+        .usage_known
+        .store(attempt.usage_known, Ordering::Relaxed);
     tracing::info!("Translate ({tl_ms:.0}ms): {text}");
     sink.push(UiEvent::UpdateTranslation {
         id,
@@ -378,11 +535,23 @@ struct TlRig {
     /// 设置总线（W4：翻译 worker 提交前读 `tl` 生效视图——目标语言/超时不再
     /// 存实例可变态（旧 MutableState 设置面 + TlSwitch::TargetLanguage/Timeout 镜像）
     bus: Arc<SettingsBus>,
-    /// W3/裁决 2：会话内学习记忆（(api_base, model) → 打赢过的关闭形态）。
-    /// **只记内存**——进程退出即清空，不写用户配置；同一 Pipeline 内跨装置重建保留
-    learned: Arc<Mutex<HashMap<(String, String), lt_translate::ThinkingPlan>>>,
+    /// 会话内台阶记忆（(api_base, model) → 上次打赢/退到底的台阶）。**只记内存**
+    /// ——进程退出即清空，不写用户配置（裁决 2）；同一 Pipeline 内跨装置重建保留。
+    /// 记"退到底"的失败台阶同样重要：否则每一段都会把整条阶梯重走一遍。
+    learned: Arc<Mutex<HashMap<(String, String), lt_translate::RequestStep>>>,
+    /// 已就"无法关闭思维链"回过执的模型键（每会话每模型一次，防止事件洪水）
+    degraded_notified: Arc<Mutex<std::collections::HashSet<(String, String)>>>,
     /// 本装置的 (api_base, model) 记忆键
     model_key: (String, String),
+    /// 模型显示名（降级回执带出，供 UI 定位条目）
+    model_name: String,
+    /// 上下文提交序号（单调递增；id 是 UUID，不能当序号用）
+    seq: Arc<AtomicU64>,
+    /// 阶梯起点与"体检驱动的降级"许可（按用户配置算一次）
+    start_step: lt_translate::RequestStep,
+    allow_verdict_advance: bool,
+    /// 配置里已声明"本模型关不掉"（UI 已取消勾选并落盘）——回执不再重复发
+    thinking_unavailable: bool,
 }
 
 impl TlRig {
@@ -393,13 +562,23 @@ impl TlRig {
         sup: &Supervisor,
         sink: EventSink,
         transcript: Arc<lt_audio::transcript::TranscriptWriter>,
-        learned: Arc<Mutex<HashMap<(String, String), lt_translate::ThinkingPlan>>>,
+        learned: Arc<Mutex<HashMap<(String, String), lt_translate::RequestStep>>>,
+        degraded_notified: Arc<Mutex<std::collections::HashSet<(String, String)>>>,
     ) -> Result<Option<Self>, String> {
         let eff = bus.load();
         let Some(mc) = eff.raw.models.get(eff.raw.active_model) else {
             return Ok(None);
         };
-        Self::from_effective(mc, &eff, bus, sup, sink, transcript, learned)
+        Self::from_effective(
+            mc,
+            &eff,
+            bus,
+            sup,
+            sink,
+            transcript,
+            learned,
+            degraded_notified,
+        )
     }
 
     /// 按指定模型配置构建（运行时切换用；构建失败返回 Err——UI 收到
@@ -414,7 +593,8 @@ impl TlRig {
         sup: &Supervisor,
         sink: EventSink,
         transcript: Arc<lt_audio::transcript::TranscriptWriter>,
-        learned: Arc<Mutex<HashMap<(String, String), lt_translate::ThinkingPlan>>>,
+        learned: Arc<Mutex<HashMap<(String, String), lt_translate::RequestStep>>>,
+        degraded_notified: Arc<Mutex<std::collections::HashSet<(String, String)>>>,
     ) -> Result<Option<Self>, String> {
         let params = lt_translate::TranslatorParams {
             api_base: mc.api_base.clone(),
@@ -423,7 +603,7 @@ impl TlRig {
             // W1/方案 §2.1：长度上限不再由应用发送（交给服务端默认——应用强加的
             // 256 会把"先想再答"的模型憋死，实测就是这个原因导致空译文）
             max_tokens: None,
-            // W1/方案 §2.1：温度取模型条目值（None = 不发送）
+            // 2026-09-10 裁决：高级参数默认一律不发送（None = 不发）；用户手动指定才发
             temperature: mc.temperature,
             streaming: mc.streaming,
             system_prompt: (!eff.raw.system_prompt.is_empty())
@@ -432,6 +612,7 @@ impl TlRig {
             no_system_role: mc.no_system_role,
             // W1/方案 §2.3：总开关 + 方式（sanitize 已把旧 "off" 归一化到总开关）
             disable_thinking: mc.disable_thinking,
+            thinking_unavailable: mc.thinking_unavailable,
             thinking_style: mc.thinking_style.clone(),
             json_response: mc.json_response,
             overrides: mc.overrides.clone(),
@@ -447,6 +628,17 @@ impl TlRig {
                 return Err(format!("{}: {e:#}", mc.name));
             }
         };
+        // 阶梯起点 = 构造期解析出的关闭形态；用户显式选定方式或取消勾选时，
+        // **不允许**体检驱动的降级（尊重用户意愿，方案 §2.3 规则 1/3）——
+        // 但参数被服务端拒绝（400/422）时仍会退级，否则该模型整条不可用
+        let start_step = lt_translate::first_step(translator.thinking_plan());
+        let explicit = mc.disable_thinking
+            && !mc.thinking_unavailable
+            && matches!(
+                mc.thinking_style.as_deref(),
+                Some(s) if !s.is_empty() && s != "auto"
+            );
+        let allow_verdict_advance = mc.disable_thinking && !mc.thinking_unavailable && !explicit;
         let stats = Arc::new(TlStats::new(mc.input_price, mc.output_price));
         tracing::info!("Switching translator: {} ({})", mc.name, mc.model);
         Ok(Some(Self {
@@ -456,7 +648,13 @@ impl TlRig {
             transcript,
             bus: bus.clone(),
             learned,
+            degraded_notified,
             model_key: (mc.api_base.clone(), mc.model.clone()),
+            model_name: mc.name.clone(),
+            seq: Arc::new(AtomicU64::new(0)),
+            start_step,
+            allow_verdict_advance,
+            thinking_unavailable: mc.thinking_unavailable,
         }))
     }
 
@@ -480,48 +678,90 @@ impl TlRig {
         // FailureKind 本地化（编排域禁依赖 lt-i18n 的纪律不变）
         let bus = self.bus.clone();
         let learned = self.learned.clone();
+        let degraded_notified = self.degraded_notified.clone();
         let model_key = (self.model_key.0.clone(), self.model_key.1.clone());
-        self.pool.submit(move || {
+        let model_name = self.model_name.clone();
+        let start_step = self.start_step;
+        let allow_verdict_advance = self.allow_verdict_advance;
+        let thinking_unavailable = self.thinking_unavailable;
+        let seq = self.seq.fetch_add(1, Ordering::Relaxed) + 1;
+        self.pool.submit(id, move || {
             let eff = bus.load();
             let target = eff.tl.target_language.clone();
             let timeout = eff.tl.timeout;
             let t0 = Instant::now();
-            // W3/方案 §4.4：会话内记忆的关闭形态优先（学到的姿势跨段复用；
-            // 裁决 2「只记内存」——进程退出即清空，不写用户配置）
-            let base = match learned.lock().unwrap().get(&model_key).copied() {
-                Some(p) if p != translator.thinking_plan() => translator.with_overrides(p, None),
-                _ => translator.with_overrides(translator.thinking_plan(), None),
-            };
-            let first = run_attempt(&base, &text, &source_lang, &target, timeout, &sink, id);
-            let mut used = first.usage;
-            if first.succeeded() {
-                finish_ok(
-                    &first, &transcript, &stats, &sink, id, t0, used.0, used.1,
+            // 会话内台阶记忆优先（学到的姿势跨段复用；记忆含"退到底"的失败台阶，
+            // 避免每段重走整条阶梯）
+            let step = learned
+                .lock()
+                .unwrap()
+                .get(&model_key)
+                .copied()
+                .unwrap_or(start_step);
+            let outcome = run_ladder(
+                &translator,
+                step,
+                allow_verdict_advance,
+                &text,
+                &source_lang,
+                &target,
+                timeout,
+                &sink,
+                id,
+                seq,
+                true,
+            );
+            let used = outcome.usage;
+            if !outcome.attempt.succeeded() {
+                // 整条阶梯都没打通过：记住退到底的台阶（下一段一步到位，不再重走）
+                learned.lock().unwrap().insert(model_key.clone(), outcome.step);
+                fail(
+                    &outcome.attempt,
+                    &transcript,
+                    &stats,
+                    &sink,
+                    id,
+                    t0,
+                    used.0,
+                    used.1,
                 );
                 return;
             }
-            // ── W3 兜底：诊断驱动的一次重试（方案 §4.4 表） ──
-            if let Some(healed) = heal_translator(&base, &first) {
-                let detail = format!("自愈重试: {:?} → {:?}", base.thinking_plan(), healed.thinking_plan());
-                tracing::info!("{detail}");
-                let second = run_attempt(&healed, &text, &source_lang, &target, timeout, &sink, id);
-                used.0 += second.usage.0;
-                used.1 += second.usage.1;
-                if second.succeeded() {
-                    // 记住打赢的姿势（本会话内对该 (base, model) 一律沿用）
-                    learned
-                        .lock()
-                        .unwrap()
-                        .insert(model_key, healed.thinking_plan());
-                    finish_ok(
-                        &second, &transcript, &stats, &sink, id, t0, used.0, used.1,
+            // 记住打赢的台阶
+            learned
+                .lock()
+                .unwrap()
+                .insert(model_key.clone(), outcome.step);
+            // ── item 5 / 方案 §2.5 规则 5「偏离可见」──────────────────────
+            // 用户要求关闭思考、但阶梯最终只能退到"不含关闭参数"的形态
+            // （强制思考模型）→ 回执 UI：取消勾选 + 落盘 thinking_unavailable
+            // + 提示"该模型无法关闭思维链"。每会话每模型只回执一次。
+            if !thinking_unavailable && lt_translate::gives_up_disabling(outcome.step) {
+                let first_time = degraded_notified.lock().unwrap().insert(model_key.clone());
+                if first_time {
+                    tracing::warn!(
+                        "模型 {model_name} 无法关闭思维链（阶梯退到 {}），已回执界面取消勾选",
+                        lt_translate::step_name(outcome.step)
                     );
-                    return;
+                    sink.push(UiEvent::TranslatorDegraded {
+                        name: model_name.clone(),
+                        api_base: model_key.0.clone(),
+                        model: model_key.1.clone(),
+                        actual: lt_translate::step_name(outcome.step).to_string(),
+                        cannot_disable_thinking: true,
+                    });
                 }
-                fail(&second, &transcript, &stats, &sink, id, t0, used.0, used.1);
-                return;
             }
-            fail(&first, &transcript, &stats, &sink, id, t0, used.0, used.1);
+            finish_ok(
+                &outcome.attempt,
+                &transcript,
+                &stats,
+                &sink,
+                id,
+                t0,
+                used.0,
+                used.1,
+            );
         });
     }
 
@@ -771,7 +1011,9 @@ impl Pipeline {
         }
 
         // W3/裁决 2：会话内学习记忆（只记内存；跨装置重建保留）
-        let learned: Arc<Mutex<HashMap<(String, String), lt_translate::ThinkingPlan>>> =
+        let degraded_notified: Arc<Mutex<std::collections::HashSet<(String, String)>>> =
+            Arc::new(Mutex::new(std::collections::HashSet::new()));
+        let learned: Arc<Mutex<HashMap<(String, String), lt_translate::RequestStep>>> =
             Arc::new(Mutex::new(HashMap::new()));
 
         // ── 翻译装置（M3）：models 非空即构建；配置无效必须让用户可见
@@ -782,6 +1024,7 @@ impl Pipeline {
             sink.clone(),
             transcript.clone(),
             learned.clone(),
+            degraded_notified.clone(),
         ) {
             Ok(t) => t.map(Arc::new),
             Err(reason) => {
@@ -869,6 +1112,7 @@ impl Pipeline {
                 let msg = msg_asr.clone();
                 let transcript = transcript_asr.clone();
                 let learned = learned.clone();
+                let degraded_notified = degraded_notified.clone();
                 Box::new(move || {
                     run_asr_thread(
                         &settings,
@@ -884,6 +1128,7 @@ impl Pipeline {
                             transcript,
                             msg,
                             learned,
+                            degraded_notified,
                         },
                         tl,
                     );
@@ -1180,7 +1425,8 @@ struct AsrThreadCtx {
     /// 线程监督器句柄（ReplaceRig 重建翻译池用）
     sup: Arc<Supervisor>,
     /// W3：会话内学习记忆（跨装置重建保留；只记内存）
-    learned: Arc<Mutex<HashMap<(String, String), lt_translate::ThinkingPlan>>>,
+    learned: Arc<Mutex<HashMap<(String, String), lt_translate::RequestStep>>>,
+    degraded_notified: Arc<Mutex<std::collections::HashSet<(String, String)>>>,
     /// 转录写盘（ReplaceRig/TestTranslator 重建翻译装置时共享同一句柄）
     transcript: Arc<lt_audio::transcript::TranscriptWriter>,
     /// 用户可见文案服务（i18n 注入；错误占位/测试连接回执经此取）
@@ -1202,7 +1448,8 @@ fn route_translator_switch(
     sup: &Supervisor,
     transcript: &Arc<lt_audio::transcript::TranscriptWriter>,
     msg: &Msg,
-    learned: &Arc<Mutex<HashMap<(String, String), lt_translate::ThinkingPlan>>>,
+    learned: &Arc<Mutex<HashMap<(String, String), lt_translate::RequestStep>>>,
+    degraded_notified: &Arc<Mutex<std::collections::HashSet<(String, String)>>>,
 ) -> Option<TlSwitch> {
     match sw {
         TlSwitch::ReplaceRig { config } => {
@@ -1215,6 +1462,7 @@ fn route_translator_switch(
                 sink.clone(),
                 transcript.clone(),
                 learned.clone(),
+                degraded_notified.clone(),
             ) {
                 Ok(Some(rig)) => {
                     tracing::info!("翻译器已切换: {} ({})", config.name, config.model);
@@ -1241,58 +1489,52 @@ fn route_translator_switch(
                 sink.clone(),
                 transcript.clone(),
                 learned.clone(),
+                degraded_notified.clone(),
             ) {
                 Ok(Some(rig)) => {
                     let sink = sink.clone();
                     let name = name.clone();
                     let msg_t = msg.clone();
                     let bus_t = bus.clone();
-                    rig.pool.submit(move || {
+                    // 判据与生产同源（第二轮评审 item 4）：跑**同一条回退阶梯**
+                    // 并完整跑完一轮——关不掉思考的模型在生产里能出译文，
+                    // 测试连接就不该判失败；空回复仍必须判失败。
+                    let start = rig.start_step;
+                    let allow = rig.allow_verdict_advance;
+                    rig.pool.submit(0, move || {
                         let eff = bus_t.load();
                         let target = eff.tl.target_language.clone();
                         let timeout = eff.tl.timeout;
                         let t0 = Instant::now();
-                        let mut it = rig.translator.translate_iter(
+                        let outcome = run_ladder(
+                            &rig.translator,
+                            start,
+                            allow,
                             "Livetranslate test",
                             "auto",
                             &target,
                             timeout,
+                            &sink,
+                            0,
+                            0,
+                            false,
                         );
-                        let (ok, err, ms) = {
-                            // W4：完整跑完一轮并按体检判定——空回复必须报失败。
-                            // （旧实现取首个 item 即判成功：思考型模型没有任何
-                            // content 增量，首个 item 就是空结束值，于是"模型坏得
-                            // 最彻底时测试连接恰好显示通过"。）
-                            let mut text = String::new();
-                            let mut err: Option<String> = None;
-                            // while let 是刻意的：跑完还要读 verdict()（方案 §4）
-                            #[allow(clippy::while_let_on_iterator)]
-                            while let Some(item) = it.next() {
-                                match item {
-                                    Ok(partial) => text = partial,
-                                    Err(e) => {
-                                        err = Some(format!(
-                                            "{}（{}）",
-                                            msg_t.t(e.failure_kind().i18n_key()),
-                                            e.ui_text()
-                                        ));
-                                        break;
-                                    }
-                                }
-                            }
-                            let ms = t0.elapsed().as_millis() as u64;
-                            let ok = err.is_none()
-                                && it.verdict().is_some_and(|v| v.has_text())
-                                && !text.trim().is_empty();
-                            let err = if ok {
-                                None
-                            } else {
-                                Some(err.unwrap_or_else(|| {
-                                    msg_t.t(lt_proto::FailureKind::Empty.i18n_key())
-                                }))
+                        let ms = t0.elapsed().as_millis() as u64;
+                        let text = outcome.attempt.text.clone().unwrap_or_default();
+                        let (ok, err) = if outcome.attempt.succeeded() && !text.trim().is_empty() {
+                            (true, None)
+                        } else {
+                            let msg_text = match &outcome.attempt.error {
+                                Some(e) => format!(
+                                    "{}（{}）",
+                                    msg_t.t(e.failure_kind().i18n_key()),
+                                    e.ui_text()
+                                ),
+                                None => msg_t.t(lt_proto::FailureKind::Empty.i18n_key()),
                             };
-                            (ok, err, ms)
-                        };                        sink.push(UiEvent::TestTranslatorResult {
+                            (false, Some(msg_text))
+                        };
+                        sink.push(UiEvent::TestTranslatorResult {
                             name,
                             ok,
                             error: err,
@@ -1337,6 +1579,7 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
         transcript,
         msg,
         learned,
+        degraded_notified,
     } = ctx;
     // 增量识别会话状态（原版 _interim_* 字段；跨段存活，vad_flush 复位）
     let mut interim_state = InterimState::default();
@@ -1403,7 +1646,7 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
                 funasr_model,
                 whisper_model_size,
                 language,
-            }) = route_translator_switch(sw, &mut tl, &bus, &sink, &sup, &transcript, &msg, &learned)
+            }) = route_translator_switch(sw, &mut tl, &bus, &sink, &sup, &transcript, &msg, &learned, &degraded_notified)
             else {
                 continue;
             };
@@ -1471,7 +1714,7 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
                     funasr_model,
                     whisper_model_size,
                     language,
-                }) = route_translator_switch(sw, &mut tl, &bus, &sink, &sup, &transcript, &msg, &learned)
+                }) = route_translator_switch(sw, &mut tl, &bus, &sink, &sup, &transcript, &msg, &learned, &degraded_notified)
                 {
                     // R3/D-61：每次切换尝试重解析 models_dir（与待命臂一致；
                     // 运行中目录损坏时切换路径同样可恢复）
@@ -2012,7 +2255,11 @@ mod tests {
 
     /// 测试转录句柄（临时目录；测试内不落盘启用——TranscriptWriter 仅记录语义）
     /// W3：空的会话内学习记忆（测试不依赖记忆）
-    fn test_learned() -> Arc<Mutex<HashMap<(String, String), lt_translate::ThinkingPlan>>> {
+    fn test_degraded_notified() -> Arc<Mutex<std::collections::HashSet<(String, String)>>> {
+        Arc::new(Mutex::new(std::collections::HashSet::new()))
+    }
+
+    fn test_learned() -> Arc<Mutex<HashMap<(String, String), lt_translate::RequestStep>>> {
         Arc::new(Mutex::new(HashMap::new()))
     }
 
@@ -2026,7 +2273,7 @@ mod tests {
     }
 
 
-    // ── W3：兜底决策（方案 §4.4 表） ──
+    // ── 回退阶梯（第二轮评审 ③/④/⑤；方案 §4.4 表） ──
 
     /// 造一个不发请求的装置（client 构建不触网）
     fn test_translator(disable_thinking: bool) -> Translator {
@@ -2038,74 +2285,171 @@ mod tests {
         .expect("测试客户端构建必成功")
     }
 
+    fn test_translator_explicit(style: &str) -> Translator {
+        Translator::new(lt_translate::TranslatorParams {
+            api_base: "http://127.0.0.1:1/v1".into(),
+            disable_thinking: true,
+            thinking_style: Some(style.into()),
+            ..Default::default()
+        })
+        .expect("测试客户端构建必成功")
+    }
+
     fn attempt(verdict: Option<lt_translate::ResponseVerdict>, text: Option<&str>) -> Attempt {
         Attempt {
             text: text.map(str::to_string),
             error: None,
             verdict,
             usage: (10, 20),
+            usage_known: true,
         }
     }
 
-    #[test]
-    fn heal_advances_thinking_chain_on_reasoning_budget() {
-        let base = test_translator(true); // 127.0.0.1 + auto → ReasoningEffortNone
-        assert_eq!(base.thinking_plan(), lt_translate::ThinkingPlan::ReasoningEffortNone);
-        let healed = heal_translator(&base, &attempt(Some(lt_translate::ResponseVerdict::EmptyReasoningBudget), None))
-            .expect("预算被推理吃光应触发兜底");
-        assert_eq!(
-            healed.thinking_plan(),
-            lt_translate::ThinkingPlan::EnableThinkingFalse,
-            "应推进到自动链的下一个候选"
-        );
+    fn param_rejected() -> Attempt {
+        Attempt {
+            text: None,
+            error: Some(lt_translate::TranslateError::Status {
+                code: 400,
+                message: "unknown field: reasoning_effort".into(),
+            }),
+            verdict: None,
+            usage: (0, 0),
+            usage_known: false,
+        }
     }
 
+    /// 体检显示"预算被思考吃光" → 允许时退一级
     #[test]
-    fn heal_stops_at_chain_end() {
-        // 链尾（嵌套体）无更弱候选 → 不再兜底，交由失败结论提示用户
-        let base = test_translator(true).with_overrides(
-            lt_translate::ThinkingPlan::NestedDisabled,
+    fn ladder_advances_on_reasoning_budget() {
+        let base = test_translator(true); // 127.0.0.1 + auto → ReasoningEffortNone
+        assert_eq!(
+            base.thinking_plan(),
+            lt_translate::ThinkingPlan::ReasoningEffortNone
+        );
+        let step = lt_translate::first_step(base.thinking_plan());
+        let verdict = attempt(
+            Some(lt_translate::ResponseVerdict::EmptyReasoningBudget),
             None,
         );
-        assert!(heal_translator(&base, &attempt(Some(lt_translate::ResponseVerdict::EmptyReasoningBudget), None)).is_none());
+        assert!(should_advance(step, &verdict, true));
+        assert_eq!(
+            lt_translate::next_step(step),
+            Some(lt_translate::RequestStep::Plan(
+                lt_translate::ThinkingPlan::EnableThinkingFalse
+            ))
+        );
     }
 
+    /// 用户取消勾选（disable_thinking=false）→ 起点即链尾，**没有任何可退的级**
+    /// （绝不擅自注入关闭参数——方案 §2.3 规则 1；旧测试曾把相反行为钉死）
     #[test]
-    fn heal_raises_budget_on_empty_truncation() {
+    fn ladder_never_injects_when_switch_off() {
+        let base = test_translator(false);
+        assert_eq!(base.thinking_plan(), lt_translate::ThinkingPlan::None);
+        let step = lt_translate::first_step(base.thinking_plan());
+        let verdict = attempt(
+            Some(lt_translate::ResponseVerdict::EmptyReasoningBudget),
+            None,
+        );
+        // 起点就是"不发送"形态；下一级只有最小请求，且不涉及任何关闭参数
+        assert_eq!(
+            lt_translate::next_step(step),
+            Some(lt_translate::RequestStep::Minimal)
+        );
+        let minimal = translator_for_step(&base, lt_translate::RequestStep::Minimal);
+        let body = minimal.build_request_body("s", "t", true, false, 0);
+        assert!(body.get("reasoning_effort").is_none());
+        assert!(body.get("enable_thinking").is_none());
+        assert!(body.get("thinking").is_none());
+        // Minimal 起步且体检说"还在推理"时也不再退（已到端点）
+        assert!(!should_advance(lt_translate::RequestStep::Minimal, &verdict, true));
+    }
+
+    /// 用户**显式选定**关闭方式 → 体检驱动的降级被禁（尊重用户选择）；
+    /// 但服务端 400 拒绝参数时仍退级（否则该模型整条不可用）
+    #[test]
+    fn ladder_respects_explicit_style_but_still_survives_400() {
+        let base = test_translator_explicit("qwen");
+        assert_eq!(
+            base.thinking_plan(),
+            lt_translate::ThinkingPlan::EnableThinkingFalse
+        );
+        let step = lt_translate::first_step(base.thinking_plan());
+        let verdict = attempt(
+            Some(lt_translate::ResponseVerdict::EmptyReasoningBudget),
+            None,
+        );
+        assert!(!should_advance(step, &verdict, false), "显式方式不受体检驱动");
+        assert!(should_advance(step, &param_rejected(), false), "400 仍须降级");
+    }
+
+    /// 非参数类错误不降级（网络/鉴权/404 与请求内容无关，退级只会白试）
+    #[test]
+    fn ladder_does_not_advance_on_unrelated_errors() {
+        let step = lt_translate::RequestStep::Plan(lt_translate::ThinkingPlan::NestedDisabled);
+        for err in [
+            lt_translate::TranslateError::Timeout("t".into()),
+            lt_translate::TranslateError::Auth {
+                code: 401,
+                message: "bad key".into(),
+            },
+            lt_translate::TranslateError::Status {
+                code: 404,
+                message: "no model".into(),
+            },
+            lt_translate::TranslateError::Connection("refused".into()),
+        ] {
+            let mut a = attempt(None, None);
+            a.error = Some(err);
+            assert!(!should_advance(step, &a, true));
+        }
+    }
+
+    /// EmptyTruncated 走"同一台阶补发上限"，不换台阶
+    #[test]
+    fn ladder_raises_budget_on_empty_truncation() {
         let base = test_translator(true);
-        let healed = heal_translator(&base, &attempt(Some(lt_translate::ResponseVerdict::EmptyTruncated), None))
-            .expect("空且被截断应补发上限");
-        // 补发上限：显式 4096（对比默认不发送）
-        let body = healed.build_request_body("s", "t", true, false);
+        let with_budget = translator_for_step(
+            &base,
+            lt_translate::RequestStep::Plan(base.thinking_plan()),
+        )
+        .with_max_tokens(4096);
+        let body = with_budget.build_request_body("s", "t", true, false, 0);
         assert_eq!(body["max_tokens"], 4096);
     }
 
+    /// 台阶 → 装置：最小请求清空全部可选参数，普通台阶保留
     #[test]
-    fn heal_not_triggered_for_no_output_or_error() {
-        let base = test_translator(true);
-        // 模型主动空答复：重试无意义
-        assert!(heal_translator(&base, &attempt(Some(lt_translate::ResponseVerdict::EmptyNoOutput), None)).is_none());
-        // 请求层错误：不兜底（错误已明确）
-        let mut a = attempt(None, None);
-        a.error = Some(lt_translate::TranslateError::Timeout("t".into()));
-        assert!(heal_translator(&base, &a).is_none());
-        // 成功（有正文）自然不兜底
-        assert!(heal_translator(&base, &attempt(Some(lt_translate::ResponseVerdict::Ok), Some("译文"))).is_none());
+    fn ladder_step_devices_differ_only_where_intended() {
+        let base = Translator::new(lt_translate::TranslatorParams {
+            api_base: "http://127.0.0.1:1234/v1".into(),
+            model: "m".into(),
+            temperature: Some(0.7),
+            ..Default::default()
+        })
+        .unwrap();
+        let normal = translator_for_step(&base, lt_translate::RequestStep::Plan(base.thinking_plan()));
+        assert_eq!(
+            normal.build_request_body("s", "t", true, false, 0)["temperature"],
+            0.7
+        );
+        let minimal = translator_for_step(&base, lt_translate::RequestStep::Minimal);
+        let body = minimal.build_request_body("s", "t", true, false, 0);
+        assert!(body.get("temperature").is_none());
+        assert!(body.get("reasoning_effort").is_none());
     }
 
+    /// 台阶名（"当前实际在用"回执用）不得出现厂商词（INV-E）
     #[test]
-    fn heal_disabled_when_switch_off() {
-        // 用户取消「关闭模型思考」= 明确要求不干预 → 首轮 plan 为 None,
-        // 空响应只能提示，不得擅自开启关闭参数
-        let base = test_translator(false);
-        assert_eq!(base.thinking_plan(), lt_translate::ThinkingPlan::None);
-        let healed = heal_translator(&base, &attempt(Some(lt_translate::ResponseVerdict::EmptyReasoningBudget), None))
-            .expect("链首兜底仍会尝试一次");
-        assert_eq!(
-            healed.thinking_plan(),
-            lt_translate::ThinkingPlan::ReasoningEffortNone,
-            "从链首（reasoning_effort）开始尝试"
-        );
+    fn ladder_step_names_are_vendor_neutral_in_copy() {
+        // 实际值本身是内部串（openai/qwen 等形状名），只在日志与内部回执使用；
+        // 用户可见文案由 UI 按 i18n 组装——此处只钉住值域稳定
+        for step in [
+            lt_translate::RequestStep::Plan(lt_translate::ThinkingPlan::None),
+            lt_translate::RequestStep::Minimal,
+        ] {
+            assert!(lt_translate::gives_up_disabling(step));
+        }
     }
 
     #[test]
@@ -2133,7 +2477,7 @@ mod tests {
         let settings = lt_proto::Settings::default();
         let sup = test_sup();
         let bus = test_bus(settings);
-        let rig = TlRig::from_settings(&bus, &sup, EventArtery::new(), test_transcript(), test_learned())
+        let rig = TlRig::from_settings(&bus, &sup, EventArtery::new(), test_transcript(), test_learned(), test_degraded_notified())
             .expect("默认设置不应报配置错误")
             .expect("默认 settings 带一个默认模型，应能构建");
         // W4：目标语言不再存实例态（逐调用经总线 tl 视图传入）——验证总线视图
@@ -2151,7 +2495,7 @@ mod tests {
             ..Default::default()
         };
         let sup = test_sup();
-        assert!(TlRig::from_settings(&test_bus(settings), &sup, EventArtery::new(), test_transcript(), test_learned()).unwrap().is_none());
+        assert!(TlRig::from_settings(&test_bus(settings), &sup, EventArtery::new(), test_transcript(), test_learned(), test_degraded_notified()).unwrap().is_none());
         sup.join_all();
     }
 
@@ -2160,7 +2504,7 @@ mod tests {
         let mut settings = lt_proto::Settings::default();
         settings.models.clear();
         let sup = test_sup();
-        assert!(TlRig::from_settings(&test_bus(settings), &sup, EventArtery::new(), test_transcript(), test_learned()).unwrap().is_none());
+        assert!(TlRig::from_settings(&test_bus(settings), &sup, EventArtery::new(), test_transcript(), test_learned(), test_degraded_notified()).unwrap().is_none());
         sup.join_all();
     }
 
@@ -2174,11 +2518,45 @@ mod tests {
         // shutdown 之后的提交不执行（submit 侧短路 + worker 侧双重检查）
         let ran = Arc::new(AtomicU64::new(0));
         let r = ran.clone();
-        pool.submit(move || {
+        pool.submit(7, move || {
             r.fetch_add(1, Ordering::Relaxed);
         });
         std::thread::sleep(Duration::from_millis(200));
         assert_eq!(ran.load(Ordering::Relaxed), 0);
+    }
+
+    /// 第二轮评审 ⑬d：队列满丢最旧时，被丢任务必须补一条"已放弃"回执
+    /// （旧实现无声无息，字幕永远停在"翻译中"）
+    #[test]
+    fn dropped_jobs_emit_receipt() {
+        use std::sync::atomic::AtomicU64;
+        let sup = test_sup();
+        let sink = EventArtery::new();
+        // worker 数为 0：任务只进队、不消费，灌满即丢最旧
+        let pool = JobPool::new(0, &sup, sink.clone());
+        let ran = Arc::new(AtomicU64::new(0));
+        for id in 0..(TL_QUEUE_CAP as u64 + 3) {
+            let r = ran.clone();
+            pool.submit(id, move || {
+                r.fetch_add(1, Ordering::Relaxed);
+            });
+        }
+        // 被丢的 3 条应在动脉里留下 3 条 Dropped 回执
+        let mut batch = Vec::new();
+        let mut dropped_ids = Vec::new();
+        loop {
+            if !sink.drain_batch(&mut batch, Duration::from_millis(20)) {
+                break;
+            }
+            for ev in batch.iter() {
+                if let UiEvent::TranslationFailed { id, kind, .. } = ev {
+                    assert_eq!(*kind, FailureKind::Dropped);
+                    dropped_ids.push(*id);
+                }
+            }
+        }
+        assert_eq!(dropped_ids, vec![0, 1, 2], "最旧的三条被丢弃并回了执");
+        sup.join_all();
     }
 
     /// W1 泄漏回归（ReplaceRig 路径）：旧 rig 被替换 Drop 后，旧池 8 个 worker
@@ -2188,12 +2566,12 @@ mod tests {
     fn replaced_rig_workers_shutdown_on_drop() {
         let sup = test_sup();
         let bus = test_bus(lt_proto::Settings::default());
-        let rig = TlRig::from_settings(&bus, &sup, EventArtery::new(), test_transcript(), test_learned()).unwrap().unwrap();
+        let rig = TlRig::from_settings(&bus, &sup, EventArtery::new(), test_transcript(), test_learned(), test_degraded_notified()).unwrap().unwrap();
         let old_alive = rig.pool.alive_workers.clone();
         wait_for(|| old_alive.load(Ordering::Relaxed) == TL_POOL_WORKERS);
         // 模拟 ReplaceRig 的替换语义（route_translator_switch：
         // `*tl = Some(Arc::new(rig))`——旧 rig 被 Drop，无人显式关机）
-        let replacement = TlRig::from_settings(&bus, &sup, EventArtery::new(), test_transcript(), test_learned()).unwrap().unwrap();
+        let replacement = TlRig::from_settings(&bus, &sup, EventArtery::new(), test_transcript(), test_learned(), test_degraded_notified()).unwrap().unwrap();
         wait_for(|| replacement.pool.alive_worker_count() == TL_POOL_WORKERS);
         drop(rig);
         // 旧池经 JobPool::Drop 自动停机：3s 内应归零（500ms pop_timeout 节拍）
@@ -2210,7 +2588,7 @@ mod tests {
     fn test_rig_dropped_with_job_shuts_down_pool() {
         let sup = test_sup();
         let bus = test_bus(lt_proto::Settings::default());
-        let rig = TlRig::from_settings(&bus, &sup, EventArtery::new(), test_transcript(), test_learned()).unwrap().unwrap();
+        let rig = TlRig::from_settings(&bus, &sup, EventArtery::new(), test_transcript(), test_learned(), test_degraded_notified()).unwrap().unwrap();
         let alive = rig.pool.alive_workers.clone();
         wait_for(|| alive.load(Ordering::Relaxed) == TL_POOL_WORKERS);
         // 等价于任务闭包 Drop 时 rig 的丢弃语义

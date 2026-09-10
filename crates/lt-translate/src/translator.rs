@@ -15,14 +15,13 @@ use std::sync::{mpsc, Arc, LazyLock};
 use std::time::{Duration, Instant};
 
 use async_openai::config::OpenAIConfig;
-use async_openai::types::chat::{CreateChatCompletionResponse, CreateChatCompletionStreamResponse};
 use parking_lot::Mutex;
 use serde_json::{json, Map, Value};
 
 use crate::error::TranslateError;
 use crate::reasoning::{strip_reasoning, ReasoningStripper};
 use crate::thinking::{resolve_thinking_plan, thinking_disable_body, ThinkingPlan};
-use crate::verdict::{classify_response, FinishKind, ResponseVerdict};
+use crate::verdict::{classify_response, finish_kind, FinishKind, ResponseVerdict};
 // E3/ADR-10：提示词/覆写键上移 lt-proto 契约层（与 lt-ui 同源——原 UI 依赖
 // 整个本 crate 仅为取常量的边已裁除）
 use lt_proto::{DEFAULT_PROMPT, OVERRIDE_KEYS};
@@ -35,6 +34,12 @@ static RUNTIME: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
         .build()
         .expect("tokio runtime 初始化失败")
 });
+
+/// 已撤出界面、**不再参与请求**的覆写键（第二轮评审 ②）：温度已升为一等字段、
+/// 输出上限应用不再发送（会憋死思考模型）、seed 冷门——界面上看不见的键绝不允许
+/// 影响实际请求（"界面所见 = 实际所发"）。档案里的旧值由 `Settings::sanitize`
+/// 一次性迁移清除，此处是构造期的第二道闸。
+const OVERRIDE_KEYS_HIDDEN: [&str; 3] = ["temperature", "max_tokens", "seed"];
 
 pub(crate) fn runtime() -> &'static tokio::runtime::Runtime {
     &RUNTIME
@@ -88,7 +93,8 @@ pub struct TranslatorParams {
     pub model: String,
     /// W1（方案 §2.1）：None = **不发送**该参数（长度上限交给服务端默认）
     pub max_tokens: Option<u32>,
-    /// W1（方案 §2.1）：None = **不发送**该参数
+    /// 采样温度（2026-09-10 裁决）：None = **不发送**——默认即 None。
+    /// 高级参数默认一律不发送，只有用户在界面上手动指定才发。
     pub temperature: Option<f64>,
     pub streaming: bool, // true
     pub system_prompt: Option<String>,
@@ -96,6 +102,9 @@ pub struct TranslatorParams {
     pub no_system_role: bool,
     /// W1（方案 §2.3）：关闭模型思考总开关，默认 true
     pub disable_thinking: bool,
+    /// 第二轮评审 item 5：该模型已确认**无法关闭思维链**（持久化在模型配置里）
+    /// ——true 时不再尝试注入任何关闭参数，直接走"照常思考 + 隔离器兜底"
+    pub thinking_unavailable: bool,
     /// 关闭方式（方案 §2.3）：None/"auto" 自动首选；deepseek/qwen/vllm/openai 只用该一种
     pub thinking_style: Option<String>,
     pub json_response: bool,
@@ -110,12 +119,13 @@ impl Default for TranslatorParams {
             api_key: String::new(),
             model: String::new(),
             max_tokens: None,
-            temperature: Some(lt_proto::DEFAULT_TEMPERATURE),
+            temperature: None,
             streaming: true,
             system_prompt: None,
             proxy: "none".into(),
             no_system_role: false,
             disable_thinking: true,
+            thinking_unavailable: false,
             thinking_style: None,
             json_response: false,
             overrides: None,
@@ -126,12 +136,19 @@ impl Default for TranslatorParams {
 
 /// 会话态（W4：目标语言/超时不再是模型运行时状态——构架 2.0 §3.2.3，
 /// 设置总线派生视图，**提交翻译前读 `load().tl`**，逐调用参数传入；
-/// 以下全部为会话/用量态，跨调用存活，由实例独占）
+/// 以下为会话记忆，跨调用存活，由实例与它的派生副本**共享**）
+///
+/// 2026-09-10 修正（第二轮评审 ①）：`Arc<Mutex<MutableState>>` 的共享是**特性
+/// 不是缺陷**——W3 为"并发不串台"给每次提交派生空白状态的副本，代价是
+/// 「上下文数」整体失效（历史恒空、`context_turns` 恒 0）。用量账本早已改为
+/// 随迭代器返回（INV-B），因此这里只留**确实应当跨调用共享**的上下文记忆。
 struct MutableState {
     context_turns: u32,
-    history: Vec<(String, String)>,
-    prompt_tokens: u64,
-    completion_tokens: u64,
+    /// 已完成的句子（提交序号 → 原文/译文）。用序号索引的原因：8 个 worker
+    /// 并发时入史顺序 = **完成序**，Vec 会让后提交的句子成为早提交句子的
+    /// 上下文（"未来句"）；按序号只取"小于本次序号"的最近 N 条才是正确语义
+    /// （方案 §4.6）。
+    history: BTreeMap<u64, (String, String)>,
 }
 
 /// LLM 翻译器（OpenAI 兼容 API）。
@@ -160,27 +177,41 @@ impl Translator {
         // W1（方案 §2.3）：总开关 + 方式 → 本次装置的唯一关闭形态
         let thinking = resolve_thinking_plan(
             params.disable_thinking,
+            params.thinking_unavailable,
             params.thinking_style.as_deref(),
             &params.api_base,
             &params.model,
         );
         if thinking != ThinkingPlan::None {
-            tracing::info!(
-                "Translator: thinking disabled for {} via {} ({})",
+            // 日志可带形状名（排障必需），但用户可见文案一律由 UI 生成——
+            // 降为 debug，避免日志窗直接显示供应商概念（INV-E）
+            tracing::debug!(
+                "Translator: thinking-disable shape {:?} for {} ({})",
+                thinking,
                 params.model,
-                thinking.name(),
                 thinking_disable_body(thinking)
             );
         }
         if params.json_response {
             tracing::info!("Translator: json_response enabled for {}", params.model);
         }
-        // 值为 null 的 override 键剔除（原版 `if v is not None`）
+        // 值为 null 的 override 键剔除（原版 `if v is not None`）；
+        // 第二轮评审 ②：**已升为一等字段/应用不再发送的键一律剔除**——
+        // 界面看不见的键绝不允许影响实际请求（"界面所见 = 实际所发"）
         let overrides: BTreeMap<String, Value> = params
             .overrides
             .unwrap_or_default()
             .into_iter()
             .filter(|(_, v)| !v.is_null())
+            .filter(|(k, _)| {
+                let drop = OVERRIDE_KEYS_HIDDEN.contains(&k.as_str());
+                if drop {
+                    tracing::warn!(
+                        "Translator: 忽略档案中已撤出界面的覆写键 '{k}'（不再参与请求）"
+                    );
+                }
+                !drop
+            })
             .collect();
         let extra_body = match params.extra_body {
             Some(Value::Object(m)) => Value::Object(m),
@@ -196,6 +227,10 @@ impl Translator {
         }
         if !extra_body.as_object().unwrap().is_empty() {
             tracing::info!("Translator extra_body: {extra_body}");
+        }
+        // 高级参数默认不发送（2026-09-10 裁决）：未手动指定即为 None/空
+        if let (None, None) = (params.temperature, params.max_tokens) {
+            tracing::debug!("Translator: 采样参数与输出上限均未指定（按最小请求发送）");
         }
         Ok(Self {
             client,
@@ -214,17 +249,9 @@ impl Translator {
                 .unwrap_or_else(|| DEFAULT_PROMPT.to_string()),
             state: Arc::new(Mutex::new(MutableState {
                 context_turns: 0,
-                history: Vec::new(),
-                prompt_tokens: 0,
-                completion_tokens: 0,
+                history: BTreeMap::new(),
             })),
         })
-    }
-
-    /// 最近一次 translate 的 (prompt_tokens, completion_tokens)
-    pub fn last_usage(&self) -> (u64, u64) {
-        let st = self.state.lock();
-        (st.prompt_tokens, st.completion_tokens)
     }
 
     pub fn set_context_turns(&self, n: u32) {
@@ -239,24 +266,52 @@ impl Translator {
         self.state.lock().history.clear();
     }
 
-    /// 本次装置实际采用的关闭形态（W3：编排层据此推进自动链 / 记录学习结果）
+    /// 复用同一 HTTP 客户端（基准测试的逐 chunk 计时需要自己驱动流，
+    /// 但请求构造必须与生产同源——方案 §2.5 规则 6）
+    pub(crate) fn client(&self) -> &async_openai::Client<OpenAIConfig> {
+        &self.client
+    }
+
+    /// 本次装置实际采用的关闭形态（回退阶梯据此推进 / 记录学习结果）
     pub fn thinking_plan(&self) -> ThinkingPlan {
         self.thinking
     }
 
-    /// W3/方案 §4.4：派生一个**共享同一 client** 的装置，仅覆盖"关闭形态"与
-    /// "输出上限"两项——自愈重试专用（历史/用量独立重算）。
-    /// `max_tokens = None` 表示沿用原装置的值。
-    pub fn with_overrides(&self, thinking: ThinkingPlan, max_tokens: Option<u32>) -> Translator {
+    /// 共享同一 client **与同一会话记忆**、仅覆盖"关闭形态"的新装置——
+    /// 回退阶梯每上一级派生一个。历史/上下文是会话级的，必须一路传承
+    /// （否则「上下文数」再次失效，这正是第二轮评审 ① 的回归）。
+    pub fn with_plan(&self, thinking: ThinkingPlan) -> Translator {
         Translator {
             thinking,
-            max_tokens: max_tokens.or(self.max_tokens),
             ..self.share_client()
         }
     }
 
-    /// 共享同一 client 的新 Translator（历史/用量清零；目标语言/超时随每次
-    /// 调用参数传入，W4——旧 with_target_language 的目标语言面随镜像退役）
+    /// 共享同一 client 与会话记忆、仅覆盖"输出上限"的副本——体检判定为
+    /// "被截断"时补发上限重试一次（方案 §4.4）
+    pub fn with_max_tokens(&self, max_tokens: u32) -> Translator {
+        Translator {
+            max_tokens: Some(max_tokens),
+            ..self.share_client()
+        }
+    }
+
+    /// 最小请求形态（用户裁决）：不带任何可选参数——温度、覆写表、额外参数、
+    /// 输出上限全部清空，关闭形态固定为"不发送"。只剩
+    /// 「模型 + 系统提示词 + 待译文本 + 流式开关」（+ 流式用量探测）。
+    pub fn minimal(&self) -> Translator {
+        Translator {
+            thinking: ThinkingPlan::None,
+            max_tokens: None,
+            temperature: None,
+            overrides: BTreeMap::new(),
+            extra_body: Value::Object(Map::new()),
+            ..self.share_client()
+        }
+    }
+
+    /// 共享同一 client 与会话记忆的新 Translator（会话状态一路传承，
+    /// 仅目标语言/超时随每次调用参数传入，W4）
     pub fn share_client(&self) -> Translator {
         Translator {
             client: self.client.clone(),
@@ -270,35 +325,54 @@ impl Translator {
             overrides: self.overrides.clone(),
             extra_body: self.extra_body.clone(),
             system_prompt_template: self.system_prompt_template.clone(),
-            state: Arc::new(Mutex::new(MutableState {
-                context_turns: 0,
-                history: Vec::new(),
-                prompt_tokens: 0,
-                completion_tokens: 0,
-            })),
+            state: self.state.clone(),
         }
     }
 
     // ── prompt / messages 组装 ──
 
-    fn format_context(&self, context_turns: u32, history: &[(String, String)]) -> String {
+    /// 上下文里的最近 N 句（**只取提交序号小于本次的**——并发下绝不用"未来句"）
+    fn recent_context(
+        context_turns: u32,
+        history: &BTreeMap<u64, (String, String)>,
+        seq: u64,
+    ) -> Vec<(String, String)> {
         if context_turns == 0 || history.is_empty() {
+            return Vec::new();
+        }
+        let mut prior: Vec<&(String, String)> = history
+            .range(..seq)
+            .map(|(_, v)| v)
+            .collect();
+        let take = (context_turns as usize).min(prior.len());
+        if take == 0 {
+            return Vec::new();
+        }
+        prior.drain(..prior.len() - take);
+        prior.into_iter().cloned().collect()
+    }
+
+    fn format_context(
+        context_turns: u32,
+        history: &BTreeMap<u64, (String, String)>,
+        seq: u64,
+    ) -> String {
+        let ctx = Self::recent_context(context_turns, history, seq);
+        if ctx.is_empty() {
             return String::new();
         }
-        let take = (context_turns as usize).min(history.len());
         let mut out = String::new();
-        for (src, tgt) in &history[history.len() - take..] {
+        for (src, tgt) in &ctx {
             out.push_str(&format!("Source: {src}\nTranslation: {tgt}\n\n"));
         }
-        // rstrip
         out.trim_end().to_string()
     }
 
-    fn build_system_prompt(&self, source_lang: &str, target_lang: &str) -> String {
+    fn build_system_prompt(&self, source_lang: &str, target_lang: &str, seq: u64) -> String {
         let src = lang_display(source_lang);
         let tgt = lang_display(target_lang);
         let st = self.state.lock();
-        let context = self.format_context(st.context_turns, &st.history);
+        let context = Self::format_context(st.context_turns, &st.history, seq);
         let prompt = match format_prompt_template(&self.system_prompt_template, src, tgt, &context)
         {
             Some(p) => p,
@@ -315,30 +389,27 @@ impl Translator {
         prompt
     }
 
-    fn build_messages(&self, system_prompt: &str, text: &str) -> Value {
+    fn build_messages(&self, system_prompt: &str, text: &str, seq: u64) -> Value {
         if self.no_system_role {
             return json!([{ "role": "user", "content": format!("{system_prompt}\n{text}") }]);
         }
         let mut msgs = vec![json!({"role": "system", "content": system_prompt})];
-        let st = self.state.lock();
         // 模板含 {context} 时上下文已并入 system prompt，不再追加历史消息
-        if st.context_turns > 0
-            && !st.history.is_empty()
-            && !self.system_prompt_template.contains("{context}")
-        {
-            let take = (st.context_turns as usize).min(st.history.len());
-            for (src, tgt) in &st.history[st.history.len() - take..] {
+        if !self.system_prompt_template.contains("{context}") {
+            let st = self.state.lock();
+            let ctx = Self::recent_context(st.context_turns, &st.history, seq);
+            drop(st);
+            for (src, tgt) in ctx {
                 msgs.push(json!({"role": "user", "content": src}));
                 msgs.push(json!({"role": "assistant", "content": tgt}));
             }
         }
-        drop(st);
         msgs.push(json!({"role": "user", "content": text}));
         json!(msgs)
     }
 
-    fn append_history(&self, text: &str, result: &str) {
-        append_history_locked(&mut self.state.lock(), text, result);
+    fn append_history(&self, seq: u64, text: &str, result: &str) {
+        append_history_locked(&mut self.state.lock(), seq, text, result);
     }
 
     // ── 请求体组装（byot：直接产 JSON，等价原版 _build_request_kwargs） ──
@@ -361,17 +432,19 @@ impl Translator {
     }
 
     /// 组装请求体（byot JSON；`include_usage` 仅流式首次尝试携带）。
-    /// 公开供测试快照与调试使用。
+    /// 公开供测试快照、调试与编排域的"请求体预览"使用（预览与实发**同一构造函数**，
+    /// 方案 §2.5 规则 6）。`seq` = 本次翻译的提交序号（决定上下文取哪几句）。
     pub fn build_request_body(
         &self,
         system_prompt: &str,
         text: &str,
         stream: bool,
         include_usage: bool,
+        seq: u64,
     ) -> Value {
         let mut body = Map::new();
         body.insert("model".into(), json!(self.model));
-        body.insert("messages".into(), self.build_messages(system_prompt, text));
+        body.insert("messages".into(), self.build_messages(system_prompt, text, seq));
         // W1（方案 §2.1）：长度上限与温度皆可缺席——None 时不发送该键
         // （长度上限交给服务端默认：应用强加上限会把"先想再答"的模型憋死）
         if let Some(max_tokens) = self.max_tokens {
@@ -425,31 +498,18 @@ impl Translator {
         system_prompt: &str,
         text: &str,
         timeout_secs: u64,
+        seq: u64,
     ) -> SyncOutcome {
-        let body = self.build_request_body(system_prompt, text, false, false);
-        let resp: CreateChatCompletionResponse = match self
+        let body = self.build_request_body(system_prompt, text, false, false, seq);
+        let resp: wire::ChatResponse = match self
             .timeout_block(self.client.chat().create_byot(body), timeout_secs)
         {
             Ok(r) => r,
             Err(e) => return SyncOutcome::failed(e),
         };
-        let (mut pt, mut ct) = (0u64, 0u64);
-        let mut reasoning_tokens = None;
-        {
-            let mut st = self.state.lock();
-            st.prompt_tokens = 0;
-            st.completion_tokens = 0;
-            if let Some(usage) = &resp.usage {
-                pt = usage.prompt_tokens as u64;
-                ct = usage.completion_tokens as u64;
-                st.prompt_tokens = pt;
-                st.completion_tokens = ct;
-                reasoning_tokens = usage
-                    .completion_tokens_details
-                    .as_ref()
-                    .and_then(|d| d.reasoning_tokens);
-            }
-        }
+        let (pt, ct) = resp.usage_tokens();
+        let usage_known = resp.usage.is_some();
+        let reasoning_tokens = resp.reasoning_tokens();
         let choice = resp.choices.first();
         // W2/INV-F：先做思维链隔离，再 trim/JSON 提取/重复检测
         let cleaned = strip_reasoning(
@@ -463,9 +523,7 @@ impl Translator {
         }
         let verdict = classify_response(
             &result,
-            choice
-                .and_then(|c| c.finish_reason.as_ref())
-                .map(FinishKind::from),
+            finish_kind(choice.and_then(|c| c.finish_reason.as_deref())),
             reasoning_tokens,
         );
         warn_if_thinking_burned(&result, ct, self.thinking.name());
@@ -473,6 +531,7 @@ impl Translator {
             result: Ok(result),
             verdict: Some(verdict),
             usage: (pt, ct),
+            usage_known,
         }
     }
 
@@ -496,16 +555,18 @@ impl Translator {
     // ── 对外主入口 ──
 
     /// 翻译并返回完整结果（原版 translate：按 streaming 配置走流式或同步）。
-    /// W4：`target_lang`/`timeout_secs` 为调用方从设置总线读出的生效值（TlView）。
+    /// W4：`target_lang`/`timeout_secs` 为调用方从设置总线读出的生效值（TlView）；
+    /// `seq` = 提交序号（上下文只取此序号之前的句子）。
     pub fn translate(
         &self,
         text: &str,
         source_language: &str,
         target_lang: &str,
         timeout_secs: u32,
+        seq: u64,
     ) -> Result<String, TranslateError> {
         let mut last: Option<Result<String, TranslateError>> = None;
-        for item in self.translate_iter(text, source_language, target_lang, timeout_secs) {
+        for item in self.translate_iter(text, source_language, target_lang, timeout_secs, seq) {
             last = Some(Ok(item?));
         }
         // translate_iter 必产至少一个值
@@ -523,18 +584,19 @@ impl Translator {
         source_language: &str,
         target_lang: &str,
         timeout_secs: u32,
+        seq: u64,
     ) -> TranslateStream {
-        let system_prompt = self.build_system_prompt(source_language, target_lang);
+        let system_prompt = self.build_system_prompt(source_language, target_lang, seq);
         if !self.streaming {
-            let outcome = self.translate_sync(&system_prompt, text, timeout_secs as u64);
+            let outcome = self.translate_sync(&system_prompt, text, timeout_secs as u64, seq);
             if let Ok(r) = &outcome.result {
-                self.append_history(text, r);
+                self.append_history(seq, text, r);
             }
             // 体检结论与用量随 SyncOutcome 一并带出（W2）
             return TranslateStream::sync(outcome);
         }
 
-        let body = self.build_request_body(&system_prompt, text, true, false);
+        let body = self.build_request_body(&system_prompt, text, true, false, seq);
         let body_with_usage = {
             let mut m = body.as_object().expect("body 是 object").clone();
             m.insert("stream_options".into(), json!({"include_usage": true}));
@@ -558,10 +620,12 @@ impl Translator {
             json_response: self.json_response,
             thinking: self.thinking,
             state: self.state.clone(),
+            seq,
             finished: false,
             stripper: ReasoningStripper::new(),
             verdict: None,
             usage: (0, 0),
+            usage_known: false,
         }
     }
 }
@@ -579,15 +643,15 @@ async fn pump_stream(
 
     let mut stream = match client
         .chat()
-        .create_stream_byot::<Value, CreateChatCompletionStreamResponse>(with_usage)
+        .create_stream_byot::<Value, wire::ChatChunk>(with_usage)
         .await
     {
         Ok(s) => s,
         Err(_) => match client
             .chat()
-            .create_stream_byot::<Value, CreateChatCompletionStreamResponse>(plain)
+            .create_stream_byot::<Value, wire::ChatChunk>(plain)
             .await
-        {
+    {
             Ok(s) => s,
             Err(e) => {
                 let _ = tx.send(StreamMsg::Err(TranslateError::from(e)));
@@ -600,26 +664,22 @@ async fn pump_stream(
     let (mut pt, mut ct) = (0u64, 0u64);
     let mut reasoning_tokens: Option<u32> = None;
     let mut finish: Option<FinishKind> = None;
+    let mut usage_known = false;
     loop {
         match tokio::time::timeout(read_timeout, stream.next()).await {
             Ok(Some(Ok(chunk))) => {
                 if let Some(usage) = &chunk.usage {
-                    pt = usage.prompt_tokens as u64;
-                    ct = usage.completion_tokens as u64;
-                    reasoning_tokens = usage
-                        .completion_tokens_details
-                        .as_ref()
-                        .and_then(|d| d.reasoning_tokens);
+                    // 用量只在末块出现（DeepSeek 无独立 usage chunk，挂最后一个内容块；
+                    // Kimi 另发一个 choices 为空的 usage-only chunk）——两者都落这里
+                    usage_known = true;
+                    pt = usage.prompt_tokens.unwrap_or(0);
+                    ct = usage.completion_tokens.unwrap_or(0);
+                    reasoning_tokens = usage.reasoning_tokens();
                 }
-                if let Some(f) = chunk.choices.first().and_then(|c| c.finish_reason.as_ref()) {
-                    finish = Some(FinishKind::from(f));
+                if let Some(f) = chunk.finish_reason() {
+                    finish = Some(f);
                 }
-                if let Some(delta) = chunk
-                    .choices
-                    .first()
-                    .and_then(|c| c.delta.content.as_deref())
-                    .filter(|s| !s.is_empty())
-                {
+                if let Some(delta) = chunk.delta_content().filter(|s| !s.is_empty()) {
                     if tx.send(StreamMsg::Delta(delta.to_string())).is_err() {
                         // 消费方已放弃（超时/提前终止），停止拉流
                         return;
@@ -645,6 +705,7 @@ async fn pump_stream(
         completion_tokens: ct,
         reasoning_tokens,
         finish,
+        usage_known,
     });
 }
 
@@ -655,6 +716,7 @@ enum StreamMsg {
         completion_tokens: u64,
         reasoning_tokens: Option<u32>,
         finish: Option<FinishKind>,
+        usage_known: bool,
     },
     Err(TranslateError),
 }
@@ -665,6 +727,8 @@ struct SyncOutcome {
     result: Result<String, TranslateError>,
     verdict: Option<ResponseVerdict>,
     usage: (u64, u64),
+    /// 服务端是否返回了用量对象（第二轮评审 ⑩：不返回时界面显示"—"而非 0）
+    usage_known: bool,
 }
 
 impl SyncOutcome {
@@ -673,6 +737,7 @@ impl SyncOutcome {
             result: Err(e),
             verdict: None,
             usage: (0, 0),
+            usage_known: false,
         }
     }
 }
@@ -698,6 +763,8 @@ pub struct TranslateStream {
     /// 本次装置的关闭形态（仅用于告警文案；体检结论见 [`TranslateStream::verdict`]）
     thinking: ThinkingPlan,
     state: Arc<Mutex<MutableState>>,
+    /// 本次翻译的提交序号（历史按序号入档，并发下不产生"未来句"上下文）
+    seq: u64,
     finished: bool,
     /// W2/INV-F：流式思维链隔离器——写进 content 的思考块绝不外泄
     stripper: ReasoningStripper,
@@ -705,26 +772,29 @@ pub struct TranslateStream {
     verdict: Option<ResponseVerdict>,
     /// W2：本次调用的 (prompt, completion) 用量
     usage: (u64, u64),
+    /// 第二轮评审 ⑩：服务端是否真的返回了用量（false → 界面显示"—"而不是 0）
+    usage_known: bool,
 }
 
 impl TranslateStream {
     fn sync(outcome: SyncOutcome) -> Self {
         let verdict = outcome.verdict;
         let usage = outcome.usage;
+        let usage_known = outcome.usage_known;
         Self {
             inner: StreamInner::Sync(Some(outcome)),
             json_response: false,
             thinking: ThinkingPlan::None,
             state: Arc::new(Mutex::new(MutableState {
                 context_turns: 0,
-                history: Vec::new(),
-                prompt_tokens: 0,
-                completion_tokens: 0,
+                history: BTreeMap::new(),
             })),
+            seq: 0,
             finished: false,
             stripper: ReasoningStripper::new(),
             verdict,
             usage,
+            usage_known,
         }
     }
 
@@ -736,6 +806,11 @@ impl TranslateStream {
     /// W2：本次调用的 (prompt_tokens, completion_tokens)
     pub fn usage(&self) -> (u64, u64) {
         self.usage
+    }
+
+    /// 第二轮评审 ⑩：服务端是否提供了用量统计（不提供时调用方不得把 0 当真实值展示）
+    pub fn usage_known(&self) -> bool {
+        self.usage_known
     }
 }
 
@@ -789,13 +864,10 @@ impl Iterator for TranslateStream {
                         completion_tokens,
                         reasoning_tokens,
                         finish,
+                        usage_known,
                     }) => {
-                        {
-                            let mut st = self.state.lock();
-                            st.prompt_tokens = prompt_tokens;
-                            st.completion_tokens = completion_tokens;
-                        }
                         self.usage = (prompt_tokens, completion_tokens);
+                        self.usage_known = usage_known;
                         // 流结束：隔离器 flush（未闭合的思考块整块丢弃）
                         let stripper = std::mem::take(&mut self.stripper);
                         let mut result = stripper.finish().trim().to_string();
@@ -810,7 +882,7 @@ impl Iterator for TranslateStream {
                             return Some(Err(TranslateError::Repetition(result)));
                         }
                         let text = std::mem::take(text);
-                        append_history_locked(&mut self.state.lock(), &text, &result);
+                        append_history_locked(&mut self.state.lock(), self.seq, &text, &result);
                         self.finished = true;
                         return Some(Ok(result));
                     }
@@ -834,15 +906,17 @@ impl Iterator for TranslateStream {
 }
 
 /// 历史追加与裁剪（原版 _append_history：context_turns>0 且结果非空才记；
-/// 超过 context_turns+2 条裁到最近 context_turns 条）
-fn append_history_locked(st: &mut MutableState, text: &str, result: &str) {
+/// 超过 context_turns+2 条裁到最近 context_turns 条）。按**提交序号**入档：
+/// 并发 8 worker 下完成序与提交序不同，按序号才能保证上下文只含"更早的句子"。
+fn append_history_locked(st: &mut MutableState, seq: u64, text: &str, result: &str) {
     if st.context_turns > 0 && !result.is_empty() {
-        st.history.push((text.to_string(), result.to_string()));
+        st.history.insert(seq, (text.to_string(), result.to_string()));
         let max_keep = st.context_turns as usize + 2;
-        if st.history.len() > max_keep {
-            let keep = st.context_turns as usize;
-            let start = st.history.len() - keep;
-            st.history = st.history.split_off(start);
+        while st.history.len() > max_keep {
+            let Some((&oldest, _)) = st.history.iter().next() else {
+                break;
+            };
+            st.history.remove(&oldest);
         }
     }
 }
@@ -862,9 +936,7 @@ pub(crate) fn extract_json_translation(raw: &str) -> String {
 fn warn_if_thinking_burned(result: &str, completion_tokens: u64, plan: &str) {
     if result.is_empty() && completion_tokens > 0 {
         tracing::warn!(
-            "Empty translation but {completion_tokens} completion tokens were used - the model \
-             likely spent the whole output budget on reasoning; keep 「关闭模型思考」enabled in \
-             the model editor (current plan: {plan})"
+            "Empty translation but {completion_tokens} completion tokens were used - the model              likely spent the whole output budget on reasoning (shape: {plan}); the fallback              ladder will step automatically"
         );
     }
 }
@@ -909,6 +981,159 @@ pub fn make_openai_client(
         .with_api_base(api_base)
         .with_api_key(api_key);
     Ok(async_openai::Client::build(http, config))
+}
+
+/// 响应线格式的**宽容**类型（第二轮评审 ⑧）：只声明我们真正要用的字段，
+/// 认不出的取值一律忽略——而不是让一个陌生的枚举取值（如 DeepSeek 的
+/// `insufficient_system_resource` / `aborted`、网关自定义字段）打死整段响应。
+/// 未知字段由 serde 默认忽略；`finish_reason` 保持字符串、由
+/// [`crate::verdict::finish_kind`] 归一化，未知值落 `FinishKind::Other`。
+pub(crate) mod wire {
+    use serde::Deserialize;
+    use crate::verdict::{finish_kind, FinishKind};
+
+    #[derive(Debug, Deserialize, Default)]
+    pub struct Delta {
+        #[serde(default)]
+        pub content: Option<String>,
+    }
+
+    #[derive(Debug, Deserialize, Default)]
+    pub struct StreamChoice {
+        #[serde(default)]
+        pub delta: Delta,
+        #[serde(default)]
+        pub finish_reason: Option<String>,
+    }
+
+    #[derive(Debug, Deserialize, Default)]
+    pub struct CompletionTokensDetails {
+        #[serde(default)]
+        pub reasoning_tokens: Option<u32>,
+    }
+
+    #[derive(Debug, Deserialize, Default)]
+    pub struct Usage {
+        #[serde(default)]
+        pub prompt_tokens: Option<u64>,
+        #[serde(default)]
+        pub completion_tokens: Option<u64>,
+        #[serde(default)]
+        pub completion_tokens_details: Option<CompletionTokensDetails>,
+    }
+
+    impl Usage {
+        pub fn reasoning_tokens(&self) -> Option<u32> {
+            self.completion_tokens_details
+                .as_ref()
+                .and_then(|d| d.reasoning_tokens)
+        }
+    }
+
+    /// 流式分片
+    #[derive(Debug, Deserialize, Default)]
+    pub struct ChatChunk {
+        #[serde(default)]
+        pub choices: Vec<StreamChoice>,
+        #[serde(default)]
+        pub usage: Option<Usage>,
+    }
+
+    impl ChatChunk {
+        pub fn delta_content(&self) -> Option<&str> {
+            self.choices
+                .first()
+                .and_then(|c| c.delta.content.as_deref())
+        }
+
+        pub fn finish_reason(&self) -> Option<FinishKind> {
+            self.choices
+                .first()
+                .and_then(|c| c.finish_reason.as_deref())
+                .map(|s| finish_kind(Some(s)))
+                .unwrap_or(None)
+        }
+    }
+
+    #[derive(Debug, Deserialize, Default)]
+    pub struct RespMessage {
+        #[serde(default)]
+        pub content: Option<String>,
+    }
+
+    #[derive(Debug, Deserialize, Default)]
+    pub struct RespChoice {
+        #[serde(default)]
+        pub message: RespMessage,
+        #[serde(default)]
+        pub finish_reason: Option<String>,
+    }
+
+    /// 非流式响应
+    #[derive(Debug, Deserialize, Default)]
+    pub struct ChatResponse {
+        #[serde(default)]
+        pub choices: Vec<RespChoice>,
+        #[serde(default)]
+        pub usage: Option<Usage>,
+    }
+
+    impl ChatResponse {
+        pub fn usage_tokens(&self) -> (u64, u64) {
+            self.usage
+                .as_ref()
+                .map(|u| (u.prompt_tokens.unwrap_or(0), u.completion_tokens.unwrap_or(0)))
+                .unwrap_or((0, 0))
+        }
+
+        pub fn reasoning_tokens(&self) -> Option<u32> {
+            self.usage.as_ref().and_then(Usage::reasoning_tokens)
+        }
+    }
+
+    /// 宽容解码的守卫（第二轮评审 ⑧ 的回归面）：DeepSeek 文档列出的
+    /// `insufficient_system_resource`/`aborted`、网关自定义 `service_tier`
+    /// 都不得让整段响应解码失败
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn unknown_finish_reason_and_extra_fields_are_tolerated() {
+            let raw = r#"{
+                "id":"x","object":"chat.completion.chunk","created":1,"model":"m",
+                "service_tier":"scale_v2",
+                "choices":[{"index":0,"delta":{"content":"译文"},"finish_reason":"insufficient_system_resource"}]
+            }"#;
+            let chunk: ChatChunk = serde_json::from_str(raw).expect("不得因陌生取值解码失败");
+            assert_eq!(chunk.delta_content(), Some("译文"));
+            assert_eq!(chunk.finish_reason(), Some(FinishKind::Other));
+        }
+
+        #[test]
+        fn null_usage_and_missing_fields_are_tolerated() {
+            let raw = r#"{"choices":[{"index":0,"delta":{"content":"a"},"finish_reason":null}],"usage":null}"#;
+            let chunk: ChatChunk = serde_json::from_str(raw).expect("usage=null 可解");
+            assert_eq!(chunk.delta_content(), Some("a"));
+            assert_eq!(chunk.finish_reason(), None);
+            let raw = r#"{"choices":[]}"#;
+            let chunk: ChatChunk = serde_json::from_str(raw).expect("空 choices 可解");
+            assert_eq!(chunk.delta_content(), None);
+        }
+
+        #[test]
+        fn non_streaming_response_is_tolerated() {
+            let raw = r#"{"choices":[{"message":{"content":"你好","reasoning_content":"思考"},"finish_reason":"aborted"}],
+                          "usage":{"prompt_tokens":3,"completion_tokens":5,"completion_tokens_details":{"reasoning_tokens":2}}}"#;
+            let resp: ChatResponse = serde_json::from_str(raw).expect("非流式可解");
+            assert_eq!(resp.usage_tokens(), (3, 5));
+            assert_eq!(resp.reasoning_tokens(), Some(2));
+            assert_eq!(
+                resp.choices.first().and_then(|c| c.message.content.as_deref()),
+                Some("你好")
+            );
+        }
+    }
 }
 
 /// 迷你 str.format：支持 {{ }} 转义与 {source_lang}/{target_lang}/{context} 命名占位。
@@ -1002,7 +1227,7 @@ mod drop_tests {
         // 黑洞地址：连接不会被立即拒绝，pump 保持挂起（否则任务可能自行结束，
         // 测不出 abort 的效果）
         let t = Translator::for_test("http://10.255.255.1:9/v1", "m", true, None, None);
-        let it = t.translate_iter("hi", "en", "zh", 30);
+        let it = t.translate_iter("hi", "en", "zh", 30, 0);
         let (abort, finished_before) = match &it.inner {
             StreamInner::Streaming { handle, .. } => (handle.abort_handle(), handle.is_finished()),
             _ => panic!("应为流式迭代器"),
@@ -1025,6 +1250,7 @@ mod drop_tests {
             result: Ok("x".into()),
             verdict: Some(ResponseVerdict::Ok),
             usage: (1, 2),
+            usage_known: true,
         });
         drop(it);
     }

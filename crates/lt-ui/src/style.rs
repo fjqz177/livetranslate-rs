@@ -238,8 +238,14 @@ pub const TL_MS: Color32 = Color32::from_rgb(0xdd, 0xbb, 0x88);
 /// "翻译中"/同语言占位（原版 #999 / #aaa）
 pub const PLACEHOLDER: Color32 = Color32::from_rgb(0x99, 0x99, 0x99);
 pub const SAME_LANG: Color32 = Color32::from_rgb(0xaa, 0xaa, 0xaa);
-/// 失败占位文案（W2：空响应/请求错误——与面板红字同色系）
-pub const ERROR: Color32 = Color32::from_rgb(0xc4, 0x1e, 0x3a);
+/// 翻译失败醒目色（2026-09-10 第二轮评审 item 8/9，字幕窗与悬浮窗同源）：
+/// 暖红 `#FF6B5C`——与正常译文（白 `#FFFFFF` / 默认金 `#FFD700`）明显不同，
+/// 在深色胶带底（字幕窗默认）与浅背景（薄描边兜底）上均可读。
+/// （取代原 `ERROR` 常量：旧值 `#C41E3A` 在深色胶带上过暗，且两窗口需同源）
+pub const WARN_TEXT: Color32 = Color32::from_rgb(0xff, 0x6b, 0x5c);
+/// 失败文案专用薄描边（字幕窗失败行恒开、宽 1.5px；浅背景可读性的保障；
+/// 只作绘制偏移，不参与换行/行高/对齐计算 → 布局零跳变）
+pub const FAILURE_OUTLINE: Color32 = Color32::from_rgb(0x3a, 0x0d, 0x0a);
 
 /// #RRGGBB → Color32；解析失败回退 fallback（原版 _hex_to_rgba 的容错路径）
 pub fn parse_color(s: &str, fallback: Color32) -> Color32 {

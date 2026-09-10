@@ -11,8 +11,14 @@
 //! 官方 README 明载 "If `none`, reasoning/thinking is disabled"；本机 LM Studio 实测
 //! 由 43.7s 降至 0.46s）。W3 补"无效/被拒 → 依次降级"的链式兜底与会话内记忆。
 //!
-//! 官方 OpenAI/xAI/Anthropic 端点**保守不发**：这些端点对不支持的参数直接 400，
-//! 在 W3 的参数被拒降级上线前保持旧行为（见 [`PARAMLESS_ENDPOINTS`]）。
+//! 官方 OpenAI/xAI/Anthropic 端点**保守不发**：这些端点对不支持的参数直接 400。
+//!
+//! **回退阶梯（2026-09-10 第二轮评审/用户裁决）**：关闭形态按 [`next_step`] 逐级
+//! 下退（reasoning_effort → enable_thinking → chat_template_kwargs →
+//! thinking.type → 不发送 → 最小请求）；请求被 400/422 拒绝或体检显示"仍在推理"
+//! 时下退一级，成功即按 (api_base, model) 记入会话记忆。退到"不含关闭参数"的
+//! 台阶即视为**该模型无法关闭思维链**——界面取消勾选并标注，翻译照常进行，
+//! 思考内容由 [`crate::reasoning`] 兜住不外泄。
 
 use serde_json::{json, Value};
 
@@ -23,9 +29,19 @@ pub const PARAMLESS_ENDPOINTS: [&str; 3] = ["api.openai.com", "api.x.ai", "api.a
 /// 实测与官方文档均支持顶层 `reasoning_effort:"none"`（W1 最可靠的首选路径）
 const LOCAL_HOSTS: [&str; 4] = ["127.0.0.1", "localhost", "[::1]", "0.0.0.0"];
 
-/// 用嵌套 `thinking` 对象关闭的厂商（旧行为保留，避免回归）
-const NESTED_THINKING_MODELS: [&str; 2] = ["deepseek", "glm"];
-const NESTED_THINKING_ENDPOINTS: [&str; 4] = ["deepseek", "volces", "api.z.ai", "bigmodel"];
+/// 用嵌套 `thinking` 对象关闭的厂商（旧行为保留，避免回归）。
+/// Moonshot/Kimi 于 2026-09-10 第二轮评审补入：官方文档明载 kimi-k2.6 用
+/// `thinking:{"type":"disabled"}`；k3/k2.7-code 强制思考（传该参数会报错），
+/// 由回退阶梯兜住并标注（见 [`next_step`]）。
+const NESTED_THINKING_MODELS: [&str; 4] = ["deepseek", "glm", "kimi", "moonshot"];
+const NESTED_THINKING_ENDPOINTS: [&str; 6] = [
+    "deepseek",
+    "volces",
+    "api.z.ai",
+    "bigmodel",
+    "moonshot",
+    "kimi",
+];
 
 /// 用扁平 `enable_thinking` 关闭的厂商端点（旧行为等价物）
 const ENABLE_THINKING_ENDPOINTS: [&str; 3] = ["dashscope", "aliyuncs.com", "siliconflow"];
@@ -62,24 +78,26 @@ impl ThinkingPlan {
 ///
 /// 规则（方案 §2.3，唯一一条链）：
 /// 1. `disable == false` → 不发（`thinking_style` 被忽略）；
-/// 2. `style` 为四种具体方式之一 → 只发该一种（用户显式选择永远优先）；
-/// 3. `style == "off"`（仅旧档案可能残留）→ 不发；
-/// 4. `style` 为 `None`/`auto`（含非法值兜底）→ 按下表自动路由：
+/// 2. `unavailable == true`（该模型已确认关不掉，持久化在模型配置里）→ 不发；
+/// 3. `style` 为四种具体方式之一 → 只发该一种（用户显式选择永远优先）；
+/// 4. `style == "off"`（仅旧档案可能残留）→ 不发；
+/// 5. `style` 为 `None`/`auto`（含非法值兜底）→ 按下表自动路由：
 ///
 /// | 端点/模型 | 形态 | 依据 |
 /// |---|---|---|
 /// | 本机回环（`127.0.0.1`/`localhost`/…） | `reasoning_effort:"none"` | 本机 LM Studio 实测 0.46s；vLLM/Ollama/llama.cpp 官方文档均认 |
-/// | 官方端点 [`PARAMLESS_ENDPOINTS`] | 不发 | 对不支持的参数直接 400（旧行为保留，W3 降级链接管） |
-/// | deepseek/glm 家族 | `thinking:{type:disabled}` | 该族不认 `reasoning_effort:"none"`（旧行为保留，避免回归） |
-/// | dashscope/siliconflow | `enable_thinking:false` | 阿里/硅基官方关闭参数（旧行为等价物） |
+/// | 官方端点 [`PARAMLESS_ENDPOINTS`] | 不发 | 对不支持的参数直接 400 |
+/// | deepseek/glm/kimi(moonshot) 家族 | `thinking:{type:disabled}` | 该族官方关闭参数 |
+/// | dashscope/siliconflow | `enable_thinking:false` | 阿里/硅基官方关闭参数 |
 /// | 其余（自建 vLLM/SGLang、网关、未知） | `reasoning_effort:"none"` | vLLM 官方会将 none 映射为 `enable_thinking=false` |
 pub fn resolve_thinking_plan(
     disable: bool,
+    unavailable: bool,
     style: Option<&str>,
     api_base: &str,
     model: &str,
 ) -> ThinkingPlan {
-    if !disable {
+    if !disable || unavailable {
         return ThinkingPlan::None;
     }
     match style {
@@ -116,14 +134,64 @@ pub fn resolve_thinking_plan(
     }
 }
 
-/// W3/方案 §2.3.1：自动链的下一个候选（`None` = 链尾，无法再降级）
+/// W3/方案 §2.3.1：自动链的下一个候选（`None` = 链尾）。
+///
+/// 链尾形态为 [`ThinkingPlan::None`]——**不发送任何推理相关参数**，即"认输"：
+/// 强制思考的模型（GLM-5.3 / kimi-k3 / gpt-oss 等）关不掉，就让它照常思考，
+/// 由思维链隔离器（`reasoning.rs`）兜住不外泄。`next_plan(None)` = `None`：已到
+/// 链尾，不再有"下一个"（这正是 `disable_thinking = false` 时绝不自动注入的保证）。
 pub fn next_plan(plan: ThinkingPlan) -> Option<ThinkingPlan> {
     match plan {
-        ThinkingPlan::None => Some(ThinkingPlan::ReasoningEffortNone),
         ThinkingPlan::ReasoningEffortNone => Some(ThinkingPlan::EnableThinkingFalse),
         ThinkingPlan::EnableThinkingFalse => Some(ThinkingPlan::ChatTemplateKwargs),
         ThinkingPlan::ChatTemplateKwargs => Some(ThinkingPlan::NestedDisabled),
-        ThinkingPlan::NestedDisabled => None,
+        ThinkingPlan::NestedDisabled => Some(ThinkingPlan::None),
+        ThinkingPlan::None => None,
+    }
+}
+
+/// 一次请求的完整形态（回退阶梯的台阶）：先逐个试关闭形态，全部无效则退到
+/// **最小请求**——连用户配置的可选参数（温度/覆写/额外参数/输出上限）一起不带，
+/// 只剩「模型 + 系统提示词 + 待译文本 + 流式开关」。
+///
+/// 依据（2026-09-10 用户裁决）：对强制思考的模型，"关不掉"不是失败——退到最小
+/// 请求照样能翻译，思考内容由隔离器兜住；对锁定参数的厂商（如 Kimi 的
+/// temperature），最小请求也天然规避了参数被拒。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequestStep {
+    /// 带关闭形态的常规请求
+    Plan(ThinkingPlan),
+    /// 最小请求（不带任何可选参数）
+    Minimal,
+}
+
+/// 阶梯的起点：从 `start` 形态开始（`Plan(None)` 时起点即"认输形态"，只差
+/// 最小请求这一步）
+pub fn first_step(start: ThinkingPlan) -> RequestStep {
+    RequestStep::Plan(start)
+}
+
+/// 阶梯的下一台阶（`None` = 已到端点，无法再退）
+pub fn next_step(step: RequestStep) -> Option<RequestStep> {
+    match step {
+        RequestStep::Plan(p) => Some(match next_plan(p) {
+            Some(next) => RequestStep::Plan(next),
+            None => RequestStep::Minimal,
+        }),
+        RequestStep::Minimal => None,
+    }
+}
+
+/// 该台阶是否"已放弃关闭思维链"（= 最终形态不含任何关闭参数）
+pub fn gives_up_disabling(step: RequestStep) -> bool {
+    matches!(step, RequestStep::Plan(ThinkingPlan::None) | RequestStep::Minimal)
+}
+
+/// 该台阶是否"诚实可展示的关闭形态"（用于界面标注"当前实际在用"）
+pub fn step_name(step: RequestStep) -> &'static str {
+    match step {
+        RequestStep::Plan(p) => p.name(),
+        RequestStep::Minimal => "minimal",
     }
 }
 
@@ -272,11 +340,104 @@ mod tests {
 
     #[test]
     fn resolve_plan_is_total() {
-        // 遍历值域（含旧 "off"）与两种开关，确保无 panic 且语义确定
+        // 遍历值域（含旧 "off"）× 两种开关 × 两种"关不掉"标记，确保无 panic 且语义确定
         for style in [None, Some("auto"), Some("off"), Some("qwen"), Some("bogus")] {
-            let _ = resolve_thinking_plan(true, style, "http://127.0.0.1:1234/v1", "m");
-            let _ = resolve_thinking_plan(false, style, "http://127.0.0.1:1234/v1", "m");
+            for disable in [true, false] {
+                for unavailable in [true, false] {
+                    let _ = resolve_thinking_plan(
+                        disable,
+                        unavailable,
+                        style,
+                        "http://127.0.0.1:1234/v1",
+                        "m",
+                    );
+                }
+            }
         }
+    }
+
+    // ── 回退阶梯（第二轮评审 §2.3.1/§2.3.2） ──
+
+    /// 链尾 = 不发送（"认输"形态）；到链尾后不再有下一级
+    #[test]
+    fn plan_chain_tail_is_silence() {
+        assert_eq!(
+            next_plan(ThinkingPlan::NestedDisabled),
+            Some(ThinkingPlan::None)
+        );
+        assert_eq!(next_plan(ThinkingPlan::None), None);
+    }
+
+    /// 阶梯完整走一遍：四形态 → 不发送 → 最小请求 → 端点
+    #[test]
+    fn step_ladder_ends_at_minimal() {
+        let mut seen = vec![first_step(ThinkingPlan::ReasoningEffortNone)];
+        while let Some(next) = next_step(*seen.last().unwrap()) {
+            seen.push(next);
+            assert!(seen.len() <= 8, "阶梯不得成环");
+        }
+        assert_eq!(
+            seen,
+            vec![
+                RequestStep::Plan(ThinkingPlan::ReasoningEffortNone),
+                RequestStep::Plan(ThinkingPlan::EnableThinkingFalse),
+                RequestStep::Plan(ThinkingPlan::ChatTemplateKwargs),
+                RequestStep::Plan(ThinkingPlan::NestedDisabled),
+                RequestStep::Plan(ThinkingPlan::None),
+                RequestStep::Minimal,
+            ]
+        );
+        assert!(gives_up_disabling(RequestStep::Plan(ThinkingPlan::None)));
+        assert!(gives_up_disabling(RequestStep::Minimal));
+        assert!(!gives_up_disabling(RequestStep::Plan(
+            ThinkingPlan::NestedDisabled
+        )));
+        assert_eq!(step_name(RequestStep::Minimal), "minimal");
+    }
+
+    /// 用户取消勾选（disable=false）→ 起点即"不发送"，且**没有任何下一级**
+    /// （绝不自动注入关闭参数——方案 §2.3 规则 1）
+    #[test]
+    fn disabled_switch_has_no_ladder() {
+        let start = first_step(resolve_thinking_plan(
+            false,
+            false,
+            None,
+            "http://127.0.0.1:1234/v1",
+            "qwen3",
+        ));
+        assert_eq!(start, RequestStep::Plan(ThinkingPlan::None));
+        assert_eq!(next_step(start), Some(RequestStep::Minimal));
+    }
+
+    /// 已确认关不掉的模型（持久化标记）→ 直接不发，不走关闭链
+    #[test]
+    fn unavailable_model_never_injects() {
+        assert_eq!(
+            resolve_thinking_plan(true, true, None, "https://api.deepseek.com/v1", "x"),
+            ThinkingPlan::None
+        );
+        assert_eq!(
+            resolve_thinking_plan(true, true, Some("deepseek"), "http://127.0.0.1:1/v1", "x"),
+            ThinkingPlan::None
+        );
+    }
+
+    /// Moonshot/Kimi 命中嵌套体（官方 k2.6 形态）；端点与模型名两条路都要认
+    #[test]
+    fn kimi_and_moonshot_route_to_nested_thinking() {
+        assert_eq!(
+            extra_body("https://api.moonshot.cn/v1", "kimi-k2.6", true, None),
+            json!({"thinking": {"type": "disabled"}})
+        );
+        assert_eq!(
+            extra_body("https://api.moonshot.ai/v1", "anything", true, None),
+            json!({"thinking": {"type": "disabled"}})
+        );
+        assert_eq!(
+            extra_body("https://my-gateway.example.com/v1", "kimi-k2.6", true, None),
+            json!({"thinking": {"type": "disabled"}})
+        );
     }
 
     // ── 自动路由表（W1：保留旧厂商映射，只改"未知/本机"这一条路径） ──

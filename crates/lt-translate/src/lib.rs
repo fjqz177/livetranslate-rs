@@ -17,12 +17,17 @@ pub mod verdict;
 
 pub use error::TranslateError;
 pub use reasoning::{strip_reasoning, ReasoningStripper};
-pub use thinking::{next_plan, ThinkingPlan};
-pub use verdict::{classify_response, FinishKind, ResponseVerdict};
+pub use thinking::{
+    first_step, gives_up_disabling, next_plan, next_step, resolve_thinking_plan, step_name,
+    RequestStep, ThinkingPlan,
+};
+pub use verdict::{classify_response, finish_kind, FinishKind, ResponseVerdict};
 pub(crate) use translator::runtime;
 // E3/ADR-10：DEFAULT_PROMPT/PROMPT_PRESETS 已上移 lt-proto（lt-ui 直引 proto，
 // 本 crate 的 re-export 随翻译页常量依赖边裁除而撤下）
-pub use translator::{check_repetition, make_openai_client, TranslateStream, Translator, TranslatorParams};
+pub use translator::{
+    check_repetition, make_openai_client, TranslateStream, Translator, TranslatorParams,
+};
 
 /// 累计费用（原版 _compute_cost）：(pt*输入单价 + ct*输出单价) / 1M，
 /// 单价为 0 时不计费返回 0。

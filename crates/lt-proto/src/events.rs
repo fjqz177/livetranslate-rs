@@ -41,13 +41,15 @@ pub enum UiEvent {
     /// 音频监视（W2 起走快照格 `MonitorSample`：capture 写 ArcSwap，UI 以
     /// ~33ms 节拍读格重绘——替代逐 chunk 事件的 31/s 唤醒，D-67/R23；
     /// update_monitor_signal 语义等价，契约侧从「事件」变为「格」）
-    /// 统计（update_stats_signal）
+    /// 统计（update_stats_signal）。`usage_known=false` = 服务端从不返回用量
+    /// （第二轮评审 ⑩：界面显示"—"而不是误导性的 0）
     UpdateStats {
         asr_n: u64,
         tl_n: u64,
         prompt_tokens: u64,
         completion_tokens: u64,
         cost: f64,
+        usage_known: bool,
     },
     /// ASR 设备标签（"SenseVoice Small" 等；不可用时 "ASR unavailable"）
     AsrDevice(String),
@@ -132,6 +134,21 @@ pub enum UiEvent {
         detail: String,
         tl_ms: f64,
     },
+    /// 翻译装置运行期降级回执（2026-09-10 第二轮评审 item 5 / 方案 §2.5 规则 4-5：
+    /// **偏离可见**）。当回退阶梯试完全部关闭形态仍关不掉思维链时，编排域发本事件，
+    /// UI 据此取消该模型的「关闭模型思考」勾选、写入 `thinking_unavailable` 并提示
+    /// "该模型无法关闭思维链"。纯新增变体（冻结规则加法豁免，PROTO_VERSION 不递增）。
+    TranslatorDegraded {
+        /// 模型显示名（UI 用来定位模型条目）
+        name: String,
+        /// 端点（与 model 共同确认唯一条目）
+        api_base: String,
+        model: String,
+        /// 当前实际在用的形态名（"minimal"/"none"/…；仅供日志与提示）
+        actual: String,
+        /// 是否"无法关闭思维链"（true → UI 取消勾选并持久化标记）
+        cannot_disable_thinking: bool,
+    },
 }
 
 impl FailureKind {
@@ -148,6 +165,7 @@ impl FailureKind {
             FailureKind::ServerError => "err_server",
             FailureKind::Connection => "err_conn_refused",
             FailureKind::Repetition => "error_repetition",
+            FailureKind::Dropped => "err_dropped",
             FailureKind::Unknown => "err_unknown",
         }
     }
@@ -182,6 +200,9 @@ pub enum FailureKind {
     Connection,
     /// 模型输出重复循环
     Repetition,
+    /// 任务被丢弃（第二轮评审 ⑬d：翻译队列满时 keep-latest 丢掉最旧的待译段，
+    /// 旧实现无任何回执 → 字幕永远停在"翻译中"）
+    Dropped,
     /// 其他未知错误
     Unknown,
 }

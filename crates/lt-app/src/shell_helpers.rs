@@ -70,6 +70,10 @@ pub fn to_bench_model(m: &lt_proto::ModelConfig) -> lt_translate::bench::BenchMo
         model: m.model.clone(),
         proxy: m.proxy.clone(),
         no_system_role: m.no_system_role,
+        // 第二轮评审 ⑫：把该条目的关闭思考配置一并带入——基准测的必须是
+        // "生产里实际会发"的请求，否则思考模型上测出的首字延迟是推理起点
+        disable_thinking: m.disable_thinking,
+        thinking_style: m.thinking_style.clone(),
     }
 }
 

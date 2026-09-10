@@ -610,7 +610,7 @@ mod tests {
     #[test]
     fn embedded_fonts_cover_all_ui_glyphs() {
         const ALL: &str =
-            "天地玄黄宇宙洪荒한국어日本語 ABZdef0123456789✓✗●▲▼◆→←◎▪LiveTranslate%,:.";
+            "天地玄黄宇宙洪荒한국어日本語 ABZdef0123456789✓✗●▲▼◆→←◎▪LiveTranslate%,:.⚠—";
         // 联合覆盖（= 渲染链覆盖）：任一字符不被三字体之一包含即失败
         let mut missing: Vec<char> = ALL
             .chars()
