@@ -463,12 +463,13 @@ mod tests {
         let back = import_settings_json(&json).expect("自身导出必可导入");
         assert_eq!(back, s);
 
-        // 原版 settings.json 含 legacy no_think → thinking_style 迁移（导入容错）
+        // 原版 settings.json 含 legacy no_think → W1 起迁移到总开关（导入容错）
         let legacy = r#"{"asr_engine":"sensevoice","models":[{"name":"m","api_base":"b","api_key":"k","model":"d","no_think":true}]}"#;
         let imported = import_settings_json(legacy).expect("legacy 导入应成功");
         assert_eq!(imported.asr_engine, "funasr");
         assert_eq!(imported.funasr_model, "sensevoice-small");
-        assert_eq!(imported.models[0].thinking_style.as_deref(), Some("auto"));
+        assert!(imported.models[0].disable_thinking, "no_think=true → 总开关开");
+        assert_eq!(imported.models[0].thinking_style, None, "不再合成方式");
     }
 
     /// 导入失败路径：非 JSON / 非 object → Err（原版 ValueError → import_invalid）

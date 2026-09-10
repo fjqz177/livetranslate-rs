@@ -232,18 +232,18 @@ impl Settings {
     /// 完成后调用 [`Settings::sanitize`] 做非法值回退。
     pub fn from_value_compatible(v: Value) -> Self {
         let mut root = v;
-        // legacy：models[].no_think → thinking_style（原版迁移规则：
-        // 无 thinking_style 时 no_think=true→"auto"、false→"off"）
+        // legacy：models[].no_think 布尔 → 新总开关 `disable_thinking`
+        // （原版语义：no_think=true = 要关思考 → 开关开；false = 不发送关闭参数 → 开关关）。
+        // W1/方案 §2.3 起不再合成 thinking_style——该字段现仅表示"用哪种方式关闭"。
         if let Some(models) = root.get_mut("models").and_then(|m| m.as_array_mut()) {
             for m in models {
-                let has_style = m
-                    .get("thinking_style")
-                    .map(|s| !s.is_null())
+                let has_switch = m
+                    .get("disable_thinking")
+                    .map(|v| !v.is_null())
                     .unwrap_or(false);
-                if !has_style {
+                if !has_switch {
                     if let Some(no_think) = m.get("no_think").and_then(|b| b.as_bool()) {
-                        m["thinking_style"] =
-                            Value::String(if no_think { "auto" } else { "off" }.into());
+                        m["disable_thinking"] = Value::Bool(no_think);
                     }
                 }
                 m.as_object_mut().map(|o| o.remove("no_think"));
@@ -324,6 +324,15 @@ impl Settings {
                 fixed.push(format!("model name: 'default' → '{}'", m.name));
             }
         }
+        // W1/方案 §2.3：旧 `thinking_style == "off"` 的语义是"不发送关闭参数"
+        // （与字面相反，曾致用户设错方向）→ 归一化到新总开关，此后值域内不再出现
+        for m in &mut self.models {
+            if m.thinking_style.as_deref() == Some("off") {
+                m.thinking_style = None;
+                m.disable_thinking = false;
+                fixed.push("thinking_style: 'off' → disable_thinking=false".into());
+            }
+        }
         if self.active_model >= self.models.len() {
             fixed.push(format!("active_model: {} 越界 → 0", self.active_model));
             self.active_model = 0;
@@ -334,8 +343,15 @@ impl Settings {
 
 /// thinking_style 合法值域（E3/ADR-10：自 lt-translate 上移——本清单是
 /// [`ModelConfig.thinking_style`] 字段的值域，与 ASR_ENGINES 同类归 settings；
-/// lt-translate 的解析逻辑与 lt-ui 的下拉项两侧同源引用）
+/// lt-translate 的解析逻辑与 lt-ui 的下拉项两侧同源引用）。
+///
+/// W1/方案 §2.3：`"off"` 仅为**解析旧档案**保留——[`Settings::sanitize`] 会把它
+/// 归一化为 `disable_thinking = false`（语义即旧 `off`：不发送关闭参数），此后
+/// 值域内不再出现；界面只呈现前五项（自动 + 四种方式）。
 pub const THINKING_STYLES: [&str; 6] = ["auto", "deepseek", "qwen", "vllm", "openai", "off"];
+
+/// 默认采样温度（W1/方案 §2.1）：构造点原先硬编码 `0.3`，现为该字段的默认值。
+pub const DEFAULT_TEMPERATURE: f64 = 0.3;
 
 /// 可覆写的采样参数键（E3/ADR-10：自 lt-translate 上移——本清单是
 /// [`ModelConfig.overrides`] 的键域单一事实源：lt-translate 构造期按此
@@ -362,9 +378,20 @@ pub struct ModelConfig {
     /// 仅 true 时写盘
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub no_system_role: bool,
+    /// 关闭方式（W1/方案 §2.3）：None/"auto" = 自动首选；deepseek/qwen/vllm/openai
+    /// = 只用该一种。仅在 [`ModelConfig::disable_thinking`] 为 true 时参与请求。
     /// 仅非 "auto" 时写盘（None = auto）
     #[serde(skip_serializing_if = "skip_thinking_auto")]
     pub thinking_style: Option<String>,
+    /// 关闭模型思考总开关（W1/方案 §2.3，默认 true）：true = 按 `thinking_style`
+    /// 发送关闭推理的参数；false = 不发送任何推理相关参数（即旧 `"off"` 的语义）。
+    /// 与 `streaming` 同款：默认值不写盘，仅 false 时写。
+    #[serde(skip_serializing_if = "is_true")]
+    pub disable_thinking: bool,
+    /// 采样温度（W1/方案 §2.1）：None = **不发送**该参数（供拒绝 temperature 的
+    /// 端点使用）；默认 [`DEFAULT_TEMPERATURE`]，等于默认值时省略写盘。
+    #[serde(skip_serializing_if = "is_default_temperature")]
+    pub temperature: Option<f64>,
     /// 默认 true；仅 false 时写盘（键名对齐原版 `streaming: false`）
     #[serde(skip_serializing_if = "is_true")]
     pub streaming: bool,
@@ -395,6 +422,8 @@ impl Default for ModelConfig {
             proxy: "none".into(),
             no_system_role: false,
             thinking_style: None,
+            disable_thinking: true,
+            temperature: Some(DEFAULT_TEMPERATURE),
             streaming: true,
             json_response: false,
             context_turns: 0,
@@ -414,6 +443,9 @@ fn skip_thinking_auto(v: &Option<String>) -> bool {
 }
 fn is_true(b: &bool) -> bool {
     *b
+}
+fn is_default_temperature(v: &Option<f64>) -> bool {
+    *v == Some(DEFAULT_TEMPERATURE)
 }
 fn is_zero_u32(v: &u32) -> bool {
     *v == 0
@@ -660,11 +692,107 @@ mod tests {
         assert_eq!(s.asr_engine, "funasr"); // 裁剪引擎回退
         assert_eq!(s.funasr_model, "sensevoice-small"); // legacy 别名
         assert_eq!(s.active_model, 0); // 越界回退
-                                       // no_think=false → thinking_style=off
-        assert_eq!(s.models[0].thinking_style.as_deref(), Some("off"));
-        // 序列化后不再出现 no_think
+                                       // W1/方案 §2.3：no_think=false → 总开关 disable_thinking=false
+                                       //（语义 = 不发送关闭参数）；thinking_style 不再被合成
+        assert!(!s.models[0].disable_thinking);
+        assert_eq!(s.models[0].thinking_style, None);
+        // 序列化后不再出现 no_think；disable_thinking=false 必须写盘（非默认值）
         let out = serde_json::to_value(&s).unwrap();
         assert!(out["models"][0].get("no_think").is_none());
+        assert_eq!(out["models"][0]["disable_thinking"], serde_json::json!(false));
+    }
+
+    /// W1/方案 §2.3：旧 `thinking_style == "off"`（语义与字面相反）在 sanitize 中
+    /// 归一化为 `disable_thinking = false`，此后值域内不再出现 "off"
+    #[test]
+    fn legacy_thinking_off_normalizes_to_switch() {
+        let mut s: Settings = serde_json::from_value(serde_json::json!({
+            "models": [{"name": "a", "model": "m", "thinking_style": "off"}]
+        }))
+        .unwrap();
+        // 反序列化后仍是旧值（归一化发生在 sanitize）
+        assert_eq!(s.models[0].thinking_style.as_deref(), Some("off"));
+        let fixed = s.sanitize();
+        assert!(s.models[0].thinking_style.is_none());
+        assert!(!s.models[0].disable_thinking);
+        assert!(fixed.iter().any(|f| f.contains("disable_thinking")));
+        // 写回不再出现 "off"
+        let out = serde_json::to_value(&s).unwrap();
+        assert!(out["models"][0].get("thinking_style").is_none());
+    }
+
+    /// W1：缺键的旧档案 → 新字段走默认（开关开 = 关思考；温度 0.3）
+    #[test]
+    fn missing_new_keys_use_defaults() {
+        let mut s: Settings = serde_json::from_value(serde_json::json!({
+            "models": [{"name": "a", "model": "m"}]
+        }))
+        .unwrap();
+        assert!(s.models[0].disable_thinking);
+        assert_eq!(s.models[0].temperature, Some(DEFAULT_TEMPERATURE));
+        s.sanitize();
+        assert!(s.models[0].disable_thinking);
+    }
+
+    /// W1/方案 §2.5 规则 8：ModelConfig 每个序列化键必须登记在册并注明消费方
+    /// ——新增字段却忘了接线（无任何消费者）会被本测试挡下。
+    /// 消费方三类：`请求构造` / `UI` / `本地展示`。
+    #[test]
+    fn every_model_config_field_is_registered() {
+        // 全字段非默认值 → 无键被 skip 掉
+        let full = ModelConfig {
+            name: "n".into(),
+            api_base: "b".into(),
+            api_key: "k".into(),
+            model: "m".into(),
+            proxy: "system".into(),
+            no_system_role: true,
+            thinking_style: Some("qwen".into()),
+            disable_thinking: false,
+            temperature: Some(0.7),
+            streaming: false,
+            json_response: true,
+            context_turns: 3,
+            input_price: 1.0,
+            output_price: 2.0,
+            overrides: Some(BTreeMap::from([("top_p".to_string(), serde_json::json!(0.9))])),
+            extra_body: Some(serde_json::json!({"k": 1})),
+        };
+        let mut keys: Vec<String> = serde_json::to_value(&full)
+            .unwrap()
+            .as_object()
+            .expect("ModelConfig 序列化为对象")
+            .keys()
+            .cloned()
+            .collect();
+        keys.sort();
+        // (键, 消费方)
+        let mut registry: Vec<String> = [
+            ("name", "UI（列表/悬浮窗/托盘显示名）"),
+            ("api_base", "请求构造（client 端点）"),
+            ("api_key", "请求构造（鉴权）"),
+            ("model", "请求构造（model 字段）"),
+            ("proxy", "请求构造（client 代理）"),
+            ("no_system_role", "请求构造（messages 组装）"),
+            ("thinking_style", "请求构造（关闭方式，§2.3 规则 3）"),
+            ("disable_thinking", "请求构造（关闭总开关，§2.3 规则 1/2）"),
+            ("temperature", "请求构造（采样温度，None=不发）"),
+            ("streaming", "请求构造（stream 开关）"),
+            ("json_response", "请求构造（response_format；W1 起界面不再暴露）"),
+            ("context_turns", "请求构造（上下文历史条数）"),
+            ("input_price", "本地展示（成本估算）"),
+            ("output_price", "本地展示（成本估算）"),
+            ("overrides", "请求构造（采样覆写逃生舱）"),
+            ("extra_body", "请求构造（逃生舱透传）"),
+        ]
+        .iter()
+        .map(|(k, _)| (*k).to_string())
+        .collect();
+        registry.sort();
+        assert_eq!(
+            keys, registry,
+            "ModelConfig 字段集与登记清单不一致：新增/删除字段时必须同步本清单并注明消费方"
+        );
     }
 
     /// legacy 引擎别名：asr_engine 命中别名表 → funasr + 别名目标，
@@ -738,6 +866,8 @@ mod tests {
         for key in [
             "no_system_role",
             "thinking_style",
+            "disable_thinking", // W1：默认 true（关思考）不写盘
+            "temperature",      // W1：默认 0.3 不写盘
             "streaming",
             "json_response",
             "context_turns",
@@ -748,6 +878,28 @@ mod tests {
         ] {
             assert!(v.get(key).is_none(), "默认模型不应写出 {key}");
         }
+        // W1：非默认值必须写盘——temperature=null（=不发送）/ 0.7 / disable_thinking=false
+        let m = ModelConfig {
+            temperature: None,
+            ..Default::default()
+        };
+        assert!(serde_json::to_value(m).unwrap()["temperature"].is_null());
+        let m = ModelConfig {
+            temperature: Some(0.7),
+            ..Default::default()
+        };
+        assert_eq!(
+            serde_json::to_value(m).unwrap()["temperature"],
+            serde_json::json!(0.7)
+        );
+        let m = ModelConfig {
+            disable_thinking: false,
+            ..Default::default()
+        };
+        assert_eq!(
+            serde_json::to_value(m).unwrap()["disable_thinking"],
+            serde_json::json!(false)
+        );
         // streaming=false 必须写出（原版仅 false 落盘）
         let m = ModelConfig {
             streaming: false,

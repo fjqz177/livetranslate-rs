@@ -254,15 +254,18 @@ impl TlRig {
             api_base: mc.api_base.clone(),
             api_key: mc.api_key.clone(),
             model: mc.model.clone(),
-            max_tokens: 256,
-            temperature: 0.3,
+            // W1/方案 §2.1：长度上限不再由应用发送（交给服务端默认——应用强加的
+            // 256 会把"先想再答"的模型憋死，实测就是这个原因导致空译文）
+            max_tokens: None,
+            // W1/方案 §2.1：温度取模型条目值（None = 不发送）
+            temperature: mc.temperature,
             streaming: mc.streaming,
             system_prompt: (!eff.raw.system_prompt.is_empty())
                 .then(|| eff.raw.system_prompt.clone()),
             proxy: mc.proxy.clone(),
-            // 原版 no_think 缺省 true（legacy 迁移后仅 thinking_style 生效）
-            no_think: true,
             no_system_role: mc.no_system_role,
+            // W1/方案 §2.3：总开关 + 方式（sanitize 已把旧 "off" 归一化到总开关）
+            disable_thinking: mc.disable_thinking,
             thinking_style: mc.thinking_style.clone(),
             json_response: mc.json_response,
             overrides: mc.overrides.clone(),

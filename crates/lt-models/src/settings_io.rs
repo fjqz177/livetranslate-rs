@@ -148,10 +148,12 @@ mod tests {
         std::fs::write(settings_file().unwrap(), original_style).unwrap();
         let s = load().unwrap().unwrap();
         assert_eq!(s.asr_engine, "funasr"); // remote-whisper 裁剪回退
-                                            // no_think=true 迁移为 thinking_style="auto"（内存值；序列化时该值会被跳过）
-        assert_eq!(s.models[0].thinking_style.as_deref(), Some("auto"));
+                                            // W1/方案 §2.3：no_think=true 迁移为总开关 disable_thinking=true
+                                            //（该值即默认值，序列化时省略不写）
+        assert!(s.models[0].disable_thinking);
+        assert_eq!(s.models[0].thinking_style, None);
         assert!(serde_json::to_value(&s).unwrap()["models"][0]
-            .get("thinking_style")
+            .get("disable_thinking")
             .is_none());
         // 未识别键（remote_asr_url 等）被 serde 默认忽略，不报错
     }

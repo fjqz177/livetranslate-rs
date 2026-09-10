@@ -28,6 +28,12 @@ pub const PROMPT_PRESET_KEYS: [&str; 5] = [
     "prompt_custom",
 ];
 
+/// 高级区仍渲染的覆写行（W1/方案 §2.2）：top_p / frequency_penalty /
+/// presence_penalty——主流通用且翻译偶尔需要。temperature 已升为一等字段、
+/// max_tokens 不再由应用发送、seed 冷门：三者不再渲染，但既有值经编辑器状态
+/// （`ModelEditState::overrides`）原样保留，不丢用户数据。
+const ADV_OVERRIDE_ROWS: [usize; 3] = [1, 3, 4];
+
 /// overrides 六行 i18n 键（原版 adv_layout addRow 顺序）
 const OVERRIDE_LABEL_KEYS: [&str; 6] = [
     "label_temperature",
@@ -550,26 +556,24 @@ fn editor_fields(ui: &mut Ui, ed: &mut ModelEditState, pal: &Palette) {
             );
             ui.end_row();
 
-            // thinking_style 下拉（原版 no_think 复选的后继形态）
-            ui.label(lt_i18n::t("label_thinking_style"));
-            let styles = lt_proto::THINKING_STYLES
-                .iter()
-                .map(|v| lt_i18n::t(&format!("thinking_style_{v}")))
-                .collect::<Vec<_>>();
-            egui::ComboBox::from_id_salt("model_edit_thinking")
-                .selected_text(styles[ed.thinking_index].clone())
-                .width(240.0)
-                .show_ui(ui, |ui| {
-                    for (i, label) in styles.iter().enumerate() {
-                        if ui
-                            .selectable_label(ed.thinking_index == i, label.clone())
-                            .clicked()
-                            && ed.thinking_index != i
-                        {
-                            ed.thinking_index = i;
-                        }
-                    }
-                });
+            // W1（方案 §2.3）：关闭模型思考总开关——默认勾选，勾选即发送关闭字段
+            ui.label(lt_i18n::t("label_thinking_switch"));
+            ui.checkbox(&mut ed.disable_thinking, lt_i18n::t("thinking_switch_on"))
+                .on_hover_text(lt_i18n::t("thinking_switch_hint"));
+            ui.end_row();
+
+            // W1（方案 §2.1）：温度——勾选才发送；不勾选 = 请求中不出现该参数
+            ui.label(lt_i18n::t("label_temperature"));
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut ed.temperature_enabled, lt_i18n::t("send_param"))
+                    .on_hover_text(lt_i18n::t("temperature_hint"));
+                ui.add_enabled(
+                    ed.temperature_enabled,
+                    egui::DragValue::new(&mut ed.temperature_value)
+                        .range(0.0..=2.0)
+                        .speed(0.05),
+                );
+            });
             ui.end_row();
 
             // 价格（原版 price_row：输入/输出 $/1M，0 显示 "—"）
@@ -582,19 +586,10 @@ fn editor_fields(ui: &mut Ui, ed: &mut ModelEditState, pal: &Palette) {
             });
             ui.end_row();
 
-            // 上下文数（原版 _context_turns 0-20）
-            ui.label(lt_i18n::t("label_context_turns"));
-            let mut turns = ed.context_turns;
-            if ui
-                .add(egui::DragValue::new(&mut turns).range(0..=20))
-                .changed()
-            {
-                ed.context_turns = turns;
-            }
-            ui.end_row();
         });
 
-    // 行为复选（原版 addRow 顺序：streaming / json_response / no_system_role）
+    // 行为复选（W1/方案 §2.4：json_response 移出界面——翻译不需要 JSON 模式且
+    // 兼容面窄；no_system_role 移入高级区；上下文数移入高级区）
     ui.add_space(2.0);
     checkbox_row(
         ui,
@@ -602,20 +597,6 @@ fn editor_fields(ui: &mut Ui, ed: &mut ModelEditState, pal: &Palette) {
         &mut ed.streaming,
         "streaming",
         "streaming_hint",
-    );
-    checkbox_row(
-        ui,
-        "model_edit_json",
-        &mut ed.json_response,
-        "json_response",
-        "json_response_hint",
-    );
-    checkbox_row(
-        ui,
-        "model_edit_nsr",
-        &mut ed.no_system_role,
-        "no_system_role",
-        "no_system_role_hint",
     );
 
     // ── Advanced（原版 adv_group：override_hint tooltip 语义移到组头提示行）──
@@ -627,12 +608,34 @@ fn editor_fields(ui: &mut Ui, ed: &mut ModelEditState, pal: &Palette) {
         .spacing([8.0, 5.0])
         .min_col_width(120.0)
         .show(ui, |ui| {
-            for (i, (label_key, row)) in OVERRIDE_LABEL_KEYS
-                .iter()
-                .zip(ed.overrides.iter_mut())
-                .enumerate()
-            {
-                ui.label(lt_i18n::t(label_key));
+            // W1/方案 §2.3：关闭方式（总开关未勾选时置灰；已选值仍保留，
+            // 重新勾选即沿用）
+            ui.label(lt_i18n::t("label_thinking_style"));
+            ui.add_enabled_ui(ed.disable_thinking, |ui| {
+                let styles = crate::state::thinking_methods()
+                    .iter()
+                    .map(|v| lt_i18n::t(&format!("thinking_style_{v}")))
+                    .collect::<Vec<_>>();
+                let idx = ed.thinking_index.min(styles.len() - 1);
+                egui::ComboBox::from_id_salt("model_edit_thinking")
+                    .selected_text(styles[idx].clone())
+                    .width(240.0)
+                    .show_ui(ui, |ui| {
+                        for (i, label) in styles.iter().enumerate() {
+                            if ui.selectable_label(idx == i, label.clone()).clicked()
+                                && ed.thinking_index != i
+                            {
+                                ed.thinking_index = i;
+                            }
+                        }
+                    });
+            });
+            ui.end_row();
+
+            // W1：高级区保留的主流采样项（其余三项不再渲染但值保留）
+            for &i in ADV_OVERRIDE_ROWS.iter() {
+                ui.label(lt_i18n::t(OVERRIDE_LABEL_KEYS[i]));
+                let row = &mut ed.overrides[i];
                 ui.horizontal(|ui| {
                     let mut current = *row;
                     if ui
@@ -645,6 +648,18 @@ fn editor_fields(ui: &mut Ui, ed: &mut ModelEditState, pal: &Palette) {
                 });
                 ui.end_row();
             }
+
+            // 上下文数（W1：自基本区移入高级区）
+            ui.label(lt_i18n::t("label_context_turns"));
+            let mut turns = ed.context_turns;
+            if ui
+                .add(egui::DragValue::new(&mut turns).range(0..=20))
+                .changed()
+            {
+                ed.context_turns = turns;
+            }
+            ui.end_row();
+
             ui.label(lt_i18n::t("label_extra_body"));
             ui.add(
                 egui::TextEdit::multiline(&mut ed.extra_body_text)
@@ -656,6 +671,14 @@ fn editor_fields(ui: &mut Ui, ed: &mut ModelEditState, pal: &Palette) {
             .on_hover_text(lt_i18n::t("extra_body_hint"));
             ui.end_row();
         });
+    // W1：少数端点兼容开关（自基本区移入高级区）
+    checkbox_row(
+        ui,
+        "model_edit_nsr",
+        &mut ed.no_system_role,
+        "no_system_role",
+        "no_system_role_hint",
+    );
 }
 
 /// 单行文本框行（label key + 输入；password=true 时掩码显示）

@@ -264,13 +264,22 @@ extra_body_invalid: "extra_body 必须是合法的 JSON 对象"
 override_enable: "覆盖"
 override_hint: "未勾选时使用服务端默认值或全局配置"
 # Rust 版新增：thinking_style 下拉（no_think 复选的后继形态，契约键 thinking_style）
-label_thinking_style: "思考链风格:"
-thinking_style_auto: "自动 (按端点猜测)"
+# W1/方案 §2.3：该下拉降级为「关闭方式」（总开关见 label_thinking_switch）；
+# 旧 "off" 不再是可选方式（已归一化为总开关关闭）
+label_thinking_style: "关闭方式:"
+thinking_style_auto: "自动（推荐）"
 thinking_style_deepseek: "DeepSeek / GLM / 火山方舟"
 thinking_style_qwen: "Qwen / SiliconFlow (enable_thinking)"
 thinking_style_vllm: "vLLM / SGLang (chat_template_kwargs)"
 thinking_style_openai: "OpenAI / Grok (reasoning_effort)"
 thinking_style_off: "关闭 (不发送关闭参数)"
+# W1/方案 §2.3：关闭模型思考总开关（契约键 disable_thinking，默认勾选）
+label_thinking_switch: "思考控制:"
+thinking_switch_on: "关闭模型思考（推荐）"
+thinking_switch_hint: "勾选后应用会要求模型不要先思考再作答：先发 reasoning_effort:\"none\"，无效时自动尝试其他关闭方式。不勾选则完全不干预——模型先思考再回答会明显变慢（实测同一句 0.5 秒 vs 44 秒）。"
+# W1/方案 §2.1：温度（勾选才发送；留空 = 请求中不出现该参数）
+send_param: "发送"
+temperature_hint: "不勾选 = 请求中不出现 temperature 参数（部分推理模型只接受默认温度）。"
 loading_model: "正在加载 {name}...\n请稍候。"
 error_title: "错误"
 error_load_asr: "ASR 模型加载失败:\n{error}"

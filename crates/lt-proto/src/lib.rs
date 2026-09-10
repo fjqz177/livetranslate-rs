@@ -29,6 +29,6 @@ pub use events::{
 pub use layout::Hub;
 pub use prompts::{DEFAULT_PROMPT, PROMPT_PRESETS};
 pub use settings::{
-    normalize_language, ASR_ENGINES, EngineKey, ModelConfig, OVERRIDE_KEYS, ProxyMode, Settings,
-    Style, SubtitleLine, SubtitleMode, THINKING_STYLES,
+    normalize_language, ASR_ENGINES, DEFAULT_TEMPERATURE, EngineKey, ModelConfig, OVERRIDE_KEYS,
+    ProxyMode, Settings, Style, SubtitleLine, SubtitleMode, THINKING_STYLES,
 };

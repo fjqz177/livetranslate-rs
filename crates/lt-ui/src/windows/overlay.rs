@@ -372,6 +372,7 @@ fn row2_combos(ui: &mut Ui, session: &mut SessionView, settings: &mut Settings) 
         let active = settings
             .active_model
             .min(settings.models.len().saturating_sub(1));
+        let mut new_active: Option<usize> = None;
         ComboBox::from_id_salt("ov_model")
             .width(w_model - 60.0)
             .selected_text(
@@ -383,9 +384,24 @@ fn row2_combos(ui: &mut Ui, session: &mut SessionView, settings: &mut Settings) 
             )
             .show_ui(ui, |ui| {
                 for (i, m) in settings.models.iter().enumerate() {
-                    ui.selectable_value(&mut settings.active_model, i, m.name.clone());
+                    if ui
+                        .selectable_label(settings.active_model == i, m.name.clone())
+                        .clicked()
+                        && settings.active_model != i
+                    {
+                        new_active = Some(i);
+                    }
                 }
             });
+        // W1/方案 §2.5 规则 3（悬浮窗与翻译页一比一）：换活动模型 = 改生效字段 →
+        // 立即重建翻译装置 + 登记落盘（此前只改内存，标题换了而装置没换）
+        if let Some(i) = new_active {
+            settings.active_model = i;
+            if let Some(cfg) = settings.models.get(i).cloned() {
+                session.send_cmd(lt_proto::Cmd::SwitchTranslator(Box::new(cfg)));
+            }
+            crate::windows::panel::mark_settings_dirty(session);
+        }
 
         lbl(ui, lt_i18n::t("source_label"));
         ComboBox::from_id_salt("ov_src_lang")

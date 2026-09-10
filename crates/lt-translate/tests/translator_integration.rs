@@ -216,7 +216,8 @@ fn streaming_yields_partials_then_final_with_usage() {
     assert_eq!(body["model"], "test-model");
     assert_eq!(body["stream"], true);
     assert_eq!(body["stream_options"]["include_usage"], true);
-    assert_eq!(body["max_tokens"], 256);
+    // W1/方案 §2.1：默认不发送长度上限；温度默认 0.3
+    assert!(body.get("max_tokens").is_none(), "默认不应发送 max_tokens");
     assert_eq!(body["temperature"], 0.3);
     assert_eq!(body["messages"][0]["role"], "system");
     assert_eq!(body["messages"].as_array().unwrap().len(), 2);
@@ -472,16 +473,52 @@ fn json_response_sends_json_schema_format() {
 
 #[test]
 fn thinking_body_merged_into_request() {
-    // api_base 无 deepseek/glm 关键词 → qwen 风格（enable_thinking=false）；
-    // legacy no_think=true → auto → 按端点解析
+    // W1/方案 §2.3：默认总开关开 + 自动首选 → 本机端点发 reasoning_effort:"none"
+    // （旧行为误发 enable_thinking，实测对本机 LM Studio 无效）
     let t = Translator::new(TranslatorParams {
         api_base: "http://127.0.0.1:1/v1".into(), // 死端口：仅本地构造请求体，不触网
-        no_think: true,
         ..TranslatorParams::default()
     })
     .unwrap();
     let body = t.build_request_body("system", "text", true, false);
-    assert_eq!(body["enable_thinking"], false);
+    assert_eq!(body["reasoning_effort"], "none");
+    assert!(body.get("enable_thinking").is_none(), "不得再盲发 enable_thinking");
+}
+
+#[test]
+fn request_body_omits_optional_params_when_absent() {
+    // W1/方案 §2.1：长度上限默认不发送（应用强加上限会把"先想再答"的模型憋死）
+    let t = Translator::new(TranslatorParams {
+        api_base: "http://127.0.0.1:1/v1".into(),
+        ..TranslatorParams::default()
+    })
+    .unwrap();
+    let body = t.build_request_body("system", "text", true, false);
+    assert!(body.get("max_tokens").is_none(), "默认不应发送 max_tokens");
+    assert_eq!(body["temperature"], 0.3, "温度默认 0.3");
+
+    // 温度为 None（留空）→ 不发送该键；显式上限则照发
+    let t = Translator::new(TranslatorParams {
+        api_base: "http://127.0.0.1:1/v1".into(),
+        temperature: None,
+        max_tokens: Some(1024),
+        ..TranslatorParams::default()
+    })
+    .unwrap();
+    let body = t.build_request_body("system", "text", true, false);
+    assert!(body.get("temperature").is_none(), "留空 = 不发送温度");
+    assert_eq!(body["max_tokens"], 1024);
+
+    // 总开关关（= 旧 "off" 语义）→ 不发任何推理参数
+    let t = Translator::new(TranslatorParams {
+        api_base: "http://127.0.0.1:1234/v1".into(),
+        disable_thinking: false,
+        ..TranslatorParams::default()
+    })
+    .unwrap();
+    let body = t.build_request_body("system", "text", true, false);
+    assert!(body.get("reasoning_effort").is_none());
+    assert!(body.get("enable_thinking").is_none());
 }
 
 #[test]

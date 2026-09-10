@@ -20,7 +20,7 @@ use parking_lot::Mutex;
 use serde_json::{json, Map, Value};
 
 use crate::error::TranslateError;
-use crate::thinking::{resolve_thinking_style, thinking_disable_body};
+use crate::thinking::{resolve_thinking_plan, thinking_disable_body, ThinkingPlan};
 // E3/ADR-10：提示词/覆写键上移 lt-proto 契约层（与 lt-ui 同源——原 UI 依赖
 // 整个本 crate 仅为取常量的边已裁除）
 use lt_proto::{DEFAULT_PROMPT, OVERRIDE_KEYS};
@@ -84,14 +84,17 @@ pub struct TranslatorParams {
     pub api_base: String,
     pub api_key: String,
     pub model: String,
-    pub max_tokens: u32,         // 256
-    pub temperature: f64,        // 0.3
-    pub streaming: bool,         // true
+    /// W1（方案 §2.1）：None = **不发送**该参数（长度上限交给服务端默认）
+    pub max_tokens: Option<u32>,
+    /// W1（方案 §2.1）：None = **不发送**该参数
+    pub temperature: Option<f64>,
+    pub streaming: bool, // true
     pub system_prompt: Option<String>,
     pub proxy: String, // "none" | "system" | URL
     pub no_system_role: bool,
-    /// legacy 布尔：仅在 thinking_style=None 时参与迁移（true→auto，false→off）
-    pub no_think: bool,
+    /// W1（方案 §2.3）：关闭模型思考总开关，默认 true
+    pub disable_thinking: bool,
+    /// 关闭方式（方案 §2.3）：None/"auto" 自动首选；deepseek/qwen/vllm/openai 只用该一种
     pub thinking_style: Option<String>,
     pub json_response: bool,
     pub overrides: Option<BTreeMap<String, Value>>,
@@ -104,13 +107,13 @@ impl Default for TranslatorParams {
             api_base: "http://127.0.0.1:1234/v1".into(),
             api_key: String::new(),
             model: String::new(),
-            max_tokens: 256,
-            temperature: 0.3,
+            max_tokens: None,
+            temperature: Some(lt_proto::DEFAULT_TEMPERATURE),
             streaming: true,
             system_prompt: None,
             proxy: "none".into(),
             no_system_role: false,
-            no_think: false,
+            disable_thinking: true,
             thinking_style: None,
             json_response: false,
             overrides: None,
@@ -138,10 +141,11 @@ pub struct Translator {
     model: String,
     streaming: bool,
     json_response: bool,
-    thinking_style: &'static str,
+    /// W1（方案 §2.3）：本次装置实际要发送的关闭形态（构造期一次性解析）
+    thinking: ThinkingPlan,
     no_system_role: bool,
-    max_tokens: u32,
-    temperature: f64,
+    max_tokens: Option<u32>,
+    temperature: Option<f64>,
     overrides: BTreeMap<String, Value>,
     extra_body: Value,
     system_prompt_template: String,
@@ -151,19 +155,19 @@ pub struct Translator {
 impl Translator {
     pub fn new(params: TranslatorParams) -> Result<Self, TranslateError> {
         let client = make_openai_client(&params.api_base, &params.api_key, &params.proxy)?;
-        let thinking_style = params.thinking_style.as_deref();
-        // legacy 迁移：仅携带 no_think 布尔的旧配置（原版 __init__）
-        let legacy_style = if params.no_think { "auto" } else { "off" };
-        let style = resolve_thinking_style(
-            thinking_style.unwrap_or(legacy_style),
+        // W1（方案 §2.3）：总开关 + 方式 → 本次装置的唯一关闭形态
+        let thinking = resolve_thinking_plan(
+            params.disable_thinking,
+            params.thinking_style.as_deref(),
             &params.api_base,
             &params.model,
         );
-        if style != "off" {
+        if thinking != ThinkingPlan::None {
             tracing::info!(
-                "Translator: thinking disabled for {} via {style} style ({})",
+                "Translator: thinking disabled for {} via {} ({})",
                 params.model,
-                thinking_disable_body(style)
+                thinking.name(),
+                thinking_disable_body(thinking)
             );
         }
         if params.json_response {
@@ -196,7 +200,7 @@ impl Translator {
             model: params.model,
             streaming: params.streaming,
             json_response: params.json_response,
-            thinking_style: style,
+            thinking,
             no_system_role: params.no_system_role,
             max_tokens: params.max_tokens,
             temperature: params.temperature,
@@ -241,7 +245,7 @@ impl Translator {
             model: self.model.clone(),
             streaming: self.streaming,
             json_response: self.json_response,
-            thinking_style: self.thinking_style,
+            thinking: self.thinking,
             no_system_role: self.no_system_role,
             max_tokens: self.max_tokens,
             temperature: self.temperature,
@@ -325,7 +329,7 @@ impl Translator {
     /// 同名键）；为空时 Null（= 不发）。镜像原版 kwargs["extra_body"]，供测试观察。
     pub(crate) fn merged_extra_body(&self) -> Value {
         let mut extra = Map::new();
-        if let Value::Object(m) = thinking_disable_body(self.thinking_style) {
+        if let Value::Object(m) = thinking_disable_body(self.thinking) {
             extra.extend(m);
         }
         if let Value::Object(m) = &self.extra_body {
@@ -350,8 +354,14 @@ impl Translator {
         let mut body = Map::new();
         body.insert("model".into(), json!(self.model));
         body.insert("messages".into(), self.build_messages(system_prompt, text));
-        body.insert("max_tokens".into(), json!(self.max_tokens));
-        body.insert("temperature".into(), json!(self.temperature));
+        // W1（方案 §2.1）：长度上限与温度皆可缺席——None 时不发送该键
+        // （长度上限交给服务端默认：应用强加上限会把"先想再答"的模型憋死）
+        if let Some(max_tokens) = self.max_tokens {
+            body.insert("max_tokens".into(), json!(max_tokens));
+        }
+        if let Some(temperature) = self.temperature {
+            body.insert("temperature".into(), json!(temperature));
+        }
         for key in OVERRIDE_KEYS {
             if let Some(v) = self.overrides.get(key) {
                 body.insert(key.into(), v.clone());
@@ -420,7 +430,7 @@ impl Translator {
         if self.json_response {
             result = extract_json_translation(&result);
         }
-        warn_if_thinking_burned(&result, self.last_usage().1, self.thinking_style);
+        warn_if_thinking_burned(&result, self.last_usage().1, self.thinking.name());
         Ok(result)
     }
 
@@ -504,7 +514,7 @@ impl Translator {
                 timeout_secs: read_timeout.as_secs(),
             },
             json_response: self.json_response,
-            thinking_style: self.thinking_style,
+            thinking: self.thinking,
             state: self.state.clone(),
             finished: false,
         }
@@ -605,7 +615,8 @@ enum StreamInner {
 pub struct TranslateStream {
     inner: StreamInner,
     json_response: bool,
-    thinking_style: &'static str,
+    /// 本次装置的关闭形态（仅用于告警文案；W2 起由体检结论取代）
+    thinking: ThinkingPlan,
     state: Arc<Mutex<MutableState>>,
     finished: bool,
 }
@@ -615,7 +626,7 @@ impl TranslateStream {
         Self {
             inner: StreamInner::Sync(Some(result)),
             json_response: false,
-            thinking_style: "off",
+            thinking: ThinkingPlan::None,
             state: Arc::new(Mutex::new(MutableState {
                 context_turns: 0,
                 history: Vec::new(),
@@ -674,7 +685,7 @@ impl Iterator for TranslateStream {
                         if self.json_response {
                             result = extract_json_translation(&result);
                         }
-                        warn_if_thinking_burned(&result, completion_tokens, self.thinking_style);
+                        warn_if_thinking_burned(&result, completion_tokens, self.thinking.name());
                         if check_repetition(&result) {
                             self.finished = true;
                             return Some(Err(TranslateError::Repetition(result)));
@@ -729,12 +740,12 @@ pub(crate) fn extract_json_translation(raw: &str) -> String {
     raw.to_string()
 }
 
-fn warn_if_thinking_burned(result: &str, completion_tokens: u64, thinking_style: &str) {
+fn warn_if_thinking_burned(result: &str, completion_tokens: u64, plan: &str) {
     if result.is_empty() && completion_tokens > 0 {
         tracing::warn!(
             "Empty translation but {completion_tokens} completion tokens were used - the model \
-             likely spent the whole max_tokens budget on reasoning; pick the correct thinking \
-             style for this provider in the model edit dialog (current: {thinking_style})"
+             likely spent the whole output budget on reasoning; keep 「关闭模型思考」enabled in \
+             the model editor (current plan: {plan})"
         );
     }
 }
@@ -844,16 +855,16 @@ impl Translator {
     pub(crate) fn for_test(
         api_base: &str,
         model: &str,
+        disable_thinking: bool,
         thinking_style: Option<&str>,
-        no_think: bool,
         extra_body: Option<Value>,
     ) -> Self {
         Self::new(TranslatorParams {
             api_base: api_base.into(),
             api_key: "test-key".into(),
             model: model.into(),
+            disable_thinking,
             thinking_style: thinking_style.map(str::to_string),
-            no_think,
             extra_body,
             ..TranslatorParams::default()
         })

@@ -795,11 +795,16 @@ pub const PANEL_APPLY_DEBOUNCE_MS: u64 = 300;
 /// 翻译页 system_prompt 防抖时长（原版 translation_tab._prompt_debounce 600ms）
 pub const PROMPT_APPLY_DEBOUNCE_MS: u64 = 600;
 
-/// thinking_style 存储值 → 下拉索引（未知值回退 auto=0）。
-/// E3/ADR-10：下拉项清单 = `lt_proto::THINKING_STYLES` 单一事实源——
-/// 本地逐字拷贝镜像（漂移隐患）随本波删除
+/// 「关闭方式」下拉的可见项（W1/方案 §2.3）：`off` 不再是方式——旧值已由
+/// `Settings::sanitize` 归一化为总开关 `disable_thinking=false`，故界面只呈现
+/// "自动 + 四种方式"。清单仍以 `lt_proto::THINKING_STYLES` 为单一事实源（前缀切片）。
+pub fn thinking_methods() -> &'static [&'static str] {
+    &lt_proto::THINKING_STYLES[..5]
+}
+
+/// 「关闭方式」存储值 → 下拉索引（未知值/旧 "off" 回退 auto=0）
 pub fn thinking_style_index(v: Option<&str>) -> usize {
-    v.and_then(|s| lt_proto::THINKING_STYLES.iter().position(|k| *k == s))
+    v.and_then(|s| thinking_methods().iter().position(|k| *k == s))
         .unwrap_or(0)
 }
 
@@ -839,9 +844,15 @@ pub struct ModelEditState {
     pub proxy_index: usize,
     /// 自定义代理 URL（仅 proxy_index==2 可编辑）
     pub proxy_url: String,
-    /// 0=auto 1=deepseek 2=qwen 3=vllm 4=openai 5=off（原版 no_think 复选的
-    /// 后继形态：契约键 thinking_style）
+    /// 「关闭方式」下拉索引（0=auto 1=deepseek 2=qwen 3=vllm 4=openai；
+    /// 仅 `disable_thinking` 为 true 时参与请求）
     pub thinking_index: usize,
+    /// W1（方案 §2.3）：关闭模型思考总开关 —— 直接映射 `ModelConfig.disable_thinking`
+    pub disable_thinking: bool,
+    /// W1（方案 §2.1）：是否发送温度（勾选 ↔ `ModelConfig.temperature.is_some()`）
+    pub temperature_enabled: bool,
+    /// W1：温度值（`temperature_enabled` 为 false 时不参与请求）
+    pub temperature_value: f64,
     pub no_system_role: bool,
     pub streaming: bool,
     pub json_response: bool,
@@ -870,6 +881,10 @@ impl ModelEditState {
             proxy_index: 0,
             proxy_url: String::new(),
             thinking_index: 0,
+            // W1/裁决 1：默认关闭模型思考；温度默认发送 0.3
+            disable_thinking: true,
+            temperature_enabled: true,
+            temperature_value: lt_proto::DEFAULT_TEMPERATURE,
             no_system_role: false,
             streaming: true,
             json_response: false,
@@ -895,6 +910,9 @@ impl ModelEditState {
             proxy_index: proxy_index_for(&cfg.proxy),
             proxy_url: String::new(),
             thinking_index: thinking_style_index(cfg.thinking_style.as_deref()),
+            disable_thinking: cfg.disable_thinking,
+            temperature_enabled: cfg.temperature.is_some(),
+            temperature_value: cfg.temperature.unwrap_or(lt_proto::DEFAULT_TEMPERATURE),
             no_system_role: cfg.no_system_role,
             streaming: cfg.streaming,
             json_response: cfg.json_response,
@@ -969,10 +987,18 @@ impl ModelEditState {
             model: self.model.trim().to_string(),
             proxy: self.proxy_arg(),
             no_system_role: self.no_system_role,
-            thinking_style: match lt_proto::THINKING_STYLES[self.thinking_index] {
+            // W1/方案 §2.3：方式下拉索引（越界回退 auto）；`off` 不再是方式
+            thinking_style: match thinking_methods()
+                [self.thinking_index.min(thinking_methods().len() - 1)]
+            {
                 "auto" => None,
                 v => Some(v.to_string()),
             },
+            disable_thinking: self.disable_thinking,
+            // W1/方案 §2.1：未勾选 = None = 不发送该参数
+            temperature: self
+                .temperature_enabled
+                .then(|| self.temperature_value.clamp(0.0, 2.0)),
             streaming: self.streaming,
             json_response: self.json_response,
             context_turns: self.context_turns.clamp(0, 20) as u32,
@@ -2857,6 +2883,10 @@ mod tests {
             proxy: "http://127.0.0.1:7890".into(),
             no_system_role: true,
             thinking_style: Some("qwen".into()),
+            // W1：总开关 + 温度一等字段（与 legacy overrides 中的同名键共存，
+            // 验证"旧值保留 + 新字段如实往返"）
+            disable_thinking: false,
+            temperature: Some(0.7),
             streaming: false,
             json_response: true,
             context_turns: 4,
@@ -2876,6 +2906,10 @@ mod tests {
         assert_eq!(st.proxy_index, 2, "自定义 URL → custom 模式");
         assert_eq!(st.proxy_url, "http://127.0.0.1:7890");
         assert_eq!(st.thinking_index, 2, "qwen → 索引 2");
+        // W1：新字段如实回填（UI 与后端一比一）
+        assert!(!st.disable_thinking, "总开关关闭如实回填");
+        assert!(st.temperature_enabled);
+        assert_eq!(st.temperature_value, 0.7);
         let built = st.build().expect("extra_body 合法");
         assert_eq!(built, cfg);
     }
@@ -3102,13 +3136,47 @@ mod tests {
         assert!(st.session.next_tick().is_some(), "应有待触发节拍");
     }
 
-    /// thinking_style 存储值 ↔ 下拉索引（未知/None 回退 auto）
+    /// 「关闭方式」存储值 ↔ 下拉索引（W1：`off` 不再是方式，回退 auto）
     #[test]
     fn thinking_style_index_mapping() {
         assert_eq!(thinking_style_index(None), 0);
         assert_eq!(thinking_style_index(Some("auto")), 0);
-        assert_eq!(thinking_style_index(Some("off")), 5);
+        assert_eq!(thinking_style_index(Some("qwen")), 2);
+        // 旧 "off"（sanitize 会归一化；未归一化时按 auto 显示，语义由总开关承载）
+        assert_eq!(thinking_style_index(Some("off")), 0);
         assert_eq!(thinking_style_index(Some("bogus")), 0);
+        // 界面只呈现前五项；常量保留六项用于解析旧档案
+        assert_eq!(thinking_methods().len(), 5);
         assert_eq!(lt_proto::THINKING_STYLES.len(), 6);
+    }
+
+    /// W1（方案 §2.3/§2.1）：编辑器默认 = 关思考 + 温度 0.3；两处均 1:1 落到契约字段
+    #[test]
+    fn editor_defaults_map_to_contract_fields() {
+        let cfg = ModelEditState::new_add().build().unwrap();
+        assert!(cfg.disable_thinking, "默认勾选关闭模型思考");
+        assert_eq!(cfg.temperature, Some(lt_proto::DEFAULT_TEMPERATURE));
+        assert_eq!(cfg.thinking_style, None, "默认方式 = auto");
+    }
+
+    /// W1：关掉总开关 / 取消温度发送 → 契约字段如实反映（UI 与后端一比一）
+    #[test]
+    fn editor_switches_round_trip() {
+        let mut st = ModelEditState::new_add();
+        st.disable_thinking = false;
+        st.temperature_enabled = false;
+        st.temperature_value = 0.9;
+        st.thinking_index = 3; // vllm
+        let cfg = st.build().unwrap();
+        assert!(!cfg.disable_thinking);
+        assert_eq!(cfg.temperature, None, "未勾选 = 不发送");
+        assert_eq!(cfg.thinking_style.as_deref(), Some("vllm"));
+
+        // 回到既有模型的编辑器：值如实回填
+        let st2 = ModelEditState::new_edit(0, &cfg);
+        assert!(!st2.disable_thinking);
+        assert!(!st2.temperature_enabled);
+        assert_eq!(st2.temperature_value, lt_proto::DEFAULT_TEMPERATURE, "未启用时回填默认值");
+        assert_eq!(st2.thinking_index, 3);
     }
 }
