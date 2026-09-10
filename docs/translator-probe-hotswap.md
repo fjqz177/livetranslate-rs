@@ -336,14 +336,18 @@ pub fn run_probe(
    `let ctl = RunCtl { cancel: Some(cancel.clone()), deadline: Some(t0 + PROBE_TOTAL_BUDGET) };`
 6. `let out = run_ladder(&t, start, allow, PROBE_TEXT, "auto", &eff.tl.target_language,
         step_timeout, &ctl, sink, 0, 0, false);`
-7. 结论映射（顺序即优先级）：
+7. 结论映射（**按表从上到下判定，命中即停**——顺序即优先级）：
 
-   | 条件 | outcome | 附带字段 |
-   |---|---|---|
-   | `out.halted == Some(Halt::Cancelled)` | `Cancelled` | — |
-   | `out.halted == Some(Halt::Budget)` | `Inconclusive { attempted: out.attempted }` | — |
-   | `out.attempt.succeeded() && 正文非空` | `Ok` | `step_note` = 起点形态则 `None`，否则 `Msg` 注入的降级说明；`preview` = 正文去换行后截断 60 字符 |
-   | 其余 | `Failed { kind, detail }`，其中 `kind = out.attempt.error.map(failure_kind).unwrap_or(Empty/Truncated)`（`verdict == Some(EmptyTruncated)` → `Truncated`，否则 `Empty`），`detail = ui_text()` 或体检描述 | — |
+   | # | 条件 | outcome | 附带字段 |
+   |---|---|---|---|
+   | 1 | `out.halted == Some(Halt::Cancelled)` **或** `matches!(out.attempt.error, Some(TranslateError::Cancelled))` | `Cancelled` | — |
+   | 2 | `out.halted == Some(Halt::Budget)` | `Inconclusive { attempted: out.attempted }` | — |
+   | 3 | `out.attempt.succeeded() && !正文.trim().is_empty()` | `Ok` | `step_note` = 起点形态则 `None`，否则 `Msg` 注入的降级说明；`preview` = 正文去换行后按**字符**截断 60 字符 |
+   | 4 | 其余 | `Failed { kind, detail }`，其中 `kind = out.attempt.error.map(failure_kind).unwrap_or(Empty/Truncated)`（`verdict == Some(EmptyTruncated)` → `Truncated`，否则 `Empty`），`detail = ui_text()` 或体检描述 | — |
+
+   > **第 1 行的第二个条件是必须的（易漏）**：取消可能发生在**一次尝试进行中**（流式读取返回
+   > `Err(Cancelled)`），此时 `halted` 仍是 `None`（只有"两台阶之间"的取消才置 `halted`）。
+   > 漏掉它，用户中断会显示成"连接失败 · 已中断"。测试 `probe_cancel_is_reported` 会钉住这条。
 
 8. `sink.push(UiEvent::TestTranslatorResult { probe_id, name, outcome, ms: t0.elapsed().as_millis() as u64, step_note, preview });`
 
@@ -390,9 +394,16 @@ warn  连接测试中断 #{probe_id}：{Cancelled | Budget 耗尽，已尝试 N 
    pub(crate) enum Halt { Cancelled, Budget }
    ```
 
-   - 签名：`fn run_ladder(base, start, allow_verdict_advance, text, source_lang, target, timeout,
-     ctl: &RunCtl, sink, id, seq, push_partials) -> LadderOutcome`
-   - `LadderOutcome` 增字段 `halted: Option<Halt>` 与 `attempted: u8`（已尝试台阶数）。
+   - 签名：`pub(crate) fn run_ladder(base, start, allow_verdict_advance, text, source_lang, target,
+     timeout, ctl: &RunCtl, sink, id, seq, push_partials) -> LadderOutcome`
+   - **可见性**：`run_ladder` 现为 `pipeline.rs` 内私有 fn，`probe.rs` 需调用它 →
+     `run_ladder` / `RunCtl` / `Halt` / `LadderOutcome` **四个都要改 `pub(crate)`**
+     （`LadderOutcome` 现为私有 struct）；`run_attempt` 保持私有（探测只经 `run_ladder`）。
+   - `LadderOutcome` 增字段 `halted: Option<Halt>` 与 `attempted: u8`
+     （**计数口径**：每调用一次 `run_attempt` 就 +1，含截断补发的那次；首个台阶也算 1）。
+   - **三个调用点全部要改**：`pipeline.rs:808`（生产 `submit_translation`）与 `:3051`（单测）
+     传 `&RunCtl::none()`；`:1803` 的旧 `TlSwitch::TestTranslator` 路径随该变体一起删除
+     （§4.5 已列）。
    - 每次尝试**之前**：`cancel` 置位 → 返回 `halted = Some(Cancelled)`；`deadline` 已过 →
      返回 `halted = Some(Budget)`。
    - 单次尝试超时：`let per = match ctl.deadline { Some(d) =>
@@ -402,25 +413,47 @@ warn  连接测试中断 #{probe_id}：{Cancelled | Budget 耗尽，已尝试 N 
 
 ### 4.5 lt-orchestrator：热切换加固（F1/F2/F3）
 
-**F1 命令消费点提前**：把主循环空闲分支里的 `while let Ok(sw) = tl_switch.try_recv() { ... }`
-整段（含 `ReplaceEngine` 处理，`pipeline.rs:2026-2130`）抽为函数
+**F1 命令消费点提前**：把**主循环空闲分支**里的 `while let Ok(sw) = tl_switch.try_recv() { ... }`
+整段（含该分支特有的 `ReplaceEngine` 处理，`pipeline.rs:2026-2130`）抽为函数并在两处调用。
 
 ```rust
+/// 主循环侧的翻译器命令排空（F1 提取；待命循环**不**用本函数——那里 ReplaceEngine
+/// 的处理是"装配 worker 退出待命"，语义完全不同，保持原样）
+#[allow(clippy::too_many_arguments)]   // 本文件既有先例
 fn drain_tl_switch(
     tl: &mut Option<Arc<TlRig>>,
-    ctx: &AsrThreadCtx,          // bus/sink/sup/transcript/msg/learned/degraded_notified
+    tl_switch: &crossbeam_channel::Receiver<TlSwitch>,
     manager: &mut AsrManager,
     current_display: &mut String,
     asr_unavailable_notified: &mut bool,
     interim_state: &mut InterimState,
+    bus: &Arc<SettingsBus>,
+    sink: &EventSink,
+    sup: &Arc<Supervisor>,
+    transcript: &Arc<lt_audio::transcript::TranscriptWriter>,
+    msg: &Msg,
+    learned: &Learned,
+    degraded_notified: &Arc<Mutex<std::collections::HashSet<(String, String)>>>,
     current_settings: &lt_proto::Settings,
 )
 ```
 
-并在**两处**调用：① 主循环 `while` 体**开头**（新增——使切换在下一段边界即生效）；② 空闲分支（保留，
-覆盖空闲期的立即消费）。原空闲分支内的内联实现删除，只留调用。
+**签名为什么这么写（易踩）**：`run_asr_thread` 开头就把 `AsrThreadCtx`
+**解构**成了局部变量（`let AsrThreadCtx { segment_queue, vad, interim, bus, stop, sink, tl_switch,
+sup, transcript, msg, learned, degraded_notified } = ctx;`，`pipeline.rs:1871-1885`），
+所以**不能**传 `&AsrThreadCtx`——必须逐个传引用（参数多，加 `#[allow(clippy::too_many_arguments)]`，
+本文件已有同款先例）。
 
-**F2 切换回执**：`route_translator_switch` 的 `ReplaceRig` 成功分支（`pipeline.rs:1755-1761`）在
+调用点：① 主循环 `while` 体**开头**（新增——使切换在下一段边界即生效，不再等 500ms 空窗）；
+② 空闲分支（保留，覆盖空闲期的立即消费）。原空闲分支内的内联实现删除，只留调用。
+
+> **别删错东西（重名警告）**：`pipeline.rs` 测试模块里有两个**同名但无关**的辅助函数
+> `fn test_translator(disable_thinking: bool) -> Translator`（`:2819`）与
+> `fn test_translator_explicit(style: &str)`（`:2828`），它们是阶梯单测的构造器，**必须保留**。
+> 本次删除的是 `Pipeline::test_translator(&self, config)` 方法（`:1307`）与
+> `TlSwitch::TestTranslator` 变体——按**路径 + 签名**定位，不要按名字搜删。
+
+**F2 切换回执**：`route_translator_switch` 的 `ReplaceRig` 成功分支（`pipeline.rs:1756-1765`）在
 `*tl = Some(Arc::new(rig));` 之后追加：
 
 ```rust
@@ -652,8 +685,8 @@ pub type CfgKey = (String, String, String, String);   // name, api_base, model, 
     `Cmd::CancelTranslatorTest { probe_id: id }`，**立即**把该行结果落为
     `ProbeResult { outcome: Cancelled, ms: started.elapsed(), .. }` 并清 `running`（不等后台回执）。
 - 行下附加行（`ui.add_space(2.0)` 后一行）：
-  - `is_my_row` → `probe_running`（「测试中…」）+ 已耗时（`{:.1}s`），并
-    `ui.ctx().request_repaint_after(Duration::from_millis(100))` 保证走秒刷新。
+  - `is_my_row` → `probe_running`（「测试中…」）+ 已耗时（`{:.1}s`）。**走秒刷新靠宿主节拍，
+    不是 `ctx.request_repaint_after`**（见下方"走秒与看门狗的重绘来源"）。
   - `result` 有效（`result.row == i` 且 `result.cfg_key == 该行 cfg_key`）→ 按 outcome 渲染：
     - `Ok`：绿色 `pal.ok`，`✓ {probe_ok} · {ms} ms · {step_note?} · {probe_preview}`；
       `step_note` 与 `preview` 用 ` · ` 拼接，缺省项整段省略
@@ -687,11 +720,41 @@ preview }`：
 `UiEvent::TranslatorSwitched { name, .. }` → `panel.state.active_model_note = Some((name, Instant::now()))`
 → `redraw(Panel)`。
 
-**看门狗（永不卡死的最终保证）**：面板帧内（渲染前）检查
-`if let Some(r) = &panel.probe.running { if r.started.elapsed().as_secs() > lt_proto::PROBE_TOTAL_BUDGET_SECS + 10 { ... } }`
-（常量取 `lt_proto`——**不得**从 `lt-orchestrator` 取，UI 无此依赖边；预算 10 秒 → 看门狗 20 秒）
-→ 落 `ProbeResult { outcome: Inconclusive { attempted: 0 }, .. }`、清 `running`、记
-`tracing::warn!("连接测试回执超时（命令可能未送达）")`、`redraw`。
+> **"已切换生效"的显示/消失时机（不新增节拍）**：回执到达时主动 `redraw(Panel)` 一次 → 面板立刻
+> 出帧并显示该提示；**过期清除发生在之后任意一次重绘**（鼠标移动/输入/其他节拍）——面板若一直没人碰，
+> 提示会留在画面上直到下次重绘。这是可接受的（提示是锦上添花，`当前使用：X` 才是权威显示）；
+> 真要做到"2 秒自动消失"就得为它单开节拍，**本方案不做**。
+
+**走秒与看门狗的重绘来源（易踩，别用 `request_repaint_after`）**：本应用的窗口重绘由宿主的
+**节拍机制**驱动（`TickKind` + `SessionView::schedule_tick` / `drain_due_ticks`，分派点
+`app.rs:2394-2500` 的 `match tick.kind`），不是 egui 的自动重绘——用 `ctx.request_repaint_after`
+在多窗口共享 Context 的布局里**不保证**该窗口按时出帧，于是"测试中… 3.4 秒"会僵在 0.0 秒、
+看门狗也不会触发。因此新增一个节拍：
+
+```rust
+// state.rs 的 TickKind 增一枚
+/// 连接探测的 100ms 走秒/看门狗节拍（仅面板；探测结束即停排班）
+ProbeTick,
+```
+
+- **排班**：点击「测试」时 `session.schedule_tick(WinId::Panel, TickKind::ProbeTick,
+  Instant::now() + Duration::from_millis(100))`。
+- **分派**（`app.rs` 的 `match tick.kind` 增一臂 `TickKind::ProbeTick => self.on_probe_tick()`）：
+
+  ```text
+  on_probe_tick():
+      若 panel.probe.running 为 Some(r):
+          r.started.elapsed() > PROBE_TOTAL_BUDGET_SECS + 10 秒（预算 10s → 看门狗 20s）
+              → 落 ProbeResult { outcome: Inconclusive { attempted: 0 }, .. }、清 running、
+                 tracing::warn!("连接测试回执超时（命令可能未送达）")
+          重新排班（now + 100ms）   // 自续拍：探测在途就一直走
+          redraw(WinId::Panel)
+      否则:
+          不排班（自然停止，不留空转节拍）
+  ```
+
+  常量取 `lt_proto::PROBE_TOTAL_BUDGET_SECS`（**不得**从 `lt-orchestrator` 取，UI 无此依赖边）。
+- 「中断」与回执到达时若 `running` 被清空，下一拍即自然停排班。
 
 **状态行 + 使用说明（F2）**：模型配置 `group_card` 内、错误横幅之后、列表之前增加两行
 （**均为只读**，不含任何切换控件——见本节"切换入口的唯一性"）：
@@ -857,7 +920,9 @@ C3 是最大提交（契约 + 编排 + shell + UI 需同步改，否则旧调用
 | `other_rows_disabled_while_running` | 在途时其他行按钮 `enabled == false` |
 | `stale_probe_result_ignored` | `probe_id` 不匹配的回执不改变状态 |
 | `probe_result_invalidated_on_config_change` | 改行配置后旧结果不渲染 |
-| `probe_watchdog_settles_inconclusive` | `started` 拨回 21 秒前 → 渲染一帧 → `running == None` + `Inconclusive` |
+| `probe_tick_self_reschedules_while_running` | 在途时调 `on_probe_tick()` → 能取到下一拍 `TickKind::ProbeTick`（自续拍） |
+| `probe_tick_watchdog_settles_inconclusive` | `running.started` 拨回 21 秒前 → 调 `on_probe_tick()` → `running == None` + `Inconclusive{0}`，**且不再续拍** |
+| `probe_tick_not_scheduled_when_idle` | 无在途时排班表里不存在 `ProbeTick`（不留空转节拍） |
 | `active_model_status_line_renders_name` | 状态行文本含当前模型名；收到 `TranslatorSwitched` 后追加「已切换生效」 |
 | `active_model_status_line_has_no_switch_control` | **裁决 E 回归**：状态行区域不含任何按钮/下拉（只读） |
 | `superseded_subtitle_line_is_neutral` | `failed = Some(Superseded)` 的行文本为 `err_subtitle_skipped` 且 `fail_kind == Some(Superseded)` |
