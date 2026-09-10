@@ -356,6 +356,18 @@ fn should_advance(step: lt_translate::RequestStep, attempt: &Attempt, allow_verd
         && !matches!(step, lt_translate::RequestStep::Minimal)
 }
 
+/// 是否应把"该模型无法关闭思维链"回执给界面（item 5）：
+/// 仅当用户**确实要求过关闭**（勾选了且尚未标记）时才成立——用户主动取消勾选
+/// 时，退到"不发送"形态本来就是他要的，不构成"关不掉"的证据（否则会给模型
+/// 打上一个错误的持久标记）。
+fn should_report_cannot_disable(
+    wants_disable: bool,
+    already_marked: bool,
+    step: lt_translate::RequestStep,
+) -> bool {
+    wants_disable && !already_marked && lt_translate::gives_up_disabling(step)
+}
+
 /// 一次翻译的完整产出：末次尝试 + 实际打赢的台阶 + 跨尝试累计用量
 struct LadderOutcome {
     attempt: Attempt,
@@ -552,6 +564,9 @@ struct TlRig {
     allow_verdict_advance: bool,
     /// 配置里已声明"本模型关不掉"（UI 已取消勾选并落盘）——回执不再重复发
     thinking_unavailable: bool,
+    /// 用户**确实要求关闭思考**（勾选且未标记）：只有这种情形下"退到不发送"
+    /// 才算"关不掉"的证据；主动取消勾选不是
+    wants_disable: bool,
 }
 
 impl TlRig {
@@ -655,6 +670,7 @@ impl TlRig {
             start_step,
             allow_verdict_advance,
             thinking_unavailable: mc.thinking_unavailable,
+            wants_disable: mc.disable_thinking && !mc.thinking_unavailable,
         }))
     }
 
@@ -684,6 +700,7 @@ impl TlRig {
         let start_step = self.start_step;
         let allow_verdict_advance = self.allow_verdict_advance;
         let thinking_unavailable = self.thinking_unavailable;
+        let wants_disable = self.wants_disable;
         let seq = self.seq.fetch_add(1, Ordering::Relaxed) + 1;
         self.pool.submit(id, move || {
             let eff = bus.load();
@@ -736,7 +753,7 @@ impl TlRig {
             // 用户要求关闭思考、但阶梯最终只能退到"不含关闭参数"的形态
             // （强制思考模型）→ 回执 UI：取消勾选 + 落盘 thinking_unavailable
             // + 提示"该模型无法关闭思维链"。每会话每模型只回执一次。
-            if !thinking_unavailable && lt_translate::gives_up_disabling(outcome.step) {
+            if should_report_cannot_disable(wants_disable, thinking_unavailable, outcome.step) {
                 let first_time = degraded_notified.lock().unwrap().insert(model_key.clone());
                 if first_time {
                     tracing::warn!(
@@ -2437,6 +2454,24 @@ mod tests {
         let body = minimal.build_request_body("s", "t", true, false, 0);
         assert!(body.get("temperature").is_none());
         assert!(body.get("reasoning_effort").is_none());
+    }
+
+    /// item 5 回执判据：只有"用户要求过关闭"才报"关不掉"——主动取消勾选不算
+    #[test]
+    fn cannot_disable_is_reported_only_when_user_asked() {
+        use lt_translate::{RequestStep, ThinkingPlan};
+        let gave_up = RequestStep::Plan(ThinkingPlan::None);
+        let minimal = RequestStep::Minimal;
+        let still_injecting = RequestStep::Plan(ThinkingPlan::NestedDisabled);
+        // 用户要求过 + 退到不发送 → 报
+        assert!(should_report_cannot_disable(true, false, gave_up));
+        assert!(should_report_cannot_disable(true, false, minimal));
+        // 用户主动取消勾选（没要求过）→ 不报（否则给模型打上错误标记）
+        assert!(!should_report_cannot_disable(false, false, gave_up));
+        // 已经标记过 → 不重复报
+        assert!(!should_report_cannot_disable(true, true, gave_up));
+        // 还在注入关闭参数 → 还没到"关不掉"的结论
+        assert!(!should_report_cannot_disable(true, false, still_injecting));
     }
 
     /// 阶梯端到端（死端口）：连接类错误**不得**白走阶梯——只在起点试一次，
