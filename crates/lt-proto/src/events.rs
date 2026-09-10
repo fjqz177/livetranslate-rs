@@ -119,6 +119,52 @@ pub enum UiEvent {
     /// 经 message-only 窗投递激活消息——首实例 UI 显示面板并前置。
     /// 纯新增变体（冻结规则加法豁免，PROTO_VERSION 不递增）。
     SecondInstance,
+    /// 跳过翻译（W2/方案 §4.4/INV-A：**空译文≠同语言**——「没有译文」的每一条
+    /// 出口从此携带机器可读原因，UI 不再靠"字符串是否为空"猜语义）。
+    /// 纯新增变体（冻结规则加法豁免，PROTO_VERSION 不递增）。
+    TranslationSkipped { id: u64, reason: SkipReason },
+    /// 翻译失败/无输出（W2/方案 §4.4）。`detail` = provider 原文或体检摘要，
+    /// 只进日志与悬浮提示，主文案由 UI 按 `kind` 选中文 i18n。
+    /// 纯新增变体（冻结规则加法豁免，PROTO_VERSION 不递增）。
+    TranslationFailed {
+        id: u64,
+        kind: FailureKind,
+        detail: String,
+        tl_ms: f64,
+    },
+}
+
+/// 跳过翻译的原因（W2）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SkipReason {
+    /// 源语言与目标语言相同：按原版语义免翻译，UI 显示 `(相同语言)`
+    SameLanguage,
+}
+
+/// 翻译失败/无输出的原因（W2；UI 据此选 i18n 文案，禁止 `_ =>` 兜底——
+/// 死契约守卫要求每个变体都有消费点）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FailureKind {
+    /// 模型无输出（体检 EmptyReasoningBudget / EmptyNoOutput）
+    Empty,
+    /// 输出被长度截断（体检 EmptyTruncated / OkTruncated）
+    Truncated,
+    /// 请求超时
+    Timeout,
+    /// 鉴权失败（401/403）
+    Auth,
+    /// 模型/端点不存在（404）
+    NotFound,
+    /// 限流（429）
+    RateLimited,
+    /// 服务端错误（其余 4xx/5xx）
+    ServerError,
+    /// 连接失败（服务未启动、网络不可达、代理错误）
+    Connection,
+    /// 模型输出重复循环
+    Repetition,
+    /// 其他未知错误
+    Unknown,
 }
 
 /// 应用级命令（托盘菜单与悬浮窗菜单同源；W2 替代 `Menu(String)` 字符串协议。

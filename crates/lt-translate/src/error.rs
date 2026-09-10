@@ -36,7 +36,25 @@ impl TranslateError {
         )
     }
 
-    /// UI 渲染文本（原版 `f"[error: {e}]"`）
+    /// W2/方案 §4.4：错误 → 用户可见的原因分类（UI 按分类选中文文案）。
+    /// 本函数是 `lt_proto::FailureKind` 在错误侧的唯一生产者；UI 侧的穷尽 match
+    /// 是唯一消费者（两侧共同满足死契约守卫的 ≥2 引用判定）。
+    pub fn failure_kind(&self) -> lt_proto::FailureKind {
+        use lt_proto::FailureKind as K;
+        match self {
+            TranslateError::Auth { .. } => K::Auth,
+            TranslateError::Status { code: 404, .. } => K::NotFound,
+            TranslateError::Status { code: 429, .. } => K::RateLimited,
+            TranslateError::Status { .. } => K::ServerError,
+            TranslateError::Connection(_) => K::Connection,
+            TranslateError::Timeout(_) => K::Timeout,
+            TranslateError::Repetition(_) => K::Repetition,
+            TranslateError::Other(_) => K::Unknown,
+        }
+    }
+
+    /// UI 渲染文本（原版 `f"[error: {e}]"`；W2 起只作为 `detail`——
+    /// 主文案由 UI 按 `failure_kind` 选中文，不再直接展示英文原文）
     pub fn ui_text(&self) -> String {
         match self {
             // 原版 TimeoutError 展示为 "Translation exceeded {t}s total timeout"

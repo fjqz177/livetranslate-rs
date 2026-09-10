@@ -884,9 +884,8 @@ impl MultiWindowApp {
                         original,
                         lang,
                         asr_ms,
-                        translation: None,
+                        translation: crate::state::TranslationView::Pending,
                         tl_ms: 0.0,
-                        streaming: false,
                     });
                     if let Some(hw) = self.find_mut(WinId::Overlay) {
                         hw.window.request_redraw();
@@ -899,36 +898,38 @@ impl MultiWindowApp {
                         hw.window.request_redraw();
                     }
                 }
-                // 译文完成（含错误文本/同语言空串；原版 update_translation）
+                // 译文完成（W2 起**只表示成功译文**——空串不再流经此处）
                 lt_proto::UiEvent::UpdateTranslation { id, text, tl_ms } => {
                     self.app_state.overlay.update_translation(id, text.clone(), tl_ms);
                     if let Some(hw) = self.find_mut(WinId::Overlay) {
                         hw.window.request_redraw();
                     }
-                    // 字幕窗文本喂入（原版 pipeline 仅 _subwin.isVisible() 时 update_text）：
-                    // 译文完成 → {目标语言: 译文}；同语言空串 → {目标语言: 原文}
-                    // （原版 pipeline.py:459/629 同语言分支与 868/955 译文完成分支）
-                    if *self.visible.get(&WinId::Subtitle).unwrap_or(&false) {
-                        let original = self
-                            .app_state
-                            .overlay
-                            .messages
-                            .iter()
-                            .rev()
-                            .find(|m| m.id == id)
-                            .map(|m| m.original.clone());
-                        if let Some(original) = original {
-                            let value = if text.is_empty() {
-                                original.clone()
-                            } else {
-                                text
-                            };
-                            let mut tl = std::collections::BTreeMap::new();
-                            tl.insert(self.app_state.settings.target_language.clone(), value);
-                            self.app_state.subtitle.update_text(&mut self.app_state.session, &self.app_state.settings, original, tl);
-                        }
-                        self.redraw(WinId::Subtitle);
+                    self.feed_subtitle(id, Some(&text));
+                }
+                // W2：同语言免翻译（显式结论；字幕窗喂原文，原版语义）
+                lt_proto::UiEvent::TranslationSkipped { id, reason } => {
+                    self.app_state.overlay.skip_translation(id, reason);
+                    if let Some(hw) = self.find_mut(WinId::Overlay) {
+                        hw.window.request_redraw();
                     }
+                    self.feed_subtitle(id, None);
+                }
+                // W2：失败/无输出（带原因；字幕窗喂占位文案而**不喂原文**——
+                // 不给"没翻出来"伪装成翻译成功的机会）
+                lt_proto::UiEvent::TranslationFailed {
+                    id,
+                    kind,
+                    detail,
+                    tl_ms,
+                } => {
+                    self.app_state
+                        .overlay
+                        .fail_translation(id, kind, detail, tl_ms);
+                    if let Some(hw) = self.find_mut(WinId::Overlay) {
+                        hw.window.request_redraw();
+                    }
+                    let placeholder = crate::state::failure_text(kind);
+                    self.feed_subtitle(id, Some(&placeholder));
                 }
                 // 翻译/用量统计（原版 update_stats）
                 lt_proto::UiEvent::UpdateStats {
@@ -1273,6 +1274,36 @@ impl MultiWindowApp {
         if let Some(hw) = self.find(id) {
             hw.window.request_redraw();
         }
+    }
+
+    /// 字幕窗文本喂入（原版 pipeline 仅 `_subwin.isVisible()` 时 update_text）。
+    /// W2/方案 §4.4：按**呈现态**取值——`Some(text)` 喂该文本（成功译文 / 失败占位），
+    /// `None` 喂原文（同语言免翻译，原版语义）。
+    fn feed_subtitle(&mut self, id: u64, text: Option<&str>) {
+        if !*self.visible.get(&WinId::Subtitle).unwrap_or(&false) {
+            return;
+        }
+        let Some(original) = self
+            .app_state
+            .overlay
+            .messages
+            .iter()
+            .rev()
+            .find(|m| m.id == id)
+            .map(|m| m.original.clone())
+        else {
+            return;
+        };
+        let value = text.unwrap_or(&original).to_string();
+        let mut tl = std::collections::BTreeMap::new();
+        tl.insert(self.app_state.settings.target_language.clone(), value);
+        self.app_state.subtitle.update_text(
+            &mut self.app_state.session,
+            &self.app_state.settings,
+            original,
+            tl,
+        );
+        self.redraw(WinId::Subtitle);
     }
 
     /// 消费 UI 帧入队的窗口动作（run_frame 尾部调用；winit 句柄操作在此）
@@ -1992,7 +2023,7 @@ impl MultiWindowApp {
         for msg in &self.app_state.overlay.messages {
             let ts = &msg.timestamp;
             let orig = msg.original.trim();
-            let trans = msg.translation.as_deref().unwrap_or("").trim();
+            let trans = msg.translation.text().trim();
             match mode {
                 lt_proto::ExportFileMode::Original => lines.push(format!("[{ts}] {orig}")),
                 lt_proto::ExportFileMode::Translation => {

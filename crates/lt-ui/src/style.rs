@@ -238,6 +238,8 @@ pub const TL_MS: Color32 = Color32::from_rgb(0xdd, 0xbb, 0x88);
 /// "翻译中"/同语言占位（原版 #999 / #aaa）
 pub const PLACEHOLDER: Color32 = Color32::from_rgb(0x99, 0x99, 0x99);
 pub const SAME_LANG: Color32 = Color32::from_rgb(0xaa, 0xaa, 0xaa);
+/// 失败占位文案（W2：空响应/请求错误——与面板红字同色系）
+pub const ERROR: Color32 = Color32::from_rgb(0xc4, 0x1e, 0x3a);
 
 /// #RRGGBB → Color32；解析失败回退 fallback（原版 _hex_to_rgba 的容错路径）
 pub fn parse_color(s: &str, fallback: Color32) -> Color32 {

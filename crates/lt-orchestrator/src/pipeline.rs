@@ -36,7 +36,8 @@ use lt_audio::{
     AudioBackend, BoundedDropQueue, CaptureLoop, InterimControl, SegmentSource, VadProcessor,
 };
 use lt_proto::{
-    ASR_ENGINES, AudioRole, CaptureEvent, EngineKey, MonitorSample, QueueId, ThreadRole, UiEvent,
+    ASR_ENGINES, AudioRole, CaptureEvent, EngineKey, FailureKind, MonitorSample, QueueId,
+    SkipReason, ThreadRole, UiEvent,
 };
 use lt_translate::Translator;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -212,8 +213,6 @@ struct TlRig {
     pool: JobPool,
     /// 会话转录写盘（原版 self._transcript；ASR 线程写原文，worker 配对译文）
     transcript: Arc<lt_audio::transcript::TranscriptWriter>,
-    /// 用户可见文案服务（i18n 注入；错误占位/回执文案经此取，见 [`Msg`]）
-    msg: Msg,
     /// 设置总线（W4：翻译 worker 提交前读 `tl` 生效视图——目标语言/超时不再
     /// 存实例可变态（旧 MutableState 设置面 + TlSwitch::TargetLanguage/Timeout 镜像）
     bus: Arc<SettingsBus>,
@@ -227,13 +226,12 @@ impl TlRig {
         sup: &Supervisor,
         sink: EventSink,
         transcript: Arc<lt_audio::transcript::TranscriptWriter>,
-        msg: Msg,
     ) -> Result<Option<Self>, String> {
         let eff = bus.load();
         let Some(mc) = eff.raw.models.get(eff.raw.active_model) else {
             return Ok(None);
         };
-        Self::from_effective(mc, &eff, bus, sup, sink, transcript, msg)
+        Self::from_effective(mc, &eff, bus, sup, sink, transcript)
     }
 
     /// 按指定模型配置构建（运行时切换用；构建失败返回 Err——UI 收到
@@ -248,7 +246,6 @@ impl TlRig {
         sup: &Supervisor,
         sink: EventSink,
         transcript: Arc<lt_audio::transcript::TranscriptWriter>,
-        msg: Msg,
     ) -> Result<Option<Self>, String> {
         let params = lt_translate::TranslatorParams {
             api_base: mc.api_base.clone(),
@@ -288,7 +285,6 @@ impl TlRig {
             stats,
             pool: JobPool::new(TL_POOL_WORKERS, sup, sink),
             transcript,
-            msg,
             bus: bus.clone(),
         }))
     }
@@ -309,7 +305,8 @@ impl TlRig {
         let stats = self.stats.clone();
         let transcript = self.transcript.clone();
         let sink = sink.clone();
-        let msg = self.msg.clone();
+        // W2：`msg`（用户文案注入）在翻译出口不再需要——失败文案改由 UI 按
+        // FailureKind 本地化（编排域禁依赖 lt-i18n 的纪律不变）
         let bus = self.bus.clone();
         self.pool.submit(move || {
             let eff = bus.load();
@@ -317,7 +314,10 @@ impl TlRig {
             let timeout = eff.tl.timeout;
             let t0 = Instant::now();
             let mut translated: Option<String> = None;
-            for item in translator.translate_iter(&text, &source_lang, &target, timeout) {
+            // W2/方案 §4.4：必须 while let——`for` 会移走迭代器，之后读不到
+            // 体检结论（`verdict()`）与本次用量（`usage()`）
+            let mut it = translator.translate_iter(&text, &source_lang, &target, timeout);
+            while let Some(item) = it.next() {
                 match item {
                     Ok(partial) => {
                         sink.push(UiEvent::UpdateStreaming {
@@ -326,18 +326,6 @@ impl TlRig {
                         });
                         translated = Some(partial);
                     }
-                    Err(lt_translate::TranslateError::Repetition(_)) => {
-                        tracing::warn!(
-                            "Repetition loop detected, model may not support structured output well"
-                        );
-                        transcript.finalize_no_translation(id);
-                        sink.push(UiEvent::UpdateTranslation {
-                            id,
-                            text: msg.t("error_repetition"),
-                            tl_ms: 0.0,
-                        });
-                        return;
-                    }
                     Err(e) => {
                         if e.is_expected() {
                             tracing::warn!("Translate error: {e}");
@@ -345,34 +333,60 @@ impl TlRig {
                             tracing::error!("Translate error: {e}");
                         }
                         transcript.finalize_no_translation(id);
-                        sink.push(UiEvent::UpdateTranslation {
+                        // W2/账本：失败也记下已消耗的用量（此前整笔漏记）
+                        let (pt, ct) = it.usage();
+                        stats.prompt_tokens.fetch_add(pt, Ordering::Relaxed);
+                        stats.completion_tokens.fetch_add(ct, Ordering::Relaxed);
+                        let tl_ms = t0.elapsed().as_secs_f64() * 1000.0;
+                        sink.push(UiEvent::TranslationFailed {
                             id,
-                            text: e.ui_text(),
-                            tl_ms: 0.0,
+                            kind: e.failure_kind(),
+                            detail: format!("{} ({tl_ms:.0}ms)", e.ui_text()),
+                            tl_ms,
                         });
+                        sink.push(stats.snapshot_event());
                         return;
                     }
                 }
             }
-            // 成功路径（原版 _translate_async 循环结束后）
+            // 循环结束（原版 _translate_async 循环结束后）
             let tl_ms = t0.elapsed().as_secs_f64() * 1000.0;
-            let translated = translated.unwrap_or_default();
-            stats.tl_count.fetch_add(1, Ordering::Relaxed);
-            let (pt, ct) = translator.last_usage();
+            // W2/账本：用量随调用返回，不再经 Translator 共享态（并发不再串台）
+            let (pt, ct) = it.usage();
             stats.prompt_tokens.fetch_add(pt, Ordering::Relaxed);
             stats.completion_tokens.fetch_add(ct, Ordering::Relaxed);
-            tracing::info!("Translate ({tl_ms:.0}ms): {translated}");
-            sink.push(UiEvent::UpdateTranslation {
+            let verdict = it.verdict();
+            let translated = translated.unwrap_or_default();
+            if verdict.is_some_and(|v| v.has_text()) {
+                stats.tl_count.fetch_add(1, Ordering::Relaxed);
+                tracing::info!("Translate ({tl_ms:.0}ms): {translated}");
+                sink.push(UiEvent::UpdateTranslation {
+                    id,
+                    text: translated.clone(),
+                    tl_ms,
+                });
+                sink.push(stats.snapshot_event());
+                transcript.write_translation(id, &translated);
+                return;
+            }
+            // W2/结论化：模型没有给出正文——**不再**冒充"同语言"，也不计成功条数
+            let kind = match verdict {
+                Some(lt_translate::ResponseVerdict::EmptyTruncated) => FailureKind::Truncated,
+                _ => FailureKind::Empty,
+            };
+            let detail = match verdict {
+                Some(v) => format!("{v:?} (pt={pt}, ct={ct}, {tl_ms:.0}ms)"),
+                None => format!("no verdict (pt={pt}, ct={ct}, {tl_ms:.0}ms)"),
+            };
+            tracing::warn!("Translation produced no text: {detail}");
+            transcript.finalize_no_translation(id);
+            sink.push(UiEvent::TranslationFailed {
                 id,
-                text: translated.clone(),
+                kind,
+                detail,
                 tl_ms,
             });
             sink.push(stats.snapshot_event());
-            if translated.is_empty() {
-                transcript.finalize_no_translation(id);
-            } else {
-                transcript.write_translation(id, &translated);
-            }
         });
     }
 
@@ -623,7 +637,7 @@ impl Pipeline {
 
         // ── 翻译装置（M3）：models 非空即构建；配置无效必须让用户可见
         //（TranslatorUnavailable → 面板翻译页状态行 + 悬浮窗译文占位）──
-        let tl = match TlRig::from_settings(bus, &sup, sink.clone(), transcript.clone(), msg.clone()) {
+        let tl = match TlRig::from_settings(bus, &sup, sink.clone(), transcript.clone()) {
             Ok(t) => t.map(Arc::new),
             Err(reason) => {
                 sink.push(UiEvent::TranslatorUnavailable {
@@ -1050,7 +1064,6 @@ fn route_translator_switch(
                 sup,
                 sink.clone(),
                 transcript.clone(),
-                msg.clone(),
             ) {
                 Ok(Some(rig)) => {
                     tracing::info!("翻译器已切换: {} ({})", config.name, config.model);
@@ -1076,7 +1089,6 @@ fn route_translator_switch(
                 sup,
                 sink.clone(),
                 transcript.clone(),
-                msg.clone(),
             ) {
                 Ok(Some(rig)) => {
                     let sink = sink.clone();
@@ -1684,10 +1696,10 @@ fn commit_text(
     if lang == target_language {
         tracing::info!("Same language ({lang}), no translation");
         rig.transcript.finalize_no_translation(id);
-        sink.push(UiEvent::UpdateTranslation {
+        // W2/INV-A：同语言走显式结论——不再用空串冒充（空串另有"模型没答"的含义）
+        sink.push(UiEvent::TranslationSkipped {
             id,
-            text: String::new(),
-            tl_ms: 0.0,
+            reason: SkipReason::SameLanguage,
         });
         sink.push(rig.stats.snapshot_event());
     } else {
@@ -1827,11 +1839,6 @@ mod tests {
         Arc::new(lt_audio::transcript::TranscriptWriter::new(tmp_models_dir("transcript")))
     }
 
-    /// 测试文案服务（键名原样返回，避免测试组依赖真实 i18n）
-    fn test_msg() -> Msg {
-        Msg::new(|k| k.to_string())
-    }
-
     /// 测试设置总线（W4：from_settings 改读总线；发布即版本 1）
     fn test_bus(settings: lt_proto::Settings) -> Arc<SettingsBus> {
         Arc::new(SettingsBus::new(settings))
@@ -1851,7 +1858,7 @@ mod tests {
         let settings = lt_proto::Settings::default();
         let sup = test_sup();
         let bus = test_bus(settings);
-        let rig = TlRig::from_settings(&bus, &sup, EventArtery::new(), test_transcript(), test_msg())
+        let rig = TlRig::from_settings(&bus, &sup, EventArtery::new(), test_transcript())
             .expect("默认设置不应报配置错误")
             .expect("默认 settings 带一个默认模型，应能构建");
         // W4：目标语言不再存实例态（逐调用经总线 tl 视图传入）——验证总线视图
@@ -1869,7 +1876,7 @@ mod tests {
             ..Default::default()
         };
         let sup = test_sup();
-        assert!(TlRig::from_settings(&test_bus(settings), &sup, EventArtery::new(), test_transcript(), test_msg()).unwrap().is_none());
+        assert!(TlRig::from_settings(&test_bus(settings), &sup, EventArtery::new(), test_transcript()).unwrap().is_none());
         sup.join_all();
     }
 
@@ -1878,7 +1885,7 @@ mod tests {
         let mut settings = lt_proto::Settings::default();
         settings.models.clear();
         let sup = test_sup();
-        assert!(TlRig::from_settings(&test_bus(settings), &sup, EventArtery::new(), test_transcript(), test_msg()).unwrap().is_none());
+        assert!(TlRig::from_settings(&test_bus(settings), &sup, EventArtery::new(), test_transcript()).unwrap().is_none());
         sup.join_all();
     }
 
@@ -1906,12 +1913,12 @@ mod tests {
     fn replaced_rig_workers_shutdown_on_drop() {
         let sup = test_sup();
         let bus = test_bus(lt_proto::Settings::default());
-        let rig = TlRig::from_settings(&bus, &sup, EventArtery::new(), test_transcript(), test_msg()).unwrap().unwrap();
+        let rig = TlRig::from_settings(&bus, &sup, EventArtery::new(), test_transcript()).unwrap().unwrap();
         let old_alive = rig.pool.alive_workers.clone();
         wait_for(|| old_alive.load(Ordering::Relaxed) == TL_POOL_WORKERS);
         // 模拟 ReplaceRig 的替换语义（route_translator_switch：
         // `*tl = Some(Arc::new(rig))`——旧 rig 被 Drop，无人显式关机）
-        let replacement = TlRig::from_settings(&bus, &sup, EventArtery::new(), test_transcript(), test_msg()).unwrap().unwrap();
+        let replacement = TlRig::from_settings(&bus, &sup, EventArtery::new(), test_transcript()).unwrap().unwrap();
         wait_for(|| replacement.pool.alive_worker_count() == TL_POOL_WORKERS);
         drop(rig);
         // 旧池经 JobPool::Drop 自动停机：3s 内应归零（500ms pop_timeout 节拍）
@@ -1928,7 +1935,7 @@ mod tests {
     fn test_rig_dropped_with_job_shuts_down_pool() {
         let sup = test_sup();
         let bus = test_bus(lt_proto::Settings::default());
-        let rig = TlRig::from_settings(&bus, &sup, EventArtery::new(), test_transcript(), test_msg()).unwrap().unwrap();
+        let rig = TlRig::from_settings(&bus, &sup, EventArtery::new(), test_transcript()).unwrap().unwrap();
         let alive = rig.pool.alive_workers.clone();
         wait_for(|| alive.load(Ordering::Relaxed) == TL_POOL_WORKERS);
         // 等价于任务闭包 Drop 时 rig 的丢弃语义

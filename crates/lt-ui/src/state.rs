@@ -106,12 +106,73 @@ pub struct OverlayMessage {
     /// 源语言标签（"zh"/"en"…）
     pub lang: String,
     pub asr_ms: f64,
-    /// 译文（流式期间为累积部分文本；同语言为空串）
-    pub translation: Option<String>,
+    /// 译文呈现态（W2/INV-A：**不再用空串表达"同语言"或"失败"**——历史上
+    /// 模型空响应被渲染成 `(相同语言)`，导致用户误判语言识别出错）
+    pub translation: TranslationView,
     /// 翻译耗时（流式期间 0，完成事件时更新）
     pub tl_ms: f64,
-    /// 流式进行中（True 时不渲染 TL 耗时，原版流式/完成分设标签文本）
-    pub streaming: bool,
+}
+
+/// 译文呈现态（A/B 设计见方案 §4.4；UI 只按此渲染，不做字符串语义猜测）
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum TranslationView {
+    /// 等待首个增量（原 `None`）
+    #[default]
+    Pending,
+    /// 流式累积中（原 `Some(text)` + `streaming=true`）
+    Streaming(String),
+    /// 完成（原 `Some(text)`）
+    Ready(String),
+    /// 跳过翻译（同语言免翻译；原 `Some("")` 的一个含义）
+    Skipped(lt_proto::SkipReason),
+    /// 失败/无输出（原 `Some("")` 的另一个含义 / `[error: …]` 文本）
+    Failed {
+        kind: lt_proto::FailureKind,
+        /// provider 原文或体检摘要——只进 tooltip/日志，主文案由 kind 决定
+        detail: String,
+    },
+}
+
+impl TranslationView {
+    /// 是否处于流式进行中（原 `OverlayMessage::streaming` 的唯一事实源）
+    pub fn is_streaming(&self) -> bool {
+        matches!(self, TranslationView::Streaming(_))
+    }
+
+    /// 可复制/可导出的正文（无正文时为空串）
+    pub fn text(&self) -> &str {
+        match self {
+            TranslationView::Streaming(t) | TranslationView::Ready(t) => t,
+            _ => "",
+        }
+    }
+}
+
+impl OverlayMessage {
+    /// 流式进行中（派生：不再持有独立的 bool 状态，避免与呈现态漂移）
+    pub fn is_streaming(&self) -> bool {
+        self.translation.is_streaming()
+    }
+}
+
+/// 失败原因 → 用户可见文案（W2/方案 §4.4：中文在前，provider 原文只做 tooltip）。
+/// **穷尽 match**：每个 `FailureKind` 都必须在此有消费点——死契约守卫据此计数，
+/// 新增变体忘了接线会被 CI 挡下。
+pub fn failure_text(kind: lt_proto::FailureKind) -> String {
+    use lt_proto::FailureKind as K;
+    let key = match kind {
+        K::Empty => "err_model_empty",
+        K::Truncated => "err_truncated",
+        K::Timeout => "err_timeout",
+        K::Auth => "err_401",
+        K::NotFound => "err_404",
+        K::RateLimited => "err_429",
+        K::ServerError => "err_server",
+        K::Connection => "err_conn_refused",
+        K::Repetition => "error_repetition",
+        K::Unknown => "err_unknown",
+    };
+    lt_i18n::t(key)
 }
 
 /// 翻译/用量统计（UpdateStats 事件；MonitorBar stats 段渲染，M4 完备）
@@ -1950,19 +2011,40 @@ impl OverlayUi {
         let pending = std::mem::take(&mut self.state.pending_streams);
         for (id, text) in pending {
             if let Some(m) = self.find_message_mut(id) {
-                m.translation = Some(text);
-                m.streaming = true;
+                m.translation = TranslationView::Streaming(text);
             }
         }
         self.state.scroll_pending = true;
     }
 
-    /// 译文完成（原版 update_translation；空文本=同语言/无翻译，同样置 Some）
+    /// 译文完成（原版 update_translation；**W2 起只用于成功路径**）
     pub fn update_translation(&mut self, id: u64, text: String, tl_ms: f64) {
         if let Some(m) = self.find_message_mut(id) {
-            m.translation = Some(text);
+            m.translation = TranslationView::Ready(text);
             m.tl_ms = tl_ms;
-            m.streaming = false;
+        }
+        self.state.scroll_pending = true;
+    }
+
+    /// 跳过翻译（W2/`UiEvent::TranslationSkipped`；同语言免翻译的唯一出口）
+    pub fn skip_translation(&mut self, id: u64, reason: lt_proto::SkipReason) {
+        if let Some(m) = self.find_message_mut(id) {
+            m.translation = TranslationView::Skipped(reason);
+        }
+        self.state.scroll_pending = true;
+    }
+
+    /// 翻译失败/无输出（W2/`UiEvent::TranslationFailed`）
+    pub fn fail_translation(
+        &mut self,
+        id: u64,
+        kind: lt_proto::FailureKind,
+        detail: String,
+        tl_ms: f64,
+    ) {
+        if let Some(m) = self.find_message_mut(id) {
+            m.translation = TranslationView::Failed { kind, detail };
+            m.tl_ms = tl_ms;
         }
         self.state.scroll_pending = true;
     }
@@ -2356,9 +2438,8 @@ mod tests {
             original: format!("消息 {id}"),
             lang: "zh".into(),
             asr_ms: 100.0,
-            translation: None,
+            translation: TranslationView::Pending,
             tl_ms: 0.0,
-            streaming: false,
         }
     }
 
@@ -2383,20 +2464,23 @@ mod tests {
 
         // 流式只入缓冲，50ms 节拍 flush 后才落消息（并置 streaming 标志）
         st.overlay.update_streaming(&mut st.session, 2, "partial".into());
-        assert_eq!(st.overlay.messages.last().unwrap().translation, None);
+        assert_eq!(
+            st.overlay.messages.last().unwrap().translation,
+            TranslationView::Pending
+        );
         st.overlay.flush_streams();
         assert_eq!(
-            st.overlay.messages.last().unwrap().translation.as_deref(),
-            Some("partial")
+            st.overlay.messages.last().unwrap().translation,
+            TranslationView::Streaming("partial".into())
         );
-        assert!(st.overlay.messages.last().unwrap().streaming);
+        assert!(st.overlay.messages.last().unwrap().is_streaming());
         assert_eq!(st.overlay.messages.last().unwrap().tl_ms, 0.0);
 
         st.overlay.update_translation(2, "done".into(), 320.0);
         let m = st.overlay.messages.last().unwrap();
-        assert_eq!(m.translation.as_deref(), Some("done"));
+        assert_eq!(m.translation, TranslationView::Ready("done".into()));
         assert_eq!(m.tl_ms, 320.0);
-        assert!(!m.streaming);
+        assert!(!m.is_streaming());
 
         // 不存在的 id：无害 no-op
         st.overlay.update_translation(999, "ghost".into(), 1.0);
@@ -2404,17 +2488,39 @@ mod tests {
 
         // 淘汰边界：id=1 已被挤出 50 条窗口（仅 2 条时不适用，直接验证 id=1 更新）
         st.overlay.update_translation(1, "first".into(), 5.0);
-        assert_eq!(st.overlay.messages[0].translation.as_deref(), Some("first"));
+        assert_eq!(
+            st.overlay.messages[0].translation,
+            TranslationView::Ready("first".into())
+        );
     }
 
+    /// W2/INV-A：同语言与"模型没答上话"从此走两条不同的结论——
+    /// 前者 `Skipped(SameLanguage)`，后者 `Failed{..}`，都不再冒充对方
     #[test]
-    fn same_language_empty_translation_still_marked() {
+    fn same_language_and_failure_are_distinct_conclusions() {
         let mut st = AppUi::new(Settings::default());
         st.overlay.push_message(msg(7));
-        // 同语言回空译文：translation=Some("")，消息标记完成
-        st.overlay.update_translation(7, String::new(), 0.0);
-        let m = st.overlay.messages.last().unwrap();
-        assert_eq!(m.translation.as_deref(), Some(""));
+        st.overlay.push_message(msg(8));
+        st.overlay.skip_translation(7, lt_proto::SkipReason::SameLanguage);
+        st.overlay
+            .fail_translation(8, lt_proto::FailureKind::Empty, "pt=142 ct=256".into(), 3200.0);
+        let skipped = &st.overlay.messages[0];
+        let failed = &st.overlay.messages[1];
+        assert_eq!(
+            skipped.translation,
+            TranslationView::Skipped(lt_proto::SkipReason::SameLanguage)
+        );
+        assert_eq!(skipped.translation.text(), "", "跳过时无正文");
+        assert!(matches!(
+            failed.translation,
+            TranslationView::Failed {
+                kind: lt_proto::FailureKind::Empty,
+                ..
+            }
+        ));
+        assert_eq!(failed.tl_ms, 3200.0);
+        // 失败文案按 kind 本地化（穷尽 match 的消费点）
+        assert!(!failure_text(lt_proto::FailureKind::Empty).is_empty());
     }
 
     #[test]

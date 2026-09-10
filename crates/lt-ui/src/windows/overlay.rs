@@ -14,8 +14,8 @@
 //! 近似还原 Qt 配色，非逐像素。
 
 use crate::state::{
-    ConfirmKind, ModalUi, OverlayMessage, OverlayMode, OverlayUi, SessionView, Settings, UiContext,
-    WinAction, WinId,
+    failure_text, ConfirmKind, ModalUi, OverlayMessage, OverlayMode, OverlayUi, SessionView,
+    Settings, TranslationView, UiContext, WinAction, WinId,
 };
 use crate::style::{self, parse_color};
 use egui::{
@@ -779,8 +779,9 @@ fn message_block(
                 }
             });
             // ── 译文行（独立换行：`> 译文` + TL 耗时 / 占位） ──
+            // W2/INV-A：按呈现态渲染——空串不再冒充"同语言"，失败带原因
             ui.horizontal_wrapped(|ui| match &msg.translation {
-                None => {
+                TranslationView::Pending => {
                     ui.label(
                         RichText::new(format!("> {}", lt_i18n::t("translating")))
                             .font(trans_font.clone())
@@ -788,7 +789,21 @@ fn message_block(
                             .color(o(style::PLACEHOLDER)),
                     );
                 }
-                Some(text) if text.is_empty() => {
+                TranslationView::Streaming(text) | TranslationView::Ready(text) => {
+                    ui.label(
+                        RichText::new(format!("> {text}"))
+                            .font(trans_font.clone())
+                            .color(trans_c),
+                    );
+                    if !compact && !msg.is_streaming() {
+                        ui.label(
+                            RichText::new(format!("TL {:.0}ms", msg.tl_ms))
+                                .font(ms_font.clone())
+                                .color(o(style::TL_MS)),
+                        );
+                    }
+                }
+                TranslationView::Skipped(_) => {
                     ui.label(
                         RichText::new(format!("> {}", lt_i18n::t("same_language")))
                             .font(trans_font.clone())
@@ -796,19 +811,14 @@ fn message_block(
                             .color(o(style::SAME_LANG)),
                     );
                 }
-                Some(text) => {
+                TranslationView::Failed { kind, detail } => {
                     ui.label(
-                        RichText::new(format!("> {text}"))
+                        RichText::new(format!("> {}", failure_text(*kind)))
                             .font(trans_font.clone())
-                            .color(trans_c),
-                    );
-                    if !compact && !msg.streaming {
-                        ui.label(
-                            RichText::new(format!("TL {:.0}ms", msg.tl_ms))
-                                .font(ms_font.clone())
-                                .color(o(style::TL_MS)),
-                        );
-                    }
+                            .italics()
+                            .color(o(style::ERROR)),
+                    )
+                    .on_hover_text(detail.clone());
                 }
             })
         });
@@ -822,15 +832,14 @@ fn message_block(
             ui.close();
         }
         if ui.button(lt_i18n::t("copy_translation")).clicked() {
-            ui.ctx()
-                .copy_text(msg.translation.clone().unwrap_or_default());
+            ui.ctx().copy_text(msg.translation.text().to_string());
             ui.close();
         }
         if ui.button(lt_i18n::t("copy_all")).clicked() {
             ui.ctx().copy_text(format!(
                 "{}\n{}",
                 msg.original,
-                msg.translation.clone().unwrap_or_default()
+                msg.translation.text()
             ));
             ui.close();
         }
