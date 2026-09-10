@@ -1814,10 +1814,42 @@ pub struct PanelUi {
     pub state: PanelUiState,
     /// 模型下载运行态（识别页缓存卡片；DownloadProgress/Failed/Succeeded 事件驱动）
     pub download: DownloadUiState,
+    /// 下载/模型修复自动重试计数（D-83 §2.3：上限 3 次，用尽提醒用户）
+    pub auto_retry: DownloadAutoRetry,
     /// 翻译装置不可用原因（TranslatorUnavailable 事件；翻译页状态行红字显示）
     pub translator_error: Option<String>,
     /// 翻译配置「测试连接」运行态（Cmd::TestTranslator 的 UI 侧）
     pub test_translator: TestTranslatorState,
+}
+
+/// 下载自动重试上限（2026-09-10 用户裁决 2：自动重试 3 次，仍失败提醒用户）
+pub const DOWNLOAD_AUTO_RETRY_MAX: u32 = 3;
+
+/// 下载自动重试状态（D-83 §2.3，docs/model-trust-repair.md）。
+///
+/// 触发：模型校验失败（坏文件已隔离 → 探测判缺 → 重下真正执行）或下载失败
+/// （可自动重试类别）。计数在装载成功（`AsrDevice`）或用户手动点下载时清零。
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct DownloadAutoRetry {
+    /// 正在自动修复的模型显示名（日志/提示用；普通下载失败可为空串）
+    pub model: String,
+    /// 已用自动尝试次数
+    pub attempts: u32,
+}
+
+/// 自动重试决策（纯函数，便于单测）：`retryable` = 本次失败是否值得自动再试；
+/// 返回 `Some(下次计数)` = 继续自动重试，`None` = 交用户处理（用尽/不可重试）。
+pub fn auto_retry_decision(retryable: bool, attempts: u32) -> Option<u32> {
+    (retryable && attempts < DOWNLOAD_AUTO_RETRY_MAX).then_some(attempts + 1)
+}
+
+/// 下载失败类别 → 是否值得自动重试：磁盘/权限与用户取消需要人工介入，不自动；
+/// 网络/长度/校验/HTTP（含 404，可能只是镜像抖动）自动。
+pub fn download_failure_retryable(kind: lt_proto::DownloadFailKind) -> bool {
+    !matches!(
+        kind,
+        lt_proto::DownloadFailKind::Disk | lt_proto::DownloadFailKind::Cancelled
+    )
 }
 
 /// 日志域（W5：日志窗与面板日志 tab 双视图共享，保持）
@@ -1929,6 +1961,7 @@ impl AppUi {
             panel: PanelUi {
                 state: PanelUiState::default(),
                 download: DownloadUiState::default(),
+                auto_retry: DownloadAutoRetry::default(),
                 translator_error: None,
                 test_translator: TestTranslatorState::default(),
             },
@@ -2527,6 +2560,70 @@ mod tests {
         st.panel.download = DownloadUiState::Idle;
         st.panel.download.apply_progress("x".into(), 1, 1, 1, 1);
         assert_eq!(st.panel.download, DownloadUiState::Idle);
+    }
+
+    // ── D-83 自动重试策略（纯函数：3 次上限 + 类别过滤）──
+
+    #[test]
+    fn auto_retry_decision_caps_at_three() {
+        // 前三次放行，计数递增
+        assert_eq!(auto_retry_decision(true, 0), Some(1));
+        assert_eq!(auto_retry_decision(true, 1), Some(2));
+        assert_eq!(auto_retry_decision(true, 2), Some(3));
+        // 用尽 → None（交用户处理：提醒 + 手动重试）
+        assert_eq!(auto_retry_decision(true, 3), None);
+        assert_eq!(auto_retry_decision(true, 99), None);
+        // 不可重试类别 → 直接 None
+        assert_eq!(auto_retry_decision(false, 0), None);
+        assert_eq!(DOWNLOAD_AUTO_RETRY_MAX, 3, "用户裁决：3 次");
+    }
+
+    #[test]
+    fn download_failure_retryable_excludes_disk_and_cancel() {
+        use lt_proto::DownloadFailKind as K;
+        for k in [
+            K::Net,
+            K::Length,
+            K::Checksum,
+            K::Http(404),
+            K::Http(500),
+            K::Other,
+        ] {
+            assert!(download_failure_retryable(k), "{k:?} 应自动重试");
+        }
+        // 磁盘满/权限、用户取消：自动重试无解，需人工介入
+        assert!(!download_failure_retryable(K::Disk));
+        assert!(!download_failure_retryable(K::Cancelled));
+    }
+
+    /// D-83：自动路径不得清零计数（否则修复闭环的次数被自己擦掉、无限重试），
+    /// 手动发起下载才是"用户新意图"→ 计数清零
+    #[test]
+    fn manual_download_resets_counter_auto_keeps_it() {
+        use crate::windows::panel::vad::{start_download, start_download_auto};
+        let mut st = AppUi::new(Settings::default());
+        let (tx, rx) = std::sync::mpsc::channel();
+        st.session.cmd_tx = Some(tx);
+        st.panel.auto_retry = DownloadAutoRetry {
+            model: "Whisper base".into(),
+            attempts: 2,
+        };
+        start_download_auto(&mut st.panel, &st.session, &st.settings);
+        assert_eq!(st.panel.auto_retry.attempts, 2, "自动路径保留计数");
+        assert!(matches!(
+            st.panel.download,
+            DownloadUiState::Downloading { .. }
+        ));
+        assert!(
+            matches!(rx.try_recv(), Ok(Cmd::StartDownload { .. })),
+            "自动路径同样要发下载命令"
+        );
+        // 卡片复位后走手动路径
+        st.panel.download = DownloadUiState::Idle;
+        start_download(&mut st.panel, &st.session, &st.settings);
+        assert_eq!(st.panel.auto_retry.attempts, 0, "手动发起清零");
+        assert!(st.panel.auto_retry.model.is_empty());
+        assert!(matches!(rx.try_recv(), Ok(Cmd::StartDownload { .. })));
     }
 
     fn msg(id: u64) -> OverlayMessage {

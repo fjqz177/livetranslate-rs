@@ -363,3 +363,35 @@ fn set_language_recoverable_fail_still_commits_effective() {
         .is_ok());
     m.shutdown();
 }
+
+/// D-83 死锁 C：同配置修好后必须能重试。
+/// `unavailable`（重启配额耗尽）+ 配置签名与上次成功一致时，普通
+/// `ensure_started` 仍拒绝（保留"别每段重试"的原语义），显式重试必须能
+/// 清标记并重新装配——旧实现下用户只能"切到别的引擎再切回来"。
+#[test]
+fn explicit_retry_revives_same_config_after_exhaustion() {
+    let mut m = AsrManager::with_spawner(fake_spawn());
+    let c = cfg_echo(
+        "Crash",
+        lt_asr::worker::EchoOptions {
+            crash_on_transcribe: true,
+            ..Default::default()
+        },
+    );
+    m.ensure_started(&c).expect("start");
+    for _ in 0..4 {
+        let _ = m.transcribe(&audio(), false, &eff());
+    }
+    assert!(m.is_unavailable(), "崩溃预算应耗尽进入 unavailable");
+    // 同配置普通路径：仍被配额拒绝（原语义保留）
+    assert!(matches!(
+        m.ensure_started(&c),
+        Err(AsrManagerError::Unavailable(_))
+    ));
+    // 显式重试（修复后重载/用户切换语义）：清标记 + 重新装配成功
+    m.ensure_started_explicit(&c)
+        .expect("显式重试应重新装配成功（同配置）");
+    assert!(m.is_ready(), "显式重试后应就绪");
+    assert!(!m.is_unavailable());
+    m.shutdown();
+}

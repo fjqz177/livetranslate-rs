@@ -24,7 +24,7 @@ pub use asr_result::{language_display, AsrResult, EngineError, WordTs};
 pub use events::{
     AppCommand, AudioDeviceChoice, AudioRole, BenchEvent, CaptureEvent, Cmd, DeviceList,
     DownloadEvent, DownloadFailKind, DownloadPhase, ExportFileMode, FailureKind, MicDeviceChoice,
-    MonitorSample, QueueId, SkipReason, ThreadDied, ThreadRole, UiEvent, UiMsg,
+    ModelFault, MonitorSample, QueueId, SkipReason, ThreadDied, ThreadRole, UiEvent, UiMsg,
 };
 pub use layout::Hub;
 pub use prompts::{DEFAULT_PROMPT, PROMPT_PRESETS};

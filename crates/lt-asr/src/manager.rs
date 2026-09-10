@@ -131,6 +131,27 @@ impl AsrManager {
         Ok(())
     }
 
+    /// 显式重试（D-83 死锁 C；docs/model-trust-repair.md §3 表 DL-C）：
+    /// 用户/修复驱动的重装配请求——`unavailable` 标记与重启/错误计数清零后
+    /// 重新装配。与 [`Self::ensure_started`] 的差异只在"同配置被配额拒绝"
+    /// 这一条：配置签名未变（如刚修好同一个模型文件）时也必须能重试，
+    /// 否则用户会陷入"文件修好了也起不来，必须先切到别的引擎再切回来"。
+    /// 调用方 = 引擎切换/待命唤醒路径（显式用户意图或修复后重载）。
+    pub fn ensure_started_explicit(&mut self, config: &WorkerConfig) -> Result<(), AsrManagerError> {
+        if self.unavailable {
+            tracing::info!("显式重试：清除不可用标记与重启/错误计数后重新装配");
+            self.unavailable = false;
+            self.restart_count = 0;
+            self.error_count = 0;
+            // 清 client/config：unavailable 态下 client 已被 mark_unavailable
+            // 关停，config 若不清晰走"配置变更"分支会触发一次无意义的旧配置
+            // 回滚 spawn
+            self.client = None;
+            self.config = None;
+        }
+        self.ensure_started(config)
+    }
+
     /// 确保就绪：配置签名一致则复用；不可用后换新配置可复活（原版引擎切换语义）
     pub fn ensure_started(&mut self, config: &WorkerConfig) -> Result<(), AsrManagerError> {
         if self.unavailable {

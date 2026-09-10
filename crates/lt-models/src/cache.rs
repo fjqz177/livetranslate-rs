@@ -36,6 +36,26 @@ pub fn dir_has_manifest(dir: &Path, files: &[&str], mins: &[u64]) -> bool {
     })
 }
 
+/// 坏文件隔离（D-83 零信任闸门）：改名 `<name>.corrupt`——**不删除、不改内容**
+/// （保留现场可诊断），同名旧隔离文件被覆盖（数量有界，不会无限堆积）。
+///
+/// 为什么必须隔离而不是只报错：缓存探测与下载跳过判定都只看清单文件名的
+/// 尺寸，坏文件顶着正式名时探测恒判"已缓存"→「重新下载」按钮空转
+/// （秒报成功却什么都不下）。隔离后探测自然判"缺"，重下才真正执行。
+pub fn quarantine_file(path: &Path) -> std::io::Result<PathBuf> {
+    let mut name = path
+        .file_name()
+        .map(|s| s.to_os_string())
+        .unwrap_or_default();
+    name.push(".corrupt");
+    let dst = path.with_file_name(name);
+    if dst.exists() {
+        std::fs::remove_file(&dst)?;
+    }
+    std::fs::rename(path, &dst)?;
+    Ok(dst)
+}
+
 /// HF repo 下含完整 manifest 的字典序最后快照（None = 无完整快照）。
 pub fn hf_manifest_snapshot(
     models_dir: &Path,
@@ -550,6 +570,35 @@ mod tests {
         assert!(!is_asr_cached(&dir2, "whisper", "tiny"));
         let _ = fs::remove_dir_all(&dir);
         let _ = fs::remove_dir_all(&dir2);
+    }
+
+    /// D-83：坏文件隔离——改名保留内容、原路径消失（探测自然判"缺"），
+    /// 二次隔离覆盖旧隔离文件（数量有界）
+    #[test]
+    fn quarantine_moves_file_and_frees_manifest_slot() {
+        let dir = tmpdir("quar");
+        let snap = hf_cache_root(&dir)
+            .join("models--a--b")
+            .join("snapshots")
+            .join("main");
+        let f = snap.join("model.bin");
+        write(&f, 2_000);
+        let files: &[&str] = &["model.bin"];
+        let mins: &[u64] = &[1_000];
+        assert!(dir_has_manifest(&snap, files, mins), "前置：隔离前清单齐全");
+
+        let dst = quarantine_file(&f).expect("隔离应成功");
+        assert_eq!(dst, snap.join("model.bin.corrupt"));
+        assert!(!f.exists(), "原路径必须消失（否则探测仍判已缓存、重下空转）");
+        assert_eq!(fs::read(&dst).unwrap().len(), 2_000, "内容不变（保留现场）");
+        assert!(!dir_has_manifest(&snap, files, mins), "隔离后清单判缺");
+
+        // 二次隔离：同名旧隔离文件被覆盖，不报错、不堆积
+        write(&f, 3_000);
+        let dst2 = quarantine_file(&f).expect("二次隔离应覆盖");
+        assert_eq!(dst2, dst);
+        assert_eq!(fs::read(&dst2).unwrap().len(), 3_000);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -36,8 +36,8 @@ use lt_audio::{
     AudioBackend, BoundedDropQueue, CaptureLoop, InterimControl, SegmentSource, VadProcessor,
 };
 use lt_proto::{
-    ASR_ENGINES, AudioRole, CaptureEvent, EngineKey, FailureKind, MonitorSample, QueueId,
-    SkipReason, ThreadRole, UiEvent,
+    ASR_ENGINES, AudioRole, CaptureEvent, EngineKey, FailureKind, ModelFault, MonitorSample,
+    QueueId, SkipReason, ThreadRole, UiEvent,
 };
 use lt_translate::Translator;
 use std::collections::HashMap;
@@ -1523,6 +1523,180 @@ fn engine_model_key<'a>(engine: &str, funasr_model: &'a str, whisper_model: &'a 
     }
 }
 
+// ── D-83 零信任加载闸门（docs/model-trust-repair.md）──────────────────────
+//
+// 规格：每次装配模型前（启动 / 待命唤醒 / 运行时切换三条路径）逐文件复验
+// 注册表 sha256；不通过 → 隔离坏文件 + 发 ModelIntegrityFailed(Hash) → 中止
+// 本次装配（隔离后缓存探测自然判"缺"，自动重下的按钮/流程才真正执行）。
+// 边界：指纹通过但加载失败 → ModelFault::Unloadable（重下同内容无意义）。
+
+/// 待校验清单：显示名 + 快照根 + (相对文件名, 期望 sha256)。
+/// 哈希为 owned：测试可构造合成清单（真实注册表条目内容无法伪造——
+/// 那正是零信任的意义，故闸门核心逻辑用可注入清单测）
+struct TrustFiles {
+    display: String,
+    root: std::path::PathBuf,
+    files: Vec<(&'static str, String)>,
+}
+
+/// 由 worker 配置反查校验清单：**校验的正是即将加载的东西**（比从 settings
+/// 重新解析更接近事实——待命唤醒路径的引擎/模型来自切换命令，可能与当前
+/// settings 快照不同）。
+/// None = 无登记指纹可比（whisper 本地自定义路径 / 已缓存的根不在托管目录下 /
+/// Echo 假 worker）——闸门放行（与旧行为一致，仅保留"能加载"判定）。
+fn trust_files_for_config(
+    models_dir: Option<&std::path::Path>,
+    config: &WorkerConfig,
+) -> Option<TrustFiles> {
+    let pairs = |e: &registry::ModelEntry| -> Vec<(&'static str, String)> {
+        e.files
+            .iter()
+            .copied()
+            .zip(e.files_sha256.iter().map(|h| (*h).to_string()))
+            .collect()
+    };
+    match &config.options {
+        lt_asr::WorkerOptions::ModelDir(dir) => {
+            // worker 引擎名 → 注册表条目（sensevoice/nano 同属 funasr 家族，
+            // 但清单不同；qwen3 单一模型）
+            let entry = match config.engine.as_str() {
+                "sensevoice" => registry::SENSEVOICE_SMALL.clone(),
+                "nano" => registry::FUNASR_NANO.clone(),
+                "qwen3" => registry::qwen3_entry(),
+                _ => return None,
+            };
+            Some(TrustFiles {
+                display: entry.display.into(),
+                root: dir.clone(),
+                files: pairs(&entry),
+            })
+        }
+        lt_asr::WorkerOptions::ModelPath(path) => {
+            // 只认托管缓存里的文件（snapshots 下）——本地自选的 GGML 路径
+            // 无指纹语义，校验/隔离会误伤用户文件
+            let root = path.parent()?.to_path_buf();
+            if !models_dir.is_some_and(|d| root.starts_with(d)) {
+                return None;
+            }
+            let name = path.file_name()?.to_string_lossy().into_owned();
+            let entry = registry::WHISPER_ENTRIES
+                .iter()
+                .find(|e| e.files.first() == Some(&name.as_str()))?;
+            Some(TrustFiles {
+                display: format!("Whisper {}", entry.key),
+                root,
+                files: pairs(entry),
+            })
+        }
+        lt_asr::WorkerOptions::Echo(_) => None,
+    }
+}
+
+/// 零信任闸门：逐文件复验；不通过即隔离 + 发事件并返回 false（调用方中止装配）。
+/// 无指纹可比 → true（闸门不介入）。
+fn trust_gate(
+    models_dir: Option<&std::path::Path>,
+    config: &WorkerConfig,
+    sink: &EventSink,
+) -> bool {
+    let Some(t) = trust_files_for_config(models_dir, config) else {
+        return true;
+    };
+    verify_files(&t, sink)
+}
+
+/// 闸门核心（可注入清单，便于单测）：逐文件复验；不通过即隔离 + 发事件并
+/// 返回 false。清单哈希为空串 = 未登记 → 跳过该文件。
+fn verify_files(t: &TrustFiles, sink: &EventSink) -> bool {
+    for (file, expected) in &t.files {
+        if expected.is_empty() {
+            continue; // 未登记（渐进登记期语义）→ 不校验
+        }
+        let path = t.root.join(file);
+        match lt_download::verify_file(&path, expected) {
+            Ok(true) => {}
+            Ok(false) => {
+                let actual = lt_download::hash_file_hex(&path).unwrap_or_default();
+                let quarantined = match lt_models::cache::quarantine_file(&path) {
+                    Ok(dst) => {
+                        tracing::error!(
+                            "模型文件校验失败：{} / {}（实际 {} ≠ 登记 {}），已隔离 → {}",
+                            t.display,
+                            file,
+                            actual,
+                            expected,
+                            dst.display()
+                        );
+                        true
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            "模型文件校验失败且隔离失败：{} / {file}（{e}）——需人工清理缓存目录",
+                            t.display
+                        );
+                        false
+                    }
+                };
+                sink.push(UiEvent::ModelIntegrityFailed {
+                    model: t.display.clone(),
+                    fault: ModelFault::Hash {
+                        file: (*file).to_string(),
+                        expected: expected.clone(),
+                        actual,
+                        quarantined,
+                    },
+                });
+                return false;
+            }
+            Err(e) => {
+                // 读不了（权限/被占用/诡异消失）→ 按不可信中止，但不隔离
+                //（内容未知，隔离等于把证据丢掉）
+                tracing::error!("模型文件不可读：{} / {file}（{e}）", t.display);
+                sink.push(UiEvent::ModelIntegrityFailed {
+                    model: t.display.clone(),
+                    fault: ModelFault::Hash {
+                        file: (*file).to_string(),
+                        expected: expected.clone(),
+                        actual: format!("不可读: {e}"),
+                        quarantined: false,
+                    },
+                });
+                return false;
+            }
+        }
+    }
+    tracing::info!(
+        "模型完整性校验通过：{}（{} 个文件）",
+        t.display,
+        t.files.len()
+    );
+    true
+}
+
+/// 装载失败后的复验分流（D-83 §2.4）：内容被改过 → Hash 故障（可修复循环）；
+/// 内容与登记一致 → Unloadable（重下同内容无意义，只提醒）。
+fn report_load_failure(
+    models_dir: Option<&std::path::Path>,
+    config: &WorkerConfig,
+    detail: &str,
+    sink: &EventSink,
+) {
+    if !trust_gate(models_dir, config, sink) {
+        return; // 已发 Hash 故障（隔离 + 可修复）
+    }
+    // 变量名避开 tracing::field::display（同名会让宏把标识符解析成函数项）
+    let model_name = trust_files_for_config(models_dir, config)
+        .map(|t| t.display)
+        .unwrap_or_else(|| config.engine.clone());
+    tracing::error!("模型加载失败（指纹与登记一致，重下无解）: {} / {}", model_name, detail);
+    sink.push(UiEvent::ModelIntegrityFailed {
+        model: model_name,
+        fault: ModelFault::Unloadable {
+            detail: detail.to_string(),
+        },
+    });
+}
+
 /// ASR 线程上下文（Pipeline::start 一次性装配的共享件）
 struct AsrThreadCtx {
     segment_queue: Arc<BoundedDropQueue<(SegmentSource, Vec<f32>)>>,
@@ -1749,7 +1923,17 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
             &settings.whisper_model_size,
             eff.asr_lang.whisper_pad,
         );
-        if worker.is_none() {
+        // D-83 零信任闸门（启动路径）：清单齐全 ≠ 内容可信——逐文件复验
+        // 注册表 sha256；不通过则坏文件已隔离、事件已发，回待命态等修复下载
+        let gate_rejected = match &worker {
+            Some((config, _)) => !trust_gate(Some(models_dir), config, &sink),
+            None => false,
+        };
+        if gate_rejected {
+            worker = None;
+            sink.push(UiEvent::AsrUnavailable);
+            tracing::warn!("ASR 模型未通过完整性校验（坏文件已隔离），进入待命态等待修复下载");
+        } else if worker.is_none() {
             sink.push(UiEvent::AsrUnavailable);
             tracing::warn!("ASR 模型未缓存（{entry:?}），进入待命态（AH-1）");
         }
@@ -1789,6 +1973,15 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
                 eff.asr_lang.whisper_pad,
             ) {
                 Some((config, display)) => {
+                    // D-83 零信任闸门（待命唤醒路径）：坏文件已隔离 + 事件已发，
+                    // 继续待命等下一轮修复下载后唤醒
+                    if !trust_gate(Some(&models_dir), &config, &sink) {
+                        sink.push(UiEvent::AsrUnavailable);
+                        tracing::warn!(
+                            "待命唤醒：{engine}/{model_key} 未通过完整性校验（已隔离），继续待命"
+                        );
+                        continue;
+                    }
                     tracing::info!("待命中模型已就绪: {engine}/{model_key}，退出待命装配 worker");
                     worker = Some((config, display));
                 }
@@ -1813,7 +2006,11 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
     let mut asr_unavailable_notified = false;
     // 模型加载对话框（原版 _ModelLoadDialog：装载期模态；AsrDevice/AsrUnavailable 关闭）
     sink.push(UiEvent::ModelLoadStart(display.clone()));
-    if let Err(e) = manager.ensure_started(&config) {
+    // D-83/DL-C：显式重试语义——修复后重载同一模型不得被"重启配额已耗尽"拒绝
+    if let Err(e) = manager.ensure_started_explicit(&config) {
+        // D-83 §2.4：装载失败复验分流（文件被改过 → Hash 可修复；指纹一致
+        // 仍失败 → Unloadable 重下无解）
+        report_load_failure(models_dir.as_deref(), &config, &e.to_string(), &sink);
         asr_unavailable_notified = true;
         sink.push(UiEvent::AsrUnavailable);
         tracing::error!("ASR worker 启动失败: {e}");
@@ -1859,7 +2056,29 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
                     ) {
                         Some((config, display)) => {
                             sink.push(UiEvent::ModelLoadStart(display.clone()));
-                            if let Err(e) = manager.ensure_started(&config) {
+                            // D-83 零信任闸门（运行时切换路径）：不通过 → 坏文件
+                            // 已隔离 + 事件已发；恢复旧标签（旧引擎继续工作，P0-4）
+                            // 并中止本次切换——修复下载完成后 shell 会重发切换
+                            if !trust_gate(Some(&models_dir), &config, &sink) {
+                                sink.push(UiEvent::AsrDevice(
+                                    format!("{} [cpu]", current_display),
+                                ));
+                                tracing::warn!(
+                                    "引擎切换中止：{} 未通过完整性校验（坏文件已隔离）",
+                                    engine_model_key(&engine, &funasr_model, &whisper_model_size)
+                                );
+                                continue;
+                            }
+                            // D-83/DL-C：切换恒为显式重试（用户意图/修复后重载）
+                            if let Err(e) = manager.ensure_started_explicit(&config) {
+                                // D-83 §2.4：装载失败复验分流——文件被改过 → Hash
+                                // 故障（可修复）；指纹一致仍失败 → Unloadable（重下无解）
+                                report_load_failure(
+                                    Some(&models_dir),
+                                    &config,
+                                    &e.to_string(),
+                                    &sink,
+                                );
                                 // 回滚后旧 worker 仍在工作：恢复旧标签而非
                                 // 发 AsrUnavailable（避免状态与行为矛盾，P0-4）
                                 sink.push(UiEvent::AsrDevice(
@@ -2254,6 +2473,203 @@ fn commit_text(
 mod tests {
     use super::*;
     use crate::event_artery::EventArtery;
+
+    // ── D-83 零信任闸门（docs/model-trust-repair.md）──
+
+    /// 合成清单（真实注册表条目内容无法伪造——那正是零信任的意义，
+    /// 故闸门核心用可注入清单测）
+    fn synthetic_files(
+        root: &std::path::Path,
+        name: &'static str,
+        content: &[u8],
+        expected: String,
+    ) -> TrustFiles {
+        std::fs::write(root.join(name), content).unwrap();
+        TrustFiles {
+            display: "Synthetic Model".into(),
+            root: root.to_path_buf(),
+            files: vec![(name, expected)],
+        }
+    }
+
+    /// 哈希一致 → 放行、不发事件、不动文件
+    #[test]
+    fn trust_gate_passes_matching_hash() {
+        let dir = std::env::temp_dir().join(format!("lt_trust_ok_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let content = b"good-model-bytes";
+        let want = lt_download::hash_file_hex(&std::fs::write(dir.join("m.bin"), content).map(|_| dir.join("m.bin")).unwrap()).unwrap();
+        let t = TrustFiles {
+            display: "Synthetic Model".into(),
+            root: dir.clone(),
+            files: vec![("m.bin", want)],
+        };
+        let artery = EventArtery::new();
+        assert!(verify_files(&t, &artery), "哈希一致应放行");
+        assert!(dir.join("m.bin").exists(), "放行不得动文件");
+        let mut batch = Vec::new();
+        artery.drain_batch(&mut batch, std::time::Duration::from_millis(50));
+        assert!(
+            !batch
+                .iter()
+                .any(|e| matches!(e, UiEvent::ModelIntegrityFailed { .. })),
+            "放行时不应发故障事件"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 哈希不符 → 隔离坏文件（原路径消失 = 探测判缺 = 重下真正执行）+ 发
+    /// Hash 故障事件（quarantined=true）
+    #[test]
+    fn trust_gate_quarantines_mismatch_and_reports() {
+        let dir = std::env::temp_dir().join(format!("lt_trust_bad_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let root = dir.clone();
+        let t = synthetic_files(&root, "m.bin", b"corrupted-bytes", "0".repeat(64));
+        let artery = EventArtery::new();
+        assert!(!verify_files(&t, &artery), "哈希不符应拦截");
+        assert!(!root.join("m.bin").exists(), "坏文件原路径必须消失");
+        assert!(root.join("m.bin.corrupt").exists(), "隔离产物保留内容");
+        let mut batch = Vec::new();
+        artery.drain_batch(&mut batch, std::time::Duration::from_millis(50));
+        let ev = batch
+            .iter()
+            .find_map(|e| match e {
+                UiEvent::ModelIntegrityFailed { model, fault } => Some((model, fault)),
+                _ => None,
+            })
+            .expect("应发 ModelIntegrityFailed");
+        assert_eq!(ev.0, "Synthetic Model");
+        match ev.1 {
+            ModelFault::Hash {
+                file,
+                expected,
+                actual,
+                quarantined,
+            } => {
+                assert_eq!(file, "m.bin");
+                assert_eq!(expected.len(), 64);
+                assert!(*quarantined, "隔离应成功");
+                // 实测哈希即被隔离内容的哈希（现场可复核）
+                let quarantined_hash =
+                    lt_download::hash_file_hex(&root.join("m.bin.corrupt")).unwrap();
+                assert_eq!(actual, &quarantined_hash);
+            }
+            other => panic!("应 Hash 故障，实际 {other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 读不了（文件缺失）→ 拦截但不隔离（内容未知，隔离等于丢证据）
+    #[test]
+    fn trust_gate_unreadable_file_blocks_without_quarantine() {
+        let dir = std::env::temp_dir().join(format!("lt_trust_missing_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let t = TrustFiles {
+            display: "Synthetic Model".into(),
+            root: dir.clone(),
+            files: vec![("gone.bin", "a".repeat(64))],
+        };
+        let artery = EventArtery::new();
+        assert!(!verify_files(&t, &artery));
+        assert!(!dir.join("gone.bin.corrupt").exists(), "不该凭空造隔离文件");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 真缓存零信任探针（ignored）：对本机真实缓存逐引擎跑闸门——校验实现
+    /// 与注册表指纹的实机互证（未缓存引擎自动跳过）。
+    /// **耗时为 debug 构建**；release 构建 sha2 走硬件加速约快 30 倍
+    /// （实测 1.5GB/s：tiny 0.02s / SenseVoice 0.15s / 1GB 级 0.7s）。
+    /// 运行：
+    /// `cargo test -p lt-orchestrator probe_trust_gate_real_cache -- --ignored --nocapture`
+    #[test]
+    #[ignore = "真实缓存探针：需本机已缓存模型（LIVETRANSLATE_CONFIG_DIR 可重定向）"]
+    fn probe_trust_gate_real_cache() {
+        let dir = lt_models::paths::models_dir(None).expect("models_dir 解析失败");
+        println!("models_dir = {}", dir.display());
+        let artery = EventArtery::new();
+        let cases: &[(&str, &str, &str)] = &[
+            ("funasr", "sensevoice-small", ""),
+            ("funasr", "funasr-nano-2512", ""),
+            ("qwen3", "", ""),
+            ("whisper", "", "tiny"),
+            ("whisper", "", "base"),
+        ];
+        let mut checked = 0;
+        for (engine, funasr_model, whisper_size) in cases {
+            let Some((config, display)) =
+                build_worker_config(&dir, engine, funasr_model, 0.5, "auto", whisper_size, 0.5)
+            else {
+                println!("跳过 {engine}/{funasr_model}{whisper_size}（未缓存）");
+                continue;
+            };
+            let t0 = std::time::Instant::now();
+            let ok = trust_gate(Some(&dir), &config, &artery);
+            println!(
+                "{} {display}：校验 {}（{:?}）",
+                if ok { "✓" } else { "✗" },
+                if ok { "通过" } else { "失败" },
+                t0.elapsed()
+            );
+            assert!(ok, "{display} 真缓存应通过零信任校验");
+            checked += 1;
+        }
+        // 本机至少应有一个缓存模型（否则探针跑了个寂寞）
+        assert!(checked > 0, "本机无已缓存模型，探针无意义");
+        let mut batch = Vec::new();
+        artery.drain_batch(&mut batch, std::time::Duration::from_millis(50));
+        assert!(
+            batch.is_empty(),
+            "真实缓存不应产生完整性故障事件: {batch:?}"
+        );
+        println!("共校验 {checked} 个模型，全部通过且零故障事件");
+    }
+
+    /// 清单解析：whisper 托管快照下的 .bin 命中注册表条目（root=快照目录）；
+    /// 本地自定义路径（不在托管 models_dir 下）→ None（无指纹，闸门放行）
+    #[test]
+    fn trust_files_resolution_scopes_to_managed_whisper_cache() {
+        let dir = std::env::temp_dir().join(format!("lt_trust_wh_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        // 托管快照：models/huggingface/hub/models--ggerganov--whisper.cpp/snapshots/main
+        let snap = lt_models::cache::hf_style_snapshot(
+            &dir,
+            lt_download::Hub::Hf,
+            "ggerganov/whisper.cpp",
+            "main",
+        );
+        std::fs::create_dir_all(&snap).unwrap();
+        let bin = snap.join("ggml-tiny-q5_1.bin");
+        std::fs::write(&bin, b"x").unwrap();
+        let cfg = WorkerConfig {
+            engine: "whisper".into(),
+            language: "auto".into(),
+            pad_seconds: Some(0.5),
+            options: lt_asr::WorkerOptions::ModelPath(bin.clone()),
+        };
+        let t = trust_files_for_config(Some(&dir), &cfg).expect("托管路径应解析出清单");
+        assert_eq!(t.root, snap);
+        assert_eq!(t.files.len(), 1);
+        assert_eq!(t.files[0].0, "ggml-tiny-q5_1.bin");
+        assert_eq!(t.files[0].1.len(), 64, "须带注册表指纹");
+
+        // 本地自定义路径（不在托管目录下）→ 不校验
+        let custom = std::env::temp_dir().join("lt_custom_ggml_tiny.bin");
+        std::fs::write(&custom, b"my own file").unwrap();
+        let cfg2 = WorkerConfig {
+            options: lt_asr::WorkerOptions::ModelPath(custom.clone()),
+            ..cfg
+        };
+        assert!(
+            trust_files_for_config(Some(&dir), &cfg2).is_none(),
+            "本地自选模型无指纹语义，闸门不得介入（否则会误隔离用户文件）"
+        );
+        let _ = std::fs::remove_file(&custom);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     // ── build_worker_config：funasr 按 entry.key 分派（WP-A）──
 

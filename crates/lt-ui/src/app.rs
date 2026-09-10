@@ -765,6 +765,110 @@ impl MultiWindowApp {
         }
     }
 
+    // ── D-83 模型零信任修复闭环（docs/model-trust-repair.md §2.2/§2.3）──
+
+    /// 追加一行到下载卡片日志（失败/取消/进行中态通用；上限 200 与卡片一致）
+    fn push_download_log(&mut self, line: &str) {
+        use crate::state::DownloadUiState;
+        let log = match &mut self.app_state.panel.download {
+            DownloadUiState::Downloading { log, .. }
+            | DownloadUiState::Cancelled { log }
+            | DownloadUiState::Failed { log, .. } => log,
+            DownloadUiState::Idle => return, // 无卡片上下文（提示只进日志窗）
+        };
+        log.push(line.to_string());
+        let n = log.len();
+        if n > 200 {
+            log.drain(0..n - 200);
+        }
+    }
+
+    /// 自动重试一轮（D-83 §2.3）：计数 +1、写卡片/日志窗、重发下载命令。
+    /// 返回 false = 不自动重试（用尽或该失败类别需人工介入），调用方负责提醒。
+    fn schedule_auto_retry(&mut self, retryable: bool) -> bool {
+        let attempts = self.app_state.panel.auto_retry.attempts;
+        let Some(next) = crate::state::auto_retry_decision(retryable, attempts) else {
+            return false;
+        };
+        self.app_state.panel.auto_retry.attempts = next;
+        let line = lt_i18n::t("model_repair_retrying")
+            .replace("{n}", &next.to_string())
+            .replace("{max}", &crate::state::DOWNLOAD_AUTO_RETRY_MAX.to_string());
+        self.push_download_log(&line);
+        self.push_log_line(30, "download", &line);
+        let st = &mut self.app_state;
+        // 自动路径不清零计数（与手动 start_download 的区别）
+        crate::windows::panel::vad::start_download_auto(&mut st.panel, &st.session, &st.settings);
+        true
+    }
+
+    /// 自动重试用尽/不可重试 → 提醒用户（原生通知 + 卡片日志 + 日志窗）
+    fn notify_repair_giveup(&mut self, detail: &str) {
+        let line = lt_i18n::t("model_repair_exhausted")
+            .replace("{max}", &crate::state::DOWNLOAD_AUTO_RETRY_MAX.to_string());
+        self.push_download_log(&line);
+        self.push_log_line(40, "download", &format!("{line} — {detail}"));
+        let title = lt_i18n::t("model_repair_exhausted_title");
+        let body = format!("{line}\n{detail}");
+        if let Err(e) = crate::notifications::show(&title, &body) {
+            tracing::warn!("模型修复失败通知发送失败: {e}");
+        }
+        self.redraw(WinId::Panel);
+    }
+
+    /// 模型完整性/可加载性故障（D-83）：Hash → 坏文件已隔离、计数内自动重下；
+    /// Unloadable → 指纹一致仍加载失败（重下无解），只提醒。
+    fn on_model_integrity_failed(&mut self, model: String, fault: lt_proto::ModelFault) {
+        match fault {
+            lt_proto::ModelFault::Hash {
+                file, quarantined, ..
+            } => {
+                let key = if quarantined {
+                    "model_repair_quarantined"
+                } else {
+                    "model_repair_quarantine_failed"
+                };
+                let base = lt_i18n::t(key).replace("{file}", &file);
+                self.push_download_log(&base);
+                self.push_log_line(40, "download", &format!("{model}: {base}"));
+                self.app_state.panel.auto_retry.model = model.clone();
+                if quarantined {
+                    // 隔离成功 → 缓存探测判缺 → 重下真正执行
+                    let (n, max) = (
+                        self.app_state.panel.auto_retry.attempts + 1,
+                        crate::state::DOWNLOAD_AUTO_RETRY_MAX,
+                    );
+                    let line = base
+                        .replace("{n}", &n.to_string())
+                        .replace("{max}", &max.to_string());
+                    if self.schedule_auto_retry(true) {
+                        // schedule_auto_retry 已写通用行；此处补模型上下文行
+                        self.push_download_log(&line);
+                    } else {
+                        self.notify_repair_giveup(&format!("{model} / {file}"));
+                    }
+                } else {
+                    // 隔离失败（文件被占用等）：重下会被探测判"已缓存"而空转，
+                    // 直接提醒用户人工清理，不做无效自动重试
+                    self.notify_repair_giveup(&base);
+                }
+            }
+            lt_proto::ModelFault::Unloadable { detail } => {
+                let line = lt_i18n::t("model_unloadable").replace("{detail}", &detail);
+                self.push_download_log(&line);
+                self.push_log_line(40, "download", &format!("{model}: {line}"));
+                if let Err(e) =
+                    crate::notifications::show(&lt_i18n::t("model_unloadable_title"), &line)
+                {
+                    tracing::warn!("模型不可加载通知发送失败: {e}");
+                }
+            }
+        }
+        // 磁盘内容已变（隔离/重下），探测缓存失效
+        self.app_state.panel.state.cache_probe = None;
+        self.redraw(WinId::Panel);
+    }
+
     /// Setup 窗节拍分派：向导倒计时（1s 一拍）与启动流成功后的 500ms 收尾延迟。
     /// 定时仅在向导 Idle / 成功待收尾期间存在（事件到达即重绘，无需节拍）。
     fn on_setup_tick(&mut self) {
@@ -956,6 +1060,8 @@ impl MultiWindowApp {
                 // ASR 设备标签（悬浮窗 MonitorBar device 段）；同时视作加载框关闭信号
                 //（原版 App.model_load_done 在设备就绪/不可用时都会被调用）
                 lt_proto::UiEvent::AsrDevice(label) => {
+                    // D-83：装载成功 = 修复闭环的成功判据 → 自动重试计数清零
+                    self.app_state.panel.auto_retry = crate::state::DownloadAutoRetry::default();
                     self.app_state.overlay.asr_label = Some(label);
                     if let Some(t) = &self.tray {
                         let status = if self.app_state.session.running {
@@ -1084,9 +1190,15 @@ impl MultiWindowApp {
                             };
                             log.push(failed_line.clone());
                             self.app_state.panel.download =
-                                DownloadUiState::Failed { kind, detail: message, log };
+                                DownloadUiState::Failed { kind, detail: message.clone(), log };
                             // DL-6/F12：磁盘内容已变，探测缓存失效
                             self.app_state.panel.state.cache_probe = None;
+                            // D-83 §2.3：自动重试（上限 3 次；磁盘/取消不自动）。
+                            // 用尽仍失败 → 提醒用户（卡片保持失败态 + 原生通知）
+                            if !self.schedule_auto_retry(crate::state::download_failure_retryable(kind))
+                            {
+                                self.notify_repair_giveup(&message);
+                            }
                             self.redraw(WinId::Panel);
                         }
                     }
@@ -1108,6 +1220,12 @@ impl MultiWindowApp {
                         self.app_state.panel.state.cache_probe = None;
                         self.redraw(WinId::Panel);
                     }
+                }
+                // ── D-83 模型完整性故障（零信任加载闸门）──
+                // Hash：坏文件已隔离 → 探测判缺 → 计数内自动重下；
+                // Unloadable：指纹一致仍加载失败（重下无解）→ 只提醒
+                lt_proto::UiEvent::ModelIntegrityFailed { model, fault } => {
+                    self.on_model_integrity_failed(model, fault);
                 }
                 // ── 启动流：下载成功（应用下发设置 + 500ms 后收尾关窗）──
                 lt_proto::UiEvent::DownloadSucceeded { .. } => {

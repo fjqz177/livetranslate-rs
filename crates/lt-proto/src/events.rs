@@ -149,6 +149,38 @@ pub enum UiEvent {
         /// 是否"无法关闭思维链"（true → UI 取消勾选并持久化标记）
         cannot_disable_thinking: bool,
     },
+    /// 模型完整性/可加载性故障（D-83 零信任加载闸门：docs/model-trust-repair.md）。
+    /// 编排域在每次装配模型前逐文件复验注册表 sha256；不通过即隔离坏文件并发本
+    /// 事件——UI 据此自动重下（上限 3 次）或提醒用户。纯新增变体（冻结规则加法
+    /// 豁免，PROTO_VERSION 不递增）。
+    ModelIntegrityFailed {
+        /// 模型显示名（如 "Whisper base" / "SenseVoice Small"；UI 提示与日志用）
+        model: String,
+        fault: ModelFault,
+    },
+}
+
+/// 模型故障分类（D-83）：决定"重下有没有意义"。
+#[derive(Debug, Clone)]
+pub enum ModelFault {
+    /// 内容与注册表指纹不符 → 可修复：坏文件已隔离（`quarantined=true`），
+    /// 缓存探测随之判"缺"，重下真正执行。
+    Hash {
+        /// 出问题的文件（快照内相对路径，如 "model.int8.onnx"）
+        file: String,
+        /// 注册表登记指纹
+        expected: String,
+        /// 实测指纹
+        actual: String,
+        /// 是否已隔离（false = 隔离失败，UI 提示需人工清理）
+        quarantined: bool,
+    },
+    /// 指纹一致但加载失败 → **重下同内容无意义**（不自动循环），
+    /// 提示用户并提供"强制重下一次"的手动入口。
+    Unloadable {
+        /// 底层错误串（worker 未就绪/加载失败原因）
+        detail: String,
+    },
 }
 
 impl FailureKind {

@@ -1,6 +1,6 @@
 # 模型零信任校验与自动修复（D-83）
 
-> **状态**：定稿（2026-09-10 用户四条裁决）→ 施工
+> **状态**：✗ 已实施（2026-09-10 同一会话完工；见 §7 施工记录）
 > **偏差登记**：**D-83**（模型加载前零信任校验 + 坏文件隔离 + 自动修复循环；D-82 为 LLM 轮次的声明区间起点，未具体占用，本包顺延）
 > **触发**：2026-09-10 whisper sha256 补齐 + 下载/校验机制评审（"缓存只验长度""重下按钮空转""加载失败无修复路径"三缺口；同轮含一条评审勘误，见 §5）
 
@@ -70,12 +70,13 @@ pub enum ModelFault {
 
 | # | 落点 | 内容 | 验收 |
 |---|---|---|---|
-| T1 | `lt-download` | 公开 `hash_file_hex` / `verify_file`（流式、大小写不敏感）；`http_client` **显式** `.timeout(30s)`（逐次读超时语义，写进注释防"优化"掉）+ 测试注入口 | 单测：命中/不中/大小写；卡流回归测试（短超时注入，首轮卡流次轮成功） |
-| T2 | `lt-models` | `cache::quarantine_file(path) -> io::Result<PathBuf>`（改名 `xxx.corrupt`，覆盖同名旧隔离） | 单测：改名成功 + 内容不变 + 原路径消失 |
-| T3 | `lt-proto` | `UiEvent::ModelIntegrityFailed` + `ModelFault` | 守卫脚本不报死契约 |
-| T4 | `lt-orchestrator` | `trust_gate`（三装配路径接入）+ 装载失败复验分流 | 单测：合成条目 好文件放行 / 坏文件隔离+事件；复验分流 Hash vs Unloadable |
-| T5 | `lt-asr` | "同配置修好后可重试"：`ensure_started` 增显式重试语义（清 `unavailable` 与计数后重装配；切换/唤醒路径恒为显式） | 单测：unavailable 同配置 + 显式重试 → 再次 spawn |
-| T6 | `lt-ui` | 修复状态机（3 次上限 / 成功清零 / 失败重下 / 用尽提醒）+ i18n zh/en + 日志/卡片/通知接线 | 状态机单测（纯函数化）+ i18n 键集测试 |
+| ✗ T1 | `lt-download` | 公开 `hash_file_hex` / `verify_file`（流式、大小写不敏感；空串=未登记恒真）；`http_client` **显式** `.timeout(30s)`（逐次读超时语义写进注释防"优化"掉）+ `with_io_timeout` 测试注入口 | 单测已知向量逐位一致/大小写/缺失 Err；卡流回归 `stalled_stream_times_out_and_retries`（注入 1s，首轮沉默次轮成功，恰 2 请求） |
+| ✗ T2 | `lt-models` | `cache::quarantine_file(path) -> io::Result<PathBuf>`（改名 `xxx.corrupt`，覆盖同名旧隔离） | 单测：改名成功 + 内容不变 + 原路径消失（manifest 判缺）+ 二次隔离覆盖不堆积 |
+| ✗ T3 | `lt-proto` | `UiEvent::ModelIntegrityFailed { model, fault }` + `ModelFault::{Hash, Unloadable}` | 死契约守卫：112 变体 0 死（生产端 orchestrator / 消费端 lt-ui 齐备） |
+| ✗ T4 | `lt-orchestrator` | `trust_gate`（启动/待命唤醒/运行时切换三路径）+ 装载失败 `report_load_failure` 复验分流；清单由 **WorkerConfig 反查**（校验的正是要加载的东西） | 单测 4 项：合成清单放行 / 坏文件隔离+事件+实测哈希可复核 / 不可读不隔离 / whisper 托管-本地路径界定 |
+| ✗ T5 | `lt-asr` | `ensure_started_explicit`：清 `unavailable` 与重启/错误计数后重装配（切换与唤醒路径恒为显式） | 单测：崩溃配额耗尽 → 普通同配置仍拒（原语义保留）→ 显式重试成功就绪 |
+| ✗ T6 | `lt-ui` | `DownloadAutoRetry`（上限 3）+ `auto_retry_decision`/`download_failure_retryable` 纯函数 + 事件接线（Hash→隔离后自动重下、Unloadable→提醒）+ 手动/自动路径计数语义 + i18n 7 键 + 卡片日志/日志窗/原生通知 | 单测：3 次上限与类别过滤、手动清零-自动保号；i18n 键集对称；全量 538+9 绿 |
+| ✗ 附加 | i18n 文案修正 | `download_err_checksum` 原文案（"重试或更换源均无效，请删除缓存目录"）与新自动重试语义矛盾 → 改为"已自动重试仍失败：多为上游模型文件已更新，需等待应用更新" | zh/en 同步 + 键集测试 |
 
 ## 5. 评审勘误（同轮实证）
 
@@ -94,3 +95,27 @@ pub enum ModelFault {
 - **上游同名重传**：注册表哈希过期 → 所有用户校验失败 → 自动重试 3 次 → 提醒。届时处置 = 更新注册表并发版（不做 revision 钉死；若将来上游频繁变动，再议决策 3）。
 - **模型加载的零信任只覆盖登记条目**：本地自定义模型无指纹，天然不可验。
 - **手动"强制重下"不校验哈希对不上之外的场景**：Unloadable 分支的重下是用户主动行为，仍会过下载期三道校验。
+
+
+## 7. 施工记录（2026-09-10 同会话完工）
+
+**测试基线**：527+8 → **538+9 全绿**（新增 11 测：闸门 4 / 隔离 1 / 显式重试 1 / 策略 3 / 哈希语义 1 / 卡流回归 1）；clippy `-D warnings` 零告警；四守护脚本全过（路径/依赖/源码禁令/死契约）。
+
+**实机零信任验证**（真缓存探针 `probe_trust_gate_real_cache`，本机 5 个已缓存模型全部通过、零故障事件）：
+
+| 模型 | debug 构建 | release 构建（实测 1.5GB/s） |
+|---|---|---|
+| Whisper tiny (32MB) | 0.63s | 0.020s |
+| Whisper base (60MB) | 1.19s | 0.037s |
+| SenseVoice (239MB) | 4.77s | 0.163s |
+| Fun-ASR-Nano (963MB) | 20.1s | 0.636s |
+| Qwen3-ASR (987MB) | 19.6s | 0.632s |
+
+→ 发布版（release）每次加载的校验代价 = 0.02~0.64s（五模型全跑 1.55s），落在既有"模型加载中"对话框内；**debug 构建慢约 30 倍属预期**（sha2 未优化），勿据此评估用户体感。
+
+**施工中发现并处理的边界**：
+
+1. 清单解析改为**由 WorkerConfig 反查**（而非从 settings 重解析）——待命唤醒路径的引擎/模型来自切换命令，可能与 settings 快照不同；且 whisper 本地自定义路径必须排除在隔离面之外（否则会把用户自己的 GGML 文件改名）。
+2. 事件字段命名避开 `display`（tracing 宏下与 `field::display` 冲突，编译期暴露）。
+3. 卡流回归测试首版因 mock 服务器单线程 accept 被 sleep 阻塞而误报"重试也失败"——改每连接一线程后通过（记录以防重蹈）。
+4. `DownloadPhase::Integrity` 契约预留仍未启用：校验耗时已足够短（≤0.7s）无需进度条，留待将来大模型体检用。

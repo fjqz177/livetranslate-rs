@@ -1145,10 +1145,30 @@ fn restore_vad_page(settings: &mut Settings, session: &mut SessionView) {
 /// 发起下载：写入 Downloading 状态（进度事件随后填充）并发送命令。
 /// 进行中忽略重复点击（P2-5 修复：不再触发并发下载线程）。
 /// 失败/取消态的日志带入新下载（上下文延续）。
-fn start_download(panel: &mut PanelUi, session: &SessionView, settings: &Settings) {
+/// D-83 起 `pub(crate)`：app.rs 的模型自动修复闭环复用同一入口。
+pub(crate) fn start_download(panel: &mut PanelUi, session: &SessionView, settings: &Settings) {
     if panel.download.downloading() {
         return;
     }
+    // 用户手动发起 = 新的意图：自动重试计数清零（D-83 §2.3）
+    panel.auto_retry = crate::state::DownloadAutoRetry::default();
+    start_download_inner(panel, session, settings);
+}
+
+/// 自动修复路径的下载发起（D-83）：**不清零**自动重试计数（计数即本次修复
+/// 已用次数，由 app.rs 的修复闭环持有）
+pub(crate) fn start_download_auto(
+    panel: &mut PanelUi,
+    session: &SessionView,
+    settings: &Settings,
+) {
+    if panel.download.downloading() {
+        return;
+    }
+    start_download_inner(panel, session, settings);
+}
+
+fn start_download_inner(panel: &mut PanelUi, session: &SessionView, settings: &Settings) {
     let mut log = match &panel.download {
         DownloadUiState::Failed { log, .. } | DownloadUiState::Cancelled { log } => log.clone(),
         _ => Vec::new(),

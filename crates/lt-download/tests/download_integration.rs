@@ -613,3 +613,63 @@ fn missing_content_length_refuses_download() {
     assert!(!snap.join("model.bin").exists(), "终版不得存在");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// D-83 勘误回归（2026-09-10 实测取证）：响应头到达后服务器**沉默**时，
+/// 逐次读超时必须把读判死并走退避重试——绝不允许永久挂起（挂起 = 取消
+/// 不生效 + 下载会话永不收敛）。reqwest 阻塞默认 30s 逐次读预算；测试注入
+/// 1s 把实测 141s 收敛压到秒级。
+///
+/// 若将来有人"顺手删掉" `http_client` 的 `.timeout(..)`，本测试会挂死
+/// （server 端保持连接 600s）→ 该删改必被拦下。
+#[test]
+fn stalled_stream_times_out_and_retries() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let served = Arc::new(AtomicU32::new(0));
+    let served_srv = served.clone();
+    let _t = std::thread::spawn(move || {
+        for conn in listener.incoming() {
+            let Ok(mut stream) = conn else { break };
+            let n = served_srv.fetch_add(1, Ordering::SeqCst);
+            // 每连接一线程：首轮会 sleep 600s，若卡在 accept 循环里，后续
+            // 重试连接连不上（曾因此让本测试误判成"重试也失败"）
+            std::thread::spawn(move || {
+                let _ = read_request_range(&mut stream);
+                if n == 0 {
+                    // 第一轮：响应头 + 前 4 字节，然后保持连接沉默（> 注入超时）
+                    let _ = stream.write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 16\r\nConnection: close\r\n\r\n0123",
+                    );
+                    let _ = stream.flush();
+                    std::thread::sleep(std::time::Duration::from_secs(600));
+                } else {
+                    let headers =
+                        format!("Content-Length: {}\r\nConnection: close\r\n", BODY.len());
+                    write_response(&mut stream, "200 OK", &headers, BODY);
+                }
+            });
+        }
+    });
+    let dir = tmpdir("stall");
+    let dl = Downloader::new(&dir, ProxyMode::None)
+        .with_ms_endpoint(format!("http://127.0.0.1:{port}"))
+        .with_io_timeout(std::time::Duration::from_secs(1));
+    let t0 = std::time::Instant::now();
+    let out = dl
+        .download_files(
+            Hub::Ms,
+            "iic/Test",
+            &[("model.bin", 1, "")],
+            &AtomicBool::new(false),
+            None,
+        )
+        .expect("沉默首轮应超时判死、退避后重试成功");
+    assert_eq!(std::fs::read(out.join("model.bin")).unwrap(), BODY);
+    assert_eq!(served.load(Ordering::SeqCst), 2, "恰好两次请求（1 卡流 + 1 成功）");
+    assert!(
+        t0.elapsed() < std::time::Duration::from_secs(30),
+        "收敛必须快于长挂起，实际 {:?}",
+        t0.elapsed()
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

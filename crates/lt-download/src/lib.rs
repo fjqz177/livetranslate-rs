@@ -171,6 +171,17 @@ struct FileJob<'a> {
 /// sha256 空串 = 渐进登记未完成，仅做长度/下限校验（AH-5/DEC-4）
 pub type FileSpec<'a> = (&'a str, u64, &'a str);
 
+/// 单次读/连接的默认预算（**逐次 read 语义**，非总传输期限）。
+///
+/// 2026-09-10 显式化（D-83 评审勘误）：reqwest 阻塞客户端的 `timeout` 是
+/// **逐次 read** 预算——`blocking/response.rs` 对每次 `body.read()` 包一层
+/// `wait::timeout(.., timeout)`，默认 30s；大文件的总耗时不受其约束，但
+/// "响应头到达后对端沉默"会在 ≤30s 内判死。实测：mock 沉默服务器下
+/// 4 次尝试 ×（30s + 1/4/16s 退避）= 141s 收敛返回 `[net]`（见
+/// tests/download_integration.rs 的 stalled_stream_times_out_and_retries）。
+/// 显式写死防将来被"顺手去掉"（去掉即回退成永久挂起 + 取消失效）。
+pub const DEFAULT_IO_TIMEOUT: Duration = Duration::from_secs(30);
+
 pub struct Downloader {
     models_dir: PathBuf,
     proxy: ProxyMode,
@@ -178,6 +189,8 @@ pub struct Downloader {
     hf_endpoint: String,
     /// ModelScope API 根（测试可指向本地 mock）
     ms_endpoint: String,
+    /// 逐次读/连接预算（D-83；默认 30s，测试可注入短值）
+    io_timeout: Duration,
 }
 
 impl Downloader {
@@ -187,7 +200,15 @@ impl Downloader {
             proxy,
             hf_endpoint: "https://huggingface.co".into(),
             ms_endpoint: "https://modelscope.cn".into(),
+            io_timeout: DEFAULT_IO_TIMEOUT,
         }
+    }
+
+    /// 覆写逐次读/连接预算（D-83 回归测试用：卡流场景注入短超时，
+    /// 把 141s 的实测收敛压到秒级；生产恒为 [`DEFAULT_IO_TIMEOUT`]）
+    pub fn with_io_timeout(mut self, timeout: Duration) -> Self {
+        self.io_timeout = timeout;
+        self
     }
 
     /// HF 镜像覆写
@@ -218,10 +239,14 @@ impl Downloader {
         }
     }
 
-    /// 构造 HTTP 客户端（代理三模式；连接超时 10s，无总超时——大文件下载）
+    /// 构造 HTTP 客户端（代理三模式；连接超时 10s，逐次读预算见
+    /// [`DEFAULT_IO_TIMEOUT`]——显式设置，勿删，见该常量文档）
     pub fn http_client(&self) -> anyhow::Result<reqwest::blocking::Client> {
         let mut b = reqwest::blocking::Client::builder()
             .connect_timeout(Duration::from_secs(10))
+            // D-83：逐次 read 预算（静默对端 ≤30s 判死 → 走退避重试；
+            // 取消也因此最多延迟一个预算生效，不会永久挂起）
+            .timeout(self.io_timeout)
             .user_agent(concat!("livetranslate-rs/", env!("CARGO_PKG_VERSION")))
             .redirect(reqwest::redirect::Policy::limited(10))
             // AH-5/H7：模型为二进制文件无需自动解压——gzip 解码会让
@@ -470,7 +495,7 @@ impl Downloader {
             // AH-5/H8：sha256 内容校验（finalize 前对 .incomplete 流式计算；
             // 不匹配删除现场快速失败——截断/镜像污染不再可能落为终版文件）
             if !job.sha256.is_empty() {
-                let actual = sha256_file_hex(incomplete).map_err(disk_err)?;
+                let actual = hash_file_hex(incomplete).map_err(disk_err)?;
                 if !actual.eq_ignore_ascii_case(job.sha256) {
                     let _ = std::fs::remove_file(incomplete);
                     return Err(DlError::new(
@@ -581,8 +606,10 @@ fn finalize_incomplete(incomplete: &Path, target: &Path) -> Result<(), DlError> 
     std::fs::rename(incomplete, target).map_err(disk_err)
 }
 
-/// 文件 sha256（十六进制小写；AH-5/H8 内容校验用，流式读避免大文件驻留）
-fn sha256_file_hex(path: &Path) -> std::io::Result<String> {
+/// 文件 sha256（十六进制小写；AH-5/H8 内容校验用，流式读避免大文件驻留）。
+/// D-83 起公开：零信任加载闸门（lt-orchestrator `trust_gate`）复用同一实现，
+/// 保证"下载期校验"与"加载前校验"是同一套哈希语义。
+pub fn hash_file_hex(path: &Path) -> std::io::Result<String> {
     use sha2::Digest;
     let mut f = std::fs::File::open(path)?;
     let mut hasher = sha2::Sha256::new();
@@ -595,6 +622,16 @@ fn sha256_file_hex(path: &Path) -> std::io::Result<String> {
         hasher.update(&buf[..n]);
     }
     Ok(format!("{:x}", hasher.finalize()))
+}
+
+/// 内容是否与登记指纹一致（十六进制、大小写不敏感；D-83 零信任闸门用）。
+/// `expected_hex` 为空串 = 未登记 → 恒真空通过（与下载器的跳过语义一致：
+/// 渐进登记期的条目不做内容校验）。
+pub fn verify_file(path: &Path, expected_hex: &str) -> std::io::Result<bool> {
+    if expected_hex.is_empty() {
+        return Ok(true);
+    }
+    Ok(hash_file_hex(path)?.eq_ignore_ascii_case(expected_hex))
 }
 
 /// 从响应解析文件总长：206 → Content-Range 尾段；200 → Content-Length
@@ -804,6 +841,32 @@ mod tests {
         assert_eq!(hf_endpoint_for(Hub::Ms), "https://hf-mirror.com");
     }
 
+    /// D-83：哈希/校验公开接口——命中/不命中/大小写不敏感/空串恒真（未登记）
+    #[test]
+    fn hash_and_verify_file_semantics() {
+        let dir = std::env::temp_dir().join(format!("lt_dl_hash_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("m.bin");
+        std::fs::write(&f, b"0123456789abcdef").unwrap();
+        // 已知向量（sha256("0123456789abcdef")，独立工具实测：
+        // `printf 0123456789abcdef | sha256sum` → 9f9f5111…929f）
+        let want = "9f9f5111f7b27a781f1f1ddde5ebc2dd2b796bfc7365c9c28b548e564176929f";
+        let got = hash_file_hex(&f).unwrap();
+        assert_eq!(got, want, "哈希实现必须与独立实现逐位一致");
+        assert!(verify_file(&f, want).unwrap(), "同值应通过");
+        assert!(
+            verify_file(&f, &want.to_uppercase()).unwrap(),
+            "十六进制大小写不敏感"
+        );
+        assert!(!verify_file(&f, "0".repeat(64).as_str()).unwrap());
+        // 空串 = 未登记 → 通过（渐进登记期语义，与下载器跳过一致）
+        assert!(verify_file(&f, "").unwrap());
+        // 缺失文件 → Err（调用方按"不可信"处理）
+        assert!(verify_file(&dir.join("nope.bin"), want).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn url_builders() {
         let d = Downloader::new("m", ProxyMode::None).with_hf_endpoint("https://hf-mirror.com");
@@ -925,7 +988,7 @@ mod probe_whisper_tmp {
     use std::sync::atomic::AtomicBool;
     use std::time::Instant;
 
-    /// 独立复算（不复用下载器内部 sha256_file_hex——探针的意义是与实现互证）
+    /// 独立复算（不复用下载器内部 hash_file_hex——探针的意义是与实现互证）
     fn sha256_hex(path: &std::path::Path) -> String {
         use sha2::Digest;
         let mut f = std::fs::File::open(path).expect("打开下载产物");
