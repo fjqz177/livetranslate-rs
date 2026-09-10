@@ -1,6 +1,8 @@
 //! lt-translate：LLM 翻译（原版 translator.py / benchmark.py 1:1 移植）。
 //!
-//! - [`thinking`]：思维链关闭策略（deepseek/qwen/vllm/openai/off + auto 启发式）
+//! - [`thinking`]：思维链关闭策略（总开关 + 方式；auto 按端点/模型路由）
+//! - [`reasoning`]：思维链隔离（把写进 `content` 的思考块剥掉，INV-F）
+//! - [`verdict`]：回应体检（正文空/被截断/预算被推理吃光，方案 §4.4）
 //! - [`translator`]：Translator（prompt/messages/请求体组装、流式/同步翻译、
 //!   上下文历史、用量统计、重复检测）
 //! - [`bench`]：多模型流式基准测试（TTFT/总耗时/排名）
@@ -8,10 +10,14 @@
 
 pub mod bench;
 pub mod error;
+pub mod reasoning;
 pub mod thinking;
 pub mod translator;
+pub mod verdict;
 
 pub use error::TranslateError;
+pub use reasoning::{strip_reasoning, ReasoningStripper};
+pub use verdict::{classify_response, FinishKind, ResponseVerdict};
 pub(crate) use translator::runtime;
 // E3/ADR-10：DEFAULT_PROMPT/PROMPT_PRESETS 已上移 lt-proto（lt-ui 直引 proto，
 // 本 crate 的 re-export 随翻译页常量依赖边裁除而撤下）

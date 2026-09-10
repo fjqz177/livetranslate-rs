@@ -132,6 +132,24 @@ fn chunk_usage(pt: u64, ct: u64) -> String {
     .to_string()
 }
 
+/// usage chunk（带推理量明细；W2 体检输入）
+fn chunk_usage_detailed(pt: u64, ct: u64, reasoning: u64) -> String {
+    json!({
+        "id": "chatcmpl-test",
+        "object": "chat.completion.chunk",
+        "created": 1,
+        "model": "test-model",
+        "choices": [],
+        "usage": {
+            "prompt_tokens": pt,
+            "completion_tokens": ct,
+            "total_tokens": pt + ct,
+            "completion_tokens_details": {"reasoning_tokens": reasoning},
+        },
+    })
+    .to_string()
+}
+
 fn non_streaming_response(status_line: &str, body: &Value) -> Vec<u8> {
     let body = body.to_string();
     format!(
@@ -221,6 +239,65 @@ fn streaming_yields_partials_then_final_with_usage() {
     assert_eq!(body["temperature"], 0.3);
     assert_eq!(body["messages"][0]["role"], "system");
     assert_eq!(body["messages"].as_array().unwrap().len(), 2);
+}
+
+/// W2/INV-F：写进 content 的思考块（含跨分片标签）不得出现在任何增量或最终译文
+// while let 是刻意的：for 会移走迭代器，之后读不到 verdict()/usage()（方案 §4）
+#[allow(clippy::while_let_on_iterator)]
+#[test]
+fn streaming_strips_inline_reasoning_never_leaks() {
+    // 标签用转义书写：源码中的完整标签字面量曾被编辑环节间歇性改写
+    let open = "\u{3c}think\u{3e}".to_string();
+    let close = "\u{3c}/think\u{3e}".to_string();
+    let server = MockServer::start(Arc::new(move |_| {
+        sse_response(&[
+            chunk_delta(&open),                    // 开标签单独一片
+            chunk_delta("先分析一下用户的问题"),   // 思考正文
+            chunk_delta(&close),                   // 闭标签单独一片
+            chunk_delta("译文在这里"),
+            chunk_usage(10, 20),
+        ])
+    }));
+    let t = translator(&server.base_url);
+    let mut partials = Vec::new();
+    let mut it = t.translate_iter("hello", "en", "zh", 10);
+    // 必须用 while let（for 会移走迭代器，之后读不到体检结论）
+    while let Some(item) = it.next() {
+        match item {
+            Ok(p) => partials.push(p),
+            Err(e) => panic!("流式失败: {e}"),
+        }
+    }
+    for p in &partials {
+        assert!(!p.contains("分析"), "增量泄露了思考: {p:?}");
+        assert!(!p.contains("think"), "增量泄露了标签: {p:?}");
+    }
+    assert_eq!(partials.last().map(String::as_str), Some("译文在这里"));
+    // W2：体检结论与用量随迭代器返回（不再经共享态）
+    assert_eq!(it.verdict(), Some(lt_translate::ResponseVerdict::Ok));
+    assert_eq!(it.usage(), (10, 20));
+}
+
+/// W2/方案 §4.4：正文恒空 + 推理量 > 0 → EmptyReasoningBudget（本次故障的判定）
+#[allow(clippy::while_let_on_iterator)]
+#[test]
+fn verdict_reports_reasoning_budget_burn() {
+    let server = MockServer::start(Arc::new(|_| {
+        sse_response(&[chunk_usage_detailed(142, 256, 256), chunk_delta("")])
+    }));
+    let t = translator(&server.base_url);
+    let mut it = t.translate_iter("hello", "en", "zh", 10);
+    let mut last: Option<Result<String, _>> = None;
+    while let Some(item) = it.next() {
+        last = Some(item);
+    }
+    assert_eq!(last.unwrap().unwrap(), "", "正文为空");
+    assert_eq!(
+        it.verdict(),
+        Some(lt_translate::ResponseVerdict::EmptyReasoningBudget)
+    );
+    assert!(!it.verdict().unwrap().has_text());
+    assert_eq!(it.usage(), (142, 256));
 }
 
 #[test]

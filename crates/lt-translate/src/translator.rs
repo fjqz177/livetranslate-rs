@@ -20,7 +20,9 @@ use parking_lot::Mutex;
 use serde_json::{json, Map, Value};
 
 use crate::error::TranslateError;
+use crate::reasoning::{strip_reasoning, ReasoningStripper};
 use crate::thinking::{resolve_thinking_plan, thinking_disable_body, ThinkingPlan};
+use crate::verdict::{classify_response, FinishKind, ResponseVerdict};
 // E3/ADR-10：提示词/覆写键上移 lt-proto 契约层（与 lt-ui 同源——原 UI 依赖
 // 整个本 crate 仅为取常量的边已裁除）
 use lt_proto::{DEFAULT_PROMPT, OVERRIDE_KEYS};
@@ -407,31 +409,55 @@ impl Translator {
         system_prompt: &str,
         text: &str,
         timeout_secs: u64,
-    ) -> Result<String, TranslateError> {
+    ) -> SyncOutcome {
         let body = self.build_request_body(system_prompt, text, false, false);
-        let resp: CreateChatCompletionResponse =
-            self.timeout_block(self.client.chat().create_byot(body), timeout_secs)?;
+        let resp: CreateChatCompletionResponse = match self
+            .timeout_block(self.client.chat().create_byot(body), timeout_secs)
+        {
+            Ok(r) => r,
+            Err(e) => return SyncOutcome::failed(e),
+        };
+        let (mut pt, mut ct) = (0u64, 0u64);
+        let mut reasoning_tokens = None;
         {
             let mut st = self.state.lock();
             st.prompt_tokens = 0;
             st.completion_tokens = 0;
             if let Some(usage) = &resp.usage {
-                st.prompt_tokens = usage.prompt_tokens as u64;
-                st.completion_tokens = usage.completion_tokens as u64;
+                pt = usage.prompt_tokens as u64;
+                ct = usage.completion_tokens as u64;
+                st.prompt_tokens = pt;
+                st.completion_tokens = ct;
+                reasoning_tokens = usage
+                    .completion_tokens_details
+                    .as_ref()
+                    .and_then(|d| d.reasoning_tokens);
             }
         }
-        let mut result = resp
-            .choices
-            .first()
-            .and_then(|c| c.message.content.clone())
-            .unwrap_or_default()
-            .trim()
-            .to_string();
+        let choice = resp.choices.first();
+        // W2/INV-F：先做思维链隔离，再 trim/JSON 提取/重复检测
+        let cleaned = strip_reasoning(
+            &choice
+                .and_then(|c| c.message.content.clone())
+                .unwrap_or_default(),
+        );
+        let mut result = cleaned.trim().to_string();
         if self.json_response {
             result = extract_json_translation(&result);
         }
-        warn_if_thinking_burned(&result, self.last_usage().1, self.thinking.name());
-        Ok(result)
+        let verdict = classify_response(
+            &result,
+            choice
+                .and_then(|c| c.finish_reason.as_ref())
+                .map(FinishKind::from),
+            reasoning_tokens,
+        );
+        warn_if_thinking_burned(&result, ct, self.thinking.name());
+        SyncOutcome {
+            result: Ok(result),
+            verdict: Some(verdict),
+            usage: (pt, ct),
+        }
     }
 
     /// 在共享运行时上执行带超时的 future（阻塞调用线程）
@@ -484,12 +510,12 @@ impl Translator {
     ) -> TranslateStream {
         let system_prompt = self.build_system_prompt(source_language, target_lang);
         if !self.streaming {
-            let result = self
-                .translate_sync(&system_prompt, text, timeout_secs as u64)
-                .inspect(|r| {
-                    self.append_history(text, r);
-                });
-            return TranslateStream::sync(result);
+            let outcome = self.translate_sync(&system_prompt, text, timeout_secs as u64);
+            if let Ok(r) = &outcome.result {
+                self.append_history(text, r);
+            }
+            // 体检结论与用量随 SyncOutcome 一并带出（W2）
+            return TranslateStream::sync(outcome);
         }
 
         let body = self.build_request_body(&system_prompt, text, true, false);
@@ -509,7 +535,6 @@ impl Translator {
             inner: StreamInner::Streaming {
                 rx,
                 deadline,
-                acc: String::new(),
                 text: text.to_string(),
                 timeout_secs: read_timeout.as_secs(),
             },
@@ -517,6 +542,9 @@ impl Translator {
             thinking: self.thinking,
             state: self.state.clone(),
             finished: false,
+            stripper: ReasoningStripper::new(),
+            verdict: None,
+            usage: (0, 0),
         }
     }
 }
@@ -551,13 +579,23 @@ async fn pump_stream(
         },
     };
 
+    // W2：除用量外，同时记录推理量与结束原因（体检输入，方案 §4.4）
     let (mut pt, mut ct) = (0u64, 0u64);
+    let mut reasoning_tokens: Option<u32> = None;
+    let mut finish: Option<FinishKind> = None;
     loop {
         match tokio::time::timeout(read_timeout, stream.next()).await {
             Ok(Some(Ok(chunk))) => {
                 if let Some(usage) = &chunk.usage {
                     pt = usage.prompt_tokens as u64;
                     ct = usage.completion_tokens as u64;
+                    reasoning_tokens = usage
+                        .completion_tokens_details
+                        .as_ref()
+                        .and_then(|d| d.reasoning_tokens);
+                }
+                if let Some(f) = chunk.choices.first().and_then(|c| c.finish_reason.as_ref()) {
+                    finish = Some(FinishKind::from(f));
                 }
                 if let Some(delta) = chunk
                     .choices
@@ -588,6 +626,8 @@ async fn pump_stream(
     let _ = tx.send(StreamMsg::End {
         prompt_tokens: pt,
         completion_tokens: ct,
+        reasoning_tokens,
+        finish,
     });
 }
 
@@ -596,16 +636,35 @@ enum StreamMsg {
     End {
         prompt_tokens: u64,
         completion_tokens: u64,
+        reasoning_tokens: Option<u32>,
+        finish: Option<FinishKind>,
     },
     Err(TranslateError),
 }
 
+/// 非流式一次调用的完整产出（W2：体检结论与用量随结果返回，
+/// 不再经 `Translator` 的共享态回传——方案 §4.6 账本归属）
+struct SyncOutcome {
+    result: Result<String, TranslateError>,
+    verdict: Option<ResponseVerdict>,
+    usage: (u64, u64),
+}
+
+impl SyncOutcome {
+    fn failed(e: TranslateError) -> Self {
+        Self {
+            result: Err(e),
+            verdict: None,
+            usage: (0, 0),
+        }
+    }
+}
+
 enum StreamInner {
-    Sync(Option<Result<String, TranslateError>>),
+    Sync(Option<SyncOutcome>),
     Streaming {
         rx: mpsc::Receiver<StreamMsg>,
         deadline: Instant,
-        acc: String,
         text: String,
         timeout_secs: u64,
     },
@@ -615,16 +674,24 @@ enum StreamInner {
 pub struct TranslateStream {
     inner: StreamInner,
     json_response: bool,
-    /// 本次装置的关闭形态（仅用于告警文案；W2 起由体检结论取代）
+    /// 本次装置的关闭形态（仅用于告警文案；体检结论见 [`TranslateStream::verdict`]）
     thinking: ThinkingPlan,
     state: Arc<Mutex<MutableState>>,
     finished: bool,
+    /// W2/INV-F：流式思维链隔离器——写进 content 的思考块绝不外泄
+    stripper: ReasoningStripper,
+    /// W2：本次调用的体检结论（迭代结束后有效）
+    verdict: Option<ResponseVerdict>,
+    /// W2：本次调用的 (prompt, completion) 用量
+    usage: (u64, u64),
 }
 
 impl TranslateStream {
-    fn sync(result: Result<String, TranslateError>) -> Self {
+    fn sync(outcome: SyncOutcome) -> Self {
+        let verdict = outcome.verdict;
+        let usage = outcome.usage;
         Self {
-            inner: StreamInner::Sync(Some(result)),
+            inner: StreamInner::Sync(Some(outcome)),
             json_response: false,
             thinking: ThinkingPlan::None,
             state: Arc::new(Mutex::new(MutableState {
@@ -634,7 +701,20 @@ impl TranslateStream {
                 completion_tokens: 0,
             })),
             finished: false,
+            stripper: ReasoningStripper::new(),
+            verdict,
+            usage,
         }
+    }
+
+    /// W2：本次调用的体检结论（迭代结束后有效；请求层错误时为 None）
+    pub fn verdict(&self) -> Option<ResponseVerdict> {
+        self.verdict
+    }
+
+    /// W2：本次调用的 (prompt_tokens, completion_tokens)
+    pub fn usage(&self) -> (u64, u64) {
+        self.usage
     }
 }
 
@@ -648,12 +728,11 @@ impl Iterator for TranslateStream {
         match &mut self.inner {
             StreamInner::Sync(item) => {
                 self.finished = true;
-                item.take()
+                item.take().map(|o| o.result)
             }
             StreamInner::Streaming {
                 rx,
                 deadline,
-                acc,
                 text,
                 timeout_secs,
             } => loop {
@@ -665,26 +744,34 @@ impl Iterator for TranslateStream {
                 };
                 match rx.recv_timeout(remaining) {
                     Ok(StreamMsg::Delta(d)) => {
-                        acc.push_str(&d);
+                        // W2/INV-F：先过思维链隔离器，再产出可见增量
+                        let visible = self.stripper.push(&d);
                         if self.json_response {
                             // json 模式中途不出部分结果，继续消费直到流结束
                             continue;
                         }
-                        return Some(Ok(acc.clone()));
+                        return Some(Ok(visible));
                     }
                     Ok(StreamMsg::End {
                         prompt_tokens,
                         completion_tokens,
+                        reasoning_tokens,
+                        finish,
                     }) => {
                         {
                             let mut st = self.state.lock();
                             st.prompt_tokens = prompt_tokens;
                             st.completion_tokens = completion_tokens;
                         }
-                        let mut result = acc.trim().to_string();
+                        self.usage = (prompt_tokens, completion_tokens);
+                        // 流结束：隔离器 flush（未闭合的思考块整块丢弃）
+                        let stripper = std::mem::take(&mut self.stripper);
+                        let mut result = stripper.finish().trim().to_string();
                         if self.json_response {
                             result = extract_json_translation(&result);
                         }
+                        self.verdict =
+                            Some(classify_response(&result, finish, reasoning_tokens));
                         warn_if_thinking_burned(&result, completion_tokens, self.thinking.name());
                         if check_repetition(&result) {
                             self.finished = true;
