@@ -1116,17 +1116,70 @@ if lt_proto::PROVIDER_PRESETS.iter().any(|p| p.api_base == base) { /* skip */ }
 
 ---
 
+## 十一、实施记录（2026-09-10 施工完工）
+
+| 提交 | 内容 | 验收 |
+|---|---|---|
+| `efb08b2`→`988d114`→`e66406e` | C1 方案定稿 + 裁决① + 施工前复核（6 处修正） | 四守护脚本过 |
+| `4d57a92` | **C2** lt-translate 可取消调用 + `TranslateError::Cancelled`（`FailureKind::Cancelled` 同批） | `lt-translate` 62+29 全绿 |
+| `6ff0036` | **C3** 契约改型（`PROTO_VERSION` 5→6）+ `probe.rs` + `RunCtl` + shell 一次性线程 + 翻译页每行按钮/四态/裁决 E | 全量 567+9 |
+| `2813d99` | **C4** F1 消费点提前 + F2 切换回执与状态行 + F3 退休让位中性化 + F4 未装配可见 | 全量 573+9 |
+| `aa1daef` | **C5** 会话级累计 + `Currency`/`effective_currency` + `UpdateStats` 双账本 + MonitorBar 落地 | 全量 580+9 |
+| `6761fdd` | **C6** 厂商预设表 + 默认供应商改 DeepSeek + `/v1` 提示豁免 | 全量 **586+9** 全绿（连跑两次稳定） |
+
+收工门禁：`cargo test --workspace` 586+9 / `cargo clippy --workspace --all-targets -- -D warnings`
+零告警 / 四守护脚本（个人路径·依赖白名单·源码禁令·死契约）全过。
+
+### 11.1 施工中的方案偏离（留痕）
+
+1. **`drain_tl_switch` 的签名**（C4/F1）：文档写"逐个传引用 + `allow(too_many_arguments)`"，
+   实现把 9 个共享引用收进 `SwitchDrain` 结构体——参数 14→6，语义与调用点不变。
+2. **预算注入**（C3）：`run_probe` 委托 `run_probe_with_budget(...)`，预算作为形参传入。
+   唯一动机是可测性（10 秒契约预算无法在单测里真等）；对外行为面与 §4.3 一致。
+3. **`FailureKind::Superseded` 推迟到 C4**：它由 C4 的退休路径消费；放在 C3 会让死契约
+   守卫报"零引用"。契约版本号不受影响（纯新增）。
+4. **默认值语义分家**（C6，复核时发现的风险）：`ModelConfig::default()` **保持中立零值**，
+   厂商默认（DeepSeek）放在 `Settings::default()` 与 `sanitize` 的空表兜底。
+   原因：`ModelConfig` 带容器级 `#[serde(default)]`，缺失字段由 `Default::default()` 补齐——
+   若把它改成厂商预设，**老档案里没写 `thinking_style` 的模型会被悄悄注入 `"deepseek"`**
+   （对本来不接受该参数的端点就是一发 400）。`default_model_is_deepseek_preset` 双向钉住。
+5. **probe 结论映射的两处修正**（C3）：
+   - 首行必须同时识别"**一次尝试进行中**被取消"（此时 `halted == None` 而错误是
+     `Cancelled`）——漏掉会显示成"连接失败·已中断"；
+   - 判定顺序改为 取消 → **成功** → 预算 → 失败：文档原顺序（预算在成功之前）会把
+     "恰好卡在预算线上成功"的那次误判成"未定论"。
+6. **单步超时改为向上取整**（C3）：截断取整会把 10 秒预算算成 9 秒，单次尝试在预算用尽
+   **之前**先超时退出，`Halt::Budget` 分支永不可达（"未定论"会被误报成"连接失败·超时"）。
+7. **守护脚本同步**（C3）：`probe.rs` 进"仅 cfg(test) 夹具"的裸 spawn 白名单（单测的 mock
+   服务端 accept 线程）；`ThreadRole.TranslatorProbe` 登记进死契约守卫"合法单边形态"注释。
+8. **根除一处既有测试 flake**（C6）：`wizard_defaults_follow_lang` 读全局语言，而并行测试
+   会 `set_lang`——偶发假红。提取 `default_hub_index_for_lang` 纯函数做断言；本次新增的测试
+   **一律不再逐条 `set_lang`**（文案断言按 zh/en 两表任一命中）。
+9. **勘误**：§1.2 H4 曾写"URL 形态错有红字拦截"——实际 `Translator::new` **不校验 api_base**
+   （只有代理地址非法/客户端构建失败才回 `TranslatorUnavailable`），故 `NotReady` 分支由
+   非法代理触发，探测测试按此构造。
+
+### 11.2 仍待用户实机走查（§6.2 清单）
+
+四态观感 / 中断手感 / 本机模型首次加载 / 每行按钮目标 / 换模型不再冒红字 /
+状态行与"已切换生效" / 费用分币种与重启归零 / 厂商预设填充 / 裁决①边界（精简与隐藏后找回）
+/ 出厂默认 DeepSeek 首启贴 Key——共 13 项，逐项见 §6.2。
+
+---
+
 ## 附录 A：多供应商热切换链路现状（已实现部分，供对照）
 
 | 环节 | 状态 | 位置 |
 |---|---|---|
-| 面板点行切换 | ✓（现状；**本方案按裁决 E 移除**，改为只选中） | `translation.rs:268-277`（写 `active_model` + 立即发 `Cmd::SwitchTranslator`） |
+| 面板点行切换 | **已按裁决 E 移除**（行点击只选中；切换唯一入口 = 悬浮窗下拉） | 原实现 `translation.rs:268-277`；回归测试 `row_click_only_selects_no_switch_cmd` |
 | 悬浮窗模型下拉切换 | ✓ | `crates/lt-ui/src/windows/overlay.rs:369-402` |
-| 命令路由 | ✓（pipeline 为 None 时静默丢弃——**本方案由 §4.5 F4 补上可见回执**） | `shell.rs:239-244` |
+| 命令路由 | ✓（F4 已补：pipeline 为 None 时回 `TranslatorUnavailable`，不再静默） | `shell.rs` SwitchTranslator 臂 |
 | 线程命令 | ✓ | `pipeline.rs:1278-1284` → `TlSwitch::ReplaceRig` |
 | 真实重建 + 失败保留旧装置 | ✓ | `pipeline.rs:1744-1772` |
 | 旧装置回收（retire + 池自停） | ✓ | `pipeline.rs:1744-1761`、`:206-210` |
 | 逐段读当前装置 | ✓ | `pipeline.rs:2204`（`commit_text(..., tl.as_deref(), ...)`） |
 | 落盘 / 重启恢复 | ✓ | `mark_settings_dirty` → 300ms → `ApplySettings`；启动 `TlRig::from_settings`（`pipeline.rs:656`） |
-| 会话学习记忆跨切换保留 | ✓ | `learned` 按 `(api_base, model)` 存、`Arc` 共享（`pipeline.rs:617-619`） |
+| 会话学习记忆跨切换保留 | ✓ | `learned` 按 `(api_base, model)` 存、`Arc` 共享 |
+| 会话费用累计跨切换保留 | ✓（F 之外的新增：G/H/I） | `TlStats` 由 Pipeline 建一次、装置共享 `Arc`（`record_translation` 按笔记账） |
+| 切换生效回执 | ✓（F2 新增） | `UiEvent::TranslatorSwitched` → 面板状态行 |
 | 对话上下文 | 有意重置 | 新 Translator 历史为空（与原版重建语义一致） |
