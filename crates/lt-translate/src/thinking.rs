@@ -116,6 +116,17 @@ pub fn resolve_thinking_plan(
     }
 }
 
+/// W3/方案 §2.3.1：自动链的下一个候选（`None` = 链尾，无法再降级）
+pub fn next_plan(plan: ThinkingPlan) -> Option<ThinkingPlan> {
+    match plan {
+        ThinkingPlan::None => Some(ThinkingPlan::ReasoningEffortNone),
+        ThinkingPlan::ReasoningEffortNone => Some(ThinkingPlan::EnableThinkingFalse),
+        ThinkingPlan::EnableThinkingFalse => Some(ThinkingPlan::ChatTemplateKwargs),
+        ThinkingPlan::ChatTemplateKwargs => Some(ThinkingPlan::NestedDisabled),
+        ThinkingPlan::NestedDisabled => None,
+    }
+}
+
 /// 具体形态对应的"关闭 thinking"请求体片段；[`ThinkingPlan::None`] → Null（= 不发）。
 /// 每次调用返回新 Value（无共享可变状态）。
 pub fn thinking_disable_body(plan: ThinkingPlan) -> Value {

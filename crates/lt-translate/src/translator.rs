@@ -239,6 +239,22 @@ impl Translator {
         self.state.lock().history.clear();
     }
 
+    /// 本次装置实际采用的关闭形态（W3：编排层据此推进自动链 / 记录学习结果）
+    pub fn thinking_plan(&self) -> ThinkingPlan {
+        self.thinking
+    }
+
+    /// W3/方案 §4.4：派生一个**共享同一 client** 的装置，仅覆盖"关闭形态"与
+    /// "输出上限"两项——自愈重试专用（历史/用量独立重算）。
+    /// `max_tokens = None` 表示沿用原装置的值。
+    pub fn with_overrides(&self, thinking: ThinkingPlan, max_tokens: Option<u32>) -> Translator {
+        Translator {
+            thinking,
+            max_tokens: max_tokens.or(self.max_tokens),
+            ..self.share_client()
+        }
+    }
+
     /// 共享同一 client 的新 Translator（历史/用量清零；目标语言/超时随每次
     /// 调用参数传入，W4——旧 with_target_language 的目标语言面随镜像退役）
     pub fn share_client(&self) -> Translator {

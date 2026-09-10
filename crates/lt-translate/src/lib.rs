@@ -17,6 +17,7 @@ pub mod verdict;
 
 pub use error::TranslateError;
 pub use reasoning::{strip_reasoning, ReasoningStripper};
+pub use thinking::{next_plan, ThinkingPlan};
 pub use verdict::{classify_response, FinishKind, ResponseVerdict};
 pub(crate) use translator::runtime;
 // E3/ADR-10：DEFAULT_PROMPT/PROMPT_PRESETS 已上移 lt-proto（lt-ui 直引 proto，

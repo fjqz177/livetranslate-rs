@@ -40,6 +40,7 @@ use lt_proto::{
     SkipReason, ThreadRole, UiEvent,
 };
 use lt_translate::Translator;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -206,6 +207,167 @@ impl TlStats {
     }
 }
 
+/// W3：一次翻译尝试的产出（流式增量已即时推送，此处只汇总结论/用量）
+struct Attempt {
+    text: Option<String>,
+    error: Option<lt_translate::TranslateError>,
+    verdict: Option<lt_translate::ResponseVerdict>,
+    usage: (u64, u64),
+}
+
+impl Attempt {
+    /// 拿到了可用正文（体检结论为准；无结论时退回"有文本即成功"）
+    fn succeeded(&self) -> bool {
+        self.error.is_none()
+            && match self.verdict {
+                Some(v) => v.has_text(),
+                None => self.text.as_deref().is_some_and(|t| !t.trim().is_empty()),
+            }
+    }
+}
+
+/// 跑一次翻译：逐增量推送事件，返回结论与用量（失败时保留 provider 错误）
+fn run_attempt(
+    translator: &Translator,
+    text: &str,
+    source_lang: &str,
+    target: &str,
+    timeout: u32,
+    sink: &EventSink,
+    id: u64,
+) -> Attempt {
+    let mut text_out: Option<String> = None;
+    // W2/方案 §4.4：必须 while let——`for` 会移走迭代器，之后读不到结论/用量
+    let mut it = translator.translate_iter(text, source_lang, target, timeout);
+    while let Some(item) = it.next() {
+        match item {
+            Ok(partial) => {
+                sink.push(UiEvent::UpdateStreaming {
+                    id,
+                    partial: partial.clone(),
+                });
+                text_out = Some(partial);
+            }
+            Err(e) => {
+                if e.is_expected() {
+                    tracing::warn!("Translate error: {e}");
+                } else {
+                    tracing::error!("Translate error: {e}");
+                }
+                return Attempt {
+                    text: text_out,
+                    error: Some(e),
+                    verdict: it.verdict(),
+                    usage: it.usage(),
+                };
+            }
+        }
+    }
+    Attempt {
+        text: text_out,
+        error: None,
+        verdict: it.verdict(),
+        usage: it.usage(),
+    }
+}
+
+/// W3/方案 §4.4：按体检结论决定是否兜底，并给出兜底装置。
+///
+/// | 结论 | 动作 |
+/// |---|---|
+/// | `EmptyReasoningBudget` | 推进自动链下一个关闭形态（链尾则放弃） |
+/// | `EmptyTruncated` | 显式补发 `max_tokens = 4096` |
+/// | 其余（含 `EmptyNoOutput`、请求层错误） | 不兜底 |
+///
+/// 用户显式选定关闭方式（非 auto）时不推进链——尊重用户选择（方案 §2.3 规则 3）。
+fn heal_translator(
+    base: &Translator,
+    attempt: &Attempt,
+) -> Option<lt_translate::Translator> {
+    use lt_translate::ResponseVerdict as V;
+    match attempt.verdict {
+        Some(V::EmptyReasoningBudget) => {
+            let plan = base.thinking_plan();
+            match lt_translate::next_plan(plan) {
+                Some(next) => Some(base.with_overrides(next, None)),
+                None => {
+                    tracing::warn!("自动链已到链尾，无法再降级（当前 {:?}）", plan);
+                    None
+                }
+            }
+        }
+        Some(V::EmptyTruncated) => Some(base.with_overrides(base.thinking_plan(), Some(4096))),
+        _ => None,
+    }
+}
+
+/// 成功收尾（原版 _translate_async 成功路径）
+#[allow(clippy::too_many_arguments)]
+fn finish_ok(
+    attempt: &Attempt,
+    transcript: &Arc<lt_audio::transcript::TranscriptWriter>,
+    stats: &Arc<TlStats>,
+    sink: &EventSink,
+    id: u64,
+    t0: Instant,
+    pt: u64,
+    ct: u64,
+) {
+    let tl_ms = t0.elapsed().as_secs_f64() * 1000.0;
+    let text = attempt.text.clone().unwrap_or_default();
+    stats.tl_count.fetch_add(1, Ordering::Relaxed);
+    stats.prompt_tokens.fetch_add(pt, Ordering::Relaxed);
+    stats.completion_tokens.fetch_add(ct, Ordering::Relaxed);
+    tracing::info!("Translate ({tl_ms:.0}ms): {text}");
+    sink.push(UiEvent::UpdateTranslation {
+        id,
+        text: text.clone(),
+        tl_ms,
+    });
+    sink.push(stats.snapshot_event());
+    transcript.write_translation(id, &text);
+}
+
+/// 失败收尾（W2/结论化：带原因；用量照记——钱花了就要记账）
+#[allow(clippy::too_many_arguments)]
+fn fail(
+    attempt: &Attempt,
+    transcript: &Arc<lt_audio::transcript::TranscriptWriter>,
+    stats: &Arc<TlStats>,
+    sink: &EventSink,
+    id: u64,
+    t0: Instant,
+    pt: u64,
+    ct: u64,
+) {
+    let tl_ms = t0.elapsed().as_secs_f64() * 1000.0;
+    stats.prompt_tokens.fetch_add(pt, Ordering::Relaxed);
+    stats.completion_tokens.fetch_add(ct, Ordering::Relaxed);
+    transcript.finalize_no_translation(id);
+    let (kind, detail) = match &attempt.error {
+        Some(e) => (e.failure_kind(), format!("{} ({tl_ms:.0}ms)", e.ui_text())),
+        None => {
+            let kind = match attempt.verdict {
+                Some(lt_translate::ResponseVerdict::EmptyTruncated) => FailureKind::Truncated,
+                _ => FailureKind::Empty,
+            };
+            let detail = match attempt.verdict {
+                Some(v) => format!("{v:?} (pt={pt}, ct={ct}, {tl_ms:.0}ms)"),
+                None => format!("no verdict (pt={pt}, ct={ct}, {tl_ms:.0}ms)"),
+            };
+            tracing::warn!("Translation produced no text: {detail}");
+            (kind, detail)
+        }
+    };
+    sink.push(UiEvent::TranslationFailed {
+        id,
+        kind,
+        detail,
+        tl_ms,
+    });
+    sink.push(stats.snapshot_event());
+}
+
 /// 翻译装置：Translator + 统计 + 线程池（ASR 线程与翻译 worker 共享）
 struct TlRig {
     translator: Arc<Translator>,
@@ -216,6 +378,11 @@ struct TlRig {
     /// 设置总线（W4：翻译 worker 提交前读 `tl` 生效视图——目标语言/超时不再
     /// 存实例可变态（旧 MutableState 设置面 + TlSwitch::TargetLanguage/Timeout 镜像）
     bus: Arc<SettingsBus>,
+    /// W3/裁决 2：会话内学习记忆（(api_base, model) → 打赢过的关闭形态）。
+    /// **只记内存**——进程退出即清空，不写用户配置；同一 Pipeline 内跨装置重建保留
+    learned: Arc<Mutex<HashMap<(String, String), lt_translate::ThinkingPlan>>>,
+    /// 本装置的 (api_base, model) 记忆键
+    model_key: (String, String),
 }
 
 impl TlRig {
@@ -226,12 +393,13 @@ impl TlRig {
         sup: &Supervisor,
         sink: EventSink,
         transcript: Arc<lt_audio::transcript::TranscriptWriter>,
+        learned: Arc<Mutex<HashMap<(String, String), lt_translate::ThinkingPlan>>>,
     ) -> Result<Option<Self>, String> {
         let eff = bus.load();
         let Some(mc) = eff.raw.models.get(eff.raw.active_model) else {
             return Ok(None);
         };
-        Self::from_effective(mc, &eff, bus, sup, sink, transcript)
+        Self::from_effective(mc, &eff, bus, sup, sink, transcript, learned)
     }
 
     /// 按指定模型配置构建（运行时切换用；构建失败返回 Err——UI 收到
@@ -246,6 +414,7 @@ impl TlRig {
         sup: &Supervisor,
         sink: EventSink,
         transcript: Arc<lt_audio::transcript::TranscriptWriter>,
+        learned: Arc<Mutex<HashMap<(String, String), lt_translate::ThinkingPlan>>>,
     ) -> Result<Option<Self>, String> {
         let params = lt_translate::TranslatorParams {
             api_base: mc.api_base.clone(),
@@ -286,6 +455,8 @@ impl TlRig {
             pool: JobPool::new(TL_POOL_WORKERS, sup, sink),
             transcript,
             bus: bus.clone(),
+            learned,
+            model_key: (mc.api_base.clone(), mc.model.clone()),
         }))
     }
 
@@ -308,85 +479,49 @@ impl TlRig {
         // W2：`msg`（用户文案注入）在翻译出口不再需要——失败文案改由 UI 按
         // FailureKind 本地化（编排域禁依赖 lt-i18n 的纪律不变）
         let bus = self.bus.clone();
+        let learned = self.learned.clone();
+        let model_key = (self.model_key.0.clone(), self.model_key.1.clone());
         self.pool.submit(move || {
             let eff = bus.load();
             let target = eff.tl.target_language.clone();
             let timeout = eff.tl.timeout;
             let t0 = Instant::now();
-            let mut translated: Option<String> = None;
-            // W2/方案 §4.4：必须 while let——`for` 会移走迭代器，之后读不到
-            // 体检结论（`verdict()`）与本次用量（`usage()`）
-            let mut it = translator.translate_iter(&text, &source_lang, &target, timeout);
-            while let Some(item) = it.next() {
-                match item {
-                    Ok(partial) => {
-                        sink.push(UiEvent::UpdateStreaming {
-                            id,
-                            partial: partial.clone(),
-                        });
-                        translated = Some(partial);
-                    }
-                    Err(e) => {
-                        if e.is_expected() {
-                            tracing::warn!("Translate error: {e}");
-                        } else {
-                            tracing::error!("Translate error: {e}");
-                        }
-                        transcript.finalize_no_translation(id);
-                        // W2/账本：失败也记下已消耗的用量（此前整笔漏记）
-                        let (pt, ct) = it.usage();
-                        stats.prompt_tokens.fetch_add(pt, Ordering::Relaxed);
-                        stats.completion_tokens.fetch_add(ct, Ordering::Relaxed);
-                        let tl_ms = t0.elapsed().as_secs_f64() * 1000.0;
-                        sink.push(UiEvent::TranslationFailed {
-                            id,
-                            kind: e.failure_kind(),
-                            detail: format!("{} ({tl_ms:.0}ms)", e.ui_text()),
-                            tl_ms,
-                        });
-                        sink.push(stats.snapshot_event());
-                        return;
-                    }
-                }
-            }
-            // 循环结束（原版 _translate_async 循环结束后）
-            let tl_ms = t0.elapsed().as_secs_f64() * 1000.0;
-            // W2/账本：用量随调用返回，不再经 Translator 共享态（并发不再串台）
-            let (pt, ct) = it.usage();
-            stats.prompt_tokens.fetch_add(pt, Ordering::Relaxed);
-            stats.completion_tokens.fetch_add(ct, Ordering::Relaxed);
-            let verdict = it.verdict();
-            let translated = translated.unwrap_or_default();
-            if verdict.is_some_and(|v| v.has_text()) {
-                stats.tl_count.fetch_add(1, Ordering::Relaxed);
-                tracing::info!("Translate ({tl_ms:.0}ms): {translated}");
-                sink.push(UiEvent::UpdateTranslation {
-                    id,
-                    text: translated.clone(),
-                    tl_ms,
-                });
-                sink.push(stats.snapshot_event());
-                transcript.write_translation(id, &translated);
+            // W3/方案 §4.4：会话内记忆的关闭形态优先（学到的姿势跨段复用；
+            // 裁决 2「只记内存」——进程退出即清空，不写用户配置）
+            let base = match learned.lock().unwrap().get(&model_key).copied() {
+                Some(p) if p != translator.thinking_plan() => translator.with_overrides(p, None),
+                _ => translator.with_overrides(translator.thinking_plan(), None),
+            };
+            let first = run_attempt(&base, &text, &source_lang, &target, timeout, &sink, id);
+            let mut used = first.usage;
+            if first.succeeded() {
+                finish_ok(
+                    &first, &transcript, &stats, &sink, id, t0, used.0, used.1,
+                );
                 return;
             }
-            // W2/结论化：模型没有给出正文——**不再**冒充"同语言"，也不计成功条数
-            let kind = match verdict {
-                Some(lt_translate::ResponseVerdict::EmptyTruncated) => FailureKind::Truncated,
-                _ => FailureKind::Empty,
-            };
-            let detail = match verdict {
-                Some(v) => format!("{v:?} (pt={pt}, ct={ct}, {tl_ms:.0}ms)"),
-                None => format!("no verdict (pt={pt}, ct={ct}, {tl_ms:.0}ms)"),
-            };
-            tracing::warn!("Translation produced no text: {detail}");
-            transcript.finalize_no_translation(id);
-            sink.push(UiEvent::TranslationFailed {
-                id,
-                kind,
-                detail,
-                tl_ms,
-            });
-            sink.push(stats.snapshot_event());
+            // ── W3 兜底：诊断驱动的一次重试（方案 §4.4 表） ──
+            if let Some(healed) = heal_translator(&base, &first) {
+                let detail = format!("自愈重试: {:?} → {:?}", base.thinking_plan(), healed.thinking_plan());
+                tracing::info!("{detail}");
+                let second = run_attempt(&healed, &text, &source_lang, &target, timeout, &sink, id);
+                used.0 += second.usage.0;
+                used.1 += second.usage.1;
+                if second.succeeded() {
+                    // 记住打赢的姿势（本会话内对该 (base, model) 一律沿用）
+                    learned
+                        .lock()
+                        .unwrap()
+                        .insert(model_key, healed.thinking_plan());
+                    finish_ok(
+                        &second, &transcript, &stats, &sink, id, t0, used.0, used.1,
+                    );
+                    return;
+                }
+                fail(&second, &transcript, &stats, &sink, id, t0, used.0, used.1);
+                return;
+            }
+            fail(&first, &transcript, &stats, &sink, id, t0, used.0, used.1);
         });
     }
 
@@ -635,9 +770,19 @@ impl Pipeline {
             });
         }
 
+        // W3/裁决 2：会话内学习记忆（只记内存；跨装置重建保留）
+        let learned: Arc<Mutex<HashMap<(String, String), lt_translate::ThinkingPlan>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+
         // ── 翻译装置（M3）：models 非空即构建；配置无效必须让用户可见
         //（TranslatorUnavailable → 面板翻译页状态行 + 悬浮窗译文占位）──
-        let tl = match TlRig::from_settings(bus, &sup, sink.clone(), transcript.clone()) {
+        let tl = match TlRig::from_settings(
+            bus,
+            &sup,
+            sink.clone(),
+            transcript.clone(),
+            learned.clone(),
+        ) {
             Ok(t) => t.map(Arc::new),
             Err(reason) => {
                 sink.push(UiEvent::TranslatorUnavailable {
@@ -723,6 +868,7 @@ impl Pipeline {
                 let tl_switch = tl_switch_rx.clone();
                 let msg = msg_asr.clone();
                 let transcript = transcript_asr.clone();
+                let learned = learned.clone();
                 Box::new(move || {
                     run_asr_thread(
                         &settings,
@@ -737,6 +883,7 @@ impl Pipeline {
                             sup,
                             transcript,
                             msg,
+                            learned,
                         },
                         tl,
                     );
@@ -1032,6 +1179,8 @@ struct AsrThreadCtx {
     tl_switch: crossbeam_channel::Receiver<TlSwitch>,
     /// 线程监督器句柄（ReplaceRig 重建翻译池用）
     sup: Arc<Supervisor>,
+    /// W3：会话内学习记忆（跨装置重建保留；只记内存）
+    learned: Arc<Mutex<HashMap<(String, String), lt_translate::ThinkingPlan>>>,
     /// 转录写盘（ReplaceRig/TestTranslator 重建翻译装置时共享同一句柄）
     transcript: Arc<lt_audio::transcript::TranscriptWriter>,
     /// 用户可见文案服务（i18n 注入；错误占位/测试连接回执经此取）
@@ -1053,6 +1202,7 @@ fn route_translator_switch(
     sup: &Supervisor,
     transcript: &Arc<lt_audio::transcript::TranscriptWriter>,
     msg: &Msg,
+    learned: &Arc<Mutex<HashMap<(String, String), lt_translate::ThinkingPlan>>>,
 ) -> Option<TlSwitch> {
     match sw {
         TlSwitch::ReplaceRig { config } => {
@@ -1064,6 +1214,7 @@ fn route_translator_switch(
                 sup,
                 sink.clone(),
                 transcript.clone(),
+                learned.clone(),
             ) {
                 Ok(Some(rig)) => {
                     tracing::info!("翻译器已切换: {} ({})", config.name, config.model);
@@ -1089,6 +1240,7 @@ fn route_translator_switch(
                 sup,
                 sink.clone(),
                 transcript.clone(),
+                learned.clone(),
             ) {
                 Ok(Some(rig)) => {
                     let sink = sink.clone();
@@ -1161,6 +1313,7 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
         sup,
         transcript,
         msg,
+        learned,
     } = ctx;
     // 增量识别会话状态（原版 _interim_* 字段；跨段存活，vad_flush 复位）
     let mut interim_state = InterimState::default();
@@ -1227,7 +1380,7 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
                 funasr_model,
                 whisper_model_size,
                 language,
-            }) = route_translator_switch(sw, &mut tl, &bus, &sink, &sup, &transcript, &msg)
+            }) = route_translator_switch(sw, &mut tl, &bus, &sink, &sup, &transcript, &msg, &learned)
             else {
                 continue;
             };
@@ -1295,7 +1448,7 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
                     funasr_model,
                     whisper_model_size,
                     language,
-                }) = route_translator_switch(sw, &mut tl, &bus, &sink, &sup, &transcript, &msg)
+                }) = route_translator_switch(sw, &mut tl, &bus, &sink, &sup, &transcript, &msg, &learned)
                 {
                     // R3/D-61：每次切换尝试重解析 models_dir（与待命臂一致；
                     // 运行中目录损坏时切换路径同样可恢复）
@@ -1835,6 +1988,11 @@ mod tests {
     }
 
     /// 测试转录句柄（临时目录；测试内不落盘启用——TranscriptWriter 仅记录语义）
+    /// W3：空的会话内学习记忆（测试不依赖记忆）
+    fn test_learned() -> Arc<Mutex<HashMap<(String, String), lt_translate::ThinkingPlan>>> {
+        Arc::new(Mutex::new(HashMap::new()))
+    }
+
     fn test_transcript() -> Arc<lt_audio::transcript::TranscriptWriter> {
         Arc::new(lt_audio::transcript::TranscriptWriter::new(tmp_models_dir("transcript")))
     }
@@ -1842,6 +2000,100 @@ mod tests {
     /// 测试设置总线（W4：from_settings 改读总线；发布即版本 1）
     fn test_bus(settings: lt_proto::Settings) -> Arc<SettingsBus> {
         Arc::new(SettingsBus::new(settings))
+    }
+
+
+    // ── W3：兜底决策（方案 §4.4 表） ──
+
+    /// 造一个不发请求的装置（client 构建不触网）
+    fn test_translator(disable_thinking: bool) -> Translator {
+        Translator::new(lt_translate::TranslatorParams {
+            api_base: "http://127.0.0.1:1/v1".into(),
+            disable_thinking,
+            ..Default::default()
+        })
+        .expect("测试客户端构建必成功")
+    }
+
+    fn attempt(verdict: Option<lt_translate::ResponseVerdict>, text: Option<&str>) -> Attempt {
+        Attempt {
+            text: text.map(str::to_string),
+            error: None,
+            verdict,
+            usage: (10, 20),
+        }
+    }
+
+    #[test]
+    fn heal_advances_thinking_chain_on_reasoning_budget() {
+        let base = test_translator(true); // 127.0.0.1 + auto → ReasoningEffortNone
+        assert_eq!(base.thinking_plan(), lt_translate::ThinkingPlan::ReasoningEffortNone);
+        let healed = heal_translator(&base, &attempt(Some(lt_translate::ResponseVerdict::EmptyReasoningBudget), None))
+            .expect("预算被推理吃光应触发兜底");
+        assert_eq!(
+            healed.thinking_plan(),
+            lt_translate::ThinkingPlan::EnableThinkingFalse,
+            "应推进到自动链的下一个候选"
+        );
+    }
+
+    #[test]
+    fn heal_stops_at_chain_end() {
+        // 链尾（嵌套体）无更弱候选 → 不再兜底，交由失败结论提示用户
+        let base = test_translator(true).with_overrides(
+            lt_translate::ThinkingPlan::NestedDisabled,
+            None,
+        );
+        assert!(heal_translator(&base, &attempt(Some(lt_translate::ResponseVerdict::EmptyReasoningBudget), None)).is_none());
+    }
+
+    #[test]
+    fn heal_raises_budget_on_empty_truncation() {
+        let base = test_translator(true);
+        let healed = heal_translator(&base, &attempt(Some(lt_translate::ResponseVerdict::EmptyTruncated), None))
+            .expect("空且被截断应补发上限");
+        // 补发上限：显式 4096（对比默认不发送）
+        let body = healed.build_request_body("s", "t", true, false);
+        assert_eq!(body["max_tokens"], 4096);
+    }
+
+    #[test]
+    fn heal_not_triggered_for_no_output_or_error() {
+        let base = test_translator(true);
+        // 模型主动空答复：重试无意义
+        assert!(heal_translator(&base, &attempt(Some(lt_translate::ResponseVerdict::EmptyNoOutput), None)).is_none());
+        // 请求层错误：不兜底（错误已明确）
+        let mut a = attempt(None, None);
+        a.error = Some(lt_translate::TranslateError::Timeout("t".into()));
+        assert!(heal_translator(&base, &a).is_none());
+        // 成功（有正文）自然不兜底
+        assert!(heal_translator(&base, &attempt(Some(lt_translate::ResponseVerdict::Ok), Some("译文"))).is_none());
+    }
+
+    #[test]
+    fn heal_disabled_when_switch_off() {
+        // 用户取消「关闭模型思考」= 明确要求不干预 → 首轮 plan 为 None,
+        // 空响应只能提示，不得擅自开启关闭参数
+        let base = test_translator(false);
+        assert_eq!(base.thinking_plan(), lt_translate::ThinkingPlan::None);
+        let healed = heal_translator(&base, &attempt(Some(lt_translate::ResponseVerdict::EmptyReasoningBudget), None))
+            .expect("链首兜底仍会尝试一次");
+        assert_eq!(
+            healed.thinking_plan(),
+            lt_translate::ThinkingPlan::ReasoningEffortNone,
+            "从链首（reasoning_effort）开始尝试"
+        );
+    }
+
+    #[test]
+    fn attempt_success_uses_verdict_first() {
+        // 有 url 文本但体检判空（理论矛盾情形）→ 以体检为准
+        assert!(!attempt(Some(lt_translate::ResponseVerdict::EmptyNoOutput), Some("x")).succeeded());
+        assert!(attempt(Some(lt_translate::ResponseVerdict::Ok), Some("x")).succeeded());
+        // 无体检结论时退回"有文本即成功"
+        assert!(attempt(None, Some("x")).succeeded());
+        assert!(!attempt(None, None).succeeded());
+        assert!(!attempt(None, Some("   ")).succeeded());
     }
 
     /// 轮询等待（W1 泄漏回归专用）：worker 出生/退出均异步，条件 3s 内应成立
@@ -1858,7 +2110,7 @@ mod tests {
         let settings = lt_proto::Settings::default();
         let sup = test_sup();
         let bus = test_bus(settings);
-        let rig = TlRig::from_settings(&bus, &sup, EventArtery::new(), test_transcript())
+        let rig = TlRig::from_settings(&bus, &sup, EventArtery::new(), test_transcript(), test_learned())
             .expect("默认设置不应报配置错误")
             .expect("默认 settings 带一个默认模型，应能构建");
         // W4：目标语言不再存实例态（逐调用经总线 tl 视图传入）——验证总线视图
@@ -1876,7 +2128,7 @@ mod tests {
             ..Default::default()
         };
         let sup = test_sup();
-        assert!(TlRig::from_settings(&test_bus(settings), &sup, EventArtery::new(), test_transcript()).unwrap().is_none());
+        assert!(TlRig::from_settings(&test_bus(settings), &sup, EventArtery::new(), test_transcript(), test_learned()).unwrap().is_none());
         sup.join_all();
     }
 
@@ -1885,7 +2137,7 @@ mod tests {
         let mut settings = lt_proto::Settings::default();
         settings.models.clear();
         let sup = test_sup();
-        assert!(TlRig::from_settings(&test_bus(settings), &sup, EventArtery::new(), test_transcript()).unwrap().is_none());
+        assert!(TlRig::from_settings(&test_bus(settings), &sup, EventArtery::new(), test_transcript(), test_learned()).unwrap().is_none());
         sup.join_all();
     }
 
@@ -1913,12 +2165,12 @@ mod tests {
     fn replaced_rig_workers_shutdown_on_drop() {
         let sup = test_sup();
         let bus = test_bus(lt_proto::Settings::default());
-        let rig = TlRig::from_settings(&bus, &sup, EventArtery::new(), test_transcript()).unwrap().unwrap();
+        let rig = TlRig::from_settings(&bus, &sup, EventArtery::new(), test_transcript(), test_learned()).unwrap().unwrap();
         let old_alive = rig.pool.alive_workers.clone();
         wait_for(|| old_alive.load(Ordering::Relaxed) == TL_POOL_WORKERS);
         // 模拟 ReplaceRig 的替换语义（route_translator_switch：
         // `*tl = Some(Arc::new(rig))`——旧 rig 被 Drop，无人显式关机）
-        let replacement = TlRig::from_settings(&bus, &sup, EventArtery::new(), test_transcript()).unwrap().unwrap();
+        let replacement = TlRig::from_settings(&bus, &sup, EventArtery::new(), test_transcript(), test_learned()).unwrap().unwrap();
         wait_for(|| replacement.pool.alive_worker_count() == TL_POOL_WORKERS);
         drop(rig);
         // 旧池经 JobPool::Drop 自动停机：3s 内应归零（500ms pop_timeout 节拍）
@@ -1935,7 +2187,7 @@ mod tests {
     fn test_rig_dropped_with_job_shuts_down_pool() {
         let sup = test_sup();
         let bus = test_bus(lt_proto::Settings::default());
-        let rig = TlRig::from_settings(&bus, &sup, EventArtery::new(), test_transcript()).unwrap().unwrap();
+        let rig = TlRig::from_settings(&bus, &sup, EventArtery::new(), test_transcript(), test_learned()).unwrap().unwrap();
         let alive = rig.pool.alive_workers.clone();
         wait_for(|| alive.load(Ordering::Relaxed) == TL_POOL_WORKERS);
         // 等价于任务闭包 Drop 时 rig 的丢弃语义
