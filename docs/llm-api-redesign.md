@@ -339,3 +339,40 @@ UiEvent::TranslationFailed  { id: u64, kind: FailureKind, detail: String, tl_ms:
 - OpenRouter：`reasoning.effort:"none"` 关闭；模型元数据带 `supported_efforts`。
 - LM Studio：OpenAI 兼容文档未列 `reasoning_effort`，但本机实测**生效**；原生 `/api/v1/models` 暴露 `capabilities.reasoning.allowed_options`（本机该模型为 `["off","on"]`）。
 - 思维链漏出实证：LM Studio #1569、#851；vLLM #54744；SGLang `separate_reasoning: False`。
+
+---
+
+## 9. 实施状态（2026-09-10 更新）
+
+**已落地**（每波均以"全量测试 + clippy -D warnings + 四守护脚本"为门禁）：
+
+| 波 | 提交 | 内容 |
+|---|---|---|
+| W1 | `364dd0e` | 接口与参数面：`ModelConfig` 新增 `disable_thinking`（默认 true）/`temperature`（None=不发）；旧 `thinking_style=="off"` 归一化；**不再发送 `max_tokens`**；关闭思考复选框 + 温度一等字段；方式下拉降级高级区；`json_response`/覆写表移出界面；悬浮窗模型下拉补 `SwitchTranslator`；字段登记测试 |
+| W2a | `b36fdda` | 思维链隔离器（五行标签表 + 跨分片尾巴缓冲 + 游离闭标签）+ 回应体检 `ResponseVerdict`（finish_reason/reasoning_tokens） |
+| W2b | `79b0959` | 结论化：`TranslationSkipped`/`TranslationFailed{kind}` 契约；UI `TranslationView` 五态；字幕窗喂养规则；失败中文文案（10 类） |
+| W3 | `a020db8` | 内部兜底链（诊断驱动的一次重试）+ 会话内记忆（只记内存）；用量跨尝试累加 |
+| W5/W4a | `f4e62c2` | 流可取消（`Drop` → `abort()`）；测试连接改完整一轮 + 非空判定；`FailureKind::i18n_key()` 单一事实源 |
+| W4b | `634eda4` | 翻译恢复后清除 `panel.translator_error`（回执闭环） |
+
+**实机验收**（本机 LM Studio + `qwen3.5-4b-mtp`，默认参数）：`cargo run -p lt-translate --example smoke`
+→ 译文正确、**186ms / 10 completion tokens**（改造前 3.2s 空译文、UI 显示 `(相同语言)`）。
+
+测试基线：454+7 → **483+7**；契约变体 93 → 106（0 死）。
+
+**尚未落地**（按优先级）：
+
+1. **请求体预览**（方案 §3.10b）：受分层规则所限，lt-ui 不能依赖 lt-translate 构造请求——
+   需要新增 `Cmd::PreviewRequest(config)` + `UiEvent::RequestPreview{json}`（纯加法）经
+   编排域构造并把脱敏后的 JSON 回执给 UI；配套 `preview_matches_actual_body` 测试。
+2. **配置校验**（方案 §4.7）：`ModelConfig::normalize()/issues()` + 编辑对话框就地提示
+   （api_base 归一化、overrides 类型、模板占位符）。
+3. **partial 快照格 / 丢任务回执**（评审 P2-2/P2-3）：事件动脉的 partial 改 ArcSwap 快照，
+   JobPool 丢任务时补回执（`FailureKind` 需新增 `Dropped` 变体）。
+4. **实机走查**：字幕窗喂养规则、失败态视觉、取消行为（放弃后服务端 ≤1s 停止生成）。
+
+**实施中发现并修复的额外缺陷**：
+- 源文件中完整标签字面量会被编辑/编码环节**间歇性改写**（闭标签曾被写成全角变体，
+  会导致"块永不闭合 → 译文恒空"的静默故障）→ 标签表全部改用 `\u{..}` 转义书写 +
+  `tag_table_is_intact` 守卫（`reasoning.rs`）。
+- `TlRig.msg` 在翻译出口成为死字段（失败文案改由 UI 本地化）→ 删除。
