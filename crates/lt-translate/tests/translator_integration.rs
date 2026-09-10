@@ -662,6 +662,34 @@ fn request_body_omits_optional_params_when_absent() {
     assert!(body.get("thinking").is_none());
 }
 
+/// 审计 R2：最小请求必须连**已撤出界面的** `json_response` 一起丢掉——
+/// 它会往请求里塞 response_format 并改写系统提示词，端点拒绝时"最小"也无路可退
+#[test]
+fn minimal_drops_hidden_json_response() {
+    let t = Translator::new(TranslatorParams {
+        api_base: "http://127.0.0.1:1234/v1".into(),
+        model: "test-model".into(),
+        json_response: true,
+        ..TranslatorParams::default()
+    })
+    .unwrap();
+    let normal = t.build_request_body("system", "text", true, false, 0);
+    assert!(
+        normal.get("response_format").is_some(),
+        "常规请求仍按其配置发送: {normal}"
+    );
+
+    let minimal = t.minimal();
+    let body = minimal.build_request_body("system", "text", true, false, 0);
+    assert!(
+        body.get("response_format").is_none(),
+        "最小请求不得带 response_format: {body}"
+    );
+    // 系统提示词的 "Respond in JSON format" 追加发生在 build_system_prompt（调用路径），
+    // 由 mock 服务器用例 `json_response_sends_json_schema_format` 从请求体侧钉住；
+    // 这里只需确认 minimal 装置的 json_response 配置面已关（上面 response_format 即证）
+}
+
 /// 最小请求：只剩「模型 + 系统提示词 + 文本 + 流式」，可选参数一个不带
 #[test]
 fn minimal_request_drops_every_optional_field() {

@@ -166,6 +166,7 @@ impl FailureKind {
             FailureKind::Connection => "err_conn_refused",
             FailureKind::Repetition => "error_repetition",
             FailureKind::Dropped => "err_dropped",
+            FailureKind::NotReady => "err_not_ready",
             FailureKind::Unknown => "err_unknown",
         }
     }
@@ -203,6 +204,9 @@ pub enum FailureKind {
     /// 任务被丢弃（第二轮评审 ⑬d：翻译队列满时 keep-latest 丢掉最旧的待译段，
     /// 旧实现无任何回执 → 字幕永远停在"翻译中"）
     Dropped,
+    /// 翻译装置未就绪（模型配置无效等）——旧实现把占位文案当**正常译文**下发，
+    /// 字幕窗以译文样式显示，用户看不出这是错误（审计 R2：报错必须可辨）
+    NotReady,
     /// 其他未知错误
     Unknown,
 }

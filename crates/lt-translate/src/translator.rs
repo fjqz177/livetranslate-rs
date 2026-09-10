@@ -300,13 +300,23 @@ impl Translator {
     /// 输出上限全部清空，关闭形态固定为"不发送"。只剩
     /// 「模型 + 系统提示词 + 待译文本 + 流式开关」（+ 流式用量探测）。
     pub fn minimal(&self) -> Translator {
+        // 白名单构造（不是"复制再清几个"）：`json_response` 会往请求里塞
+        // `response_format` 并改写系统提示词，而它已撤出界面——老档案带着它时
+        // 最小请求就不再"最小"，被拒也再无退路（对抗审计实证）。保留的只有
+        // 翻译必需项 + 用户可见的传输开关。
         Translator {
+            client: self.client.clone(),
+            model: self.model.clone(),
+            streaming: self.streaming,
+            json_response: false,
             thinking: ThinkingPlan::None,
+            no_system_role: self.no_system_role,
             max_tokens: None,
             temperature: None,
             overrides: BTreeMap::new(),
             extra_body: Value::Object(Map::new()),
-            ..self.share_client()
+            system_prompt_template: self.system_prompt_template.clone(),
+            state: self.state.clone(),
         }
     }
 

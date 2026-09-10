@@ -175,6 +175,16 @@ impl JobPool {
         self.stopped.store(true, Ordering::Relaxed);
     }
 
+    /// **装置被替换**前的收尾：把在队任务全部取出并**补发"已放弃"回执**
+    /// （在 `stopped` 置位前丢弃，[`TlJob::drop`] 才会回执）。停机路径不走这里
+    /// ——停机时事件无处可去，也不该刷一堆失败。
+    fn retire(&self) {
+        while self.queue.try_pop().is_some() {
+            // 出队即（在 stopped=false 下）Drop → 回执
+        }
+        self.shutdown();
+    }
+
     /// 存活 worker 数（泄漏回归测试观测面）
     #[cfg(test)]
     fn alive_worker_count(&self) -> usize {
@@ -218,7 +228,9 @@ impl TlStats {
             tl_count: AtomicU64::new(0),
             prompt_tokens: AtomicU64::new(0),
             completion_tokens: AtomicU64::new(0),
-            usage_known: AtomicBool::new(true),
+            // 尚未观测到任何用量 → "未知"（界面显示"—"），不是"已知为零"。
+            // 只有唯一失败的端点此前会显示 0 冒充真实值（对抗审计）
+            usage_known: AtomicBool::new(false),
             input_price,
             output_price,
         }
@@ -356,16 +368,49 @@ fn should_advance(step: lt_translate::RequestStep, attempt: &Attempt, allow_verd
         && !matches!(step, lt_translate::RequestStep::Minimal)
 }
 
-/// 是否应把"该模型无法关闭思维链"回执给界面（item 5）：
-/// 仅当用户**确实要求过关闭**（勾选了且尚未标记）时才成立——用户主动取消勾选
-/// 时，退到"不发送"形态本来就是他要的，不构成"关不掉"的证据（否则会给模型
-/// 打上一个错误的持久标记）。
+/// 是否应把"该模型无法关闭思维链"回执给界面（item 5）。三个前提缺一不可：
+/// - `wants_disable`：用户**确实要求过**关闭——主动取消勾选时退到"不发送"本
+///   就是他要的，不构成证据（否则给模型打上错误的持久标记）；
+/// - `attempted_disable`：这条链**确实试过**注入关闭形态——官方保守端点
+///   （api.openai.com 等）起点就是"不发"，从没试过，谈不上"关不掉"；否则会出现
+///   "每翻译一段就被自动取消勾选一次"的自证预言（对抗审计实证）；
+/// - `!already_marked`：没标记过（每会话每模型只回执一次）。
 fn should_report_cannot_disable(
     wants_disable: bool,
+    attempted_disable: bool,
     already_marked: bool,
     step: lt_translate::RequestStep,
 ) -> bool {
-    wants_disable && !already_marked && lt_translate::gives_up_disabling(step)
+    wants_disable && attempted_disable && !already_marked && lt_translate::gives_up_disabling(step)
+}
+
+/// 配置指纹（会话记忆的失效依据）：用户改了与请求形态有关的任何一项，之前学到的
+/// 台阶就不再可信——否则会出现"取消了勾选、记忆却仍注入关闭参数"或"改了密钥、
+/// 却仍在用退到底的最小请求"这类界面与实际不一致（审计实证）。
+fn config_fingerprint(mc: &lt_proto::ModelConfig) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    mc.api_base.hash(&mut h);
+    mc.api_key.hash(&mut h);
+    mc.model.hash(&mut h);
+    mc.disable_thinking.hash(&mut h);
+    mc.thinking_unavailable.hash(&mut h);
+    mc.thinking_style.hash(&mut h);
+    mc.streaming.hash(&mut h);
+    mc.no_system_role.hash(&mut h);
+    mc.json_response.hash(&mut h);
+    mc.context_turns.hash(&mut h);
+    mc.temperature.map(f64::to_bits).hash(&mut h);
+    if let Some(ov) = &mc.overrides {
+        for (k, v) in ov {
+            k.hash(&mut h);
+            v.to_string().hash(&mut h);
+        }
+    }
+    if let Some(eb) = &mc.extra_body {
+        eb.to_string().hash(&mut h);
+    }
+    h.finish()
 }
 
 /// 一次翻译的完整产出：末次尝试 + 实际打赢的台阶 + 跨尝试累计用量
@@ -394,6 +439,7 @@ fn run_ladder(
 ) -> LadderOutcome {
     let mut step = start;
     let mut total = (0u64, 0u64);
+    let mut truncation_retried = false;
     loop {
         let device = translator_for_step(base, step);
         let attempt = run_attempt(
@@ -416,9 +462,9 @@ fn run_ladder(
                 usage: total,
             };
         }
-        // 体检判定"被截断且没有正文"：同一台阶补发输出上限重试一次
-        // （只做一次——两个分支都在此收束，不会回到循环）
-        if attempt.error.is_none()
+        // 体检判定"被截断且没有正文"：同一台阶补发输出上限重试一次（每段一次）
+        if !truncation_retried
+            && attempt.error.is_none()
             && matches!(
                 attempt.verdict,
                 Some(lt_translate::ResponseVerdict::EmptyTruncated)
@@ -426,6 +472,7 @@ fn run_ladder(
         {
             tracing::info!("体检：输出被截断，补发输出上限重试一次（{step:?}）");
             let retry = translator_for_step(base, step).with_max_tokens(4096);
+            truncation_retried = true;
             let second = run_attempt(
                 &retry,
                 text,
@@ -439,13 +486,32 @@ fn run_ladder(
             );
             total.0 += second.usage.0;
             total.1 += second.usage.1;
-            // 补发上限只做一次：无论成败都在此收束（不再下退台阶——
-            // 截断与"关不掉思考"是两件事）
-            return LadderOutcome {
-                attempt: second,
-                step,
-                usage: total,
+            if second.succeeded() {
+                return LadderOutcome {
+                    attempt: second,
+                    step,
+                    usage: total,
+                };
+            }
+            // 补发上限这次也可能被端点拒绝（400/422）——按同一套判据继续退级
+            // （下一级不带 max_tokens，本可成功的情形不该被判死）
+            if !should_advance(step, &second, allow_verdict_advance) {
+                return LadderOutcome {
+                    attempt: second,
+                    step,
+                    usage: total,
+                };
+            }
+            let Some(next) = lt_translate::next_step(step) else {
+                return LadderOutcome {
+                    attempt: second,
+                    step,
+                    usage: total,
+                };
             };
+            tracing::info!("补发上限被拒，继续降级：{:?} → {:?}", step, next);
+            step = next;
+            continue;
         }
         if !should_advance(step, &attempt, allow_verdict_advance) {
             return LadderOutcome {
@@ -537,6 +603,13 @@ fn fail(
     sink.push(stats.snapshot_event());
 }
 
+/// 会话内台阶记忆的共享句柄：`(api_base, model) → (配置指纹, 台阶)`。
+/// 记"退到底"的失败台阶同样重要（否则每段重走整条阶梯），但必须与配置指纹绑定：
+/// 配置一变即失效（否则会出现"取消了勾选、记忆却仍注入关闭参数"这类界面与实际不一致）。
+type LearnedMap = HashMap<(String, String), (u64, lt_translate::RequestStep)>;
+/// 记忆句柄（Arc 包装：跨装置重建保留、只记内存）
+type Learned = Arc<Mutex<LearnedMap>>;
+
 /// 翻译装置：Translator + 统计 + 线程池（ASR 线程与翻译 worker 共享）
 struct TlRig {
     translator: Arc<Translator>,
@@ -547,10 +620,10 @@ struct TlRig {
     /// 设置总线（W4：翻译 worker 提交前读 `tl` 生效视图——目标语言/超时不再
     /// 存实例可变态（旧 MutableState 设置面 + TlSwitch::TargetLanguage/Timeout 镜像）
     bus: Arc<SettingsBus>,
-    /// 会话内台阶记忆（(api_base, model) → 上次打赢/退到底的台阶）。**只记内存**
-    /// ——进程退出即清空，不写用户配置（裁决 2）；同一 Pipeline 内跨装置重建保留。
-    /// 记"退到底"的失败台阶同样重要：否则每一段都会把整条阶梯重走一遍。
-    learned: Arc<Mutex<HashMap<(String, String), lt_translate::RequestStep>>>,
+    /// 会话内台阶记忆（见 [`Learned`]）：跨装置重建保留、只记内存
+    learned: Learned,
+    /// 本装置配置的指纹（记忆命中判据）
+    config_fp: u64,
     /// 已就"无法关闭思维链"回过执的模型键（每会话每模型一次，防止事件洪水）
     degraded_notified: Arc<Mutex<std::collections::HashSet<(String, String)>>>,
     /// 本装置的 (api_base, model) 记忆键
@@ -577,7 +650,7 @@ impl TlRig {
         sup: &Supervisor,
         sink: EventSink,
         transcript: Arc<lt_audio::transcript::TranscriptWriter>,
-        learned: Arc<Mutex<HashMap<(String, String), lt_translate::RequestStep>>>,
+        learned: Learned,
         degraded_notified: Arc<Mutex<std::collections::HashSet<(String, String)>>>,
     ) -> Result<Option<Self>, String> {
         let eff = bus.load();
@@ -608,7 +681,7 @@ impl TlRig {
         sup: &Supervisor,
         sink: EventSink,
         transcript: Arc<lt_audio::transcript::TranscriptWriter>,
-        learned: Arc<Mutex<HashMap<(String, String), lt_translate::RequestStep>>>,
+        learned: Learned,
         degraded_notified: Arc<Mutex<std::collections::HashSet<(String, String)>>>,
     ) -> Result<Option<Self>, String> {
         let params = lt_translate::TranslatorParams {
@@ -665,6 +738,7 @@ impl TlRig {
             learned,
             degraded_notified,
             model_key: (mc.api_base.clone(), mc.model.clone()),
+            config_fp: config_fingerprint(mc),
             model_name: mc.name.clone(),
             seq: Arc::new(AtomicU64::new(0)),
             start_step,
@@ -701,6 +775,13 @@ impl TlRig {
         let allow_verdict_advance = self.allow_verdict_advance;
         let thinking_unavailable = self.thinking_unavailable;
         let wants_disable = self.wants_disable;
+        // "确实尝试过注入关闭形态"：起点不是 Plan(None) 才算试过（官方保守端点
+        // 从设计上就不发，永不算"关不掉"）
+        let attempted_disable = matches!(
+            start_step,
+            lt_translate::RequestStep::Plan(p) if p != lt_translate::ThinkingPlan::None
+        );
+        let config_fp = self.config_fp;
         let seq = self.seq.fetch_add(1, Ordering::Relaxed) + 1;
         self.pool.submit(id, move || {
             let eff = bus.load();
@@ -713,7 +794,8 @@ impl TlRig {
                 .lock()
                 .unwrap()
                 .get(&model_key)
-                .copied()
+                .filter(|(fp, _)| *fp == config_fp)
+                .map(|(_, s)| *s)
                 .unwrap_or(start_step);
             let outcome = run_ladder(
                 &translator,
@@ -731,7 +813,10 @@ impl TlRig {
             let used = outcome.usage;
             if !outcome.attempt.succeeded() {
                 // 整条阶梯都没打通过：记住退到底的台阶（下一段一步到位，不再重走）
-                learned.lock().unwrap().insert(model_key.clone(), outcome.step);
+                learned
+                    .lock()
+                    .unwrap()
+                    .insert(model_key.clone(), (config_fp, outcome.step));
                 fail(
                     &outcome.attempt,
                     &transcript,
@@ -748,12 +833,17 @@ impl TlRig {
             learned
                 .lock()
                 .unwrap()
-                .insert(model_key.clone(), outcome.step);
+                .insert(model_key.clone(), (config_fp, outcome.step));
             // ── item 5 / 方案 §2.5 规则 5「偏离可见」──────────────────────
             // 用户要求关闭思考、但阶梯最终只能退到"不含关闭参数"的形态
             // （强制思考模型）→ 回执 UI：取消勾选 + 落盘 thinking_unavailable
             // + 提示"该模型无法关闭思维链"。每会话每模型只回执一次。
-            if should_report_cannot_disable(wants_disable, thinking_unavailable, outcome.step) {
+            if should_report_cannot_disable(
+                wants_disable,
+                attempted_disable,
+                thinking_unavailable,
+                outcome.step,
+            ) {
                 let first_time = degraded_notified.lock().unwrap().insert(model_key.clone());
                 if first_time {
                     tracing::warn!(
@@ -1030,7 +1120,7 @@ impl Pipeline {
         // W3/裁决 2：会话内学习记忆（只记内存；跨装置重建保留）
         let degraded_notified: Arc<Mutex<std::collections::HashSet<(String, String)>>> =
             Arc::new(Mutex::new(std::collections::HashSet::new()));
-        let learned: Arc<Mutex<HashMap<(String, String), lt_translate::RequestStep>>> =
+        let learned: Learned =
             Arc::new(Mutex::new(HashMap::new()));
 
         // ── 翻译装置（M3）：models 非空即构建；配置无效必须让用户可见
@@ -1442,7 +1532,7 @@ struct AsrThreadCtx {
     /// 线程监督器句柄（ReplaceRig 重建翻译池用）
     sup: Arc<Supervisor>,
     /// W3：会话内学习记忆（跨装置重建保留；只记内存）
-    learned: Arc<Mutex<HashMap<(String, String), lt_translate::RequestStep>>>,
+    learned: Learned,
     degraded_notified: Arc<Mutex<std::collections::HashSet<(String, String)>>>,
     /// 转录写盘（ReplaceRig/TestTranslator 重建翻译装置时共享同一句柄）
     transcript: Arc<lt_audio::transcript::TranscriptWriter>,
@@ -1465,7 +1555,7 @@ fn route_translator_switch(
     sup: &Supervisor,
     transcript: &Arc<lt_audio::transcript::TranscriptWriter>,
     msg: &Msg,
-    learned: &Arc<Mutex<HashMap<(String, String), lt_translate::RequestStep>>>,
+    learned: &Learned,
     degraded_notified: &Arc<Mutex<std::collections::HashSet<(String, String)>>>,
 ) -> Option<TlSwitch> {
     match sw {
@@ -1483,6 +1573,11 @@ fn route_translator_switch(
             ) {
                 Ok(Some(rig)) => {
                     tracing::info!("翻译器已切换: {} ({})", config.name, config.model);
+                    // 旧装置交给 Drop 之前先 retire：在队未跑的任务补发"已放弃"
+                    // 回执——否则这些段落在字幕上永远停在「翻译中…」
+                    if let Some(old) = tl.take() {
+                        old.pool.retire();
+                    }
                     *tl = Some(Arc::new(rig));
                 }
                 Ok(None) => {
@@ -2118,11 +2213,15 @@ fn commit_text(
 
     // ── 翻译分流（原版 _process_segment_text 尾部；字幕窗 extra_langs 随 M4 接入）──
     let Some(rig) = tl else {
-        // 翻译装置未就绪（配置无效已被 TranslatorUnavailable 提醒）：译文行立即
-        // 给出明确占位，不停留在永久的「翻译中...」——P0-2
-        sink.push(UiEvent::UpdateTranslation {
+        // 翻译装置未就绪（配置无效已被 TranslatorUnavailable 提醒）：立即给结论，
+        // 不停留在永久的「翻译中...」（P0-2）。**以失败结论下发**——旧实现把它当
+        // 正常译文（`UpdateTranslation` + 占位文案），字幕窗用译文样式显示，用户
+        // 看不出这是错误（审计 R2：报错必须与译文明显不同）。
+        let _ = msg; // 文案由 UI 按 FailureKind 本地化（编排域不依赖 lt-i18n）
+        sink.push(UiEvent::TranslationFailed {
             id,
-            text: msg.t("translator_unavailable_placeholder"),
+            kind: FailureKind::NotReady,
+            detail: "translator not ready (invalid model config or no active model)".into(),
             tl_ms: 0.0,
         });
         return;
@@ -2276,7 +2375,7 @@ mod tests {
         Arc::new(Mutex::new(std::collections::HashSet::new()))
     }
 
-    fn test_learned() -> Arc<Mutex<HashMap<(String, String), lt_translate::RequestStep>>> {
+    fn test_learned() -> Learned {
         Arc::new(Mutex::new(HashMap::new()))
     }
 
@@ -2456,6 +2555,46 @@ mod tests {
         assert!(body.get("reasoning_effort").is_none());
     }
 
+    /// 会话记忆与配置指纹绑定：改了请求形态相关的任何一项，记忆即失效
+    /// （否则"取消了勾选、记忆却仍注入关闭参数"= 界面与实际不一致）
+    #[test]
+    fn config_fingerprint_tracks_request_shape() {
+        let base = lt_proto::ModelConfig::default();
+        assert_eq!(config_fingerprint(&base), config_fingerprint(&base.clone()));
+        for changed in [
+            lt_proto::ModelConfig {
+                disable_thinking: !base.disable_thinking,
+                ..base.clone()
+            },
+            lt_proto::ModelConfig {
+                thinking_style: Some("qwen".into()),
+                ..base.clone()
+            },
+            lt_proto::ModelConfig {
+                temperature: Some(0.7),
+                ..base.clone()
+            },
+            lt_proto::ModelConfig {
+                api_key: "other-key".into(),
+                ..base.clone()
+            },
+            lt_proto::ModelConfig {
+                model: "other-model".into(),
+                ..base.clone()
+            },
+            lt_proto::ModelConfig {
+                extra_body: Some(serde_json::json!({"a": 1})),
+                ..base.clone()
+            },
+        ] {
+            assert_ne!(
+                config_fingerprint(&base),
+                config_fingerprint(&changed),
+                "配置变化必须换指纹: {changed:?}"
+            );
+        }
+    }
+
     /// item 5 回执判据：只有"用户要求过关闭"才报"关不掉"——主动取消勾选不算
     #[test]
     fn cannot_disable_is_reported_only_when_user_asked() {
@@ -2463,15 +2602,18 @@ mod tests {
         let gave_up = RequestStep::Plan(ThinkingPlan::None);
         let minimal = RequestStep::Minimal;
         let still_injecting = RequestStep::Plan(ThinkingPlan::NestedDisabled);
-        // 用户要求过 + 退到不发送 → 报
-        assert!(should_report_cannot_disable(true, false, gave_up));
-        assert!(should_report_cannot_disable(true, false, minimal));
+        // 用户要求过 + 确实试过注入 + 退到不发送 → 报
+        assert!(should_report_cannot_disable(true, true, false, gave_up));
+        assert!(should_report_cannot_disable(true, true, false, minimal));
         // 用户主动取消勾选（没要求过）→ 不报（否则给模型打上错误标记）
-        assert!(!should_report_cannot_disable(false, false, gave_up));
+        assert!(!should_report_cannot_disable(false, true, false, gave_up));
+        // **没试过注入**（官方保守端点起点即 Plan(None)）→ 不报，
+        // 否则每翻译一段就被自动取消勾选一次（对抗审计实证的自证预言）
+        assert!(!should_report_cannot_disable(true, false, false, gave_up));
         // 已经标记过 → 不重复报
-        assert!(!should_report_cannot_disable(true, true, gave_up));
+        assert!(!should_report_cannot_disable(true, true, true, gave_up));
         // 还在注入关闭参数 → 还没到"关不掉"的结论
-        assert!(!should_report_cannot_disable(true, false, still_injecting));
+        assert!(!should_report_cannot_disable(true, true, false, still_injecting));
     }
 
     /// 阶梯端到端（死端口）：连接类错误**不得**白走阶梯——只在起点试一次，
@@ -2594,6 +2736,48 @@ mod tests {
         });
         std::thread::sleep(Duration::from_millis(200));
         assert_eq!(ran.load(Ordering::Relaxed), 0);
+    }
+
+    /// 装置被替换（换模型）时要 retire 在队任务：补"已放弃"回执而非静默丢弃
+    /// （审计：只覆盖了队列溢出路径，替换路径会让字幕永远停在「翻译中…」）
+    #[test]
+    fn retired_pool_emits_receipts_for_queued_jobs() {
+        let sup = test_sup();
+        let sink = EventArtery::new();
+        let pool = JobPool::new(0, &sup, sink.clone());
+        for id in 0..3u64 {
+            pool.submit(id, || {});
+        }
+        pool.retire();
+        let mut batch = Vec::new();
+        let mut dropped_ids = Vec::new();
+        loop {
+            if !sink.drain_batch(&mut batch, Duration::from_millis(20)) {
+                break;
+            }
+            for ev in batch.iter() {
+                if let UiEvent::TranslationFailed { id, kind, .. } = ev {
+                    assert_eq!(*kind, FailureKind::Dropped);
+                    dropped_ids.push(*id);
+                }
+            }
+        }
+        assert_eq!(dropped_ids, vec![0, 1, 2], "替换时在队任务必须逐条回执");
+        // 停机路径（不 retire）保持静默：事件无处可去，也不该刷失败
+        let pool2 = JobPool::new(0, &sup, sink.clone());
+        for id in 10..12u64 {
+            pool2.submit(id, || {});
+        }
+        pool2.shutdown();
+        let mut batch2 = Vec::new();
+        while sink.drain_batch(&mut batch2, Duration::from_millis(20)) {
+            for ev in batch2.iter() {
+                if let UiEvent::TranslationFailed { id, .. } = ev {
+                    assert!(*id < 10, "停机路径不应补回执");
+                }
+            }
+        }
+        sup.join_all();
     }
 
     /// 第二轮评审 ⑬d：队列满丢最旧时，被丢任务必须补一条"已放弃"回执

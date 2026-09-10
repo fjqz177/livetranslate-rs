@@ -522,6 +522,7 @@ err_model_empty: "The model returned no translation. If it is a reasoning model,
 err_truncated: "The translation was cut off (output hit the length limit)."
 err_unknown: "Translation failed (unknown reason). See the log for details."
 err_dropped: "Translation task dropped (too many queued; only the newest sentences are kept)."
+err_not_ready: "The translation engine is not ready: check the model settings (base URL, key, model name)."
 err_subtitle_label: "⚠ Translation failed"
 stats_usage_unknown: "—"
 stats_usage_unknown_hint: "This endpoint does not report token usage"

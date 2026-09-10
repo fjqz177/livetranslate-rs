@@ -526,6 +526,7 @@ err_model_empty: "模型没有返回译文。若是推理模型，请保持「�
 err_truncated: "译文被截断（输出达到长度上限）。"
 err_unknown: "翻译失败（未知原因）。详情见日志。"
 err_dropped: "翻译任务被丢弃（积压过多，只处理最新的句子）。"
+err_not_ready: "翻译组件未就绪：请在模型设置里检查配置（地址、密钥、模型名）。"
 err_subtitle_label: "⚠ 翻译失败"
 stats_usage_unknown: "—"
 stats_usage_unknown_hint: "该端点未提供用量统计"

@@ -336,6 +336,14 @@ impl Settings {
         // 2026-09-10 第二轮评审 ②：界面已撤下的覆写键从档案里**清除**——
         // 界面看不见的键绝不允许影响实际请求（温度已升为一等字段、输出上限应用
         // 不再发送——旧值留着会反杀"不再发送 max_tokens"的修复、seed 冷门）
+        // json_response 已撤出界面却仍会改写请求（response_format + 提示词追加）
+        // ——与上面三个覆写键同理，界面看不见的东西不许影响实发请求
+        for m in &mut self.models {
+            if m.json_response {
+                m.json_response = false;
+                fixed.push("json_response: 已撤出界面 → 关闭（不再改写请求）".into());
+            }
+        }
         for m in &mut self.models {
             if let Some(ov) = m.overrides.as_mut() {
                 for k in OVERRIDE_KEYS_HIDDEN {
