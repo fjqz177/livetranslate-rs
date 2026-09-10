@@ -173,8 +173,8 @@ pub fn duplicate_model(models: &mut Vec<ModelConfig>, row: usize) -> Option<usiz
 
 // ── 页内数据模型（原版 dialog model 的 Rust 表达）──
 
-/// 翻译页恢复默认：models 回默认单行（LM Studio 本地端点）、清 prompt、
-/// timeout 回 10s；恢复后重发 SwitchTranslator（N3 生效管道）。
+/// 翻译页恢复默认：models 回默认单行（LM Studio 本地端点，含上下文数归 0）、
+/// 清 prompt、timeout 回 10s；恢复后重发 SwitchTranslator（N3 生效管道）。
 /// 破坏性（抹掉 API Key）——调用前必须已过确认框。
 pub(crate) fn restore_translation_page(
     panel: &mut PanelUi,
@@ -393,6 +393,32 @@ pub fn page(ui: &mut Ui, panel: &mut PanelUi, session: &mut SessionView, setting
                 ui.label(RichText::new(&text).size(10.5).color(pal.weak));
             }
         }
+
+        // ── 当前模型「上下文数」（面板直达）──
+        // 此前该设置只在模型编辑对话框的高级区里，配套说明却错挂在「网络配置」
+        // 组下（本页看得见说明、找不到控件）。此项改的是**当前活跃模型**的
+        // context_turns：600ms 防抖重建翻译器 + 300ms 落盘，与编辑对话框确定
+        // 同路（原版 main.py:493 取 model_config.context_turns 后
+        // set_context_turns 的语义；面板行是 Rust 版直达入口）
+        if !settings.models.is_empty() {
+            ui.add_space(6.0);
+            let idx = settings.active_model.min(settings.models.len() - 1);
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(format!("{} ", lt_i18n::t("label_context_turns"))).color(pal.text),
+                );
+                let mut turns = settings.models[idx].context_turns as i32;
+                let resp = ui
+                    .add(egui::DragValue::new(&mut turns).range(0..=20).speed(1.0))
+                    .on_hover_text(lt_i18n::t("context_turns_hint"));
+                if resp.changed() {
+                    settings.models[idx].context_turns = turns.clamp(0, 20) as u32;
+                    schedule_prompt_apply(panel, session, std::time::Instant::now());
+                    mark_settings_dirty(session);
+                }
+            });
+            hint_line(ui, pal, &lt_i18n::t("context_turns_hint"));
+        }
     });
 
     // ── 系统提示词（原版 prompt_group）──
@@ -452,7 +478,6 @@ pub fn page(ui: &mut Ui, panel: &mut PanelUi, session: &mut SessionView, setting
                 mark_settings_dirty(session);
             }
         });
-        hint_line(ui, pal, &lt_i18n::t("context_turns_hint"));
     });
 
     ui.add_space(8.0);
@@ -734,13 +759,14 @@ fn editor_fields(ui: &mut Ui, ed: &mut ModelEditState, pal: &Palette) {
                 ui.end_row();
             }
 
-            // 上下文数（W1：自基本区移入高级区）
+            // 上下文数（W1：自基本区移入高级区；原版 QSpinBox 0-20 + setToolTip
+            // (context_turns_hint)——tooltip 此前漏移植，此处补回）
             ui.label(lt_i18n::t("label_context_turns"));
             let mut turns = ed.context_turns;
-            if ui
-                .add(egui::DragValue::new(&mut turns).range(0..=20))
-                .changed()
-            {
+            let resp = ui
+                .add(egui::DragValue::new(&mut turns).range(0..=20).speed(1.0))
+                .on_hover_text(lt_i18n::t("context_turns_hint"));
+            if resp.changed() {
                 ed.context_turns = turns;
             }
             ui.end_row();
@@ -1144,6 +1170,184 @@ mod tests {
         assert_eq!(ed.extra_body_shape(), crate::state::ExtraBodyShape::Object);
     }
 
+    /// 面板窗口实际逻辑尺寸（app.rs：535×781，visual-parity 对齐原版实机）——
+    /// 无头探针按真实视口渲染，顺带钉住"新控件在首屏可见"
+    const PANEL_VIEWPORT: egui::Vec2 = egui::vec2(535.0, 781.0);
+
+    /// 无头渲染翻译页（逐帧送事件），返回末帧文本图元 (rect, 文本)。
+    /// rect 取 galley 尺寸 + `Shape::Text::pos`（egui 的 galley.rect 相对 pos）。
+    fn render_translation_page(
+        st: &mut crate::state::AppUi,
+        ctx: &egui::Context,
+        frames: Vec<Vec<egui::Event>>,
+    ) -> Vec<(egui::Rect, String)> {
+        let mut last = Vec::new();
+        for events in frames {
+            let mut out = ctx.run_ui(
+                egui::RawInput {
+                    events,
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        PANEL_VIEWPORT,
+                    )),
+                    ..Default::default()
+                },
+                |ui| crate::windows::dispatch(crate::state::WinId::Panel, ui, st),
+            );
+            out.textures_delta.clear();
+            last = out
+                .shapes
+                .iter()
+                .filter_map(|cl| match &cl.shape {
+                    egui::Shape::Text(t) => Some((
+                        egui::Rect::from_min_size(t.pos, t.galley.size()),
+                        t.galley.text().to_string(),
+                    )),
+                    _ => None,
+                })
+                .collect();
+        }
+        last
+    }
+
+    /// i18n 取值候选（zh/en 两份内嵌表）：并行测试都可能改全局语言，
+    /// 断言一律按"任一表命中"匹配，避免被 `set_lang` 竞争打飞（t_for_lang
+    /// 不触碰全局状态）。`suffix` 用于控件标签这类渲染时拼接了空格的文本。
+    fn text_variants(key: &str, suffix: &str) -> Vec<String> {
+        ["zh", "en"]
+            .iter()
+            .map(|l| format!("{}{suffix}", lt_i18n::t_for_lang(l, key)))
+            .collect()
+    }
+
+    /// 渲染文本里找 key 命中的图元（zh/en 任一）
+    fn find_by_key<'a>(
+        texts: &'a [(egui::Rect, String)],
+        key: &str,
+        suffix: &str,
+    ) -> Option<&'a (egui::Rect, String)> {
+        let variants = text_variants(key, suffix);
+        texts.iter().find(|(_, t)| variants.iter().any(|v| v == t))
+    }
+
+    /// 「上下文数」说明必须落在**模型配置组内**（控件同组），不得再像修复前那样
+    /// 错挂在「网络配置」组下（本页看得见说明、找不到控件）。
+    #[test]
+    fn context_hint_sits_in_model_group_not_network_group() {
+        let _ = lt_i18n::set_lang("zh");
+        let ctx = egui::Context::default();
+        let mut st = crate::state::AppUi::new(Settings::default());
+        st.panel.state.page = crate::state::PanelPage::Translation;
+        // 两帧：egui 即时模式布局第二帧才收敛
+        let texts = render_translation_page(&mut st, &ctx, vec![vec![], vec![]]);
+        let top_of = |key: &str, suffix: &str| {
+            find_by_key(&texts, key, suffix)
+                .map(|(r, _)| r.top())
+                .unwrap_or_else(|| panic!("{key} 应出现在翻译页"))
+        };
+        let model_y = top_of("group_model_configs", "");
+        let net_y = top_of("group_network", "");
+        let label_y = top_of("label_context_turns", " ");
+        let hint_y = top_of("context_turns_hint", "");
+        let hint_count = texts
+            .iter()
+            .filter(|(_, t)| text_variants("context_turns_hint", "").contains(t))
+            .count();
+        assert_eq!(hint_count, 1, "说明只应出现一次（修复前它挂在网络配置组下）");
+        assert!(
+            model_y < label_y && label_y < hint_y && hint_y < net_y,
+            "标签与说明都必须在模型配置组内：模型组 {model_y} < 标签 {label_y} < 说明 {hint_y} < 网络组 {net_y}"
+        );
+        assert!(
+            hint_y < PANEL_VIEWPORT.y,
+            "上下文数行必须落在面板首屏内（y={hint_y}，视口高 {}）",
+            PANEL_VIEWPORT.y
+        );
+        // 值就在标签同一行右侧（控件可达）
+        let label = find_by_key(&texts, "label_context_turns", " ").expect("标签 rect").0;
+        assert!(
+            texts.iter().any(|(r, t)| {
+                !t.is_empty()
+                    && t.chars().all(|c| c.is_ascii_digit())
+                    && (r.top() - label.top()).abs() < 6.0
+                    && r.left() > label.left()
+            }),
+            "上下文数标签右侧应有可拖拽的数值控件"
+        );
+    }
+
+    /// 拖拽面板行 → 写回**当前活跃模型**的 context_turns，并登记 600ms 翻译器
+    /// 重建与 300ms 落盘（原版 main.py:493 取 model_config.context_turns 后
+    /// set_context_turns 的语义；面板行是 Rust 版直达入口）。
+    /// 渲染按真实面板视口（535×781）——控件若被挤出可视区，egui 交互判定
+    /// （clip rect 命中）会失败、拖拽无反应，本用例同时钉住"入口真实可用"。
+    #[test]
+    fn panel_context_drag_writes_active_model_and_schedules_rebuild() {
+        let _ = lt_i18n::set_lang("zh");
+        let ctx = egui::Context::default();
+        let mut st = crate::state::AppUi::new(Settings::default());
+        st.panel.state.page = crate::state::PanelPage::Translation;
+        st.settings.active_model = 0;
+        assert_eq!(st.settings.models[0].context_turns, 0, "默认不携带上下文");
+        let texts = render_translation_page(&mut st, &ctx, vec![vec![]]);
+        // 控件中心 = 标签同一行右侧的数字图元（DragValue 本体即该文本）
+        let label = find_by_key(&texts, "label_context_turns", " ")
+            .map(|(r, _)| *r)
+            .expect("上下文数标签");
+        let value = texts
+            .iter()
+            .filter(|(r, t)| {
+                !t.is_empty()
+                    && t.chars().all(|c| c.is_ascii_digit())
+                    && (r.top() - label.top()).abs() < 6.0
+                    && r.left() > label.left()
+            })
+            .min_by(|a, b| a.0.left().total_cmp(&b.0.left()))
+            .map(|(r, _)| *r)
+            .expect("面板行数值控件");
+        let p = value.center();
+        let down = egui::Event::PointerButton {
+            pos: p,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::default(),
+        };
+        let up = egui::Event::PointerButton {
+            pos: p + egui::vec2(15.0, 0.0),
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::default(),
+        };
+        // 悬停 → 按下 → 单帧横拖（越过 egui 拖动判定阈值；speed=1.0 → +15）→ 抬起
+        let _ = render_translation_page(
+            &mut st,
+            &ctx,
+            vec![
+                vec![egui::Event::PointerMoved(p)],
+                vec![down],
+                vec![egui::Event::PointerMoved(p + egui::vec2(15.0, 0.0))],
+                vec![up],
+            ],
+        );
+        assert_eq!(
+            st.settings.models[0].context_turns, 15,
+            "拖拽 15px（speed=1.0）应写入活跃模型 context_turns=15（实际 {}）",
+            st.settings.models[0].context_turns
+        );
+        assert!(
+            st.panel.state.prompt_apply_due.is_some(),
+            "应登记 600ms 防抖翻译器重建"
+        );
+        assert!(
+            st.session
+                .ticks
+                .iter()
+                .any(|t| t.kind == crate::state::TickKind::PromptApply),
+            "应排入 PromptApply 节拍"
+        );
+        assert!(st.session.settings_apply_pending, "应登记设置落盘防抖");
+    }
+
     /// 版本段判定（避免对厂商自有路径误报）
     #[test]
     fn version_segment_detection_is_conservative() {
@@ -1155,3 +1359,4 @@ mod tests {
         assert!(!has_version_segment(""));
     }
 }
+
