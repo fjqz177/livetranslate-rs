@@ -1258,18 +1258,41 @@ fn route_translator_switch(
                             &target,
                             timeout,
                         );
-                        let (ok, err, ms) = match it.next() {
-                            Some(Ok(_partial)) => (true, None, t0.elapsed().as_millis() as u64),
-                            Some(Err(e)) => {
-                                (false, Some(e.ui_text()), t0.elapsed().as_millis() as u64)
+                        let (ok, err, ms) = {
+                            // W4：完整跑完一轮并按体检判定——空回复必须报失败。
+                            // （旧实现取首个 item 即判成功：思考型模型没有任何
+                            // content 增量，首个 item 就是空结束值，于是"模型坏得
+                            // 最彻底时测试连接恰好显示通过"。）
+                            let mut text = String::new();
+                            let mut err: Option<String> = None;
+                            // while let 是刻意的：跑完还要读 verdict()（方案 §4）
+                            #[allow(clippy::while_let_on_iterator)]
+                            while let Some(item) = it.next() {
+                                match item {
+                                    Ok(partial) => text = partial,
+                                    Err(e) => {
+                                        err = Some(format!(
+                                            "{}（{}）",
+                                            msg_t.t(e.failure_kind().i18n_key()),
+                                            e.ui_text()
+                                        ));
+                                        break;
+                                    }
+                                }
                             }
-                            None => (
-                                false,
-                                Some(msg_t.t("test_translator_no_response")),
-                                t0.elapsed().as_millis() as u64,
-                            ),
-                        };
-                        sink.push(UiEvent::TestTranslatorResult {
+                            let ms = t0.elapsed().as_millis() as u64;
+                            let ok = err.is_none()
+                                && it.verdict().is_some_and(|v| v.has_text())
+                                && !text.trim().is_empty();
+                            let err = if ok {
+                                None
+                            } else {
+                                Some(err.unwrap_or_else(|| {
+                                    msg_t.t(lt_proto::FailureKind::Empty.i18n_key())
+                                }))
+                            };
+                            (ok, err, ms)
+                        };                        sink.push(UiEvent::TestTranslatorResult {
                             name,
                             ok,
                             error: err,

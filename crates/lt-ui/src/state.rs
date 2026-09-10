@@ -159,20 +159,8 @@ impl OverlayMessage {
 /// **穷尽 match**：每个 `FailureKind` 都必须在此有消费点——死契约守卫据此计数，
 /// 新增变体忘了接线会被 CI 挡下。
 pub fn failure_text(kind: lt_proto::FailureKind) -> String {
-    use lt_proto::FailureKind as K;
-    let key = match kind {
-        K::Empty => "err_model_empty",
-        K::Truncated => "err_truncated",
-        K::Timeout => "err_timeout",
-        K::Auth => "err_401",
-        K::NotFound => "err_404",
-        K::RateLimited => "err_429",
-        K::ServerError => "err_server",
-        K::Connection => "err_conn_refused",
-        K::Repetition => "error_repetition",
-        K::Unknown => "err_unknown",
-    };
-    lt_i18n::t(key)
+    // 键名来自契约层（lt_proto::FailureKind::i18n_key），编排层与 UI 同源
+    lt_i18n::t(kind.i18n_key())
 }
 
 /// 翻译/用量统计（UpdateStats 事件；MonitorBar stats 段渲染，M4 完备）

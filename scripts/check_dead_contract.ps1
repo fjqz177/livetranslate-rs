@@ -34,6 +34,11 @@ $ReservedWhitelist = @(
 #     变体名只出现在消费端；同型的 Pause/ShowPanel/Quit 因托盘/悬浮窗双生产点≥2
 #   ThreadRole.LogBridge / ThreadRole.ArteryBridge / ThreadRole.AudioBridge ——
 #     角色仅出生点按名（死亡事件携带值不携带名），监督器按 Policy 泛型处理
+#   FailureKind.RateLimited / ServerError / Connection —— 生产点是
+#     lt-translate/error.rs 的 failure_kind()（唯一映射点）；消费点经
+#     FailureKind::i18n_key()（定义同文件，被本守卫的"定义文件"规则排除），
+#     再由编排层（测试连接文案）与 lt-ui（failure_text）取用。属"单边引用"
+#     的合法形态：文案键的单一事实源刻意与枚举同处一文件。
 # 新增同类单边形态时在此登记，其余 WARN 仍需人工定性
 
 # 扫描面：lt-proto 契约枚举所在文件（events/layout/asr_result；settings.rs 的

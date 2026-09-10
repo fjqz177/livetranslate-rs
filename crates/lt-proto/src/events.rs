@@ -134,6 +134,25 @@ pub enum UiEvent {
     },
 }
 
+impl FailureKind {
+    /// i18n 键（W4：文案值在 `assets/i18n/*.yaml`；编排层经 `Msg` 取、
+    /// UI 经 `lt_i18n::t` 取——键名只有这一个事实源）
+    pub fn i18n_key(self) -> &'static str {
+        match self {
+            FailureKind::Empty => "err_model_empty",
+            FailureKind::Truncated => "err_truncated",
+            FailureKind::Timeout => "err_timeout",
+            FailureKind::Auth => "err_401",
+            FailureKind::NotFound => "err_404",
+            FailureKind::RateLimited => "err_429",
+            FailureKind::ServerError => "err_server",
+            FailureKind::Connection => "err_conn_refused",
+            FailureKind::Repetition => "error_repetition",
+            FailureKind::Unknown => "err_unknown",
+        }
+    }
+}
+
 /// 跳过翻译的原因（W2）
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SkipReason {

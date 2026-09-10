@@ -543,7 +543,7 @@ impl Translator {
         let read_timeout = Duration::from_secs(timeout_secs as u64);
         let (tx, rx) = mpsc::channel();
         let client = self.client.clone();
-        runtime().spawn(async move {
+        let handle = runtime().spawn(async move {
             pump_stream(client, body_with_usage, body, read_timeout, tx).await;
         });
         let deadline = Instant::now() + read_timeout;
@@ -553,6 +553,7 @@ impl Translator {
                 deadline,
                 text: text.to_string(),
                 timeout_secs: read_timeout.as_secs(),
+                handle,
             },
             json_response: self.json_response,
             thinking: self.thinking,
@@ -683,6 +684,10 @@ enum StreamInner {
         deadline: Instant,
         text: String,
         timeout_secs: u64,
+        /// W5/INV-C：pump 任务句柄——消费方放弃时中止，服务端不再空转
+        /// （本机模型尤其重要：推理型模型一个 content 增量都不发，
+        /// 旧实现要等它把整段生成完才能发现接收端已关闭）
+        handle: tokio::task::JoinHandle<()>,
     },
 }
 
@@ -734,6 +739,16 @@ impl TranslateStream {
     }
 }
 
+/// W5/INV-C：迭代器被丢弃（超时放弃、测试连接提前收手、切模型、停机）即中止
+/// pump 任务——HTTP 连接随之关闭，服务端停止生成
+impl Drop for TranslateStream {
+    fn drop(&mut self) {
+        if let StreamInner::Streaming { handle, .. } = &self.inner {
+            handle.abort();
+        }
+    }
+}
+
 impl Iterator for TranslateStream {
     type Item = Result<String, TranslateError>;
 
@@ -751,6 +766,7 @@ impl Iterator for TranslateStream {
                 deadline,
                 text,
                 timeout_secs,
+                ..
             } => loop {
                 let now = Instant::now();
                 let timeout_msg = format!("Translation exceeded {timeout_secs}s total timeout");
@@ -972,5 +988,44 @@ impl Translator {
             ..TranslatorParams::default()
         })
         .expect("测试客户端构建必成功")
+    }
+}
+
+#[cfg(test)]
+mod drop_tests {
+    use super::*;
+
+    /// W5/INV-C：丢弃迭代器必须中止 pump 任务（否则连不上的端点会一直挂着
+    /// 直到连接超时，推理型模型更会白跑完整段生成）
+    #[test]
+    fn dropping_stream_aborts_pump_task() {
+        // 黑洞地址：连接不会被立即拒绝，pump 保持挂起（否则任务可能自行结束，
+        // 测不出 abort 的效果）
+        let t = Translator::for_test("http://10.255.255.1:9/v1", "m", true, None, None);
+        let it = t.translate_iter("hi", "en", "zh", 30);
+        let (abort, finished_before) = match &it.inner {
+            StreamInner::Streaming { handle, .. } => (handle.abort_handle(), handle.is_finished()),
+            _ => panic!("应为流式迭代器"),
+        };
+        assert!(!finished_before, "pump 任务应仍在挂起");
+        drop(it);
+        // abort 异步生效：给调度器一点时间
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !abort.is_finished() {
+            assert!(Instant::now() < deadline, "drop 后 pump 任务未被中止");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// 非流式分支没有 pump 任务，drop 应无害
+    #[test]
+    fn dropping_sync_stream_is_harmless() {
+        let _t = Translator::for_test("http://10.255.255.1:9/v1", "m", true, None, None);
+        let it = TranslateStream::sync(SyncOutcome {
+            result: Ok("x".into()),
+            verdict: Some(ResponseVerdict::Ok),
+            usage: (1, 2),
+        });
+        drop(it);
     }
 }
