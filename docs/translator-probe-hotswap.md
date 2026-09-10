@@ -50,7 +50,7 @@
 | # | 欠缺 | 证据 |
 |---|---|---|
 | H1 | 生效时机不可控：`ReplaceRig` 只在 ASR 线程空闲分支被消费，连续识别时延后到"当前段转录完 + 下一个 500ms 空窗" | `pipeline.rs:2028`、`:1947` |
-| H2 | 零反馈：面板唯一变化是 `>>>` 前缀与加粗挪位，无"当前使用"状态行、无"已生效"回执 | `translation.rs:81-84` |
+| H2 | 零反馈：面板唯一变化是 `>>>` 前缀与加粗挪位，无"当前使用"状态行、无"已生效"回执 | `translation.rs:64-78`（`model_row_text` 的 `>>>` 前缀） |
 | H3 | 换模型时在队未翻译的段收到写死的红色失败回执「队列积压，保留最新（本段已放弃）」——**真实原因是切换了模型** | 回执文案：`pipeline.rs:87-98`；i18n：`assets/i18n/zh.yaml:528` `err_dropped`；字幕按失败色渲染：`crates/lt-ui/src/windows/subtitle.rs:530-537` |
 | H4 | 不做语义验证：地址/密钥/模型名错要等后续每段翻译失败才暴露（URL 形态错有红字拦截） | `pipeline.rs:1744-1772`（构建失败发 `TranslatorUnavailable`） |
 | H5 | 累计统计被清零：新装置自带全新 `TlStats`，`UpdateStats` 在 UI 侧整体覆盖 | `pipeline.rs:221-266`（per-rig）、`:738`（每装置新建）；`app.rs:1043-1055`（整体覆盖） |
@@ -91,7 +91,7 @@
 | **C** | 结果内容 | 成功：耗时 + 实际生效请求形态（降级时告知）+ 回执摘要（≤60 字符）；失败：分类中文原因 + 原始详情（次要行/悬停） | 否决"只显示 ✓/✖ + 耗时"（丢失诊断价值） |
 | **D** | 并发 | **一次只测一个**：在途期间其他行的测试按钮禁用 | 否决并发（取消语义与结果归属复杂化） |
 | **E** | 选中语义 | **不拆**：行点击保持"设为当前使用"（原版语义）；测试改用每行按钮后与选中互不干扰；另加"当前使用"状态行消除歧义 | 否决本轮拆分"选中/使用"（改动面大，收益可由状态行覆盖） |
-| **F** | 热切换加固 | **做三项**：F1 命令消费点提前到每轮循环开头；F2 切换回执 `TranslatorSwitched` + 「当前使用」状态行；F3 退休任务回执中性化（新 `FailureKind::Superseded`，字幕中性灰）。**另补** `route_translator_switch` 单测 | — |
+| **F** | 热切换加固 | **做四项**：F1 命令消费点提前到每轮循环开头；F2 切换回执 `TranslatorSwitched` + 「当前使用」状态行 + 分组使用说明；F3 退休任务回执中性化（新 `FailureKind::Superseded`，字幕中性灰）；F4 管道未装配时切换回 `TranslatorUnavailable`（不再静默）。**另补** `route_translator_switch` 单测 | — |
 | **G** | 统计口径 | **会话级累计**（用户裁决）：`asr_n / tl_n / tokens / cost` 全部按本次运行累加，跨模型切换不清零，重启归零；费用按**每笔发生时的当时单价**累加 | 否决"仅费用累计、句数保持 per-rig"（会出现"费用在涨、句数只有 3"的自相矛盾显示） |
 
 ---
@@ -229,8 +229,9 @@ pub const PROBE_TEXT: &str = "Livetranslate test";
 pub const PROBE_PREVIEW_MAX_CHARS: usize = 60;
 
 /// 执行一次连接探测；结果经 `sink` 回执 `UiEvent::TestTranslatorResult`。
-/// 本函数**不写**任何会话记忆（learned）与降级标记（degraded_notified）——
-/// 探测是只读观察，不改变生产装置的会话状态。
+/// 本函数**不写也不读**会话记忆（learned）与降级标记（degraded_notified）：
+/// 探测是只读观察，既不改变生产装置的会话状态，也不受"生产已退到某台阶"的记忆
+/// 影响——它总是从**配置推导出的起点形态**重跑完整阶梯（复验更彻底）。
 pub fn run_probe(
     probe_id: u64,
     config: &lt_proto::ModelConfig,
@@ -271,6 +272,15 @@ pub fn run_probe(
 
 `step_note` 取值规则（无歧义）：最终成功台阶为 `RequestStep::Minimal` → `msg.t("probe_step_minimal")`；
 为 `Plan(p)` 且 `p != 起点形态` → `msg.t("probe_step_degraded")`；等于起点 → `None`。
+
+**日志（3 条，用户报障时的唯一凭据；不得记录 api_key）**：
+
+```text
+info  连接测试开始 #{probe_id}：{name}（{api_base} / {model}，单步超时 {step_timeout}s）
+info  连接测试完成 #{probe_id}：{outcome 摘要}（{ms} ms，台阶 {step_name(out.step)}）
+warn  连接测试中断 #{probe_id}：{Cancelled | Budget 耗尽，已尝试 N 步}
+```
+（第 1 条与第 3 条按情况择一；`api_base`/`model` 可记，`api_key` **禁止**入日志）
 
 ### 4.4 lt-orchestrator：阶梯与装置构造的单点化
 
@@ -353,6 +363,31 @@ detail: if superseded { "已切换模型，本段未翻译" } else { "队列积�
 
 队列溢出（`BoundedDropQueue` 满丢最旧）路径语义不变，仍为 `Dropped`。
 
+**F4 管道未装配时切换不再静默**（复核补漏）：`shell.rs:239-244` 的 `Cmd::SwitchTranslator` 在
+`self.pipeline` 为 `None` 时什么都不做，但 `publish_settings()` 与 `persist_settings()` 照常执行
+（`ui_text` 而言即"设置说切了、实际没切"）。改为：
+
+```rust
+Cmd::SwitchTranslator(config) => {
+    match self.pipeline.as_mut() {
+        Some(p) => {
+            p.switch_translator(&config);
+            tracing::info!("Switching translator: {} ({})", config.name, config.model);
+        }
+        // 管道装配失败（pipeline_error 已在识别页红字）——翻译页也必须可见；
+        // 复用现有 TranslatorUnavailable{ reason } 形态，不改契约结构
+        None => self.artery.push(UiEvent::TranslatorUnavailable {
+            reason: lt_i18n::t("translator_switch_no_pipeline"),
+        }),
+    }
+    self.publish_settings();
+    self.persist_settings();
+}
+```
+
+新增 i18n 键 `translator_switch_no_pipeline`：zh「翻译管道未启动，模型切换未生效；请到「识别」页查看错误后重启应用。」
+/ en "The translation pipeline is not running, so the model switch did not take effect. Check the errors on the Recognition tab and restart the app."
+
 ### 4.6 lt-orchestrator：会话级统计（G）
 
 1. `TlStats`（`pipeline.rs:221-266`）改造：
@@ -405,21 +440,24 @@ Cmd::CancelTranslatorTest { probe_id } => {
 }
 ```
 
-新增字段（`AppShell`）：`probe_cancel: Arc<AtomicBool>`、`probe_id: Arc<AtomicU64>`、
-`probe_active: Arc<AtomicBool>`。
+新增字段（`AppShell`）：`probe_cancel: Arc<AtomicBool>`（**在途探测的取消标志**，每启动新探测换成新实例）、
+`probe_id: Arc<AtomicU64>`（**在途探测 id，0 = 无在途**）。
 
 `fn start_probe(&mut self, config: ModelConfig, probe_id: u64)`：
 
-1. 防重入：`if self.probe_active.swap(true, SeqCst) { tracing::warn!("连接测试已在途，忽略重复请求 #{probe_id}"); return; }`
-   （UI 侧已禁用其他按钮，此为纵深防御；**不留回执**由 §4.8 的 UI 看门狗兜底。）
+1. **取代语义（supersede），不拒绝**：若已有在途（`self.probe_id.load(SeqCst) != 0`）→ 先置位**旧探测**的
+   取消标志并记 `warn!("连接测试被新请求取代 #{old} → #{new}")`，然后照常启动新探测。
+   **禁止**"在途时拒绝新请求"：旧线程退出可滞后一个轮询周期（流式 ≤150ms、非流式 ≤20s），
+   拒绝会把用户"中断后立刻重测"这一正常操作变成最长 70 秒空等（只剩看门狗兜底）。
 2. `self.probe_cancel = Arc::new(AtomicBool::new(false)); self.probe_id.store(probe_id, SeqCst);`
 3. 经监督器一次性线程出生（镜像 `start_bench` / `spawn_device_probe` 范式，`shell.rs:375-425`）：
 
    ```rust
+   let id_cell = self.probe_id.clone();
    self.sup.spawn(ThreadRole::TranslatorProbe, "lt-probe", Policy::Never, move || {
-       let (artery, bus, cancel, active, msg) = (...clone...);
+       let (artery, bus, cancel, msg, id_cell) = (...clone...);
        Box::new(move || {
-           let _guard = ProbeActiveGuard(active);       // 任何退出路径（含 panic unwind）复位
+           let _guard = ProbeExitGuard { id: id_cell, probe_id };  // 任何退出路径（含 panic unwind）复位
            lt_orchestrator::probe::run_probe(probe_id, &config, &bus, cancel, &msg, &artery);
        })
    });
@@ -429,8 +467,18 @@ Cmd::CancelTranslatorTest { probe_id } => {
    （`Msg::new(lt_i18n::t)`）存字段；`start_pipeline` 改为复用该字段（不得在 `start_pipeline` 内构造
    ——探测可能发生在管道未启动时）。
 
-4. `shell_helpers.rs` 增 `pub struct ProbeActiveGuard(pub Arc<AtomicBool>)`（`Drop` 复位，
-   与既有 `BenchActiveGuard` 同款）。
+4. `shell_helpers.rs` 增 **id 条件复位守卫**（与既有 `BenchActiveGuard` 同款纪律：任何退出路径复位）：
+
+   ```rust
+   /// 探测线程退出守卫：仅当在途 id **仍是自己**时归零——被新探测取代时不得
+   /// 把新探测的 id 抹掉（否则随后的「中断」会被判为过期而失效）。
+   pub struct ProbeExitGuard { pub id: Arc<AtomicU64>, pub probe_id: u64 }
+   impl Drop for ProbeExitGuard {
+       fn drop(&mut self) {
+           let _ = self.id.compare_exchange(self.probe_id, 0, SeqCst, SeqCst);
+       }
+   }
+   ```
 5. **停机**：`AppShell::shutdown` 增加 `self.probe_cancel.store(true, SeqCst);`（在 `p.stop()` 之前），
    避免退出被在途探测拖住最多一个流式轮询周期（150ms）或一次尝试超时（非流式，≤20s）。
 
@@ -468,26 +516,41 @@ pub type CfgKey = (String, String, String, String);   // name, api_base, model, 
 [ 行按钮（selectable，宽 = available_width - 72 - item_spacing） ][ 测试/中断（宽 72）]
 ```
 
+- **行归属判据（统一）**：某行"是本探测的行" ⟺ `probe.running.row == i` **且**
+  `probe.running.cfg_key == 该行当前 cfg_key`。只比行号会在"探测期间删行导致行号前移"时把
+  「测试中…」显示到别的供应商上；结果行同理（`result.row` + `result.cfg_key` 双校验）。
 - 行按钮：文本、`>>>` 前缀、加粗、点击选中、双击编辑——**全部保持现状**。
-- 右侧按钮两态：
-  - 非在途（或 `running.row != i`）：标签 `probe_btn`（「测试」），`add_enabled(running.is_none(), ...)`；
+- 右侧按钮两态（`is_my_row` = 上述判据）：
+  - 非在途或 `!is_my_row`：标签 `probe_btn`（「测试」），`add_enabled(running.is_none(), ...)`；
     点击 → `id = probe.next_id; probe.next_id += 1;` → `probe.running = Some(ProbeRun{id, row: i,
     started: Instant::now(), cfg_key: 该行 cfg_key})` → 发 `Cmd::TestTranslator { config: 该行配置克隆,
     probe_id: id }`。
-  - 在途且 `running.row == i`：标签 `probe_cancel`（「中断」）；点击 → 发
+  - `is_my_row`：标签 `probe_cancel`（「中断」）；点击 → 发
     `Cmd::CancelTranslatorTest { probe_id: id }`，**立即**把该行结果落为
     `ProbeResult { outcome: Cancelled, ms: started.elapsed(), .. }` 并清 `running`（不等后台回执）。
 - 行下附加行（`ui.add_space(2.0)` 后一行）：
-  - `running.row == i` → `probe_running`（「测试中…」）+ 已耗时（`{:.1}s`），并
+  - `is_my_row` → `probe_running`（「测试中…」）+ 已耗时（`{:.1}s`），并
     `ui.ctx().request_repaint_after(Duration::from_millis(100))` 保证走秒刷新。
   - `result` 有效（`result.row == i` 且 `result.cfg_key == 该行 cfg_key`）→ 按 outcome 渲染：
-    - `Ok`：绿色 `pal.ok`，`✓ probe_ok · {ms} ms · {step_note?} · probe_preview{preview}`
-    - `Failed{kind,detail}`：红色 `pal.err`，`✖ probe_failed · {ms} ms · failure_text(kind)`；
+    - `Ok`：绿色 `pal.ok`，`✓ {probe_ok} · {ms} ms · {step_note?} · {probe_preview}`；
+      `step_note` 与 `preview` 用 ` · ` 拼接，缺省项整段省略
+    - `Failed{kind,detail}`：红色 `pal.err`，`✖ {probe_failed} · {ms} ms · {failure_text(kind)}`；
       `detail` 以次要行弱色显示（≤2 行省略）
-    - `Cancelled`：弱色 `pal.weak`，`⏱ probe_cancelled · {ms} ms`
-    - `Inconclusive{attempted}`：警示黄，`？ probe_inconclusive · {ms} ms · probe_attempted{n}` +
+    - `Cancelled`：弱色 `pal.weak`，`⏱ {probe_cancelled} · {ms} ms`
+    - `Inconclusive{attempted}`：警示黄，`？ {probe_inconclusive} · {ms} ms · {probe_attempted}` +
       次要行 `probe_inconclusive_hint`
 - **删除**四按钮行中的测试按钮（`translation.rs:345-372`）与旧结果块（`:374-393`）。
+
+**插值写法（硬约束）**：`lt_i18n::t()` **只做查表，不做占位符插值**——全仓既有实践是调用点
+`.replace("{x}", …)`（见 `app.rs:533-537`、`:795`、`:831`）。故 `probe_preview` 与 `probe_attempted`
+两个带占位符的键，实现必须显式写：
+
+```rust
+lt_i18n::t("probe_preview").replace("{text}", &preview)
+lt_i18n::t("probe_attempted").replace("{n}", &attempted.to_string())
+```
+
+其余结果行文案一律在代码里用 `format!` + ` · ` 拼接**完整句**（不要新增占位符键）。
 
 **回执处理（`app.rs`）**：`UiEvent::TestTranslatorResult { probe_id, name, outcome, ms, step_note,
 preview }`：
@@ -507,11 +570,12 @@ preview }`：
 → 落 `ProbeResult { outcome: Inconclusive { attempted: 0 }, .. }`、清 `running`、记
 `tracing::warn!("连接测试回执超时（命令可能未送达）")`、`redraw`。
 
-**状态行（F2）**：模型配置 `group_card` 内、错误横幅之后、列表之前增加一行：
+**状态行 + 使用说明（F2）**：模型配置 `group_card` 内、错误横幅之后、列表之前增加两行：
 
 ```text
 当前使用：{name}            // settings.active_model 对应行；越界时回落第 0 行
     + 若 active_model_note 新鲜（<2s）→ 追加 " · 已切换生效"
+<hint_line> models_group_hint    // 见 §4.9；这是"如何设置当前使用的模型"的现场答案
 ```
 
 ### 4.9 i18n 键表（`assets/i18n/zh.yaml` + `en.yaml` 同步）
@@ -541,11 +605,22 @@ preview }`：
 | `err_subtitle_skipped` | — 已跳过（切换模型） | — skipped (model switched) |
 | `status_active_model` | 当前使用：{name} | Active model: {name} |
 | `status_switched` | 已切换生效 | Switched |
+| `models_group_hint` | 点任意一行即把它设为当前使用的模型；每行右侧的「测试」按钮可验证该供应商是否可用。 | Click any row to make it the active model; use the Test button on a row to verify that provider. |
 | `stats_partial_unknown` | 部分未知 | partial |
+| `stats_partial_unknown_hint` | 本次运行中有调用未返回用量，金额可能偏低。 | Some calls this session returned no usage, so the total may be low. |
 
-`usage_known == false` 且 `cost > 0` 时，MonitorBar 费用段追加 `stats_partial_unknown`
-（`crates/lt-ui/src/windows/overlay.rs:547` 与 `:639` 两处渲染分支）；
-`cost == 0` 且从未有已知用量时维持现状显示「—」。
+`status_active_model` 的 `{name}` 同样按调用点 `.replace("{name}", …)` 填充（同 §4.8 插值约束）。
+
+**G 在 MonitorBar 的落地（`crates/lt-ui/src/windows/overlay.rs`，两处判据都要改）**：
+
+| 位置 | 现状 | 改为 |
+|---|---|---|
+| 约 `:547` token 段 | `!usage_known` → 显示 `stats_usage_unknown`（"—"） | `total_tokens == 0 && !usage_known` → "—"；否则显示**累计值**，并在 `!usage_known` 时于悬停保留 `stats_usage_unknown_hint` |
+| 约 `:652` 费用段 | 仅 `cost > 0.0` 时渲染 `{¥/$}{:.4}` | 同上渲染；`!usage_known` 时在同一标签尾追加弱色 ` · {stats_partial_unknown}` 并 `on_hover_text(stats_partial_unknown_hint)` |
+
+理由（避免自相矛盾显示）：会话累计口径下 `usage_known` 表示"本次运行**出现过**用量未知的调用"，
+若沿用旧的"未知即显示 —"，会出现"费用在涨而 token 显示 —"。既有测试需同步：
+`crates/lt-ui/src/state.rs:2937-2943`、`crates/lt-ui/src/windows/overlay.rs:1080-1095`。
 
 ### 4.10 交互状态机（无歧义清单）
 
@@ -562,7 +637,8 @@ preview }`：
 
 **不变量**
 
-1. 同一时刻至多一个在途探测（UI 禁用 + shell 防重入 + 看门狗三重保证）。
+1. 同一时刻至多一个**有效**在途探测（UI 禁用其他行 + shell 取代语义 + 看门狗三重保证；
+   被取代的旧探测可能仍在退出途中，其回执因 `probe_id` 不符必然被丢弃）。
 2. 任何在途探测必在 ≤70 秒内落到终态（成功/失败/中断/未定论），**不存在永久「测试中…」**。
 3. 探测不产生副作用：不切活动模型、不写 learned/degraded、不动 transcript、不进统计。
 
@@ -573,10 +649,11 @@ preview }`：
 | # | 提交 | 内容 | 收工前提 |
 |---|---|---|---|
 | C1 | `docs(translator-probe): 方案定稿（D-85）` | 本文件 + `docs/README.md` 索引行 | 四守护脚本过（docs 变更仅路径卫生相关） |
-| C2 | `feat(probe-lt): lt-translate 可取消调用 + Cancelled 错误` | §4.2 全部 + 三项取消测试 | `cargo test -p lt-translate` 绿；clippy 零告警 |
-| C3 | `feat(probe): 连接测试迁移到独立线程（每行按钮 + 四态结果，D-85）` | §4.1 契约 + §4.3 probe + §4.4-1 params 单点 + §4.7 shell + §4.8 UI + §4.9 键（probe 段） | 全量测试绿 + 四守护 + clippy |
-| C4 | `feat(hotswap): 切换回执/消费点提前/退休回执中性化（D-85/F）` | §4.4-2 RunCtl 中 non-probe 部分已随 C3；本提交 = §4.5 三项 + §4.8 字幕中性化 + 状态行 | 全量测试绿 + 四守护 + clippy |
-| C5 | `feat(stats): 会话级累计（D-85/G）` | §4.6 + §4.9 的 `stats_partial_unknown` | 全量测试绿 + 四守护 + clippy |
+| C2 | `feat(probe-lt): lt-translate 可取消调用 + Cancelled 错误` | §4.2 全部 + §6.1 的 lt-translate 五项测试 | `cargo test -p lt-translate` 绿；clippy 零告警 |
+| C3 | `feat(probe): 连接测试迁移到独立线程（每行按钮 + 四态结果，D-85）` | §4.1 契约 + §4.3 probe + §4.4（params 单点 + `RunCtl` 签名改造，生产调用点传 `RunCtl::none()`）+ §4.7 shell + §4.8 UI + §4.9 键（probe 段） | 全量测试绿 + 四守护 + clippy |
+| C4 | `feat(hotswap): 切换回执/消费点提前/退休回执中性化（D-85/F）` | 本提交 = §4.5 四项（F1~F4）+ §4.8 字幕中性化 + 状态行与使用说明 | 全量测试绿 + 四守护 + clippy |
+| C5 | `feat(stats): 会话级累计（D-85/G）` | §4.6 + §4.9 的 `stats_partial_unknown(_hint)`（含 MonitorBar 两处判据改造与既有测试同步） | 全量测试绿 + 四守护 + clippy |
+| C6 | `feat(providers): 厂商预设 + 费用单位口径（D-85/N1-N2）` | §九 N1/N2（**待裁决**；获批才做） | 全量测试绿 + 四守护 + clippy |
 
 依赖关系：C2 独立可编译；C3 依赖 C2；C4/C5 依赖 C3（共用 `TranslatorSwitched` 与 UI 状态结构）。
 C3 是最大提交（契约 + 编排 + shell + UI 需同步改，否则旧调用点编译不过）——允许拆为
@@ -636,7 +713,8 @@ C3 是最大提交（契约 + 编排 + shell + UI 需同步改，否则旧调用
 | 测试 | 断言 |
 |---|---|
 | `cancel_test_only_matches_current_id` | 过期 id 不置位取消标志 |
-| `second_test_rejected_while_in_flight` | `probe_active == true` 时重复命令被拒且不发线程 |
+| `second_test_supersedes_in_flight` | 在途时再发一条：旧探测取消标志被置位、`probe_id` 换新、新线程已出生（**不拒绝**） |
+| `probe_exit_guard_keeps_newer_id` | 旧探测退出时不抹掉新探测的在途 id（`compare_exchange` 条件复位） |
 
 ### 6.2 实机走查清单（待用户，逐项勾）
 
@@ -671,7 +749,7 @@ cargo test --workspace      # 基线 540+9 → 本方案预计 +20 左右
 | 改动 lt-translate 流式读取循环影响生产翻译 | 生产路径 `cancel == None`，`slice == remaining` 与原实现逐字节等价；既有全量测试 + `no_cancel_token_keeps_legacy_timeout_semantics` 回归测试 |
 | 契约改型破坏其他消费点 | Rust 编译期强制；`PROTO_VERSION` 同步升 6 |
 | 探测线程拖住退出 | `Policy::Never` + `shutdown` 前置取消 + `join_all`；最坏等待 = 一次流式轮询（150ms） |
-| shell 防重入拒绝命令后 UI 卡死 | UI 看门狗（70 秒）兜底落终态——不依赖任何回执 |
+| 探测线程 / 命令链路异常导致 UI 无回执 | UI 看门狗（70 秒）兜底落终态——不依赖任何回执；shell 侧不拒绝新请求（取代语义），避免"取消后立刻重测"被阻塞 |
 | 会话统计改造影响成产翻译统计 | `record_translation` 在既有 `finish_ok/fail` 调用点等价替换；`session_stats_accumulate_across_rig_replacement` 与既有统计测试双覆盖 |
 | 新 `FailureKind` 触发死契约守卫 | §4.1 已列引用点 ≥2；若 WARN 按脚本先例登记 |
 
@@ -689,13 +767,31 @@ cargo test --workspace      # 基线 540+9 → 本方案预计 +20 左右
 
 ---
 
+## 九、本次复核新增发现（不属原 A~G 范围，待裁决是否纳入）
+
+> 2026-09-10 文档复核时对翻译子系统做的二次巡检结果。N1/N2 建议**纳入本次**（代价小、与"多供应商可用"
+> 直接相关），N3~N5 建议登记备忘、不在本次做。
+
+| # | 发现 | 证据 | 建议 |
+|---|---|---|---|
+| **N1** | **没有厂商预设**：新增一个供应商必须手打 api_base + 模型名，且默认配置是"本机 LM Studio"（`http://127.0.0.1:1234/v1` + `hunyuan-mt-chimera-7b`，空密钥）——对绝大多数用户而言默认就不可用，多供应商的"添加"门槛偏高 | `lt-proto/settings.rs:452-475`（`ModelConfig::default`）；编辑对话框无预设入口（`translation.rs:596` 起 `editor_fields` 逐字段手填） | **纳入（建议）**：编辑对话框加「厂商预设」下拉，选中即填 `api_base` + 建议 `model` + `thinking_style`。候选集（与 `llm-api-round2.md` 的四家厂商参数对照表天然衔接）：OpenAI / DeepSeek / 智谱 GLM / Kimi / 阿里通义 / 火山方舟 / 本机 LM Studio / 本机 Ollama / 自定义。代价：一张常量表（建议放 `lt-proto`，纯新增豁免）+ 下拉 + i18n 键 + 3 条测试 |
+| **N2** | **费用单位口径不一致**：价格字段按"每 1M token 的**美元**价"计算（`compute_cost` 直接当作美元），中文界面却用 `¥` 符号显示——数字是美元、符号是人民币，约 7 倍口径误导；且价格输入行**完全没有单位说明**（i18n 里 `price_suffix`「 /1M tok」键**从未被使用**） | 计算：`lt-translate/src/lib.rs:34-45`；符号：`lt-ui/src/windows/overlay.rs:652-657`（`get_lang()=="zh" ? "¥" : "$"`）；输入行：`translation.rs:681-686`（无单位）；死键：`assets/i18n/zh.yaml:253` | **纳入（建议）**：① 费用统一以 `$` 显示（去掉按语言换符号）；② 价格输入行补「美元 / 1M tok」（启用或改写 `price_suffix`）；③ 悬停说明"费用按你填写的单价计算"。代价：3 行代码 + 2 个 i18n 键 |
+| **N3** | api_key 明文落盘（`settings.json`） | `lt-models` 设置落盘路径 | 登记备忘；如需提升可接 Windows DPAPI（`CryptProtectData`），不在本次 |
+| **N4** | 探测"已验证"状态不落盘：重启后无从判断哪个供应商验证过 | — | 不做（与"结果随配置失效"的设计一致性更高） |
+| **N5** | 无「测试全部」按钮：多供应商时逐个点 | — | 不做（一次只测一个是本次定案 D） |
+
+若 N1/N2 获批，施工切分为追加提交 **C6 `feat(providers): 厂商预设 + 费用单位口径（D-85/N1-N2）`**，
+排在 C5 之后；测试追加 N1 的预设填充测试与 N2 的符号/单位渲染测试。
+
+---
+
 ## 附录 A：多供应商热切换链路现状（已实现部分，供对照）
 
 | 环节 | 状态 | 位置 |
 |---|---|---|
 | 面板点行切换 | ✓ | `translation.rs:268-277`（写 `active_model` + 立即发 `Cmd::SwitchTranslator`） |
 | 悬浮窗模型下拉切换 | ✓ | `crates/lt-ui/src/windows/overlay.rs:369-402` |
-| 命令路由 | ✓（pipeline 为 None 时静默丢弃——本方案不改，UI 侧由状态行与红字覆盖） | `shell.rs:239-244` |
+| 命令路由 | ✓（pipeline 为 None 时静默丢弃——**本方案由 §4.5 F4 补上可见回执**） | `shell.rs:239-244` |
 | 线程命令 | ✓ | `pipeline.rs:1278-1284` → `TlSwitch::ReplaceRig` |
 | 真实重建 + 失败保留旧装置 | ✓ | `pipeline.rs:1744-1772` |
 | 旧装置回收（retire + 池自停） | ✓ | `pipeline.rs:1744-1761`、`:206-210` |
