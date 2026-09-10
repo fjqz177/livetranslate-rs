@@ -142,7 +142,7 @@ impl AppShell {
             bench_active: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             probe_cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             probe_id: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            msg: Msg::new(lt_i18n::t),
+            msg: Msg::new(lt_i18n::t, lt_i18n::get_lang),
             pipeline: None,
             started: false,
         };

@@ -356,7 +356,7 @@ Connection: close
     /// 跑一次探测并取回**全部**回流事件（含非回执事件——用于"恰好一次"断言）
     fn run_all(config: &ModelConfig, cancel: Arc<AtomicBool>, budget: Duration) -> Vec<UiEvent> {
         let sink = EventArtery::new();
-        let msg = Msg::new(|k| k.to_string());
+        let msg = Msg::new(|k| k.to_string(), || "zh".into());
         let bus = test_bus();
         run_probe_with_budget(1, config, &bus, cancel, &msg, &sink, budget);
         let mut batch = Vec::new();

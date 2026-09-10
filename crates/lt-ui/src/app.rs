@@ -1064,7 +1064,8 @@ impl MultiWindowApp {
                     tl_n,
                     prompt_tokens,
                     completion_tokens,
-                    cost,
+                    cost_cny,
+                    cost_usd,
                     usage_known,
                 } => {
                     self.app_state.overlay.update_stats(crate::state::OverlayStats {
@@ -1072,7 +1073,8 @@ impl MultiWindowApp {
                         tl_n,
                         prompt_tokens,
                         completion_tokens,
-                        cost,
+                        cost_cny,
+                        cost_usd,
                         usage_known,
                     });
                 }

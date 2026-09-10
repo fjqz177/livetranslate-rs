@@ -33,14 +33,28 @@ pub use supervisor::{Policy, Supervisor};
 #[derive(Clone)]
 pub struct Msg {
     t: std::sync::Arc<dyn Fn(&str) -> String + Send + Sync>,
+    lang: std::sync::Arc<dyn Fn() -> String + Send + Sync>,
 }
 
 impl Msg {
-    pub fn new(t: impl Fn(&str) -> String + Send + Sync + 'static) -> Self {
-        Self { t: std::sync::Arc::new(t) }
+    /// `t` = 文案键查询；`lang` = 当前界面语言（D-85：费用币种的"跟随界面语言"
+    /// 默认值要在编排域里算，而本 crate 不许依赖 lt-i18n，故经注入取）
+    pub fn new(
+        t: impl Fn(&str) -> String + Send + Sync + 'static,
+        lang: impl Fn() -> String + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            t: std::sync::Arc::new(t),
+            lang: std::sync::Arc::new(lang),
+        }
     }
 
     pub fn t(&self, key: &str) -> String {
         (self.t)(key)
+    }
+
+    /// 当前界面语言（"zh" / "en"）
+    pub fn lang(&self) -> String {
+        (self.lang)()
     }
 }

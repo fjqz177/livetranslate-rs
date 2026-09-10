@@ -544,7 +544,10 @@ fn stats_line(ui: &mut Ui, overlay: &OverlayUi, opa_pct: u32) {
     let total_tokens = stats.prompt_tokens + stats.completion_tokens;
     // 2026-09-10 第二轮评审 ⑩：端点不提供用量时显示 "—"（+ 悬停说明），
     // 不把 0 冒充真实值；此时也隐藏 (p↑c↓) 明细（同为不可信数据）
-    let tokens_str = if !stats.usage_known {
+    // D-85：会话累计口径下"未知"= 本次运行出现过不报用量的调用——此时**仍显示
+    // 累计值**（不再显示 "—"，否则会出现"费用在涨、token 显示 —"的自相矛盾）；
+    // 只有一次都没观测到用量时才显示 "—"
+    let tokens_str = if !stats.usage_known && total_tokens == 0 {
         lt_i18n::t("stats_usage_unknown")
     } else if total_tokens >= 1000 {
         format!("{:.1}k", total_tokens as f64 / 1000.0)
@@ -637,7 +640,12 @@ fn stats_line(ui: &mut Ui, overlay: &OverlayUi, opa_pct: u32) {
                 .color(o(STATS_VAL)),
         );
         if !stats.usage_known {
-            tok_resp.on_hover_text(lt_i18n::t("stats_usage_unknown_hint"));
+            // 有累计值但费用不完整 → 标注"部分未知"（悬停解释）
+            tok_resp.on_hover_text(format!(
+                "{}（{}）",
+                lt_i18n::t("stats_usage_unknown_hint"),
+                lt_i18n::t("stats_partial_unknown")
+            ));
         } else {
             ui.label(
                 RichText::new(format!(
@@ -650,18 +658,28 @@ fn stats_line(ui: &mut Ui, overlay: &OverlayUi, opa_pct: u32) {
             );
         }
         // cost 在统计行末尾（原版 _refresh_stats 的 cost_str）
-        if stats.cost > 0.0 {
-            let symbol = if lt_i18n::get_lang() == "zh" {
-                "¥"
-            } else {
-                "$"
-            };
+        // D-85：分币种两个账本、符号取各自币种（**不再按界面语言**——
+        // 旧实现把美元数字标成人民币，差 ~7 倍）；未知用量时标"部分未知"
+        let mut costs: Vec<String> = Vec::new();
+        if stats.cost_cny > 0.0 {
+            costs.push(format!("{}{:.4}", lt_proto::Currency::Cny.symbol(), stats.cost_cny));
+        }
+        if stats.cost_usd > 0.0 {
+            costs.push(format!("{}{:.4}", lt_proto::Currency::Usd.symbol(), stats.cost_usd));
+        }
+        if !costs.is_empty() {
+            let mut line = costs.join(" ");
+            if !stats.usage_known {
+                line.push_str(" · ");
+                line.push_str(&lt_i18n::t("stats_partial_unknown"));
+            }
             ui.label(
-                RichText::new(format!("{symbol}{:.4}", stats.cost))
+                RichText::new(line)
                     .monospace()
                     .size(10.5)
                     .color(o(Color32::from_rgb(0xff, 0xaa, 0x55))),
-            );
+            )
+            .on_hover_text(lt_i18n::t("stats_partial_unknown_hint"));
         }
     });
 }
@@ -941,6 +959,29 @@ fn resize_grip(ui: &mut Ui, session: &mut SessionView) {
 mod tests {
     use super::*;
 
+    /// 渲染悬浮窗一帧并取回全部文本（headless；stats 段仅在完整形态渲染）
+    fn render_overlay_stats(ctx: &egui::Context, st: &mut crate::state::AppUi) -> Vec<String> {
+        st.overlay.state.mode = crate::state::OverlayMode::Full;
+        let mut out = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(420.0, 140.0),
+                )),
+                ..Default::default()
+            },
+            |ui| crate::windows::dispatch(crate::state::WinId::Overlay, ui, st),
+        );
+        out.textures_delta.clear();
+        out.shapes
+            .iter()
+            .filter_map(|cl| match &cl.shape {
+                egui::Shape::Text(t) => Some(t.galley.text().to_string()),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// D-29：MIC 条显隐跟随"启用意图"（mic_device 有值），与是否有监控数据无关。
     /// 默认禁用 → 恒不显示；启用（默认/具名）→ 立即显示。
     #[test]
@@ -1088,10 +1129,90 @@ mod tests {
             tl_n: 2,
             prompt_tokens: 1200,
             completion_tokens: 600,
-            cost: 0.001,
+            cost_cny: 0.001,
+            cost_usd: 0.0,
             usage_known: true,
         });
         run(&mut st);
         assert!(st.overlay.stats.usage_known);
+    }
+
+    /// D-85/H/I：费用段按**配置币种**显示（符号不随界面语言）、两账本并列；
+    /// 未知用量时追加"部分未知"
+    #[test]
+    fn monitor_bar_cost_uses_config_currency_not_lang() {
+        let _ = lt_i18n::set_lang("en"); // 故意用英文界面验证"符号不随语言"
+        let ctx = egui::Context::default();
+        let mut st = crate::state::AppUi::new(Settings::default());
+        st.overlay.update_stats(crate::state::OverlayStats {
+            asr_n: 1,
+            tl_n: 2,
+            prompt_tokens: 100,
+            completion_tokens: 50,
+            cost_cny: 0.0123,
+            cost_usd: 0.0456,
+            usage_known: true,
+        });
+        let texts = render_overlay_stats(&ctx, &mut st);
+        assert!(
+            texts.iter().any(|t| t.contains("¥0.0123")),
+            "人民币账本应带 ¥，实际 {texts:?}"
+        );
+        assert!(
+            texts.iter().any(|t| t.contains("$0.0456")),
+            "美元账本应带 $，实际 {texts:?}"
+        );
+        // 未知用量 → 追加"部分未知"标记。**并行测试会改全局语言**（既有教训），
+        // 故按 zh/en 两表任一命中匹配，不依赖 set_lang
+        st.overlay.stats.usage_known = false;
+        let texts = render_overlay_stats(&ctx, &mut st);
+        let partials = [
+            lt_i18n::t_for_lang("zh", "stats_partial_unknown"),
+            lt_i18n::t_for_lang("en", "stats_partial_unknown"),
+        ];
+        assert!(
+            texts.iter().any(|t| partials.iter().any(|p| t.contains(p))),
+            "出现未知用量时应标「部分未知」，实际 {texts:?}"
+        );
+    }
+
+    /// D-85：会话累计口径下"未知但有累计值"不再显示 "—"（否则出现
+    /// "费用在涨、token 显示 —"的自相矛盾）；只有一次都没观测到才显示 "—"
+    #[test]
+    fn monitor_bar_tokens_show_accumulated_value_when_partially_unknown() {
+        let _ = lt_i18n::set_lang("zh");
+        let ctx = egui::Context::default();
+        let mut st = crate::state::AppUi::new(Settings::default());
+        st.overlay.update_stats(crate::state::OverlayStats {
+            asr_n: 1,
+            tl_n: 1,
+            prompt_tokens: 1200,
+            completion_tokens: 300,
+            cost_cny: 0.0,
+            cost_usd: 0.01,
+            usage_known: false,
+        });
+        let texts = render_overlay_stats(&ctx, &mut st);
+        let dash = lt_i18n::t_for_lang("zh", "stats_usage_unknown");
+        assert!(
+            texts.iter().any(|t| t.contains("1.5k")),
+            "有累计值时应显示数字，实际 {texts:?}"
+        );
+        assert!(
+            !texts.iter().any(|t| t == &dash),
+            "有累计值时不得显示 \"—\""
+        );
+        // 纯未知（无任何累计）→ 仍是 "—"
+        st.overlay.update_stats(crate::state::OverlayStats {
+            asr_n: 0,
+            tl_n: 0,
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            cost_cny: 0.0,
+            cost_usd: 0.0,
+            usage_known: false,
+        });
+        let texts = render_overlay_stats(&ctx, &mut st);
+        assert!(texts.iter().any(|t| t == &dash), "纯未知应显示 \"—\"");
     }
 }

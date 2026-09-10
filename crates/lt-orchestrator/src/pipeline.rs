@@ -243,34 +243,63 @@ pub(crate) struct TlStats {
     tl_count: AtomicU64,
     prompt_tokens: AtomicU64,
     completion_tokens: AtomicU64,
-    /// 服务端是否提供用量统计（第二轮评审 ⑩：不提供时界面显示"—"而不是 0）
-    usage_known: AtomicBool,
-    input_price: f64,
-    output_price: f64,
+    /// 累计金额的两个账本，单位 1e-9（整数累加，避免浮点原子）；币种按**每笔
+    /// 调用各自配置**的生效币种归账（D-85：跨币种不做汇率折算，各记各的）
+    cost_nano_cny: AtomicU64,
+    cost_nano_usd: AtomicU64,
+    /// 本次运行是否**出现过**用量未知的调用（true = 费用不完整，界面标"部分未知"）
+    usage_unknown_seen: AtomicBool,
+    /// 是否至少观察到过一次可用用量（区分"未知"与"确为零"——旧实现只有
+    /// 唯一失败端点会显示 0 冒充真实值，对抗审计点）
+    usage_any_known: AtomicBool,
 }
 
+/// 金额累加单位（1 美元 = 1e9 nano）
+const NANO_PER_UNIT: f64 = 1e9;
+
 impl TlStats {
-    fn new(input_price: f64, output_price: f64) -> Self {
+    /// 会话级累计器（D-85：由 Pipeline 建一次，跨装置重建共享——**重启归零**）
+    fn new() -> Self {
         Self {
             asr_count: AtomicU64::new(0),
             tl_count: AtomicU64::new(0),
             prompt_tokens: AtomicU64::new(0),
             completion_tokens: AtomicU64::new(0),
-            // 尚未观测到任何用量 → "未知"（界面显示"—"），不是"已知为零"。
-            // 只有唯一失败的端点此前会显示 0 冒充真实值（对抗审计）
-            usage_known: AtomicBool::new(false),
-            input_price,
-            output_price,
+            cost_nano_cny: AtomicU64::new(0),
+            cost_nano_usd: AtomicU64::new(0),
+            usage_unknown_seen: AtomicBool::new(false),
+            usage_any_known: AtomicBool::new(false),
         }
     }
 
-    fn cost(&self) -> f64 {
-        lt_translate::compute_cost(
-            self.prompt_tokens.load(Ordering::Relaxed),
-            self.completion_tokens.load(Ordering::Relaxed),
-            self.input_price,
-            self.output_price,
-        )
+    /// 记一笔翻译：tokens 与金额都按**本次调用**的价格/币种累加
+    /// （换过模型之后，先前那几笔仍按旧单价记着——总额才是真实花销）
+    fn record_translation(
+        &self,
+        pt: u64,
+        ct: u64,
+        usage_known: bool,
+        prices: (f64, f64),
+        currency: lt_proto::Currency,
+    ) {
+        self.prompt_tokens.fetch_add(pt, Ordering::Relaxed);
+        self.completion_tokens.fetch_add(ct, Ordering::Relaxed);
+        self.tl_count.fetch_add(1, Ordering::Relaxed);
+        if usage_known {
+            self.usage_any_known.store(true, Ordering::Relaxed);
+        } else {
+            self.usage_unknown_seen.store(true, Ordering::Relaxed);
+        }
+        let amount = lt_translate::compute_cost(pt, ct, prices.0, prices.1);
+        let nano = (amount * NANO_PER_UNIT).round().max(0.0) as u64;
+        match currency {
+            lt_proto::Currency::Cny => {
+                self.cost_nano_cny.fetch_add(nano, Ordering::Relaxed);
+            }
+            lt_proto::Currency::Usd => {
+                self.cost_nano_usd.fetch_add(nano, Ordering::Relaxed);
+            }
+        }
     }
 
     fn snapshot_event(&self) -> UiEvent {
@@ -279,8 +308,12 @@ impl TlStats {
             tl_n: self.tl_count.load(Ordering::Relaxed),
             prompt_tokens: self.prompt_tokens.load(Ordering::Relaxed),
             completion_tokens: self.completion_tokens.load(Ordering::Relaxed),
-            cost: self.cost(),
-            usage_known: self.usage_known.load(Ordering::Relaxed),
+            cost_cny: self.cost_nano_cny.load(Ordering::Relaxed) as f64 / NANO_PER_UNIT,
+            cost_usd: self.cost_nano_usd.load(Ordering::Relaxed) as f64 / NANO_PER_UNIT,
+            // 语义（D-85）：true = 本次运行所有调用都给了用量；false = 出现过未知
+            // （或**从未**观测到任何用量——此时界面显示 "—"）
+            usage_known: !self.usage_unknown_seen.load(Ordering::Relaxed)
+                && self.usage_any_known.load(Ordering::Relaxed),
         }
     }
 }
@@ -674,6 +707,8 @@ fn finish_ok(
     attempt: &Attempt,
     transcript: &Arc<lt_audio::transcript::TranscriptWriter>,
     stats: &Arc<TlStats>,
+    prices: (f64, f64),
+    currency: lt_proto::Currency,
     sink: &EventSink,
     id: u64,
     t0: Instant,
@@ -682,13 +717,8 @@ fn finish_ok(
 ) {
     let tl_ms = t0.elapsed().as_secs_f64() * 1000.0;
     let text = attempt.text.clone().unwrap_or_default();
-    stats.tl_count.fetch_add(1, Ordering::Relaxed);
-    stats.prompt_tokens.fetch_add(pt, Ordering::Relaxed);
-    stats.completion_tokens.fetch_add(ct, Ordering::Relaxed);
-    // ⑩：端点是否提供用量（最后一次成功尝试为准）——不提供时界面显示"—"
-    stats
-        .usage_known
-        .store(attempt.usage_known, Ordering::Relaxed);
+    // D-85：会话级累计——价格/币种按**本次调用**的配置记账
+    stats.record_translation(pt, ct, attempt.usage_known, prices, currency);
     tracing::info!("Translate ({tl_ms:.0}ms): {text}");
     sink.push(UiEvent::UpdateTranslation {
         id,
@@ -705,6 +735,8 @@ fn fail(
     attempt: &Attempt,
     transcript: &Arc<lt_audio::transcript::TranscriptWriter>,
     stats: &Arc<TlStats>,
+    prices: (f64, f64),
+    currency: lt_proto::Currency,
     sink: &EventSink,
     id: u64,
     t0: Instant,
@@ -712,8 +744,8 @@ fn fail(
     ct: u64,
 ) {
     let tl_ms = t0.elapsed().as_secs_f64() * 1000.0;
-    stats.prompt_tokens.fetch_add(pt, Ordering::Relaxed);
-    stats.completion_tokens.fetch_add(ct, Ordering::Relaxed);
+    // D-85：失败也记账（钱花了就要记——旧实现只记 tokens 不算金额）
+    stats.record_translation(pt, ct, attempt.usage_known, prices, currency);
     transcript.finalize_no_translation(id);
     let (kind, detail) = match &attempt.error {
         Some(e) => (e.failure_kind(), format!("{} ({tl_ms:.0}ms)", e.ui_text())),
@@ -776,6 +808,9 @@ struct TlRig {
     /// 用户**确实要求关闭思考**（勾选且未标记）：只有这种情形下"退到不发送"
     /// 才算"关不掉"的证据；主动取消勾选不是
     wants_disable: bool,
+    /// 本装置的价格（每 1M tokens）与生效币种（D-85：按笔记账用）
+    prices: (f64, f64),
+    currency: lt_proto::Currency,
     /// 本次构造用的请求参数（D-85：供"探测与生产同源"测试逐字段断言）。
     /// **生产路径不读它**——持有即语义（同源证据），故允许 dead_code
     #[allow(dead_code)]
@@ -817,6 +852,7 @@ pub(crate) fn translator_params(
 impl TlRig {
     /// 按设置构建；models 为空/active_model 越界 → Ok(None)（不翻译，仅 ASR）；
     /// 配置无效（URL 格式错等）→ Err(原因)（必须让用户可见，见 TranslatorUnavailable）
+    #[allow(clippy::too_many_arguments)]
     fn from_settings(
         bus: &Arc<SettingsBus>,
         sup: &Supervisor,
@@ -824,6 +860,8 @@ impl TlRig {
         transcript: Arc<lt_audio::transcript::TranscriptWriter>,
         learned: Learned,
         degraded_notified: Arc<Mutex<std::collections::HashSet<(String, String)>>>,
+        session_stats: &Arc<TlStats>,
+        ui_lang: &str,
     ) -> Result<Option<Self>, String> {
         let eff = bus.load();
         let Some(mc) = eff.raw.models.get(eff.raw.active_model) else {
@@ -838,6 +876,8 @@ impl TlRig {
             transcript,
             learned,
             degraded_notified,
+            session_stats,
+            ui_lang,
         )
     }
 
@@ -855,6 +895,8 @@ impl TlRig {
         transcript: Arc<lt_audio::transcript::TranscriptWriter>,
         learned: Learned,
         degraded_notified: Arc<Mutex<std::collections::HashSet<(String, String)>>>,
+        session_stats: &Arc<TlStats>,
+        ui_lang: &str,
     ) -> Result<Option<Self>, String> {
         let params = translator_params(mc, eff);
         let translator = match Translator::new(params.clone()) {
@@ -878,11 +920,12 @@ impl TlRig {
                 Some(s) if !s.is_empty() && s != "auto"
             );
         let allow_verdict_advance = mc.disable_thinking && !mc.thinking_unavailable && !explicit;
-        let stats = Arc::new(TlStats::new(mc.input_price, mc.output_price));
         tracing::info!("Switching translator: {} ({})", mc.name, mc.model);
         Ok(Some(Self {
             translator,
-            stats,
+            stats: session_stats.clone(),
+            prices: (mc.input_price, mc.output_price),
+            currency: lt_proto::effective_currency(mc.currency.as_deref(), ui_lang),
             pool: JobPool::new(TL_POOL_WORKERS, sup, sink),
             transcript,
             bus: bus.clone(),
@@ -920,6 +963,8 @@ impl TlRig {
     ) {
         let translator = self.translator.clone();
         let stats = self.stats.clone();
+        let prices = self.prices;
+        let currency = self.currency;
         let transcript = self.transcript.clone();
         let sink = sink.clone();
         // W2：`msg`（用户文案注入）在翻译出口不再需要——失败文案改由 UI 按
@@ -980,6 +1025,8 @@ impl TlRig {
                     &outcome.attempt,
                     &transcript,
                     &stats,
+                    prices,
+                    currency,
                     &sink,
                     id,
                     t0,
@@ -1022,6 +1069,8 @@ impl TlRig {
                 &outcome.attempt,
                 &transcript,
                 &stats,
+                prices,
+                currency,
                 &sink,
                 id,
                 t0,
@@ -1281,6 +1330,10 @@ impl Pipeline {
 
         // ── 翻译装置（M3）：models 非空即构建；配置无效必须让用户可见
         //（TranslatorUnavailable → 面板翻译页状态行 + 悬浮窗译文占位）──
+        // D-85/G：会话级累计器——**本次进程只建一次**，跨装置重建共享
+        //（换模型不清零；进程退出自然归零 = 用户要的"重启重算"）
+        let session_stats: Arc<TlStats> = Arc::new(TlStats::new());
+        let ui_lang = msg.lang();
         let tl = match TlRig::from_settings(
             bus,
             &sup,
@@ -1288,6 +1341,8 @@ impl Pipeline {
             transcript.clone(),
             learned.clone(),
             degraded_notified.clone(),
+            &session_stats,
+            &ui_lang,
         ) {
             Ok(t) => {
                 // D-85/F2：启动即回执一次"当前使用"——面板状态行首帧就正确，
@@ -1883,12 +1938,19 @@ fn route_translator_switch(
     sink: &EventSink,
     sup: &Supervisor,
     transcript: &Arc<lt_audio::transcript::TranscriptWriter>,
+    // 文案 + 界面语言注入（D-85：币种默认值按界面语言，编排域不依赖 lt-i18n）
+    msg: &Msg,
     learned: &Learned,
     degraded_notified: &Arc<Mutex<std::collections::HashSet<(String, String)>>>,
 ) -> Option<TlSwitch> {
     match sw {
         TlSwitch::ReplaceRig { config } => {
             let eff = bus.load();
+            // 会话统计与界面语言随装置传承（替换不换账本；语言取当前注入）
+            let (session_stats, ui_lang) = match tl.as_ref() {
+                Some(rig) => (rig.stats.clone(), msg.lang()),
+                None => (Arc::new(TlStats::new()), msg.lang()),
+            };
             match TlRig::from_effective(
                 &config,
                 &eff,
@@ -1898,6 +1960,8 @@ fn route_translator_switch(
                 transcript.clone(),
                 learned.clone(),
                 degraded_notified.clone(),
+                &session_stats,
+                &ui_lang,
             ) {
                 Ok(Some(rig)) => {
                     tracing::info!("翻译器已切换: {} ({})", config.name, config.model);
@@ -1951,6 +2015,8 @@ struct SwitchDrain<'a> {
     degraded_notified: &'a Arc<Mutex<std::collections::HashSet<(String, String)>>>,
     interim: &'a Arc<InterimControl>,
     settings: &'a lt_proto::Settings,
+    /// 文案 + 界面语言注入（币种默认值的语言回退在编排域算）
+    msg: &'a Msg,
 }
 
 fn drain_tl_switch(
@@ -1967,7 +2033,7 @@ fn drain_tl_switch(
             funasr_model,
             whisper_model_size,
             language,
-        }) = route_translator_switch(sw, tl, ctx.bus, ctx.sink, ctx.sup, ctx.transcript, ctx.learned, ctx.degraded_notified)
+        }) = route_translator_switch(sw, tl, ctx.bus, ctx.sink, ctx.sup, ctx.transcript, ctx.msg, ctx.learned, ctx.degraded_notified)
         {
             // R3/D-61：每次切换尝试重解析 models_dir（与待命臂一致；
             // 运行中目录损坏时切换路径同样可恢复）
@@ -2154,7 +2220,7 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
                 funasr_model,
                 whisper_model_size,
                 language,
-            }) = route_translator_switch(sw, &mut tl, &bus, &sink, &sup, &transcript, &learned, &degraded_notified)
+            }) = route_translator_switch(sw, &mut tl, &bus, &sink, &sup, &transcript, &msg, &learned, &degraded_notified)
             else {
                 continue;
             };
@@ -2241,6 +2307,7 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
                 degraded_notified: &degraded_notified,
                 interim: &interim,
                 settings,
+                msg: &msg,
             },
         );
         // 取段：capture 线程直塞的 (source, audio)（source 目前仅 VadFlush，
@@ -2265,6 +2332,7 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
                     degraded_notified: &degraded_notified,
                     interim: &interim,
                     settings,
+                    msg: &msg,
                 },
             );
             continue;
@@ -3259,7 +3327,7 @@ mod tests {
         let settings = lt_proto::Settings::default();
         let sup = test_sup();
         let bus = test_bus(settings);
-        let rig = TlRig::from_settings(&bus, &sup, EventArtery::new(), test_transcript(), test_learned(), test_degraded_notified())
+        let rig = TlRig::from_settings(&bus, &sup, EventArtery::new(), test_transcript(), test_learned(), test_degraded_notified(), &test_session_stats(), "zh")
             .expect("默认设置不应报配置错误")
             .expect("默认 settings 带一个默认模型，应能构建");
         // W4：目标语言不再存实例态（逐调用经总线 tl 视图传入）——验证总线视图
@@ -3268,6 +3336,11 @@ mod tests {
         // join_all 将无限等待（pop_timeout 永不返回）
         rig.pool.shutdown();
         sup.join_all();
+    }
+
+    /// D-85：测试用会话统计（每个用例独立一份——真实实现由 Pipeline 建一次）
+    fn test_session_stats() -> Arc<TlStats> {
+        Arc::new(TlStats::new())
     }
 
     /// D-85：探测与生产**同源**——装置参数只有一处构造点
@@ -3287,6 +3360,8 @@ mod tests {
             test_transcript(),
             test_learned(),
             test_degraded_notified(),
+            &test_session_stats(),
+            "zh",
         )
         .expect("默认设置不应报配置错误")
         .expect("默认 settings 带一个默认模型，应能构建");
@@ -3306,7 +3381,7 @@ mod tests {
             ..Default::default()
         };
         let sup = test_sup();
-        assert!(TlRig::from_settings(&test_bus(settings), &sup, EventArtery::new(), test_transcript(), test_learned(), test_degraded_notified()).unwrap().is_none());
+        assert!(TlRig::from_settings(&test_bus(settings), &sup, EventArtery::new(), test_transcript(), test_learned(), test_degraded_notified(), &test_session_stats(), "zh").unwrap().is_none());
         sup.join_all();
     }
 
@@ -3315,7 +3390,7 @@ mod tests {
         let mut settings = lt_proto::Settings::default();
         settings.models.clear();
         let sup = test_sup();
-        assert!(TlRig::from_settings(&test_bus(settings), &sup, EventArtery::new(), test_transcript(), test_learned(), test_degraded_notified()).unwrap().is_none());
+        assert!(TlRig::from_settings(&test_bus(settings), &sup, EventArtery::new(), test_transcript(), test_learned(), test_degraded_notified(), &test_session_stats(), "zh").unwrap().is_none());
         sup.join_all();
     }
 
@@ -3420,12 +3495,12 @@ mod tests {
     fn replaced_rig_workers_shutdown_on_drop() {
         let sup = test_sup();
         let bus = test_bus(lt_proto::Settings::default());
-        let rig = TlRig::from_settings(&bus, &sup, EventArtery::new(), test_transcript(), test_learned(), test_degraded_notified()).unwrap().unwrap();
+        let rig = TlRig::from_settings(&bus, &sup, EventArtery::new(), test_transcript(), test_learned(), test_degraded_notified(), &test_session_stats(), "zh").unwrap().unwrap();
         let old_alive = rig.pool.alive_workers.clone();
         wait_for(|| old_alive.load(Ordering::Relaxed) == TL_POOL_WORKERS);
         // 模拟 ReplaceRig 的替换语义（route_translator_switch：
         // `*tl = Some(Arc::new(rig))`——旧 rig 被 Drop，无人显式关机）
-        let replacement = TlRig::from_settings(&bus, &sup, EventArtery::new(), test_transcript(), test_learned(), test_degraded_notified()).unwrap().unwrap();
+        let replacement = TlRig::from_settings(&bus, &sup, EventArtery::new(), test_transcript(), test_learned(), test_degraded_notified(), &test_session_stats(), "zh").unwrap().unwrap();
         wait_for(|| replacement.pool.alive_worker_count() == TL_POOL_WORKERS);
         drop(rig);
         // 旧池经 JobPool::Drop 自动停机：3s 内应归零（500ms pop_timeout 节拍）
@@ -3442,7 +3517,7 @@ mod tests {
     fn test_rig_dropped_with_job_shuts_down_pool() {
         let sup = test_sup();
         let bus = test_bus(lt_proto::Settings::default());
-        let rig = TlRig::from_settings(&bus, &sup, EventArtery::new(), test_transcript(), test_learned(), test_degraded_notified()).unwrap().unwrap();
+        let rig = TlRig::from_settings(&bus, &sup, EventArtery::new(), test_transcript(), test_learned(), test_degraded_notified(), &test_session_stats(), "zh").unwrap().unwrap();
         let alive = rig.pool.alive_workers.clone();
         wait_for(|| alive.load(Ordering::Relaxed) == TL_POOL_WORKERS);
         // 等价于任务闭包 Drop 时 rig 的丢弃语义
@@ -3745,6 +3820,7 @@ mod tests {
             &sink,
             &sup,
             &test_transcript(),
+            &Msg::new(|k| k.to_string(), || "zh".into()),
             &test_learned(),
             &test_degraded_notified(),
         );
@@ -3806,6 +3882,7 @@ mod tests {
                 degraded_notified: &degraded,
                 interim: &interim,
                 settings: &settings,
+                msg: &Msg::new(|k| k.to_string(), || "zh".into()),
             },
         );
         assert!(tl.is_some(), "主循环开头的一次调用就该完成切换");
@@ -3836,11 +3913,82 @@ mod tests {
                 degraded_notified: &degraded,
                 interim: &interim,
                 settings: &settings,
+                msg: &Msg::new(|k| k.to_string(), || "zh".into()),
             },
         );
         if let Some(rig) = tl.take() {
             rig.pool.shutdown();
         }
         sup.join_all();
+    }
+
+    // ── D-85/G/H：会话级累计 + 双币种 ──
+
+    /// 会话统计跨装置重建不清零；金额按**每笔当时的单价与币种**归账
+    #[test]
+    fn session_stats_accumulate_across_rig_replacement() {
+        let stats = TlStats::new();
+        // 第一笔：人民币供应商 ¥1/¥2 每 1M
+        stats.record_translation(1_000_000, 0, true, (1.0, 2.0), lt_proto::Currency::Cny);
+        // 第二笔：换成美元供应商 $0.5/$1.0（模拟换模型）
+        stats.record_translation(0, 1_000_000, true, (0.5, 1.0), lt_proto::Currency::Usd);
+        // 第三笔：又切回人民币供应商
+        stats.record_translation(0, 1_000_000, true, (1.0, 2.0), lt_proto::Currency::Cny);
+        match stats.snapshot_event() {
+            UiEvent::UpdateStats {
+                tl_n,
+                cost_cny,
+                cost_usd,
+                usage_known,
+                ..
+            } => {
+                assert_eq!(tl_n, 3, "句数跨装置累计");
+                assert!((cost_cny - 3.0).abs() < 1e-6, "人民币账本=1+2，实际 {cost_cny}");
+                assert!((cost_usd - 1.0).abs() < 1e-6, "美元账本=1，实际 {cost_usd}");
+                assert!(usage_known);
+            }
+            other => panic!("期望 UpdateStats，实际 {other:?}"),
+        }
+    }
+
+    /// 出现一次"用量未知"→ 快照 usage_known=false（费用可能偏低），
+    /// 但已记的金额不丢
+    #[test]
+    fn session_stats_marks_partial_unknown() {
+        let stats = TlStats::new();
+        stats.record_translation(100, 50, true, (1.0, 1.0), lt_proto::Currency::Usd);
+        stats.record_translation(100, 50, false, (1.0, 1.0), lt_proto::Currency::Usd);
+        match stats.snapshot_event() {
+            UiEvent::UpdateStats {
+                cost_usd,
+                usage_known,
+                prompt_tokens,
+                ..
+            } => {
+                assert!(!usage_known, "出现过未知 → 费用不完整");
+                assert!(cost_usd > 0.0, "已发生的金额仍要记");
+                assert_eq!(prompt_tokens, 200);
+            }
+            other => panic!("期望 UpdateStats，实际 {other:?}"),
+        }
+    }
+
+    /// 从未观测到用量（只有失败调用）→ 总额为 0 且 unknown（界面显示 "—"）
+    #[test]
+    fn session_stats_zero_and_unknown_stays_unknown() {
+        let stats = TlStats::new();
+        stats.record_translation(0, 0, false, (0.0, 0.0), lt_proto::Currency::Cny);
+        match stats.snapshot_event() {
+            UiEvent::UpdateStats {
+                cost_cny,
+                cost_usd,
+                usage_known,
+                ..
+            } => {
+                assert_eq!((cost_cny, cost_usd), (0.0, 0.0));
+                assert!(!usage_known);
+            }
+            other => panic!("期望 UpdateStats，实际 {other:?}"),
+        }
     }
 }

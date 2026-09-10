@@ -43,12 +43,19 @@ pub enum UiEvent {
     /// update_monitor_signal 语义等价，契约侧从「事件」变为「格」）
     /// 统计（update_stats_signal）。`usage_known=false` = 服务端从不返回用量
     /// （第二轮评审 ⑩：界面显示"—"而不是误导性的 0）
+    /// 用量与费用快照（D-85：**本次运行累计**——跨模型切换不清零、进程重启归零；
+    /// 费用按每笔发生时的当时单价累加，并按配置币种分两个账本）
     UpdateStats {
         asr_n: u64,
         tl_n: u64,
         prompt_tokens: u64,
         completion_tokens: u64,
-        cost: f64,
+        /// 人民币账本（未发生为 0.0）
+        cost_cny: f64,
+        /// 美元账本（未发生为 0.0）
+        cost_usd: f64,
+        /// 本次运行是否**所有**调用都提供了用量（false = 费用可能偏低，
+        /// 界面标"部分未知"而不是把偏低数字冒充完整总额）
         usage_known: bool,
     },
     /// ASR 设备标签（"SenseVoice Small" 等；不可用时 "ASR unavailable"）

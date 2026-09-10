@@ -398,6 +398,63 @@ pub const OVERRIDE_KEYS_HIDDEN: [&str; 3] = ["temperature", "max_tokens", "seed"
 /// 界面仍在渲染的覆写键（高级区三行）
 pub const OVERRIDE_KEYS_VISIBLE: [&str; 3] = ["top_p", "frequency_penalty", "presence_penalty"];
 
+/// 费用计价币种（D-85）：显示符号与价格单位都由它决定——**不再按界面语言切换**
+/// （旧实现按 `get_lang()` 选 ¥/$，用户填美元价时中文界面会标成人民币，差 ~7 倍）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Currency {
+    /// 人民币（元）
+    Cny,
+    /// 美元
+    Usd,
+}
+
+impl Currency {
+    /// 配置字面量 → 币种（认不出的值按 `None` 处理 = 跟随界面语言）
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "cny" | "rmb" | "yuan" => Some(Currency::Cny),
+            "usd" | "dollar" => Some(Currency::Usd),
+            _ => None,
+        }
+    }
+
+    /// 写回配置的字面量
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Currency::Cny => "cny",
+            Currency::Usd => "usd",
+        }
+    }
+
+    /// 显示符号
+    pub fn symbol(self) -> &'static str {
+        match self {
+            Currency::Cny => "¥",
+            Currency::Usd => "$",
+        }
+    }
+
+    /// 价格单位文案的 i18n 键（"元 / 1M tok" vs "美元 / 1M tok"）
+    pub fn unit_key(self) -> &'static str {
+        match self {
+            Currency::Cny => "price_unit_cny",
+            Currency::Usd => "price_unit_usd",
+        }
+    }
+}
+
+/// 生效币种（D-85 唯一判据）：配置显式值优先，否则按界面语言
+/// （中文 → 人民币，其余 → 美元）。UI 与编排域共用同一函数，避免两处各判一次。
+pub fn effective_currency(cfg_currency: Option<&str>, ui_lang: &str) -> Currency {
+    cfg_currency
+        .and_then(Currency::parse)
+        .unwrap_or(if ui_lang.starts_with("zh") {
+            Currency::Cny
+        } else {
+            Currency::Usd
+        })
+}
+
 /// 翻译模型配置 —— 序列化形状与原版 ModelEditDialog.get_data() 逐键一致。
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(default, rename_all = "snake_case")]
@@ -437,8 +494,14 @@ pub struct ModelConfig {
     pub json_response: bool,
     #[serde(skip_serializing_if = "is_zero_u32")]
     pub context_turns: u32,
+    /// 计价币种（"cny" | "usd"）；None = 跟随界面语言（中文→cny，英文→usd）。
+    /// D-85：国内外站点官方定价币种不同，由用户按自己看到的定价页填；
+    /// 会话费用累计据此分币种两个账本（跨币种不做汇率折算）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub currency: Option<String>,
+    /// 每 1M tokens 的输入价（单位由 [`ModelConfig::currency`] 决定）
     #[serde(skip_serializing_if = "is_zero_f64")]
-    pub input_price: f64, // 美元 / 1M tokens
+    pub input_price: f64,
     #[serde(skip_serializing_if = "is_zero_f64")]
     pub output_price: f64,
     /// 仅勾选的键（原版 Advanced "checkbox+value" 行；界面只剩 top_p 与两个惩罚项）
@@ -466,6 +529,7 @@ impl Default for ModelConfig {
             streaming: true,
             json_response: false,
             context_turns: 0,
+            currency: None,
             input_price: 0.0,
             output_price: 0.0,
             overrides: None,
@@ -820,6 +884,7 @@ mod tests {
             json_response: true,
             context_turns: 3,
             input_price: 1.0,
+            currency: None,
             output_price: 2.0,
             overrides: Some(BTreeMap::from([("top_p".to_string(), serde_json::json!(0.9))])),
             extra_body: Some(serde_json::json!({"k": 1})),
@@ -1079,5 +1144,42 @@ mod tests {
         assert_eq!(normalize_language(" auto "), "auto");
         assert_eq!(normalize_language(""), "");
         assert_eq!(normalize_language("-"), "");
+    }
+
+    // ── D-85/H：币种判据 ──
+
+    /// 生效币种：显式优先，其次按界面语言（中文→人民币，其余→美元）
+    #[test]
+    fn effective_currency_follows_lang_then_explicit() {
+        use super::{effective_currency, Currency};
+        assert_eq!(effective_currency(None, "zh"), Currency::Cny);
+        assert_eq!(effective_currency(None, "zh-CN"), Currency::Cny);
+        assert_eq!(effective_currency(None, "en"), Currency::Usd);
+        assert_eq!(effective_currency(Some("usd"), "zh"), Currency::Usd);
+        assert_eq!(effective_currency(Some("cny"), "en"), Currency::Cny);
+        // 认不出的值 → 回落语言默认（不 panic、不硬失败）
+        assert_eq!(effective_currency(Some("bogus"), "zh"), Currency::Cny);
+        assert_eq!(effective_currency(Some(""), "en"), Currency::Usd);
+        // 符号与单位键
+        assert_eq!(Currency::Cny.symbol(), "¥");
+        assert_eq!(Currency::Usd.symbol(), "$");
+        assert_eq!(Currency::Cny.as_str(), "cny");
+        assert_eq!(Currency::Usd.unit_key(), "price_unit_usd");
+    }
+
+    /// 老档案（无 currency 键）反序列化后为 None——跟随界面语言，不产生迁移
+    #[test]
+    fn settings_without_currency_key_loads_as_none() {
+        let json = r#"{"models":[{"name":"m","api_base":"http://x/v1","api_key":"k","model":"d"}]}"#;
+        let s: crate::Settings = serde_json::from_str(json).expect("老档案可解");
+        assert_eq!(s.models[0].currency, None);
+        // 空 currency 不写盘（保持档案干净）
+        let out = serde_json::to_string(&s).expect("可序列化");
+        assert!(!out.contains("currency"), "None 不该出现在落盘 JSON：{out}");
+        // 显式币种要写盘
+        let mut s2 = s.clone();
+        s2.models[0].currency = Some("usd".into());
+        let out2 = serde_json::to_string(&s2).expect("可序列化");
+        assert!(out2.contains("\"currency\":\"usd\""), "{out2}");
     }
 }

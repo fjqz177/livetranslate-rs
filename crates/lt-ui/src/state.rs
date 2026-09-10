@@ -198,10 +198,11 @@ pub struct OverlayStats {
     pub tl_n: u64,
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
-    pub cost: f64,
-    /// 端点是否提供用量（2026-09-10 第二轮评审 ⑩：false = 服务端从不返回
-    /// usage → MonitorBar Tok 段显示 "—" 而非误导性的 0；默认 false 同样
-    /// 让"首个事件到达前"不把 0 冒充真实值）
+    /// 人民币/美元两个账本（D-85：本次运行累计、分币种；未发生为 0.0）
+    pub cost_cny: f64,
+    pub cost_usd: f64,
+    /// 本次运行是否所有调用都提供了用量（false = 出现过未知 → 金额可能偏低，
+    /// 界面标"部分未知"；**全部为 0 且未知**时 Tok/费用段显示 "—"）
     pub usage_known: bool,
 }
 
@@ -969,6 +970,8 @@ pub struct ModelEditState {
     /// 0..=20（原版 QSpinBox）
     pub context_turns: i32,
     /// $ / 1M tokens（原版 QDoubleSpinBox 0-999 两位小数，0 = "—"）
+    /// 计价币种（D-85：`None` = 跟随界面语言；`Some("cny"/"usd")` = 用户指定）
+    pub currency: Option<String>,
     pub input_price: f64,
     pub output_price: f64,
     /// 六行 checkbox+value（键序 = `lt_proto::OVERRIDE_KEYS`，单一事实源）
@@ -1016,6 +1019,7 @@ impl ModelEditState {
             streaming: true,
             json_response: false,
             context_turns: 0,
+            currency: None,
             input_price: 0.0,
             output_price: 0.0,
             overrides: std::array::from_fn(|_| OverrideRow::default()),
@@ -1045,6 +1049,7 @@ impl ModelEditState {
             streaming: cfg.streaming,
             json_response: cfg.json_response,
             context_turns: cfg.context_turns as i32,
+            currency: cfg.currency.clone(),
             input_price: cfg.input_price,
             output_price: cfg.output_price,
             overrides: std::array::from_fn(|i| OverrideRow {
@@ -1139,6 +1144,7 @@ impl ModelEditState {
             streaming: self.streaming,
             json_response: self.json_response,
             context_turns: self.context_turns.clamp(0, 20) as u32,
+            currency: self.currency.clone(),
             input_price: self.input_price.clamp(0.0, 999.0),
             output_price: self.output_price.clamp(0.0, 999.0),
             overrides: if overrides.is_empty() {
@@ -3042,11 +3048,12 @@ mod tests {
             tl_n: 8,
             prompt_tokens: 1000,
             completion_tokens: 500,
-            cost: 0.002,
+            cost_cny: 0.002,
+            cost_usd: 0.0,
             usage_known: true,
         });
         assert_eq!(st.overlay.stats.asr_n, 10);
-        assert_eq!(st.overlay.stats.cost, 0.002);
+        assert_eq!(st.overlay.stats.cost_cny, 0.002);
         assert!(st.overlay.stats.usage_known, "用量可用如实落格");
         // 默认（首个事件到达前 / 无用量端点）不得把 0 冒充真实用量
         assert!(!OverlayStats::default().usage_known);
@@ -3307,6 +3314,7 @@ mod tests {
             json_response: true,
             context_turns: 4,
             input_price: 0.27,
+            currency: None,
             output_price: 1.1,
             overrides: Some(
                 [

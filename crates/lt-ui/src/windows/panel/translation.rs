@@ -795,10 +795,58 @@ fn editor_fields(ui: &mut Ui, ed: &mut ModelEditState, pal: &Palette) {
             // 价格（原版 price_row：输入/输出 $/1M，0 显示 "—"）
             ui.label(lt_i18n::t("label_pricing"));
             ui.horizontal(|ui| {
+                // D-85：币种下拉（跟随界面语言 / 人民币 / 美元）——价格单位与
+                // 费用显示符号都取它；旧实现没有单位说明、符号还按界面语言切
+                let cur = lt_proto::effective_currency(
+                    ed.currency.as_deref(),
+                    &lt_i18n::get_lang(),
+                );
+                let selected = match ed.currency.as_deref() {
+                    None => lt_i18n::t("currency_follow_lang"),
+                    Some(_) => lt_i18n::t(match cur {
+                        lt_proto::Currency::Cny => "currency_cny",
+                        lt_proto::Currency::Usd => "currency_usd",
+                    }),
+                };
+                egui::ComboBox::from_id_salt("model_edit_currency")
+                    .selected_text(selected)
+                    .width(120.0)
+                    .show_ui(ui, |ui| {
+                        if ui
+                            .selectable_label(ed.currency.is_none(), lt_i18n::t("currency_follow_lang"))
+                            .clicked()
+                        {
+                            ed.currency = None;
+                        }
+                        if ui
+                            .selectable_label(
+                                ed.currency.as_deref() == Some("cny"),
+                                lt_i18n::t("currency_cny"),
+                            )
+                            .clicked()
+                        {
+                            ed.currency = Some("cny".into());
+                        }
+                        if ui
+                            .selectable_label(
+                                ed.currency.as_deref() == Some("usd"),
+                                lt_i18n::t("currency_usd"),
+                            )
+                            .clicked()
+                        {
+                            ed.currency = Some("usd".into());
+                        }
+                    });
                 ui.label(lt_i18n::t("label_input_price"));
                 price_drag(ui, "model_edit_ip", &mut ed.input_price);
                 ui.label(lt_i18n::t("label_output_price"));
                 price_drag(ui, "model_edit_op", &mut ed.output_price);
+                // 单位随生效币种（不再无单位）
+                ui.label(
+                    RichText::new(lt_i18n::t(cur.unit_key()))
+                        .size(11.0)
+                        .color(pal.weak),
+                );
             });
             ui.end_row();
 
