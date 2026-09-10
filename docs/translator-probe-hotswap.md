@@ -133,6 +133,9 @@
 
 ### 4.1 契约变更（`crates/lt-proto/`）
 
+> 行号口径（2026-09-11 评审注记）：本节及后续各节的 `文件:行号` 是 2026-09-10 定稿时的快照；
+> 实现（含评审修复）后普遍有偏移，**一律以符号名/代码为准**，行号仅作定位线索。
+
 **`PROTO_VERSION: 5 → 6`**（`lib.rs:21`；结构变更需递增）。
 
 `src/lib.rs` 新增共享常量（跨层单一事实源：`lt-orchestrator` 探测预算与 `lt-ui` 看门狗同源，
@@ -252,7 +255,12 @@ Superseded,
 
 `ThreadRole` 新增变体（`events.rs:405` 段落）：`TranslatorProbe`（一次性探测线程，`Policy::Never`）。
 
-**死契约守卫预期**：`FailureKind::Cancelled` 引用点 = `lt-translate/error.rs`（生产）+ `lt-orchestrator/probe.rs`（消费）≥2；`FailureKind::Superseded` 引用点 = `pipeline.rs`（生产）+ `subtitle.rs`（中性渲染分支）≥2。若 `check_dead_contract.ps1` 仍报 WARN，按脚本既有先例登记进"已定性合法单边形态"注释并说明理由。
+**死契约守卫预期**：`FailureKind::Superseded` 引用点 = `pipeline.rs`（生产）+ `subtitle.rs`/`overlay.rs`
+（中性渲染分支）≥2 ✓。`FailureKind::Cancelled` 的实际形态（2026-09-11 评审勘正）：它是
+`TranslateError::Cancelled::failure_kind()` 的分类槽位（`lt-translate/error.rs` 生产 + `i18n_key`），
+**probe 的取消结论走 `ProbeOutcome::Cancelled`、不经该变体渲染**——属"类型化失败分类里的
+合法单边形态"，已登记进 `check_dead_contract.ps1` 注释块；守卫按裸名计数（`TranslateError::Cancelled`
+的海量出现）不会报它，属已知粗粒度（不影响门禁有效性）。
 
 ### 4.2 lt-translate：可取消的翻译调用
 
@@ -285,7 +293,8 @@ Superseded,
 
    **关键约束**：`cancel.is_none()`（生产翻译路径）时 `slice == remaining`，与现状逐字节等价。
 6. 非流式路径：`timeout_block`（`translator.rs:552-567`，被 `translate_sync` 使用）在 `cancel.is_some()`
-   时改为 `tokio::select!` 竞争：主 future 正常超时语义不变；取消分支每 100ms 轮询标志，命中即
+   时改为 `tokio::select!` 竞争：主 future 正常超时语义不变；取消分支按 [`CANCEL_POLL`]（150ms，
+   2026-09-11 评审勘正——旧稿写 100ms，实现统一走同一常量）轮询标志，命中即
    `Err(TranslateError::Cancelled)`。取消分支必须**丢弃主 future**（`select!` 语义天然满足）。
 7. `pump_stream` 与 `TranslateStream::drop` 的 `handle.abort()` 不动——迭代器被丢弃即关闭 HTTP 连接。
 
@@ -575,8 +584,9 @@ Cmd::CancelTranslatorTest { probe_id } => {
 
 1. **取代语义（supersede），不拒绝**：若已有在途（`self.probe_id.load(SeqCst) != 0`）→ 先置位**旧探测**的
    取消标志并记 `warn!("连接测试被新请求取代 #{old} → #{new}")`，然后照常启动新探测。
-   **禁止**"在途时拒绝新请求"：旧线程退出可滞后一个轮询周期（流式 ≤150ms、非流式 ≤20s），
-   拒绝会把用户"中断后立刻重测"这一正常操作变成最长 70 秒空等（只剩看门狗兜底）。
+   **禁止**"在途时拒绝新请求"：旧线程退出可滞后一个轮询周期（流式 ≤150ms、非流式 ≤ 一次尝试超时
+   ≤10 秒），拒绝会把用户"中断后立刻重测"这一正常操作变成最长 20 秒空等（看门狗兜底；口径
+   2026-09-11 评审统一——旧稿写 70 秒，与实现/裁决 B 不符）。
 2. `self.probe_cancel = Arc::new(AtomicBool::new(false)); self.probe_id.store(probe_id, SeqCst);`
 3. 经监督器一次性线程出生（镜像 `start_bench` / `spawn_device_probe` 范式，`shell.rs:375-425`）：
 
@@ -802,7 +812,8 @@ ProbeTick,
 | `price_unit_cny` | 元 / 1M tok | CNY / 1M tok |
 | `price_unit_usd` | 美元 / 1M tok | USD / 1M tok |
 | `preset_label` | 厂商预设 | Provider preset |
-| `preset_custom` | 自定义 | Custom |
+| `preset_hint` | 选一个厂商即可自动填好地址、推荐模型与关闭思考方式；密钥与其它自定义项不会被覆盖。 | Pick a provider to fill in the base URL, a suggested model and the thinking-disable shape; your API key and other custom fields are never overwritten. |
+| `preset_provider_custom` | 自定义（不填充） | Custom (fill nothing) |
 | `preset_deepseek` | 深度求索 DeepSeek | DeepSeek |
 | `preset_openai` | OpenAI | OpenAI |
 | `preset_zhipu` | 智谱 GLM | Zhipu GLM |
@@ -819,7 +830,10 @@ ProbeTick,
 `lt_i18n::t(currency.unit_key())`；币种下拉三项 = `currency_follow_lang` / `currency_cny` /
 `currency_usd`（选中项写回 `ModelConfig.currency`：`None` / `Some("cny")` / `Some("usd")`）；
 费用显示符号取 `currency.symbol()`，**不再**按 `lt_i18n::get_lang()` 判断。
-Preset 项的显示名取 `preset_*` 键（品牌名中英同形者两边写同一串）。
+Preset 项的显示名取 `preset_*` 键（品牌名中英同形者两边写同一串）；
+**`custom` 项例外**——改用专属键 `preset_provider_custom`（2026-09-11 评审修复：
+旧实现直接取 `preset_custom`，与样式页既有同名键撞键、yaml 内重复定义被
+`HashMap` 反序列化静默 last-wins，样式页标签被覆盖成"（不填充）"）。
 
 **G 在 MonitorBar 的落地（`crates/lt-ui/src/windows/overlay.rs`，两处判据都要改）**：
 
@@ -841,7 +855,7 @@ Preset 项的显示名取 `preset_*` 键（品牌名中英同形者两边写同�
 | 在途(id, i) | 收到 `TestTranslatorResult{probe_id != id}` | 丢弃（debug 日志） | 在途(id, i) 不变 |
 | 在途(id, i) | 收到 `TestTranslatorResult{probe_id == id}` | 落 result（行 i、cfg_key_i） | 无在途 + Result |
 | 在途(id, i) | 点行 i「中断」 | 发 `Cmd::CancelTranslatorTest{id}`；本地立即落 `Cancelled` | 无在途 + Result |
-| 在途(id, i) | 已耗时 > 70 秒 | 本地落 `Inconclusive{0}` + warn 日志 | 无在途 + Result |
+| 在途(id, i) | 已耗时 > 20 秒（预算 10s + 10s 裕量） | 本地落 `Inconclusive{0}` + warn 日志 | 无在途 + Result |
 | 在途(id, i) | 切换面板页/关闭面板 | 无动作（探测继续） | 在途(id, i) |
 | 无在途 | 结果行所在配置被编辑 | 渲染期 cfg_key 失配 → 不显示（存储不变） | 无在途 |
 | 无在途 | 结果行被删除/行号越界 | 渲染期行号越界 → 不显示 | 无在途 |
@@ -850,7 +864,9 @@ Preset 项的显示名取 `preset_*` 键（品牌名中英同形者两边写同�
 
 1. 同一时刻至多一个**有效**在途探测（UI 禁用其他行 + shell 取代语义 + 看门狗三重保证；
    被取代的旧探测可能仍在退出途中，其回执因 `probe_id` 不符必然被丢弃）。
-2. 任何在途探测必在 ≤70 秒内落到终态（成功/失败/中断/未定论），**不存在永久「测试中…」**。
+2. 任何在途探测必在 ≤20 秒内落到终态（成功/失败/中断/未定论），**不存在永久「测试中…」**
+   ——该兜底由 `TickKind::ProbeTick` 看门狗提供，且**首次排班由点击「测试」时发出**
+   （2026-09-11 评审修复：旧实现只有自续拍、首排缺失，看门狗实际不可达）。
 3. 探测不产生副作用：不切活动模型、不写 learned/degraded、不动 transcript、不进统计。
 
 ---
@@ -883,51 +899,50 @@ C3 是最大提交（契约 + 编排 + shell + UI 需同步改，否则旧调用
 
 | 测试 | 断言 |
 |---|---|
-| `cancel_stops_streaming_within_poll_interval` | 假服务端慢流（每 500ms 一 chunk）→ 置取消 → 迭代器 ≤400ms 返回 `Err(Cancelled)` |
+| `cancel_stops_streaming_within_poll_interval` | 假服务端慢流（300ms 间隔）→ 置取消 → 迭代器 <500ms 返回 `Err(Cancelled)` |
 | `cancel_before_first_read_returns_immediately` | 置取消后再调用 → 首个 `next()` 即 `Err(Cancelled)` |
-| `cancel_works_on_sync_path` | 非流式 + 慢响应 → 置取消 → ≤400ms 返回 |
+| `cancel_works_on_sync_path` | 非流式 + 慢响应 → 250ms 后置取消 → 快速返回 `Err(Cancelled)`（<3s 上限） |
 | `no_cancel_token_keeps_legacy_timeout_semantics` | `cancel = None` 时超时仍返回 `Err(Timeout)`（回归） |
-| `minimal_and_with_plan_preserve_cancel` | `minimal()` / `with_plan()` 产物仍持有取消令牌 |
+| `derived_translators_preserve_cancel_token`（原文档名 `minimal_and_with_plan_preserve_cancel`，断言更全） | `minimal()` / `share_client()` / `with_plan()` / `with_max_tokens()` 产物仍持有取消令牌 |
 
 **lt-orchestrator（C3/C4/C5）**
 
 | 测试 | 断言 |
 |---|---|
 | `probe_ok_reports_preview_and_ms` | 假服务端返回 `"你好"` → `Ok` + `preview = "你好"` + `step_note.is_none()` |
-| `probe_ladder_reports_degraded_step` | 首个形态 400 → 降级成功 → `step_note.is_some()` |
+| `probe_ladder_reports_degraded_step` | 首个形态"空正文+推理量"（EmptyReasoningBudget）→ 降级成功 → `step_note.is_some()` |
 | `probe_reports_auth_failure_kind` | 401 → `Failed{ kind: Auth }` |
-| `probe_reports_malformed_config_as_not_ready` | URL 非法 → `Failed{ kind: NotReady }` |
+| `probe_reports_unbuildable_config_as_not_ready`（原文档名 `..._malformed_config_...`；§11.1-9 勘误后由非法代理构造） | 装置不可构建（非法代理）→ `Failed{ kind: NotReady }` |
 | `probe_budget_exhausted_is_inconclusive` | 服务端永不返回 + 预算 1 秒 → `Inconclusive{ attempted >= 1 }` |
-| `probe_cancel_is_reported` | 置取消 → `Cancelled` |
-| `probe_does_not_touch_learned_or_degraded` | 探测后会话记忆与降级标记为空 |
+| `probe_cancel_before_start_is_reported` + `probe_cancel_during_attempt_is_reported_as_cancelled`（原文档名 `probe_cancel_is_reported`，拆为两条） | 起始即取消 / **一次尝试进行中**被取消 → `Cancelled`（后者钉住映射表首行第二个判据） |
+| `probe_emits_exactly_one_receipt` | 探测可观测副作用面 = **恰好一条回执**（不接收 learned/degraded/transcript——签名即保证；原文档名 `probe_does_not_touch_learned_or_degraded`，无法直接断言故改为签名+回执面双重保证） |
 | `translator_params_single_source` | `rig.params == translator_params(mc, eff)` |
 | `session_stats_accumulate_across_rig_replacement` | 换装置（含不同单价）后 `asr_n/tl_n/tokens/cost` 不归零且费用按各自单价累加 |
 | `session_stats_marks_partial_unknown` | 一次 `usage_known=false` → 快照 `usage_known=false` 且费用仍累计 |
 | `retired_pool_marks_superseded_not_dropped` | `retire()` 双段 → 两条 `TranslationFailed{ kind: Superseded }` |
 | `queue_overflow_still_reports_dropped` | 溢出丢最旧仍为 `Dropped`（回归） |
 | `replace_rig_pushes_translator_switched` | 成功替换 → `UiEvent::TranslatorSwitched{name, model}` |
-| `drain_tl_switch_runs_before_segment_pop` | 段队列非空时仍消费到 `ReplaceRig`（F1 回归） |
+| `next_segment_drains_switch_before_pop`（原文档名 `drain_tl_switch_runs_before_segment_pop`） | **段队列非空时**取段前仍先消费到 `ReplaceRig`（F1 位置不变量；`next_segment` 为生产主循环该环节唯一实现点） |
 
 **lt-ui（C3/C4/C5/C6）**
 
 | 测试 | 断言 |
 |---|---|
 | `row_click_only_selects_no_switch_cmd` | **裁决 E 回归**：headless 点击第 1 行 → `model_selected == Some(1)`，且**未发出任何 `Cmd::SwitchTranslator`**、`settings.active_model` 不变 |
-| `row_context_menu_and_double_click_unchanged` | 双击行仍进编辑、四按钮（增/编/复制/删）目标 = 选中行（回归） |
+| `row_double_click_opens_editor_and_buttons_target_selection` | 双击行**直接打开编辑对话框**（target row）；四按钮（增/编/复制/删）目标 = 选中行（回归） |
 | `delete_active_row_still_switches_internally` | 删掉活动行 → 仍发 `Cmd::SwitchTranslator`（正确性保留，与 E 不冲突） |
-| `probe_row_button_sends_cmd_with_id` | headless 指针点击第 1 行「测试」→ 发出 `Cmd::TestTranslator{probe_id: 0}` 且 `running.row == 1` |
+| `probe_row_button_sends_cmd_with_id_and_config` | headless 指针点击该行「测试」→ 发出 `Cmd::TestTranslator{probe_id: 1}`（号源从 1 起）、`running.row` 正确、配置=该行，**且已排入 `TickKind::ProbeTick` 首拍** |
 | `probe_cancel_button_sends_cancel_and_settles_locally` | 在途时点击 → 发 `CancelTranslatorTest` + 本地 `Cancelled` + `running == None` |
-| `other_rows_disabled_while_running` | 在途时其他行按钮 `enabled == false` |
-| `stale_probe_result_ignored` | `probe_id` 不匹配的回执不改变状态 |
+| `probe_cancel_settles_locally_and_other_rows_disabled`（含 `other_rows_disabled_while_running` 行为断言：点其他行「测试」不发出新探测） | 在途时其他行按钮禁用（行为断言替代像素断言） |
+| `probe_settle_is_id_scoped`（含 `stale_probe_result_ignored`：在途号不符分支） | `probe_id` 不匹配的回执不改变状态、不清在途 |
 | `probe_result_invalidated_on_config_change` | 改行配置后旧结果不渲染 |
-| `probe_tick_self_reschedules_while_running` | 在途时调 `on_probe_tick()` → 能取到下一拍 `TickKind::ProbeTick`（自续拍） |
+| `probe_tick_keeps_scheduling_while_running`（状态层 `tick()` 返回 true 即续拍）+ 点击路径 `probe_row_button_...` 断言**首次排班** | 在途续拍 + 首拍由点击发出（2026-09-11 评审修复：旧实现只有自续拍，看门狗不可达） |
 | `probe_tick_watchdog_settles_inconclusive` | `running.started` 拨回 21 秒前 → 调 `on_probe_tick()` → `running == None` + `Inconclusive{0}`，**且不再续拍** |
 | `probe_tick_not_scheduled_when_idle` | 无在途时排班表里不存在 `ProbeTick`（不留空转节拍） |
-| `active_model_status_line_renders_name` | 状态行文本含当前模型名；收到 `TranslatorSwitched` 后追加「已切换生效」 |
-| `active_model_status_line_has_no_switch_control` | **裁决 E 回归**：状态行区域不含任何按钮/下拉（只读） |
+| `active_model_status_line_renders_name_and_has_no_control`（原文档两个测试名合并） | 状态行文本含当前模型名、收到 `TranslatorSwitched` 后追加「已切换生效」；且该行**不含任何可点控件**（只读，裁决 E 回归） |
 | `superseded_subtitle_line_is_neutral` | `failed = Some(Superseded)` 的行文本为 `err_subtitle_skipped` 且 `fail_kind == Some(Superseded)` |
-| `currency_symbol_follows_config_not_lang` | 同一份 `OverlayStats` 在 zh/en 界面下符号一致；`cost_cny>0` 显示 ¥、`cost_usd>0` 显示 $、两者皆非零并列显示 |
-| `price_unit_label_follows_currency` | 币种下拉选「人民币」→ 价格行单位键 = `price_unit_cny`；选「跟随界面语言」且界面 zh → 同 cny |
+| `monitor_bar_cost_uses_config_currency_not_lang`（原文档名 `currency_symbol_follows_config_not_lang`） | `cost_cny>0` 显示 ¥、`cost_usd>0` 显示 $、两者并列；费用符号**不随界面语言**（断言按两表任一命中，防并行 set_lang 竞争） |
+| `price_unit_label_follows_currency` | 指定人民币/美元 → 价格行单位为 `price_unit_cny` / `price_unit_usd`（对话框草稿态直接断言） |
 | `preset_fills_all_fields` | 选「DeepSeek」→ `api_base` / `model` / `thinking_style` / `disable_thinking` / `currency` 与 §十 常量表逐字段一致 |
 | `preset_never_overwrites_user_data` | 已填 `api_key` / `temperature` / 价格 / 非空 `name` 后再选预设 → 这些字段**一字不变**；`name` 为空时才被填入 |
 | `preset_custom_fills_nothing` | 选「自定义」→ 五字段全部保持原值 |
@@ -946,8 +961,32 @@ C3 是最大提交（契约 + 编排 + shell + UI 需同步改，否则旧调用
 | 测试 | 断言 |
 |---|---|
 | `effective_currency_follows_lang_then_explicit` | `None` + "zh" → `Cny`；`None` + "en" → `Usd`；`Some("usd")` + "zh" → `Usd`（显式优先） |
-| `default_model_is_deepseek_preset` | `ModelConfig::default()` 的 `api_base/model/thinking_style/currency` == §十 DeepSeek 预设行；`api_key` 为空串 |
+| `default_model_is_deepseek_preset` | **`Settings::default().models[0]`** == §十 DeepSeek 预设行（`api_key` 空串）；且反向钉住 `ModelConfig::default()` **保持中立零值**（serde 容器默认不得注入厂商偏好，见 §11.1-4） |
 | `settings_without_currency_key_loads_as_none` | 老 `settings.json`（无 `currency` 键）反序列化后 `currency == None`（serde 默认兼容） |
+
+#### 6.1.1 评审修复补录（2026-09-11，四子代理对抗式评审后的新增/强化测试）
+
+上文表格已就地勘正被评审判定为「缺失 / 弱断言 / 改名」的行；本节只列**新增**用例：
+
+| 归属 | 测试 | 断言 |
+|---|---|---|
+| lt-orchestrator | `probe_truncation_retry_respects_remaining_budget` | 首请求"空+截断"、补发请求不回包 + 预算 1s → `Inconclusive{attempted: 2}` 且 <3s 收口（钉住补发吃**剩余预算**，不再用满单步超时） |
+| lt-orchestrator | `probe_truncation_retry_still_succeeds_within_budget` | 预算充足时截断补发照常工作（修 halt 检查不得关掉补发） |
+| lt-orchestrator | `retired_jobs_finalize_transcript_original` | 让位/丢弃段的原文必须落 all 转录（`write_original` 后无人 finalize 的缺口） |
+| lt-ui | `probe_ids_start_at_one` | 号源从 1 起且单调递增（0 是 shell 侧"无在途"哨兵） |
+| lt-ui | `probe_target_row_lost_keeps_cancel_affordance` | 目标行被删/改（双校验全行失配）时仍有可点的「中断」兜底入口 |
+| lt-ui | `row_double_click_opens_editor_and_buttons_target_selection` | 双击**直接打开**编辑对话框（2026-09-11 顺带修复：旧实现只"武装"编辑按钮） |
+| lt-ui | `delete_active_row_still_switches_internally` | 删活动行 → 仍发 `Cmd::SwitchTranslator`（§4.8 保留语义） |
+| lt-ui | `price_unit_label_follows_currency` | 指定币种 → 价格行单位键 = `price_unit_cny` / `price_unit_usd` |
+| lt-ui | `preset_saved_config_matches_intended_posture` | 全部预设经 `build()` 保存后的关闭姿态 = 预设意图（OpenAI = 总开关 false） |
+| lt-ui | `preset_thinking_index_stays_within_dialog_domain` | 预设落位的关闭方式索引永远在对话框值域（5 项）内 |
+| lt-ui | `superseded_overlay_line_is_neutral` | 让位句在悬浮窗也是中性（无 ⚠ 失败标签）；真失败仍是失败标签 |
+| lt-ui | `failure_kind_i18n_keys_exist_in_both_langs` | 全部 `FailureKind::i18n_key()` 在两表都存在（防"显示裸键名"复发） |
+| lt-i18n | `yaml_has_no_duplicate_keys` | 两表内不得有重复键（`HashMap` 反序列化静默 last-wins 的守卫） |
+| lt-proto | `preset_matching_finds_official_rows_only` | 预设反查：官方地址+模型命中；custom 永不参与 |
+| lt-proto | `preset_table_is_well_formed`（扩） | 新增不变式：`thinking_style == "off"` ⇒ `disable_thinking == false`（"off" 的规范编码） |
+| lt-translate | `provider_presets_resolve_to_intended_plans` | 每行预设的请求层 plan 逐行钉住（OpenAI → `None` = 不发） |
+| lt-app | `second_test_supersedes_in_flight` | 取代语义：旧标志置位 + 换新标志 + 号前移 + 条件复位保住新号 |
 
 ### 6.2 实机走查清单（待用户，逐项勾）
 
@@ -986,7 +1025,7 @@ cargo test --workspace      # 基线 540+9 → 本方案预计 +32 左右（C2~C
 | 改动 lt-translate 流式读取循环影响生产翻译 | 生产路径 `cancel == None`，`slice == remaining` 与原实现逐字节等价；既有全量测试 + `no_cancel_token_keeps_legacy_timeout_semantics` 回归测试 |
 | 契约改型破坏其他消费点 | Rust 编译期强制；`PROTO_VERSION` 同步升 6 |
 | 探测线程拖住退出 | `Policy::Never` + `shutdown` 前置取消 + `join_all`；最坏等待 = 一次流式轮询（150ms） |
-| 探测线程 / 命令链路异常导致 UI 无回执 | UI 看门狗（70 秒）兜底落终态——不依赖任何回执；shell 侧不拒绝新请求（取代语义），避免"取消后立刻重测"被阻塞 |
+| 探测线程 / 命令链路异常导致 UI 无回执 | UI 看门狗（20 秒 = 预算 10s + 10s 裕量）兜底落终态——不依赖任何回执；shell 侧不拒绝新请求（取代语义），避免"取消后立刻重测"被阻塞 |
 | 会话统计改造影响成产翻译统计 | `record_translation` 在既有 `finish_ok/fail` 调用点等价替换；`session_stats_accumulate_across_rig_replacement` 与既有统计测试双覆盖 |
 | 新 `FailureKind` 触发死契约守卫 | §4.1 已列引用点 ≥2；若 WARN 按脚本先例登记 |
 | 出厂默认配置改为 DeepSeek 影响老用户 | 仅影响"无 `settings.json` 或 models 为空"的全新用户；已有档案的 `models` 数组原样保留（`sanitize` 不触碰非空列表）。回滚 = 还原 `ModelConfig::default()` 一处 |
@@ -1065,12 +1104,13 @@ pub const PROVIDER_PRESETS: &[ProviderPreset] = &[ /* 见下表 */ ];
 既有守卫（`name` 与 `model` 均非空才收，`translation.rs:570-572`）会拦住用户先填模型名——
 这是预期行为，不需要额外校验。
 
-**表格数值 = 官方文档核查结果**（2026-09-10 子代理逐家核对官方文档原文，URL 入表留痕）：
+**表格数值 = 官方文档核查结果**（2026-09-10 子代理逐家核对官方文档原文；核查来源未存档 URL，
+复核请查各厂商官方 API 参考——2026-09-11 评审勘正："URL 入表留痕"的说法不实）：
 
 | key | 供应商 | `api_base` | `model`（可改） | `thinking_style` | `disable_thinking` | `currency` |
 |---|---|---|---|---|---|---|
 | `deepseek` | 深度求索 DeepSeek | `https://api.deepseek.com`（官方形态**不带 `/v1`**） | `deepseek-flash` | `"deepseek"` | `true` | `Some("cny")` |
-| `openai` | OpenAI | `https://api.openai.com/v1` | `gpt-5.6-luna` | `"off"` | `true` | `Some("usd")` |
+| `openai` | OpenAI | `https://api.openai.com/v1` | `gpt-5.6-luna` | `"off"` | **`false`**（见下注） | `Some("usd")` |
 | `zhipu` | 智谱 GLM | `https://open.bigmodel.cn/api/paas/v4` | `glm-4.6` | `"deepseek"` | `true` | `Some("cny")` |
 | `moonshot` | Kimi（月之暗面） | `https://api.moonshot.cn/v1` | `kimi-k2.6` | `"deepseek"` | `true` | `Some("cny")` |
 | `qwen` | 通义千问（阿里云百炼） | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen3.5-flash` | `"qwen"` | `true` | `Some("cny")` |
@@ -1090,6 +1130,12 @@ pub const PROVIDER_PRESETS: &[ProviderPreset] = &[ /* 见下表 */ ];
   - **OpenAI 用 `"off"`（= 不发送任何关闭参数）**：`reasoning_effort: "none"` 在 OpenAI 是
     **model-dependent**（部分新模型不支持 `none`，传了直接 400），保守不发是唯一稳的选择；
     用户在「关闭方式」里显式选 `openai` 才会发（该选项仍在）。
+    **注（2026-09-11 评审修复）**：`"off"` 的**规范编码是 `disable_thinking = false`**——
+    W1/§2.3 起 `"off"` 不是活值（`Settings::sanitize` 一律归一化为总开关 false），对话框
+    的可选值域也只有"自动 + 四种方式"。旧表写 `true`，应用预设后保存会被对话框值域把
+    `"off"` 钳成 `"openai"`（实际发送 `reasoning_effort:"none"`，正是本节要避免的形态）。
+    修正后：预设 → 保存 = 总开关 false → 请求不含任何关闭参数；`lt-translate` 侧有
+    `provider_presets_resolve_to_intended_plans` 按请求层 plan 逐行钉住。
 - **八家地址全部命中 `crates/lt-translate/src/thinking.rs` 既有路由表**（`deepseek` / `api.openai.com` /
   `bigmodel` / `moonshot` / `dashscope`+`aliyuncs.com` / `volces` / 回环 `LOCAL_HOSTS`），
   **无需为预设新增任何路由关键词**——预设与自动路由不会互相矛盾。
@@ -1137,8 +1183,9 @@ if lt_proto::PROVIDER_PRESETS.iter().any(|p| p.api_base == base) { /* skip */ }
    实现把 9 个共享引用收进 `SwitchDrain` 结构体——参数 14→6，语义与调用点不变。
 2. **预算注入**（C3）：`run_probe` 委托 `run_probe_with_budget(...)`，预算作为形参传入。
    唯一动机是可测性（10 秒契约预算无法在单测里真等）；对外行为面与 §4.3 一致。
-3. **`FailureKind::Superseded` 推迟到 C4**：它由 C4 的退休路径消费；放在 C3 会让死契约
-   守卫报"零引用"。契约版本号不受影响（纯新增）。
+3. **`FailureKind::Superseded` 的提交时序**（2026-09-11 评审勘正——原记录不准确）：
+   git 实证为「C2 已加入 → **C3 撤除**（当时无消费者，死契约守卫会红）→ C4 随退休路径
+   恢复」；并非"推迟到 C4 才首次出现"。契约版本号不受影响（纯新增）。
 4. **默认值语义分家**（C6，复核时发现的风险）：`ModelConfig::default()` **保持中立零值**，
    厂商默认（DeepSeek）放在 `Settings::default()` 与 `sanitize` 的空表兜底。
    原因：`ModelConfig` 带容器级 `#[serde(default)]`，缺失字段由 `Default::default()` 补齐——
@@ -1159,12 +1206,63 @@ if lt_proto::PROVIDER_PRESETS.iter().any(|p| p.api_base == base) { /* skip */ }
 9. **勘误**：§1.2 H4 曾写"URL 形态错有红字拦截"——实际 `Translator::new` **不校验 api_base**
    （只有代理地址非法/客户端构建失败才回 `TranslatorUnavailable`），故 `NotReady` 分支由
    非法代理触发，探测测试按此构造。
+10. **结论映射③的预算判据**（C3，2026-09-11 评审补记）：实际实现是
+    `halted == Some(Budget) || Instant::now() >= t0 + budget`——最后一次尝试吃满预算时
+    `halted` 仍为 `None`，该合取是"单次尝试超时退出"的兜底；边缘情形会把"恰在预算线后
+    到达的错误"报成 `Inconclusive`（可重试，无副作用）。
 
 ### 11.2 仍待用户实机走查（§6.2 清单）
 
-四态观感 / 中断手感 / 本机模型首次加载 / 每行按钮目标 / 换模型不再冒红字 /
-状态行与"已切换生效" / 费用分币种与重启归零 / 厂商预设填充 / 裁决①边界（精简与隐藏后找回）
+四态观感 / 中断手感（**含每次启动后的第一次测试**）/ 本机模型首次加载 / 每行按钮目标
+（含**双击行直接打开编辑**）/ 换模型不再冒红字 / 状态行与"已切换生效" / 费用分币种与重启归零 /
+厂商预设填充（含**选 OpenAI 预设保存后不再发送关闭参数**）/ 裁决①边界（精简与隐藏后找回）
 / 出厂默认 DeepSeek 首启贴 Key——共 13 项，逐项见 §6.2。
+
+### 11.3 评审修复记录（2026-09-11，四子代理对抗式评审 → 修复批 `5b1ede2`）
+
+**评审方式**：评审按四个面切分给子代理独立取证（① C2 lt-translate 取消调用 ② lt-orchestrator
+编排域 ③ lt-ui/lt-app/契约/i18n ④ 声索核验与合规审计），主线程对每条 P1 亲自读码复证、
+并独立复跑门禁。**结论**：交付主体成立（门禁声索全部复现为真），但发现 5 项 P1——且全部属
+"测试盲区逃逸"（弱断言/改名/缺失使缺陷全绿）。
+
+**P1 修复（五项）**
+
+1. **看门狗不可达**：`TickKind::ProbeTick` 只有自续拍，点击「测试」从未排首拍 →
+   走秒冻结、20 秒看门狗永不触发（不变量 2 失效）。修复：点击路径 `schedule_tick` 首拍。
+2. **号源撞哨兵**：UI 首个探测 id=0 与 shell「0 = 无在途」冲突 → 每个启动会话的**第一次**
+   探测，「中断」只做本地表面功夫（后台请求不被掐断）、也不可被新探测取代。
+   修复：号源从 1 起（`ProbeUiState::begin`）；取代语义提取 `begin_probe_slot` 纯函数直测。
+3. **字幕缺键**：`err_subtitle_skipped` 从未进 zh/en 两表（缺键回退显示裸键名），
+   且测试以"缺键回退值"自比较而空转。修复：补两表键 + 测试先钉键存在 +
+   新增 `failure_kind_i18n_keys_exist_in_both_langs` 全变体守卫。
+4. **预设 off 被吞**：`apply_preset` 按完整 `THINKING_STYLES`（6 项）取下标，`"off"`=5
+   保存时被对话框值域（5 项）钳成 `"openai"` → OpenAI 预设实际发送
+   `reasoning_effort:"none"`（§十明令避免的形态）。修复：`"off"` 的规范编码 =
+   `disable_thinking=false`（sanitize 语义），预设表相应改 `false`；新增按请求层 plan
+   逐行钉住的 `provider_presets_resolve_to_intended_plans`。
+5. **补发超预算**：截断补发（同轮第二次尝试）绕过 halt 检查且用满单步超时 →
+   探测可突破裁决 B 的 10 秒封顶、`attempted` 少报 1。修复：补发前复查 halt +
+   超时按剩余预算钳制 + 计数自增；两条新测试（预算钳制 / 补发功能未关掉）。
+
+**P2 修复（八项）**：`preset_custom` 与样式页同名键撞键（yaml 重复定义、`HashMap`
+反序列化静默 last-wins）→ 拆 `preset_provider_custom` + 下拉选中态反查 +
+`yaml_has_no_duplicate_keys` 守卫；悬浮窗 `Superseded` 仍按红色失败渲染 → 中性化
+（与字幕窗同源）；探测目标行被删/改后「中断」入口消失 → 行解耦兜底按钮；
+让位/丢弃段的 ASR 原文不落 all 转录（存量缺口被 F3 常规化）→ `TlJob` 持转录句柄补 finalize；
+会话统计"无装置"回退分支自建账本 → 句柄入 `AsrThreadCtx` 单点创建；
+双击行只"武装"编辑按钮不开对话框 → 直接打开；`preview` 空白归一（CRLF 双空格）；
+看门狗 70 秒文档漂移统一为 20 秒（§4.7/§4.10/§7/不变量 2）。
+
+**测试补课**：§6.1 就地勘正（改名/拆分/合并 16 行）+ 新增 17 用例（见 §6.1.1）；
+`session_stats_accumulate_across_rig_replacement` 由"手工记三笔"升级为**真建三个装置**
+并断言共享同一账本。
+
+**门禁（修复批）**：`cargo test --workspace` **603+9** 全绿（586+9 → +17）/
+`cargo clippy --workspace --all-targets -- -D warnings` 零告警 / 四守护脚本过 /
+release 构建过 + `--version` 正常（76.0 MB）。
+
+**遗留（仍待用户）**：§6.2 十三项实机走查；`FailureKind::Cancelled` 属"类型化分类的单边
+合法形态"（probe 走 `ProbeOutcome::Cancelled`），已登记进 `check_dead_contract.ps1` 注释块。
 
 ---
 
