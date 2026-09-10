@@ -17,14 +17,25 @@ pub mod settings;
 /// （`Cmd::StartDownload` 载荷改型 String→`Hub`/`ProxyMode`，D-79）= 4；
 /// E6 死契约清理（`EngineError::WorkerExited`/`Cmd::SetTimeout` 删除，
 /// 守卫校准发现零引用/零生产者；基准取消按钮接线补齐 `CancelBench`
-/// 生产者，D-81）= 5。
-pub const PROTO_VERSION: u32 = 5;
+/// 生产者，D-81）= 5；D-85 连接测试改造（`Cmd::TestTranslator` 载荷改型为
+/// 结构体 + `probe_id`、`UiEvent::TestTranslatorResult` 改型为
+/// `ProbeOutcome` 判别 + id 归位；`FailureKind`/`ThreadRole` 的新增属加法
+/// 豁免不计）= 6。
+pub const PROTO_VERSION: u32 = 6;
+
+/// 连接探测总预算（秒，D-85 用户裁决 B）：编排域据此设 deadline，
+/// UI 域据此设看门狗（+10s 裕量）。放契约层是为了让两个域同源又不越依赖边
+/// （lt-ui 禁依赖 lt-orchestrator，架构 §3.1）。
+pub const PROBE_TOTAL_BUDGET_SECS: u64 = 10;
+/// 连接探测单步超时上限（秒）：用户超时更短时取用户值，更长时封顶
+pub const PROBE_STEP_TIMEOUT_CAP_SECS: u32 = 10;
 
 pub use asr_result::{language_display, AsrResult, EngineError, WordTs};
 pub use events::{
     AppCommand, AudioDeviceChoice, AudioRole, BenchEvent, CaptureEvent, Cmd, DeviceList,
     DownloadEvent, DownloadFailKind, DownloadPhase, ExportFileMode, FailureKind, MicDeviceChoice,
-    ModelFault, MonitorSample, QueueId, SkipReason, ThreadDied, ThreadRole, UiEvent, UiMsg,
+    ModelFault, MonitorSample, ProbeOutcome, QueueId, SkipReason, ThreadDied, ThreadRole, UiEvent,
+    UiMsg,
 };
 pub use layout::Hub;
 pub use prompts::{DEFAULT_PROMPT, PROMPT_PRESETS};

@@ -14,8 +14,9 @@
 //!   （原版仅做越界钳制，行前移会错位指向别的模型——有意修正）。
 
 use super::{group_card, hint_line, mark_settings_dirty, Palette, schedule_prompt_apply};
-use crate::state::{ModalUi, ModelEditState, PanelUi, SessionView, Settings, TestTranslatorState};
+use crate::state::{ModalUi, ModelEditState, PanelUi, SessionView, Settings};
 use egui::{RichText, Ui};
+use std::time::Instant;
 use lt_proto::ModelConfig;
 
 /// prompt 预设下拉 i18n 键（daily/esports/anime/webid/custom；顺序同
@@ -196,6 +197,70 @@ pub(crate) fn restore_translation_page(
 
 // ── UI ──
 
+/// 连接测试结果行（D-85 四态：成功/失败/已中断/未定论）。
+/// 颜色沿用页面既有的 ok/err/weak/warn，不新增主题色。
+fn probe_result_line(ui: &mut egui::Ui, res: &crate::state::ProbeResult, pal: &Palette) {
+    use lt_proto::ProbeOutcome as O;
+    ui.add_space(2.0);
+    match &res.outcome {
+        O::Ok => {
+            let mut line = format!("\u{2713} {} · {} ms", lt_i18n::t("probe_ok"), res.ms);
+            if let Some(note) = &res.step_note {
+                line.push_str(" · ");
+                line.push_str(note);
+            }
+            if let Some(pv) = &res.preview {
+                line.push_str(" · ");
+                line.push_str(&lt_i18n::t("probe_preview").replace("{text}", pv));
+            }
+            ui.label(RichText::new(line).size(11.0).color(pal.ok));
+        }
+        O::Failed { kind, detail } => {
+            ui.label(
+                RichText::new(format!(
+                    "\u{2716} {} · {} ms · {}",
+                    lt_i18n::t("probe_failed"),
+                    res.ms,
+                    lt_i18n::t(kind.i18n_key())
+                ))
+                .size(11.0)
+                .color(pal.err),
+            )
+            .on_hover_text(detail);
+            ui.label(RichText::new(detail).size(10.5).color(pal.weak));
+        }
+        O::Cancelled => {
+            ui.label(
+                RichText::new(format!(
+                    "\u{23F1} {} · {} ms",
+                    lt_i18n::t("probe_cancelled"),
+                    res.ms
+                ))
+                .size(11.0)
+                .color(pal.weak),
+            );
+        }
+        O::Inconclusive { attempted } => {
+            ui.label(
+                RichText::new(format!(
+                    "? {} · {} ms · {}",
+                    lt_i18n::t("probe_inconclusive"),
+                    res.ms,
+                    lt_i18n::t("probe_attempted").replace("{n}", &attempted.to_string())
+                ))
+                .size(11.0)
+                .color(pal.warn),
+            );
+            ui.label(
+                RichText::new(lt_i18n::t("probe_inconclusive_hint"))
+                    .size(10.5)
+                    .color(pal.weak),
+            );
+        }
+    }
+}
+
+
 /// 翻译页 UI 总入口
 pub fn page(ui: &mut Ui, panel: &mut PanelUi, session: &mut SessionView, settings: &mut Settings, modal: &mut ModalUi, pal: &Palette) {
     // N3/N4：翻译页偏离默认提示 + 恢复本页（恢复会清掉 API 配置 → 确认框）
@@ -241,39 +306,115 @@ pub fn page(ui: &mut Ui, panel: &mut PanelUi, session: &mut SessionView, setting
         let count = settings.models.len();
         let mut select: Option<usize> = None;
         let mut edit_row: Option<usize> = None;
+        // D-85：本页每行右侧的「测试 / 中断」按钮
+        let mut probe_click: Option<usize> = None;
+        let mut cancel_click = false;
+        let now = Instant::now();
         for i in 0..count {
             let text = model_row_text(i, active, &settings.models[i]);
             let mut rich = RichText::new(&text).monospace().size(12.0);
             if i == active {
                 rich = rich.strong();
             }
-            let resp = ui
-                .push_id(i, |ui| {
-                    ui.add(
-                        egui::Button::selectable(panel.state.model_selected == Some(i), rich)
-                            .corner_radius(4.0)
-                            .min_size(egui::vec2(ui.available_width(), 0.0)),
+            let this_key = crate::state::cfg_key(&settings.models[i]);
+            // 归属判据 = 行号 + 配置身份双校验（删行会让行号漂移）
+            let is_my_row = panel
+                .probe
+                .running
+                .as_ref()
+                .is_some_and(|r| r.row == i && r.cfg_key == this_key);
+            ui.horizontal(|ui| {
+                let probe_w = 72.0;
+                let spacing = ui.spacing().item_spacing.x;
+                let row_w = (ui.available_width() - probe_w - spacing).max(120.0);
+                let resp = ui
+                    .push_id(i, |ui| {
+                        ui.add(
+                            egui::Button::selectable(panel.state.model_selected == Some(i), rich)
+                                .corner_radius(4.0)
+                                .min_size(egui::vec2(row_w, 0.0)),
+                        )
+                    })
+                    .inner;
+                if resp.clicked() {
+                    select = Some(i);
+                }
+                // 双击行 = 编辑（原版 itemDoubleClicked → _on_model_double_clicked）
+                if resp.double_clicked() {
+                    edit_row = Some(i);
+                }
+                if is_my_row {
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                RichText::new(lt_i18n::t("probe_cancel")).size(12.0),
+                            )
+                            .corner_radius(6.0),
+                        )
+                        .clicked()
+                    {
+                        cancel_click = true;
+                    }
+                } else if ui
+                    .add_enabled(
+                        panel.probe.running.is_none(),
+                        egui::Button::new(RichText::new(lt_i18n::t("probe_btn")).size(12.0))
+                            .corner_radius(6.0),
                     )
-                })
-                .inner;
-            if resp.clicked() {
-                select = Some(i);
-            }
-            // 双击行 = 编辑（原版 itemDoubleClicked → _on_model_double_clicked）
-            if resp.double_clicked() {
-                edit_row = Some(i);
+                    .clicked()
+                {
+                    probe_click = Some(i);
+                }
+            });
+            // 行下附加行：在途走秒 / 结果（D-85 四态）
+            if is_my_row {
+                if let Some(run) = &panel.probe.running {
+                    let secs = now.saturating_duration_since(run.started).as_secs_f32();
+                    ui.label(
+                        RichText::new(format!("{} {secs:.1}s", lt_i18n::t("probe_running")))
+                            .size(11.0)
+                            .color(pal.weak),
+                    );
+                }
+            } else if let Some(res) = &panel.probe.result {
+                if res.row == i && res.cfg_key == this_key {
+                    probe_result_line(ui, res, pal);
+                }
             }
         }
 
-        // 行选中 → active_model 跟随并即时切换翻译器（原版"当前模型"语义）
+        // 行选中只改"选中"（D-85 裁决 E：设置页只管配置，不切换运行中的模型）
         if let Some(i) = select {
             panel.state.model_selected = Some(i);
-            if i != settings.active_model && i < settings.models.len() {
-                settings.active_model = i;
-                if let Some(cfg) = super::active_model_config(settings) {
-                    session.send_cmd(lt_proto::Cmd::SwitchTranslator(Box::new(cfg)));
-                }
-                mark_settings_dirty(session);
+        }
+
+        // 「测试」：发号 + 置在途 + 发命令（目标就是这一行，无静默回落）
+        if let Some(i) = probe_click {
+            if let Some(cfg) = settings.models.get(i).cloned() {
+                let id = panel
+                    .probe
+                    .begin(i, crate::state::cfg_key(&cfg), now);
+                session.send_cmd(lt_proto::Cmd::TestTranslator {
+                    config: Box::new(cfg),
+                    probe_id: id,
+                });
+            }
+        }
+        // 「中断」：本地立即落"已中断"（不等后台回执），并请求后台收手
+        if cancel_click {
+            if let Some(run) = panel.probe.running.take() {
+                session.send_cmd(lt_proto::Cmd::CancelTranslatorTest { probe_id: run.id });
+                let ms = now.saturating_duration_since(run.started).as_millis() as u64;
+                panel.probe.result = Some(crate::state::ProbeResult {
+                    id: run.id,
+                    row: run.row,
+                    cfg_key: run.cfg_key,
+                    name: String::new(),
+                    outcome: lt_proto::ProbeOutcome::Cancelled,
+                    ms,
+                    step_note: None,
+                    preview: None,
+                });
             }
         }
 
@@ -342,57 +483,7 @@ pub fn page(ui: &mut Ui, panel: &mut PanelUi, session: &mut SessionView, setting
                     }
                 }
             }
-            // 「测试连接」（Rust 版新增）：对选中行（无选中取活跃模型）发一次
-            // 最简请求并回执结果——LLM API 接入的及时验证闭环
-            let test_target = edit_row.or(panel.state.model_selected);
-            let test_cfg = test_target
-                .and_then(|i| settings.models.get(i).cloned())
-                .or_else(|| super::active_model_config(settings));
-            let testing = matches!(panel.test_translator, TestTranslatorState::Running);
-            if ui
-                .add_enabled(
-                    test_cfg.is_some() && !testing,
-                    egui::Button::new(
-                        RichText::new(match testing {
-                            true => lt_i18n::t("test_translator_testing"),
-                            false => lt_i18n::t("test_translator_btn"),
-                        })
-                        .size(12.5),
-                    )
-                    .corner_radius(6.0),
-                )
-                .clicked()
-            {
-                if let Some(cfg) = test_cfg {
-                    panel.test_translator = TestTranslatorState::Running;
-                    session.send_cmd(lt_proto::Cmd::TestTranslator(Box::new(cfg)));
-                }
-            }
         });
-
-        // 测试结果行（Success 绿 / 失败红 + 耗时；hover 展开错误全文）
-        if let TestTranslatorState::Done { ok, error, ms } = &panel.test_translator {
-            ui.add_space(2.0);
-            if *ok {
-                ui.label(
-                    RichText::new(format!(
-                        "\u{2713} {} ({ms} ms)",
-                        lt_i18n::t("test_translator_ok")
-                    ))
-                    .size(11.0)
-                    .color(pal.ok),
-                );
-            } else {
-                let text = error.clone().unwrap_or_default();
-                ui.label(
-                    RichText::new(format!("\u{2716} {}", lt_i18n::t("test_translator_fail")))
-                        .size(11.0)
-                        .color(pal.err),
-                )
-                .on_hover_text(&text);
-                ui.label(RichText::new(&text).size(10.5).color(pal.weak));
-            }
-        }
 
         // ── 当前模型「上下文数」（面板直达）──
         // 此前该设置只在模型编辑对话框的高级区里，配套说明却错挂在「网络配置」
@@ -1357,6 +1448,182 @@ mod tests {
         assert!(!has_version_segment("https://api.deepseek.com"));
         assert!(!has_version_segment("http://x/compatible-mode"));
         assert!(!has_version_segment(""));
+    }
+
+    // ── D-85：每行「测试 / 中断」+ 行点击不再切换（裁决 E） ──
+
+    /// 面板视口内按文本找控件的中心点（"控件的可交互性"由 egui 的 clip 判定，
+    /// 用真实视口渲染即等于验证入口可达）
+    fn click_at(texts: &[(egui::Rect, String)], key: &str, suffix: &str) -> egui::Pos2 {
+        find_by_key(texts, key, suffix)
+            .map(|(r, _)| r.center())
+            .unwrap_or_else(|| panic!("{key} 应出现在翻译页"))
+    }
+
+    fn click_events(pos: egui::Pos2) -> Vec<egui::Event> {
+        vec![
+            egui::Event::PointerMoved(pos),
+            egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::default(),
+            },
+            egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::default(),
+            },
+        ]
+    }
+
+    /// 裁决 E 回归：点行**只选中**——不写 active_model、不发 SwitchTranslator
+    #[test]
+    fn row_click_only_selects_no_switch_cmd() {
+        let _ = lt_i18n::set_lang("zh");
+        let ctx = egui::Context::default();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut settings = Settings::default();
+        // 造两行，确保"点第二行"在旧实现里会触发切换
+        let mut second = settings.models[0].clone();
+        second.name = "second".into();
+        second.model = "m2".into();
+        settings.models.push(second);
+        settings.active_model = 0;
+        let mut st = crate::state::AppUi::new(settings);
+        st.session.cmd_tx = Some(tx);
+        st.panel.state.page = crate::state::PanelPage::Translation;
+        // 第一帧：布局收敛并拿到行控件位置
+        let texts = render_translation_page(&mut st, &ctx, vec![vec![], vec![]]);
+        let row = texts
+            .iter()
+            .find(|(_, t)| t.contains("second"))
+            .map(|(r, _)| r.center())
+            .expect("第二行应可见");
+        // 第二帧：点它
+        render_translation_page(&mut st, &ctx, vec![click_events(row), vec![]]);
+
+        assert_eq!(
+            st.panel.state.model_selected,
+            Some(1),
+            "点行应把该行设为选中（编辑/复制/删除的目标）"
+        );
+        assert_eq!(st.settings.active_model, 0, "点行不得改变当前使用的模型");
+        let mut cmds = Vec::new();
+        while let Ok(c) = rx.try_recv() {
+            cmds.push(c);
+        }
+        assert!(
+            !cmds
+                .iter()
+                .any(|c| matches!(c, lt_proto::Cmd::SwitchTranslator(_))),
+            "点行不得发出切换命令，实际: {cmds:?}"
+        );
+    }
+
+    /// 每行「测试」按钮：发号 + 置在途 + 携带该行配置（点哪测哪）
+    #[test]
+    fn probe_row_button_sends_cmd_with_id_and_config() {
+        let _ = lt_i18n::set_lang("zh");
+        let ctx = egui::Context::default();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut st = crate::state::AppUi::new(Settings::default());
+        st.session.cmd_tx = Some(tx);
+        st.panel.state.page = crate::state::PanelPage::Translation;
+        let texts = render_translation_page(&mut st, &ctx, vec![vec![], vec![]]);
+        let btn = click_at(&texts, "probe_btn", "");
+        render_translation_page(&mut st, &ctx, vec![click_events(btn), vec![]]);
+
+        let run = st.panel.probe.running.as_ref().expect("应进入在途态");
+        assert_eq!(run.row, 0, "默认单行配置 → 第 0 行");
+        assert_eq!(run.id, 0, "首个探测号应为 0");
+        match rx.try_recv() {
+            Ok(lt_proto::Cmd::TestTranslator { config, probe_id }) => {
+                assert_eq!(probe_id, 0);
+                assert_eq!(config.model, st.settings.models[0].model);
+            }
+            other => panic!("期望 TestTranslator，实际 {other:?}"),
+        }
+    }
+
+    /// 在途时该行按钮变「中断」、其他行按钮禁用；点中断 → 发取消命令 + 本地立即落"已中断"
+    #[test]
+    fn probe_cancel_settles_locally_and_other_rows_disabled() {
+        let _ = lt_i18n::set_lang("zh");
+        let ctx = egui::Context::default();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut settings = Settings::default();
+        let mut second = settings.models[0].clone();
+        second.name = "second".into();
+        settings.models.push(second);
+        let mut st = crate::state::AppUi::new(settings);
+        st.session.cmd_tx = Some(tx);
+        st.panel.state.page = crate::state::PanelPage::Translation;
+        // 直接置在途（等价于点过测试）
+        st.panel
+            .probe
+            .begin(0, crate::state::cfg_key(&st.settings.models[0]), Instant::now());
+
+        let texts = render_translation_page(&mut st, &ctx, vec![vec![], vec![]]);
+        // 在途行走秒提示 + 该行按钮是「中断」
+        assert!(
+            find_by_key(&texts, "probe_running", "").is_none(),
+            "走秒文本带秒数后缀，find_by_key 精确匹配不该命中"
+        );
+        assert!(
+            texts.iter().any(|(_, t)| t.starts_with(&lt_i18n::t_for_lang("zh", "probe_running"))),
+            "在途行下应有「测试中… N.Ns」"
+        );
+        // 第 1 行的「测试」按钮仍在（其他行禁用靠 add_enabled，不做像素断言）
+        let cancel = click_at(&texts, "probe_cancel", "");
+        render_translation_page(&mut st, &ctx, vec![click_events(cancel), vec![]]);
+
+        assert!(st.panel.probe.running.is_none(), "中断后应退出在途态");
+        match st.panel.probe.result.as_ref().map(|r| &r.outcome) {
+            Some(lt_proto::ProbeOutcome::Cancelled) => {}
+            other => panic!("本地应立即落「已中断」，实际 {other:?}"),
+        }
+        let mut cmds = Vec::new();
+        while let Ok(c) = rx.try_recv() {
+            cmds.push(c);
+        }
+        assert!(
+            cmds.iter()
+                .any(|c| matches!(c, lt_proto::Cmd::CancelTranslatorTest { probe_id: 0 })),
+            "应发出取消命令，实际: {cmds:?}"
+        );
+    }
+
+    /// 结果行按 id/配置身份失效：改行配置后旧结果不再渲染
+    #[test]
+    fn probe_result_invalidated_on_config_change() {
+        let _ = lt_i18n::set_lang("zh");
+        let ctx = egui::Context::default();
+        let mut st = crate::state::AppUi::new(Settings::default());
+        st.panel.state.page = crate::state::PanelPage::Translation;
+        st.panel.probe.result = Some(crate::state::ProbeResult {
+            id: 0,
+            row: 0,
+            cfg_key: crate::state::cfg_key(&st.settings.models[0]),
+            name: "x".into(),
+            outcome: lt_proto::ProbeOutcome::Ok,
+            ms: 12,
+            step_note: None,
+            preview: Some("你好".into()),
+        });
+        let texts = render_translation_page(&mut st, &ctx, vec![vec![], vec![]]);
+        assert!(
+            texts.iter().any(|(_, t)| t.contains("你好")),
+            "配置未变时应渲染结果行"
+        );
+        // 改配置 → 结果失效
+        st.settings.models[0].api_key = "changed".into();
+        let texts = render_translation_page(&mut st, &ctx, vec![vec![], vec![]]);
+        assert!(
+            !texts.iter().any(|(_, t)| t.contains("你好")),
+            "配置变更后旧结果必须失效"
+        );
     }
 }
 

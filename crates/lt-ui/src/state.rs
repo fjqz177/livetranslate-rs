@@ -77,6 +77,9 @@ pub enum TickKind {
     SubtitlePending,
     /// 面板设置 300ms 防抖到期（原版 ControlPanel._save_timer singleShot；win=Panel）
     PanelApply,
+    /// 连接测试的 100ms 走秒/看门狗节拍（D-85；win=Panel，探测结束即停排班，
+    /// 不留空转节拍——窗口重绘由宿主节拍驱动，不依赖 egui 的自动重绘）
+    ProbeTick,
     /// 翻译页 system_prompt 600ms 防抖到期（原版 _prompt_debounce QTimer 600ms；
     /// 到期发 SwitchTranslator 重建翻译器；win=Panel）
     PromptApply,
@@ -1502,17 +1505,118 @@ impl DownloadUiState {
     }
 }
 
-/// 翻译配置「测试连接」运行态（翻译页按钮行；TestTranslatorResult 事件收敛）
+/// 配置身份（D-85：探测结果/在途归属的失效判据——行编辑任一字段即失配）
+pub type CfgKey = (String, String, String, String); // name, api_base, model, api_key
+
+/// 某行配置的 [`CfgKey`]
+pub fn cfg_key(m: &lt_proto::ModelConfig) -> CfgKey {
+    (
+        m.name.clone(),
+        m.api_base.clone(),
+        m.model.clone(),
+        m.api_key.clone(),
+    )
+}
+
+/// 在途连接测试（D-85：一次至多一个）
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProbeRun {
+    /// UI 发的号（回执按号归位；迟到/被取代者据此丢弃）
+    pub id: u64,
+    /// 目标行号（渲染用；与 `cfg_key` 双校验——删行会让行号漂移）
+    pub row: usize,
+    pub cfg_key: CfgKey,
+    /// 起始时刻（走秒显示 + 看门狗判据）
+    pub started: Instant,
+}
+
+/// 最近一次连接测试结果（D-85 四态；渲染期按行号 + 配置指纹校验有效性）
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProbeResult {
+    pub id: u64,
+    pub row: usize,
+    pub cfg_key: CfgKey,
+    pub name: String,
+    pub outcome: lt_proto::ProbeOutcome,
+    pub ms: u64,
+    pub step_note: Option<String>,
+    pub preview: Option<String>,
+}
+
+/// 连接测试的 UI 侧状态（D-85：一次至多一个在途；任何异常路径都收敛到终态）
 #[derive(Debug, Clone, Default, PartialEq)]
-pub enum TestTranslatorState {
-    #[default]
-    Idle,
-    Running,
-    Done {
-        ok: bool,
-        error: Option<String>,
-        ms: u64,
-    },
+pub struct ProbeUiState {
+    /// 号源（单调递增）
+    pub next_id: u64,
+    /// 在途探测（None = 无在途）
+    pub running: Option<ProbeRun>,
+    /// 最近一次结果
+    pub result: Option<ProbeResult>,
+}
+
+impl ProbeUiState {
+    /// 分配新号并进入在途态（返回号供命令载荷使用）
+    pub fn begin(&mut self, row: usize, cfg_key: CfgKey, now: Instant) -> u64 {
+        let id = self.next_id;
+        self.next_id = self.next_id.wrapping_add(1);
+        self.running = Some(ProbeRun {
+            id,
+            row,
+            cfg_key,
+            started: now,
+        });
+        id
+    }
+
+    /// 收敛到终态：落结果并退出在途（回执 / 本地中断 / 看门狗三条路径共用）
+    pub fn settle(&mut self, name: String, outcome: lt_proto::ProbeOutcome, ms: u64,
+                  step_note: Option<String>, preview: Option<String>) {
+        if let Some(run) = self.running.take() {
+            self.result = Some(ProbeResult {
+                id: run.id,
+                row: run.row,
+                cfg_key: run.cfg_key,
+                name,
+                outcome,
+                ms,
+                step_note,
+                preview,
+            });
+        }
+    }
+
+    /// 看门狗判据（D-85：预算 + 10 秒仍未收敛即本地落"未定论"）——命令链路
+    /// 任何一环丢失都不会让按钮永久卡住
+    pub fn overdue(&self, now: Instant) -> bool {
+        self.running.as_ref().is_some_and(|r| {
+            now.saturating_duration_since(r.started).as_secs()
+                > lt_proto::PROBE_TOTAL_BUDGET_SECS + 10
+        })
+    }
+
+    /// 一拍（D-85 的节拍语义，宿主只做排班与重绘）：返回**是否应继续排班**。
+    ///
+    /// - 无在途 → false（自然停，不留空转节拍）
+    /// - 在途未超时 → true（续拍；走秒文本靠这条节拍刷新）
+    /// - 在途且超时 → 落 `Inconclusive{0}` + 清在途 → false（永不卡死的最终保证）
+    pub fn tick(&mut self, now: Instant) -> bool {
+        let Some(run) = self.running.as_ref() else {
+            return false;
+        };
+        let started = run.started;
+        if !self.overdue(now) {
+            return true;
+        }
+        tracing::warn!("连接测试回执超时（20 秒未收敛，命令可能未送达）——本地按未定论收口");
+        self.settle(
+            String::new(),
+            lt_proto::ProbeOutcome::Inconclusive { attempted: 0 },
+            now.saturating_duration_since(started).as_millis() as u64,
+            None,
+            Some(lt_i18n::t("probe_no_receipt")),
+        );
+        false
+    }
 }
 
 /// 音频设备枚举状态（W5/R13 下沉后：`Cmd::RefreshDevices` → `UiEvent::Devices`
@@ -1536,6 +1640,9 @@ pub enum DevicesState {
 pub struct PanelUiState {
     /// 当前页（原版 _nav.currentRow + _stack.setCurrentIndex）
     pub page: PanelPage,
+    /// 「已切换生效」瞬时提示（D-85/F2：`UiEvent::TranslatorSwitched` 触发的
+    /// 一次重绘时显示；过期清除发生在之后任意一次重绘，不额外排节拍）
+    pub active_model_note: Option<(String, Instant)>,
     /// 明暗主题（内存态；settings 契约缺 theme 键，见 [`ThemeMode`]）
     pub theme: ThemeMode,
     /// 启动时隐藏悬浮窗（内存态；settings 契约缺 start_hidden 键，生效随 M4.4 启动流）
@@ -1818,8 +1925,8 @@ pub struct PanelUi {
     pub auto_retry: DownloadAutoRetry,
     /// 翻译装置不可用原因（TranslatorUnavailable 事件；翻译页状态行红字显示）
     pub translator_error: Option<String>,
-    /// 翻译配置「测试连接」运行态（Cmd::TestTranslator 的 UI 侧）
-    pub test_translator: TestTranslatorState,
+    /// 连接测试运行态（D-85：`Cmd::TestTranslator` 的 UI 侧；每行按钮共享一份）
+    pub probe: ProbeUiState,
 }
 
 /// 下载自动重试上限（2026-09-10 用户裁决 2：自动重试 3 次，仍失败提醒用户）
@@ -1963,7 +2070,7 @@ impl AppUi {
                 download: DownloadUiState::default(),
                 auto_retry: DownloadAutoRetry::default(),
                 translator_error: None,
-                test_translator: TestTranslatorState::default(),
+                probe: ProbeUiState::default(),
             },
             log: LogUi {
                 logwin: LogWindowState::default(),
@@ -3622,5 +3729,58 @@ mod tests {
         assert!(!back_none.temperature_enabled);
         assert_eq!(back_none.temperature_value, lt_proto::DEFAULT_TEMPERATURE);
         assert_eq!(back_none.build().unwrap(), none_cfg);
+    }
+
+    // ── D-85：连接测试节拍（走秒 / 看门狗 / 自然停） ──
+
+    /// 在途 → 续拍（走秒靠它刷新）
+    #[test]
+    fn probe_tick_keeps_scheduling_while_running() {
+        let mut st = ProbeUiState::default();
+        let t0 = Instant::now();
+        st.begin(0, ("a".into(), "b".into(), "c".into(), "d".into()), t0);
+        assert!(st.tick(t0 + Duration::from_millis(100)), "在途应续拍");
+        assert!(st.running.is_some(), "续拍不得改变在途态");
+        assert!(st.result.is_none(), "未收敛不该有结果");
+    }
+
+    /// 超时 → 本地落"未定论"并停拍（命令链路任何一环丢失都不会永久卡住）
+    #[test]
+    fn probe_tick_watchdog_settles_inconclusive() {
+        let mut st = ProbeUiState::default();
+        let t0 = Instant::now();
+        st.begin(2, ("a".into(), "b".into(), "c".into(), "d".into()), t0);
+        // 预算 10 秒 + 10 秒裕量 → 21 秒必判超时
+        let later = t0 + Duration::from_secs(21);
+        assert!(!st.tick(later), "超时后应停拍");
+        assert!(st.running.is_none(), "超时应退出在途态");
+        let r = st.result.as_ref().expect("应落结果");
+        assert_eq!(r.outcome, lt_proto::ProbeOutcome::Inconclusive { attempted: 0 });
+        assert_eq!(r.row, 2, "结果归属行不得丢");
+        assert_eq!(r.ms, 21_000, "ms 应为实际等待时长");
+    }
+
+    /// 无在途 → 不排班（不留空转节拍）
+    #[test]
+    fn probe_tick_not_scheduled_when_idle() {
+        let mut st = ProbeUiState::default();
+        assert!(!st.tick(Instant::now()));
+        assert!(st.result.is_none());
+    }
+
+    /// 迟到回执按 id 丢弃（旧探测不得顶替新探测的状态）
+    #[test]
+    fn probe_settle_is_id_scoped() {
+        let mut st = ProbeUiState::default();
+        let t0 = Instant::now();
+        let key = ("a".to_string(), "b".to_string(), "c".to_string(), "d".to_string());
+        st.begin(0, key.clone(), t0);
+        // 「中断」本地收敛后，旧回执到达：running 已清 → settle 是空操作
+        let running_id = st.running.as_ref().map(|r| r.id);
+        assert_eq!(running_id, Some(0));
+        st.settle("被中断的那次".into(), lt_proto::ProbeOutcome::Cancelled, 5, None, None);
+        let before = st.result.clone();
+        st.settle("陈旧回执".into(), lt_proto::ProbeOutcome::Ok, 9, None, None);
+        assert_eq!(st.result, before, "无在途时 settle 不得改写已有结果");
     }
 }

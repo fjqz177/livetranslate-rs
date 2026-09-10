@@ -19,6 +19,7 @@ use lt_proto::{AppCommand, Cmd, Settings, ThreadRole, UiEvent, UiMsg};
 
 use crate::shell_helpers::{
     pick_file_path, probe_audio_devices, to_bench_model, BenchActiveGuard, FilePickKind,
+    ProbeExitGuard,
 };
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
@@ -96,6 +97,13 @@ pub struct AppShell {
     /// 基准在途标志（W5 收口 P3：RunBench 防重入——UI 侧 bench.running 之外的
     /// 纵深防御；基准线程退出（含 panic unwind）经 [`BenchActiveGuard`] 复位）
     bench_active: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// 在途连接测试的取消标志（D-85：`Cmd::CancelTranslatorTest` 置位；
+    /// 每次启动新探测换成新实例——被取代的旧探测自行察觉）
+    probe_cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// 在途连接测试的号（D-85：0 = 无在途；取消/退出守卫按号比对）
+    probe_id: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    /// 编排域文案注入句柄（D-85：探测的降级说明经它取；构造一次全生命周期复用）
+    msg: Msg,
     pipeline: Option<Pipeline>,
     started: bool,
 }
@@ -132,6 +140,9 @@ impl AppShell {
             sup,
             bench_cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             bench_active: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            probe_cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            probe_id: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            msg: Msg::new(lt_i18n::t),
             pipeline: None,
             started: false,
         };
@@ -149,7 +160,8 @@ impl AppShell {
         // INV7：先发布后装配（管道启动读总线当前快照；重复发布幂等）
         self.bus.publish(settings);
         // i18n 文案经 Msg 注入编排域（白名单不变量：orchestrator 零 lt-i18n 依赖）
-        let msg = Msg::new(lt_i18n::t);
+        // D-85：句柄在 new 时构造一次（探测可能先于管道启动发生），此处只克隆
+        let msg = self.msg.clone();
         match Pipeline::start(&self.bus, self.artery.clone(), &self.monitor_cell, msg) {
             Ok(p) => self.pipeline = Some(p),
             Err(e) => {
@@ -164,6 +176,9 @@ impl AppShell {
 
     /// 事件循环退出后的统一收尾（main 调用）
     pub fn shutdown(&mut self) {
+        // D-85：先叫停在途连接测试——否则 join_all 要等它跑完一次尝试
+        self.probe_cancel
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         if let Some(p) = self.pipeline.as_mut() {
             p.stop();
         }
@@ -243,9 +258,16 @@ impl AppShell {
                 self.publish_settings();
                 self.persist_settings();
             }
-            Cmd::TestTranslator(config) => {
-                if let Some(p) = self.pipeline.as_ref() {
-                    p.test_translator(&config);
+            // D-85：连接测试不再经 ASR 线程——组合根起一次性监督线程跑探测
+            Cmd::TestTranslator { config, probe_id } => self.start_probe(*config, probe_id),
+            Cmd::CancelTranslatorTest { probe_id } => {
+                let in_flight = self.probe_id.load(std::sync::atomic::Ordering::SeqCst);
+                if crate::shell_helpers::probe_cancel_matches(in_flight, probe_id) {
+                    self.probe_cancel
+                        .store(true, std::sync::atomic::Ordering::SeqCst);
+                    tracing::info!("已请求中断连接测试 #{probe_id}");
+                } else {
+                    tracing::debug!("忽略过期的连接测试取消请求 #{probe_id}（在途 #{in_flight}）");
                 }
             }
             Cmd::PersistSettings(_settings) => {
@@ -373,6 +395,52 @@ impl AppShell {
     /// `bench_cancel` 在模型边界轮询。防重入（W5 收口 P3）：标准在途时
     /// 拒绝新会话（UI 侧 bench.running 之外的纵深防御——连发命令不再叠
     /// 线程）；拒绝时旧基准的取消标志不受影响。
+    /// 连接测试一次性线程（D-85）：`Cmd::TestTranslator` → 监督器出生
+    /// （`Policy::Never`）→ `lt_orchestrator::probe::run_probe` → 回执经动脉回流。
+    ///
+    /// **取代语义（不是拒绝）**：已有在途时先置位**旧探测**的取消标志再启动新的
+    /// ——旧线程退出可滞后一个轮询周期（流式 ≤150ms），拒绝会把"中断后立刻重测"
+    /// 这一正常操作变成 70 秒空等。旧探测的迟到回执因 `probe_id` 不符必然被 UI 丢弃。
+    fn start_probe(&mut self, config: lt_proto::ModelConfig, probe_id: u64) {
+        let old = self.probe_id.load(std::sync::atomic::Ordering::SeqCst);
+        if old != 0 {
+            self.probe_cancel
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            tracing::warn!("连接测试被新请求取代：#{old} → #{probe_id}");
+        }
+        self.probe_cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        self.probe_id
+            .store(probe_id, std::sync::atomic::Ordering::SeqCst);
+        let artery = self.artery.clone();
+        let bus = self.bus.clone();
+        let cancel = self.probe_cancel.clone();
+        let msg = self.msg.clone();
+        let id_cell = self.probe_id.clone();
+        self.sup.spawn(
+            ThreadRole::TranslatorProbe,
+            "lt-probe",
+            Policy::Never,
+            move || {
+                // factory 为 Fn：每次构造干净的运行闭包（INV5）
+                let artery = artery.clone();
+                let bus = bus.clone();
+                let cancel = cancel.clone();
+                let msg = msg.clone();
+                let id_cell = id_cell.clone();
+                let config = config.clone();
+                Box::new(move || {
+                    // 任何退出路径（含 panic unwind）按号条件复位——被取代时
+                    // 不得把新探测的号抹掉
+                    let _guard = ProbeExitGuard {
+                        id: id_cell,
+                        probe_id,
+                    };
+                    lt_orchestrator::probe::run_probe(probe_id, &config, &bus, cancel, &msg, &artery);
+                })
+            },
+        );
+    }
+
     fn start_bench(
         &mut self,
         models: Vec<lt_proto::ModelConfig>,

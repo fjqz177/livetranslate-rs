@@ -14,6 +14,7 @@ pub mod download;
 pub mod event_artery;
 pub mod logging;
 pub mod pipeline;
+pub mod probe;
 pub mod settings_bus;
 pub mod supervisor;
 

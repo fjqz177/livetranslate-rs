@@ -91,12 +91,18 @@ pub enum UiEvent {
     ModelLoadDone { ok: bool, error: Option<String> },
     /// 翻译装置构建失败（配置无效等）：整条翻译静默不可用的唯一用户可见通道
     TranslatorUnavailable { reason: String },
-    /// 翻译配置「测试连接」结果（Cmd::TestTranslator 的回执）
+    /// 连接探测结果（`Cmd::TestTranslator` 的回执，D-85 改型）
     TestTranslatorResult {
+        /// 回执归属（UI 只采纳与在途探测 id 相同者——迟到/被取代的回执据此丢弃）
+        probe_id: u64,
         name: String,
-        ok: bool,
-        error: Option<String>,
+        outcome: ProbeOutcome,
+        /// 从发起探测到得出结论的耗时（毫秒）
         ms: u64,
+        /// 成功时**实际生效**的请求形态说明（等于起点形态则 None）——降级可见
+        step_note: Option<String>,
+        /// 成功时的回执摘要（去换行、按字符截断）
+        preview: Option<String>,
     },
     /// 性能基准流（W2：替代 `LogLine{target:"benchmark"}` + 完成哨兵；
     /// 逐行输出 + 完成语义类型化，基准窗不再借道日志总线）
@@ -200,7 +206,6 @@ impl FailureKind {
             FailureKind::Dropped => "err_dropped",
             FailureKind::NotReady => "err_not_ready",
             FailureKind::Cancelled => "err_cancelled",
-            FailureKind::Superseded => "err_superseded",
             FailureKind::Unknown => "err_unknown",
         }
     }
@@ -211,6 +216,25 @@ impl FailureKind {
 pub enum SkipReason {
     /// 源语言与目标语言相同：按原版语义免翻译，UI 显示 `(相同语言)`
     SameLanguage,
+}
+
+/// 连接探测的结论分类（D-85，`Cmd::TestTranslator` 回执的判别字段）
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProbeOutcome {
+    /// 打通且拿到非空译文
+    Ok,
+    /// 失败：分类 + 原始详情（详情原文仅供悬停/次要行展示）
+    Failed {
+        kind: FailureKind,
+        detail: String,
+    },
+    /// 用户中断（不是失败）
+    Cancelled,
+    /// 预算耗尽仍未取得结论（**不是失败**：可重试）
+    Inconclusive {
+        /// 已尝试的请求形态数（≥1）
+        attempted: u8,
+    },
 }
 
 /// 翻译失败/无输出的原因（W2；UI 据此选 i18n 文案，禁止 `_ =>` 兜底——
@@ -243,10 +267,6 @@ pub enum FailureKind {
     NotReady,
     /// 用户中断（D-85：连接探测取消等；**不是错误**，UI 以弱色说明呈现）
     Cancelled,
-    /// 装置被替换（D-85/F3：换模型时在队未翻译的段）——非错误，字幕窗中性展示，
-    /// 与"队列积压"（[`FailureKind::Dropped`]）区分开：后者是真丢件，前者是用户
-    /// 主动换模型导致的正常让位
-    Superseded,
     /// 其他未知错误
     Unknown,
 }
@@ -432,6 +452,9 @@ pub enum ThreadRole {
     /// 下载会话线程（W7：`DownloadManager` 经 Supervisor 出生；Policy::Never
     /// ——限时 join 语义由会话自管理的子线程承接，父线程死亡上报即可）
     Download,
+    /// 连接测试一次性线程（D-85：`Cmd::TestTranslator` 的 Supervisor 会话；
+    /// Policy::Never——死亡仅上报，UI 侧由 20 秒看门狗兜底落终态）
+    TranslatorProbe,
 }
 
 /// 被监督线程死亡事件载荷（R1）
@@ -518,8 +541,15 @@ pub enum Cmd {
         enabled: bool,
         interval: f32,
     },
-    /// 翻译配置「测试连接」：构建临时装置发一次最简请求，回执 TestTranslatorResult
-    TestTranslator(Box<ModelConfig>),
+    /// 连接测试（D-85 改型）：构建一次性装置跑完整回退阶梯，回执
+    /// `TestTranslatorResult`。`probe_id` 由 UI 发号——回执按 id 归位，
+    /// 迟到/被取代的结果据此丢弃
+    TestTranslator {
+        config: Box<ModelConfig>,
+        probe_id: u64,
+    },
+    /// 中断在途连接测试（`probe_id` 与在途不符则忽略，D-85 新增）
+    CancelTranslatorTest { probe_id: u64 },
     /// 重新枚举音频设备（W5/R13：面板识别页首次进入/刷新按钮；编排域起
     /// Supervisor 一次性探测线程 → `UiEvent::Devices` 回执——UI 帧内不再
     /// 阻塞 COM 枚举）

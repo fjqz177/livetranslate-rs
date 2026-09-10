@@ -266,23 +266,36 @@ impl TlStats {
 }
 
 /// W3：一次翻译尝试的产出（流式增量已即时推送，此处只汇总结论/用量）
-struct Attempt {
-    text: Option<String>,
-    error: Option<lt_translate::TranslateError>,
-    verdict: Option<lt_translate::ResponseVerdict>,
-    usage: (u64, u64),
+pub(crate) struct Attempt {
+    pub(crate) text: Option<String>,
+    pub(crate) error: Option<lt_translate::TranslateError>,
+    pub(crate) verdict: Option<lt_translate::ResponseVerdict>,
+    pub(crate) usage: (u64, u64),
     /// 服务端是否返回了用量统计（⑩：不返回时界面显示"—"）
-    usage_known: bool,
+    pub(crate) usage_known: bool,
 }
 
 impl Attempt {
     /// 拿到了可用正文（体检结论为准；无结论时退回"有文本即成功"）
-    fn succeeded(&self) -> bool {
+    pub(crate) fn succeeded(&self) -> bool {
         self.error.is_none()
             && match self.verdict {
                 Some(v) => v.has_text(),
                 None => self.text.as_deref().is_some_and(|t| !t.trim().is_empty()),
             }
+    }
+
+    /// 未发起任何请求的占位（D-85：阶梯在"每次尝试之前"被取消/预算耗尽时
+    /// 用它填 [`LadderOutcome::attempt`]）——`succeeded() == false` 且无错误，
+    /// 调用方按 `halted` 分流，不得把它当"翻译失败"渲染
+    fn halted(_halt: Halt) -> Self {
+        Self {
+            text: None,
+            error: None,
+            verdict: None,
+            usage: (0, 0),
+            usage_known: false,
+        }
     }
 }
 
@@ -421,18 +434,88 @@ fn config_fingerprint(mc: &lt_proto::ModelConfig) -> u64 {
     h.finish()
 }
 
-/// 一次翻译的完整产出：末次尝试 + 实际打赢的台阶 + 跨尝试累计用量
-struct LadderOutcome {
-    attempt: Attempt,
-    step: lt_translate::RequestStep,
-    usage: (u64, u64),
+/// 阶梯提前中止的原因（D-85：只有探测会用到——生产翻译传 [`RunCtl::none`]）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Halt {
+    /// 调用方置位取消令牌（用户中断）
+    Cancelled,
+    /// 总预算耗尽（仍未取得结论）
+    Budget,
+}
+
+/// 阶梯的运行控制（D-85）：`cancel` 每次尝试前与读取循环内均可察觉；
+/// `deadline` 限定整场（含补发重试）的总时长。
+#[derive(Clone, Default)]
+pub(crate) struct RunCtl {
+    pub cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
+    pub deadline: Option<Instant>,
+}
+
+impl RunCtl {
+    /// 生产翻译路径：不取消、不限总时长（单次尝试仍受 `timeout` 约束）
+    pub(crate) fn none() -> Self {
+        Self::default()
+    }
+
+    /// 取消令牌是否已置位
+    fn cancelled(&self) -> bool {
+        self.cancel
+            .as_ref()
+            .is_some_and(|f| f.load(Ordering::Relaxed))
+    }
+
+    /// 本台阶可用的超时（秒）：用户超时与"剩余预算"取小，下限 1 秒。
+    ///
+    /// 向上取整（ceil）而非截断：否则 10 秒预算会被算成 9 秒，单次尝试在预算
+    /// 用尽**之前**先超时退出，探测就再也到不了 `Halt::Budget` 分支——
+    /// "未定论"会被误报成"连接失败·超时"。
+    fn attempt_timeout(&self, timeout: u32) -> u32 {
+        match self.deadline {
+            Some(d) => {
+                let left = d.saturating_duration_since(Instant::now());
+                let secs = left.as_secs() + u64::from(left.subsec_nanos() > 0);
+                timeout.min(secs.max(1) as u32)
+            }
+            None => timeout,
+        }
+    }
+
+    /// 预算是否已耗尽
+    fn budget_exhausted(&self) -> bool {
+        self.deadline.is_some_and(|d| Instant::now() >= d)
+    }
+}
+
+/// 本次尝试前的提前中止判定（取消优先于预算：用户意图更值得如实回报）
+pub(crate) fn halt_reason(ctl: &RunCtl) -> Option<Halt> {
+    if ctl.cancelled() {
+        return Some(Halt::Cancelled);
+    }
+    if ctl.budget_exhausted() {
+        return Some(Halt::Budget);
+    }
+    None
+}
+
+/// 一次翻译的完整产出：末次尝试 + 实际打赢的台阶 + 跨尝试累计用量 + 提前中止原因
+pub(crate) struct LadderOutcome {
+    pub attempt: Attempt,
+    pub step: lt_translate::RequestStep,
+    pub usage: (u64, u64),
+    /// `Some` = 阶梯被提前中止（未跑完）；`None` = 正常收敛（成功或退到端点）
+    pub halted: Option<Halt>,
+    /// 已尝试的形态数（每次 `run_attempt` 计 1，含截断补发那次）
+    pub attempted: u8,
 }
 
 /// 回退阶梯（第二轮评审 ③/④/⑤）：按 [`lt_translate::next_step`] 逐级下退，
 /// **成功即停**；`EmptyTruncated` 时在同一台阶补发输出上限重试一次（方案 §4.4）。
 /// 阶梯由构造保证有限（每级严格前进、端点即 `Minimal`），不会成环。
+///
+/// D-85：每一次尝试**之前**先查取消与总预算（`ctl`）——提前中止时返回
+/// `halted = Some(..)`，调用方据此区分"未定论"与"失败"。
 #[allow(clippy::too_many_arguments)]
-fn run_ladder(
+pub(crate) fn run_ladder(
     base: &Translator,
     start: lt_translate::RequestStep,
     allow_verdict_advance: bool,
@@ -440,6 +523,7 @@ fn run_ladder(
     source_lang: &str,
     target: &str,
     timeout: u32,
+    ctl: &RunCtl,
     sink: &EventSink,
     id: u64,
     seq: u64,
@@ -448,19 +532,31 @@ fn run_ladder(
     let mut step = start;
     let mut total = (0u64, 0u64);
     let mut truncation_retried = false;
+    let mut attempted: u8 = 0;
     loop {
+        // 提前中止检查（每次尝试之前；含补发重试那一轮）
+        if let Some(halt) = halt_reason(ctl) {
+            return LadderOutcome {
+                attempt: Attempt::halted(halt),
+                step,
+                usage: total,
+                halted: Some(halt),
+                attempted,
+            };
+        }
         let device = translator_for_step(base, step);
         let attempt = run_attempt(
             &device,
             text,
             source_lang,
             target,
-            timeout,
+            ctl.attempt_timeout(timeout),
             sink,
             id,
             seq,
             push_partials,
         );
+        attempted = attempted.saturating_add(1);
         total.0 += attempt.usage.0;
         total.1 += attempt.usage.1;
         if attempt.succeeded() {
@@ -468,6 +564,8 @@ fn run_ladder(
                 attempt,
                 step,
                 usage: total,
+                halted: None,
+                attempted,
             };
         }
         // 体检判定"被截断且没有正文"：同一台阶补发输出上限重试一次（每段一次）
@@ -499,6 +597,8 @@ fn run_ladder(
                     attempt: second,
                     step,
                     usage: total,
+                    halted: None,
+                    attempted,
                 };
             }
             // 补发上限这次也可能被端点拒绝（400/422）——按同一套判据继续退级
@@ -508,6 +608,8 @@ fn run_ladder(
                     attempt: second,
                     step,
                     usage: total,
+                    halted: None,
+                    attempted,
                 };
             }
             let Some(next) = lt_translate::next_step(step) else {
@@ -515,6 +617,8 @@ fn run_ladder(
                     attempt: second,
                     step,
                     usage: total,
+                    halted: None,
+                    attempted,
                 };
             };
             tracing::info!("补发上限被拒，继续降级：{:?} → {:?}", step, next);
@@ -526,6 +630,8 @@ fn run_ladder(
                 attempt,
                 step,
                 usage: total,
+                halted: None,
+                attempted,
             };
         }
         let Some(next) = lt_translate::next_step(step) else {
@@ -533,6 +639,8 @@ fn run_ladder(
                 attempt,
                 step,
                 usage: total,
+                halted: None,
+                attempted,
             };
         };
         tracing::info!("翻译降级：{:?} → {:?}", step, next);
@@ -648,6 +756,42 @@ struct TlRig {
     /// 用户**确实要求关闭思考**（勾选且未标记）：只有这种情形下"退到不发送"
     /// 才算"关不掉"的证据；主动取消勾选不是
     wants_disable: bool,
+    /// 本次构造用的请求参数（D-85：供"探测与生产同源"测试逐字段断言）。
+    /// **生产路径不读它**——持有即语义（同源证据），故允许 dead_code
+    #[allow(dead_code)]
+    params: lt_translate::TranslatorParams,
+}
+
+/// 配置 → 请求参数（D-85：**全仓唯一构造点**）。
+///
+/// 生产装置（[`TlRig::from_effective`]）与连接探测（[`crate::probe`]）都必须经
+/// 本函数——"探测判据 == 生产判据"是第二轮评审的硬要求，两处各列一遍字段迟早
+/// 漂移（`translator_params_single_source` 测试钉住这条）。
+pub(crate) fn translator_params(
+    mc: &lt_proto::ModelConfig,
+    eff: &EffectiveSettings,
+) -> lt_translate::TranslatorParams {
+    lt_translate::TranslatorParams {
+        api_base: mc.api_base.clone(),
+        api_key: mc.api_key.clone(),
+        model: mc.model.clone(),
+        // W1/方案 §2.1：长度上限不再由应用发送（交给服务端默认——应用强加的
+        // 256 会把"先想再答"的模型憋死，实测就是这个原因导致空译文）
+        max_tokens: None,
+        // 2026-09-10 裁决：高级参数默认一律不发送（None = 不发）；用户手动指定才发
+        temperature: mc.temperature,
+        streaming: mc.streaming,
+        system_prompt: (!eff.raw.system_prompt.is_empty()).then(|| eff.raw.system_prompt.clone()),
+        proxy: mc.proxy.clone(),
+        no_system_role: mc.no_system_role,
+        // W1/方案 §2.3：总开关 + 方式（sanitize 已把旧 "off" 归一化到总开关）
+        disable_thinking: mc.disable_thinking,
+        thinking_unavailable: mc.thinking_unavailable,
+        thinking_style: mc.thinking_style.clone(),
+        json_response: mc.json_response,
+        overrides: mc.overrides.clone(),
+        extra_body: mc.extra_body.clone(),
+    }
 }
 
 impl TlRig {
@@ -692,29 +836,8 @@ impl TlRig {
         learned: Learned,
         degraded_notified: Arc<Mutex<std::collections::HashSet<(String, String)>>>,
     ) -> Result<Option<Self>, String> {
-        let params = lt_translate::TranslatorParams {
-            api_base: mc.api_base.clone(),
-            api_key: mc.api_key.clone(),
-            model: mc.model.clone(),
-            // W1/方案 §2.1：长度上限不再由应用发送（交给服务端默认——应用强加的
-            // 256 会把"先想再答"的模型憋死，实测就是这个原因导致空译文）
-            max_tokens: None,
-            // 2026-09-10 裁决：高级参数默认一律不发送（None = 不发）；用户手动指定才发
-            temperature: mc.temperature,
-            streaming: mc.streaming,
-            system_prompt: (!eff.raw.system_prompt.is_empty())
-                .then(|| eff.raw.system_prompt.clone()),
-            proxy: mc.proxy.clone(),
-            no_system_role: mc.no_system_role,
-            // W1/方案 §2.3：总开关 + 方式（sanitize 已把旧 "off" 归一化到总开关）
-            disable_thinking: mc.disable_thinking,
-            thinking_unavailable: mc.thinking_unavailable,
-            thinking_style: mc.thinking_style.clone(),
-            json_response: mc.json_response,
-            overrides: mc.overrides.clone(),
-            extra_body: mc.extra_body.clone(),
-        };
-        let translator = match Translator::new(params) {
+        let params = translator_params(mc, eff);
+        let translator = match Translator::new(params.clone()) {
             Ok(t) => {
                 t.set_context_turns(mc.context_turns);
                 Arc::new(t)
@@ -753,7 +876,14 @@ impl TlRig {
             allow_verdict_advance,
             thinking_unavailable: mc.thinking_unavailable,
             wants_disable: mc.disable_thinking && !mc.thinking_unavailable,
+            params,
         }))
+    }
+
+    /// 探测与生产同源断言面（D-85：只给单测用，不进生产路径）
+    #[cfg(test)]
+    fn params_for_test(&self) -> &lt_translate::TranslatorParams {
+        &self.params
     }
 
     /// 提交一段的翻译任务（对照原版 _translate_async 的成功/重复/错误三路）；
@@ -813,6 +943,7 @@ impl TlRig {
                 &source_lang,
                 &target,
                 timeout,
+                &RunCtl::none(), // 生产翻译：不取消、不限总时长（单次尝试仍受 timeout）
                 &sink,
                 id,
                 seq,
@@ -969,11 +1100,8 @@ pub(crate) enum TlSwitch {
         whisper_model_size: String,
         language: String,
     },
-    /// 翻译配置「测试连接」：临时装置发一次最简请求后回执 TestTranslatorResult
-    TestTranslator {
-        name: String,
-        config: Box<lt_proto::ModelConfig>,
-    },
+    // D-85：`TestTranslator` 臂已删除——连接测试改由组合根经监督器起
+    // 一次性线程跑 `crate::probe::run_probe`（不再占用 ASR 线程的空闲分支）
 }
 
 /// 转录写盘句柄（W3 起随 Pipeline 生命周期显式持有：进程级 OnceLock 单例
@@ -1298,17 +1426,6 @@ impl Pipeline {
                 funasr_model: funasr_model.to_string(),
                 whisper_model_size: whisper_model_size.to_string(),
                 language: language.to_string(),
-            });
-        }
-    }
-
-    /// 翻译配置「测试连接」（设置页翻译按钮）：ASR 线程空闲分支执行，
-    /// 结果经 TestTranslatorResult 回执 UI；不改变当前活动翻译装置
-    pub fn test_translator(&self, config: &lt_proto::ModelConfig) {
-        if let Some(tx) = &self.tl_switch {
-            let _ = tx.send(TlSwitch::TestTranslator {
-                name: config.name.clone(),
-                config: Box::new(config.clone()),
             });
         }
     }
@@ -1736,7 +1853,6 @@ fn route_translator_switch(
     sink: &EventSink,
     sup: &Supervisor,
     transcript: &Arc<lt_audio::transcript::TranscriptWriter>,
-    msg: &Msg,
     learned: &Learned,
     degraded_notified: &Arc<Mutex<std::collections::HashSet<(String, String)>>>,
 ) -> Option<TlSwitch> {
@@ -1767,90 +1883,6 @@ fn route_translator_switch(
                 }
                 Err(reason) => {
                     sink.push(UiEvent::TranslatorUnavailable { reason });
-                }
-            }
-            None
-        }
-        TlSwitch::TestTranslator { name, config } => {
-            // 构建临时装置（不切换活动翻译器），发一次最简请求回执 UI；
-            // 目标语言/超时读总线（与活动翻译器同源，发布即一致）
-            let eff = bus.load();
-            match TlRig::from_effective(
-                &config,
-                &eff,
-                bus,
-                sup,
-                sink.clone(),
-                transcript.clone(),
-                learned.clone(),
-                degraded_notified.clone(),
-            ) {
-                Ok(Some(rig)) => {
-                    let sink = sink.clone();
-                    let name = name.clone();
-                    let msg_t = msg.clone();
-                    let bus_t = bus.clone();
-                    // 判据与生产同源（第二轮评审 item 4）：跑**同一条回退阶梯**
-                    // 并完整跑完一轮——关不掉思考的模型在生产里能出译文，
-                    // 测试连接就不该判失败；空回复仍必须判失败。
-                    let start = rig.start_step;
-                    let allow = rig.allow_verdict_advance;
-                    rig.pool.submit(0, move || {
-                        let eff = bus_t.load();
-                        let target = eff.tl.target_language.clone();
-                        let timeout = eff.tl.timeout;
-                        let t0 = Instant::now();
-                        let outcome = run_ladder(
-                            &rig.translator,
-                            start,
-                            allow,
-                            "Livetranslate test",
-                            "auto",
-                            &target,
-                            timeout,
-                            &sink,
-                            0,
-                            0,
-                            false,
-                        );
-                        let ms = t0.elapsed().as_millis() as u64;
-                        let text = outcome.attempt.text.clone().unwrap_or_default();
-                        let (ok, err) = if outcome.attempt.succeeded() && !text.trim().is_empty() {
-                            (true, None)
-                        } else {
-                            let msg_text = match &outcome.attempt.error {
-                                Some(e) => format!(
-                                    "{}（{}）",
-                                    msg_t.t(e.failure_kind().i18n_key()),
-                                    e.ui_text()
-                                ),
-                                None => msg_t.t(lt_proto::FailureKind::Empty.i18n_key()),
-                            };
-                            (false, Some(msg_text))
-                        };
-                        sink.push(UiEvent::TestTranslatorResult {
-                            name,
-                            ok,
-                            error: err,
-                            ms,
-                        });
-                    });
-                }
-                Ok(None) => {
-                    sink.push(UiEvent::TestTranslatorResult {
-                        name,
-                        ok: false,
-                        error: Some(msg.t("test_translator_no_config")),
-                        ms: 0,
-                    });
-                }
-                Err(reason) => {
-                    sink.push(UiEvent::TestTranslatorResult {
-                        name,
-                        ok: false,
-                        error: Some(reason),
-                        ms: 0,
-                    });
                 }
             }
             None
@@ -1950,7 +1982,7 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
                 funasr_model,
                 whisper_model_size,
                 language,
-            }) = route_translator_switch(sw, &mut tl, &bus, &sink, &sup, &transcript, &msg, &learned, &degraded_notified)
+            }) = route_translator_switch(sw, &mut tl, &bus, &sink, &sup, &transcript, &learned, &degraded_notified)
             else {
                 continue;
             };
@@ -2031,7 +2063,7 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
                     funasr_model,
                     whisper_model_size,
                     language,
-                }) = route_translator_switch(sw, &mut tl, &bus, &sink, &sup, &transcript, &msg, &learned, &degraded_notified)
+                }) = route_translator_switch(sw, &mut tl, &bus, &sink, &sup, &transcript, &learned, &degraded_notified)
                 {
                     // R3/D-61：每次切换尝试重解析 models_dir（与待命臂一致；
                     // 运行中目录损坏时切换路径同样可恢复）
@@ -3056,6 +3088,7 @@ mod tests {
             "en",
             "zh",
             1,
+            &RunCtl::none(),
             &sink,
             42,
             1,
@@ -3064,6 +3097,8 @@ mod tests {
         assert!(!outcome.attempt.succeeded());
         assert_eq!(outcome.step, start, "连接错误不得推进台阶");
         assert_eq!(outcome.usage, (0, 0), "无用量");
+        assert_eq!(outcome.halted, None, "生产路径不提前中止");
+        assert_eq!(outcome.attempted, 1, "连接类错误只试一次");
         assert!(
             matches!(
                 outcome.attempt.error,
@@ -3121,6 +3156,35 @@ mod tests {
         assert_eq!(bus.load().tl.target_language, "zh");
         // 收尾：先停池再 join——worker 以 stopped 为退出条件，不先置标志
         // join_all 将无限等待（pop_timeout 永不返回）
+        rig.pool.shutdown();
+        sup.join_all();
+    }
+
+    /// D-85：探测与生产**同源**——装置参数只有一处构造点
+    /// （[`translator_params`]），装置自存一份供逐字段断言。两处各列一遍字段
+    /// 的写法迟早漂移，本测试把"漂移"钉成红灯。
+    #[test]
+    fn translator_params_single_source() {
+        let settings = lt_proto::Settings::default();
+        let sup = test_sup();
+        let bus = test_bus(settings);
+        let eff = bus.load();
+        let mc = eff.raw.models[eff.raw.active_model].clone();
+        let rig = TlRig::from_settings(
+            &bus,
+            &sup,
+            EventArtery::new(),
+            test_transcript(),
+            test_learned(),
+            test_degraded_notified(),
+        )
+        .expect("默认设置不应报配置错误")
+        .expect("默认 settings 带一个默认模型，应能构建");
+        assert_eq!(
+            rig.params_for_test(),
+            &translator_params(&mc, &eff),
+            "装置参数必须来自唯一构造点（探测与生产同源）"
+        );
         rig.pool.shutdown();
         sup.join_all();
     }

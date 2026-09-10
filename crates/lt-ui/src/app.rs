@@ -941,6 +941,25 @@ impl MultiWindowApp {
         }
     }
 
+    /// 连接测试节拍（D-85）：走秒刷新 + 看门狗。
+    ///
+    /// 用宿主节拍而不是 `ctx.request_repaint_after`：本应用的多窗口重绘由
+    /// `next_tick()` → `ControlFlow::WaitUntil` 驱动，面板若无人操作不会自己出帧——
+    /// 靠 egui 的自动重绘会让"测试中… 0.0 秒"僵住且看门狗永不触发。
+    /// 在途即续拍、收敛即停（不留空转节拍）。
+    fn on_probe_tick(&mut self) {
+        let now = Instant::now();
+        let keep = self.app_state.panel.probe.tick(now);
+        if keep {
+            self.app_state.session.schedule_tick(
+                WinId::Panel,
+                crate::state::TickKind::ProbeTick,
+                now + Duration::from_millis(100),
+            );
+        }
+        self.redraw(WinId::Panel);
+    }
+
     /// UiMsg 统一入口（管道事件/托盘事件）
     fn on_msg(&mut self, event_loop: &ActiveEventLoop, msg: UiMsg) {
         match msg {
@@ -1134,16 +1153,33 @@ impl MultiWindowApp {
                         self.redraw(WinId::Panel);
                     }
                 }
-                // 翻译配置「测试连接」回执
+                // 连接测试回执（D-85：按 probe_id 归位——迟到/被取代者一律丢弃，
+                // 否则旧探测的结果会顶替新探测的状态）
                 lt_proto::UiEvent::TestTranslatorResult {
+                    probe_id,
                     name,
-                    ok,
-                    error,
+                    outcome,
                     ms,
+                    step_note,
+                    preview,
                 } => {
-                    let _ = name;
-                    self.app_state.panel.test_translator =
-                        crate::state::TestTranslatorState::Done { ok, error, ms };
+                    let running_id = self
+                        .app_state
+                        .panel
+                        .probe
+                        .running
+                        .as_ref()
+                        .map(|r| r.id);
+                    if running_id == Some(probe_id) {
+                        self.app_state
+                            .panel
+                            .probe
+                            .settle(name, outcome, ms, step_note, preview);
+                    } else {
+                        tracing::debug!(
+                            "丢弃过期连接测试回执 #{probe_id}（在途 {running_id:?}）"
+                        );
+                    }
                     self.redraw(WinId::Panel);
                 }
                 // ── 启动流：下载进度（向导/缺模型对话框共用；W2 类型化，
@@ -2479,6 +2515,9 @@ impl ApplicationHandler<UiMsg> for MultiWindowApp {
                 // 面板设置 300ms 防抖到期（原版 _save_timer.timeout → _apply_settings：
                 // 整体重放 ApplySettings，AppShell 负责热应用 + 落盘）
                 TickKind::PanelApply => self.on_panel_apply_tick(),
+                // 连接测试 100ms 走秒/看门狗（D-85）：在途则续拍 + 重绘，
+                // 收敛即停（不留空转节拍）
+                TickKind::ProbeTick => self.on_probe_tick(),
                 // 翻译页 prompt 600ms 防抖到期（原版 _prompt_debounce → _apply_prompt：
                 // system_prompt 已实时写入 settings，此处重建活动模型翻译器）
                 TickKind::PromptApply => {

@@ -16,6 +16,29 @@ impl Drop for BenchActiveGuard {
     }
 }
 
+/// 取消请求是否命中在途探测（D-85 纯判据）：号不符即忽略——过期的取消请求
+/// 不得误伤随后启动的新探测（"中断后立刻重测"场景）。
+pub fn probe_cancel_matches(in_flight: u64, requested: u64) -> bool {
+    in_flight != 0 && in_flight == requested
+}
+
+/// 连接测试线程的退出守卫（D-85）：**按号条件复位**在途号——旧探测被新请求
+/// 取代后退出时，不得把新探测在途号抹掉（否则随后的「中断」会被判为过期而失效）。
+/// 与 [`BenchActiveGuard`] 同款纪律：任何退出路径（含 panic unwind）都复位。
+pub struct ProbeExitGuard {
+    pub id: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    pub probe_id: u64,
+}
+
+impl Drop for ProbeExitGuard {
+    fn drop(&mut self) {
+        let _ = self
+            .id
+            .compare_exchange(self.probe_id, 0, std::sync::atomic::Ordering::SeqCst,
+                              std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 /// 文件对话框形态（导出=保存框 + txt 过滤器；背景图=打开框 + 图片过滤器）
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FilePickKind {
@@ -110,4 +133,45 @@ mod tests {
         assert_eq!(b2.name, "glm");
         assert_eq!(b2.model, "glm-4");
     }
+
+    /// D-85：取消判据必须按号命中——过期请求不得误伤新探测
+    #[test]
+    fn cancel_test_only_matches_current_id() {
+        assert!(probe_cancel_matches(3, 3), "号一致应命中");
+        assert!(!probe_cancel_matches(4, 3), "号已被新探测取代 → 忽略");
+        assert!(!probe_cancel_matches(0, 3), "无在途 → 忽略");
+        assert!(!probe_cancel_matches(3, 0), "号 0 是哨兵值，永不匹配");
+    }
+
+    /// D-85：退出守卫按号条件复位——旧探测退出不得抹掉新探测的号
+    #[test]
+    fn probe_exit_guard_keeps_newer_id() {
+        let id = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(7));
+        {
+            let _g = ProbeExitGuard {
+                id: id.clone(),
+                probe_id: 5, // 自己是被取代的那个
+            };
+        }
+        assert_eq!(
+            id.load(std::sync::atomic::Ordering::SeqCst),
+            7,
+            "旧探测退出不得抹掉新探测的在途号"
+        );
+    }
+
+    /// D-85：退出守卫在"仍是自己"时确实归零（无在途态可恢复）
+    #[test]
+    fn probe_exit_guard_clears_own_id() {
+        let id = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(7));
+        {
+            let _g = ProbeExitGuard {
+                id: id.clone(),
+                probe_id: 7,
+            };
+        }
+        assert_eq!(id.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
 }
+

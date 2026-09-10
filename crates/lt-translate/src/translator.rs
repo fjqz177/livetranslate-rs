@@ -85,8 +85,10 @@ pub(crate) fn lang_display(code: &str) -> &str {
         .map_or(code, |(_, v)| v)
 }
 
-/// Translator 构造参数（默认值 = 原版签名默认值）
-#[derive(Debug, Clone)]
+/// Translator 构造参数（默认值 = 原版签名默认值）。
+/// D-85：derive `PartialEq` 供"探测与生产同源"测试逐字段断言
+/// （`translator_params_single_source`）。
+#[derive(Debug, Clone, PartialEq)]
 pub struct TranslatorParams {
     pub api_base: String,
     pub api_key: String,

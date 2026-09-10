@@ -38,6 +38,7 @@ $SpawnWhite = @(
     '*\lt-orchestrator\src\download.rs',     # 下载 worker 子线程（父会话线程 join，W7 注记）
     '*\lt-asr\src\bin\fake_asr_worker.rs',   # 测试用假 worker
     '*\lt-audio\src\audio\capture.rs',       # 仅 cfg(test) 夹具（生产侧无 spawn）
+    '*\lt-orchestrator\src\probe.rs',        # 仅 cfg(test) 夹具（探测单测的 mock 服务端 accept 线程，D-85）
     '*\lt-download\src\lib.rs',              # 仅 #[ignore] 网络探针
     '*\tests\*',                             # 集成测试夹具
     '*\lt-translate\src\lib.rs'

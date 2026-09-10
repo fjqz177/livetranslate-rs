@@ -32,7 +32,8 @@ $ReservedWhitelist = @(
 # 已定性合法单边形态（WARN 常驻项，2026-09-09 校准确认——不必逐次复核）：
 #   AppCommand.OverlayToggle —— 生产经 from_menu_id 字符串映射（proto 内单点），
 #     变体名只出现在消费端；同型的 Pause/ShowPanel/Quit 因托盘/悬浮窗双生产点≥2
-#   ThreadRole.LogBridge / ThreadRole.ArteryBridge / ThreadRole.AudioBridge ——
+#   ThreadRole.LogBridge / ThreadRole.ArteryBridge / ThreadRole.AudioBridge /
+#     ThreadRole.TranslatorProbe（D-85：连接测试一次性线程，出生点 shell.rs）——
 #     角色仅出生点按名（死亡事件携带值不携带名），监督器按 Policy 泛型处理
 #   FailureKind.RateLimited / ServerError / Connection —— 生产点是
 #     lt-translate/error.rs 的 failure_kind()（唯一映射点）；消费点经
