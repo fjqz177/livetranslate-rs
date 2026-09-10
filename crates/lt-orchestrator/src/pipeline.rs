@@ -2439,6 +2439,42 @@ mod tests {
         assert!(body.get("reasoning_effort").is_none());
     }
 
+    /// 阶梯端到端（死端口）：连接类错误**不得**白走阶梯——只在起点试一次，
+    /// 立即返回失败，且失败台阶即起点（供"下一段不再重走"的记忆使用）
+    #[test]
+    fn ladder_stops_on_connection_error_without_walking() {
+        let base = test_translator(true);
+        let start = lt_translate::first_step(base.thinking_plan());
+        let sink = EventArtery::new();
+        let t0 = Instant::now();
+        let outcome = run_ladder(
+            &base,
+            start,
+            true,
+            "hello",
+            "en",
+            "zh",
+            1,
+            &sink,
+            42,
+            1,
+            false,
+        );
+        assert!(!outcome.attempt.succeeded());
+        assert_eq!(outcome.step, start, "连接错误不得推进台阶");
+        assert_eq!(outcome.usage, (0, 0), "无用量");
+        assert!(
+            matches!(
+                outcome.attempt.error,
+                Some(lt_translate::TranslateError::Connection(_))
+                    | Some(lt_translate::TranslateError::Timeout(_))
+            ),
+            "实际: {:?}",
+            outcome.attempt.error
+        );
+        assert!(t0.elapsed() < Duration::from_secs(10), "不得逐级重试耗尽时间");
+    }
+
     /// 台阶名（"当前实际在用"回执用）不得出现厂商词（INV-E）
     #[test]
     fn ladder_step_names_are_vendor_neutral_in_copy() {
