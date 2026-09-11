@@ -267,7 +267,6 @@ impl<C: ConfidenceSource> VadProcessor<C> {
         max_speech_duration: f64,
         chunk_duration: f64,
     ) -> Self {
-        
         Self {
             conf,
             sample_rate,
@@ -708,8 +707,8 @@ impl VadProcessor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
 
     /// 脚本化置信度源：按序弹出（超出后重复末值），chunk 内容不计
     struct Script {
@@ -1057,7 +1056,10 @@ mod tests {
 
         let chunk = vec![0.0f32; 512];
         p.process_chunk(&chunk);
-        assert_eq!(p.last_confidence, 0.1, "reset 后状态应从零起算，旧残留不得串味");
+        assert_eq!(
+            p.last_confidence, 0.1,
+            "reset 后状态应从零起算，旧残留不得串味"
+        );
     }
 
     #[test]

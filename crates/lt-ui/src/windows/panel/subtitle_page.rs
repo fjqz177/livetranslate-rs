@@ -12,7 +12,10 @@
 //! 空串=跟随字幕主字体）；颜色为 "#rrggbb" 文本 + 色块预览（rfd 无颜色对话框）。
 
 use super::{color_field, group_card, mark_settings_dirty, Palette};
-use crate::state::{move_line_down, move_line_up, LineEditState, ModalUi, PanelUi, SessionView, Settings, UiContext, ANIM_VALUES};
+use crate::state::{
+    move_line_down, move_line_up, LineEditState, ModalUi, PanelUi, SessionView, Settings,
+    UiContext, ANIM_VALUES,
+};
 use egui::{RichText, Ui};
 use lt_proto::SubtitleLine;
 
@@ -106,7 +109,15 @@ pub fn combo_index(
 // ── UI ──
 
 /// 字幕页 UI 总入口
-pub fn page(ui: &mut Ui, panel: &mut PanelUi, session: &mut SessionView, settings: &mut Settings, modal: &mut ModalUi, ctx: &mut UiContext, pal: &Palette) {
+pub fn page(
+    ui: &mut Ui,
+    panel: &mut PanelUi,
+    session: &mut SessionView,
+    settings: &mut Settings,
+    modal: &mut ModalUi,
+    ctx: &mut UiContext,
+    pal: &Palette,
+) {
     // N3/N4：字幕页偏离默认提示 + 恢复本页（SubtitleMode 整体 + 文字行两行默认；
     // 窗口位置 window_x/y 不纳入——样式页「重置窗口位置」单独承担）。
     // 确认文案复用原版孤儿键 subwin_reset_confirm（zh/en 均已有）。
@@ -122,7 +133,11 @@ pub fn page(ui: &mut Ui, panel: &mut PanelUi, session: &mut SessionView, setting
             modal.request_confirm(
                 crate::state::ConfirmKind::ResetSubtitle,
                 false,
-                session.visible.get(&crate::state::WinId::Panel).copied().unwrap_or(true),
+                session
+                    .visible
+                    .get(&crate::state::WinId::Panel)
+                    .copied()
+                    .unwrap_or(true),
                 lt_i18n::t("reset_confirm_title"),
                 lt_i18n::t("subwin_reset_confirm"),
             );
@@ -280,10 +295,7 @@ pub fn page(ui: &mut Ui, panel: &mut PanelUi, session: &mut SessionView, setting
             mark_settings_dirty(session);
         }
         // 时长 50..=3000 ms
-        let mut v = settings
-            .subtitle_mode
-            .auto_hide_duration
-            .clamp(50, 3000) as i32;
+        let mut v = settings.subtitle_mode.auto_hide_duration.clamp(50, 3000) as i32;
         if number_row(
             ui,
             "sub_hide_dur",
@@ -317,9 +329,7 @@ pub fn page(ui: &mut Ui, panel: &mut PanelUi, session: &mut SessionView, setting
                     crate::state::WinId::Subtitle,
                     crate::state::TickKind::ClickThrough,
                     std::time::Instant::now()
-                        + std::time::Duration::from_millis(
-                            crate::state::SUBTITLE_POLL_MS,
-                        ),
+                        + std::time::Duration::from_millis(crate::state::SUBTITLE_POLL_MS),
                 );
             }
             mark_settings_dirty(session);

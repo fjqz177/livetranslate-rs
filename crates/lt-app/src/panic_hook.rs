@@ -47,7 +47,11 @@ pub fn install() {
 
         // ② crash 文件：按需打开追加（release windows_subsystem 下的最后留痕）
         if let Some(Some(path)) = CRASH_PATH.get() {
-            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+            {
                 let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f ");
                 let _ = f.write_all(ts.to_string().as_bytes());
                 let _ = f.write_all(line.as_bytes());

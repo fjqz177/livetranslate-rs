@@ -240,9 +240,7 @@ mod tests {
             engine: "whisper".into(),
             language: "auto".into(),
             pad_seconds: Some(0.5),
-            options: crate::worker::WorkerOptions::ModelPath(
-                std::path::PathBuf::from("m.bin"),
-            ),
+            options: crate::worker::WorkerOptions::ModelPath(std::path::PathBuf::from("m.bin")),
         };
         let err = WhisperEngine::from_config(&cfg);
         assert!(matches!(err, Err(EngineError::Load(_))));

@@ -14,7 +14,9 @@ use egui::{Align2, RichText, Ui};
 /// 仅在 `host` 窗口帧内渲染确认模态；确定/取消在模态内收敛并执行效果。
 /// 由 dispatch 在 overlay/panel 窗口帧之后调用（共享状态单源）。
 pub fn render_confirm_if_host(ui: &mut Ui, app: &mut AppUi, host: WinId) {
-    let Some(conf) = &app.modal.confirm else { return };
+    let Some(conf) = &app.modal.confirm else {
+        return;
+    };
     if conf.host != host {
         return;
     }
@@ -53,7 +55,8 @@ pub fn render_confirm_if_host(ui: &mut Ui, app: &mut AppUi, host: WinId) {
     } else if cancelled || !open {
         // 取消/关闭：面板因确认临时显示则回隐藏（H-3"取消退出不多个面板"）
         if conf.panel_shown_for_confirm {
-            app.session.enqueue_action(WinId::Panel, WinAction::HidePanel);
+            app.session
+                .enqueue_action(WinId::Panel, WinAction::HidePanel);
         }
     } else {
         // 未收敛（仅取回渲染快照）→ 重新放回，等下一帧
@@ -76,7 +79,8 @@ fn apply_confirm_kind(ui: &Ui, app: &mut AppUi, kind: &ConfirmKind) {
             app.settings.subtitle_mode = lt_proto::SubtitleMode::default();
             // 行级字体跟随（空串）解析自注册表 → 重装字体链
             crate::fonts::apply_fonts(ui.ctx(), &app.settings, &mut app.ctx.fonts);
-            app.session.enqueue_action(WinId::Panel, WinAction::ToggleSubtitle);
+            app.session
+                .enqueue_action(WinId::Panel, WinAction::ToggleSubtitle);
             app.session.request_settings_apply();
         }
         ConfirmKind::ResetTranslation => {
@@ -121,7 +125,11 @@ mod tests {
         st.modal.request_confirm(
             ConfirmKind::Quit,
             false,
-            st.session.visible.get(&WinId::Panel).copied().unwrap_or(true),
+            st.session
+                .visible
+                .get(&WinId::Panel)
+                .copied()
+                .unwrap_or(true),
             lt_i18n::t("quit_confirm_title"),
             lt_i18n::t("quit_confirm_msg"),
         );
@@ -148,7 +156,11 @@ mod tests {
         st.modal.request_confirm(
             ConfirmKind::Clear,
             true,
-            st.session.visible.get(&WinId::Panel).copied().unwrap_or(true),
+            st.session
+                .visible
+                .get(&WinId::Panel)
+                .copied()
+                .unwrap_or(true),
             lt_i18n::t("clear_confirm_title"),
             lt_i18n::t("clear_confirm_msg"),
         );

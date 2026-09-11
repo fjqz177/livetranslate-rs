@@ -121,11 +121,7 @@ impl<F: Fn(f32, f64, Option<f32>) + Send> CaptureLoop<F> {
     /// 形参特化为 boxed 默认形态（架构 2.0 W1/R2）：模式热切换需要经
     /// `make_confidence_source` 重建源——只有 boxed trait object 可跨型替换；
     /// 具体类型源（测试 mock）装箱传入即可
-    pub fn run(
-        &mut self,
-        vad: &Arc<Mutex<VadProcessor>>,
-        running: &AtomicBool,
-    ) {
+    pub fn run(&mut self, vad: &Arc<Mutex<VadProcessor>>, running: &AtomicBool) {
         let silence_chunk = vec![0.0f32; CHUNK_SAMPLES];
         // W4：上次已应用的发布版本（0 = 未应用 → 启动后首 tick 应用一次；
         // 值与启动装配相同则幂等无害）
@@ -414,7 +410,10 @@ mod tests {
 
     #[test]
     fn vad_tick_applied_when_version_changes() {
-        let q = Arc::new(BoundedDropQueue::<(Vec<f32>, Option<f32>)>::new(100, "test-chunk"));
+        let q = Arc::new(BoundedDropQueue::<(Vec<f32>, Option<f32>)>::new(
+            100,
+            "test-chunk",
+        ));
         let seg_tx = Arc::new(BoundedDropQueue::<(SegmentSource, Vec<f32>)>::new(
             16, "test-seg",
         ));
@@ -445,7 +444,10 @@ mod tests {
             q_feed.push((vec![0.0f32; 512], None));
         }
         std::thread::sleep(Duration::from_millis(150));
-        assert_eq!(vad_obs.lock().unwrap().max_speech_samples(), (8.0 * 16000.0) as usize);
+        assert_eq!(
+            vad_obs.lock().unwrap().max_speech_samples(),
+            (8.0 * 16000.0) as usize
+        );
         // 发布版本 1 + 新阈值/时长 → 下一循环轮询应用
         let s = crate::vad::VadSettings {
             max_speech_duration: 15.0,

@@ -462,7 +462,10 @@ mod tests {
     #[test]
     fn menu_ids_all_map_to_commands() {
         for id in [ids::PAUSE, ids::OVERLAY_TOGGLE, ids::SHOW_PANEL, ids::QUIT] {
-            assert!(AppCommand::from_menu_id(id).is_some(), "菜单 id {id} 必须可映射");
+            assert!(
+                AppCommand::from_menu_id(id).is_some(),
+                "菜单 id {id} 必须可映射"
+            );
         }
         assert!(
             AppCommand::from_menu_id(ids::STATUS).is_none(),

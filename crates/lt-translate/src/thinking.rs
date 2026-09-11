@@ -56,12 +56,7 @@ const LOCAL_HOSTS: [&str; 4] = ["127.0.0.1", "localhost", "[::1]", "0.0.0.0"];
 /// （官方明载传 disabled 报错）——同一兜底路径覆盖。
 const NESTED_THINKING_MODELS: [&str; 4] = ["deepseek", "glm", "kimi", "moonshot"];
 const NESTED_THINKING_ENDPOINTS: [&str; 6] = [
-    "deepseek",
-    "volces",
-    "api.z.ai",
-    "bigmodel",
-    "moonshot",
-    "kimi",
+    "deepseek", "volces", "api.z.ai", "bigmodel", "moonshot", "kimi",
 ];
 
 /// 用扁平 `enable_thinking` 关闭的厂商端点（旧行为等价物）
@@ -205,7 +200,10 @@ pub fn next_step(step: RequestStep) -> Option<RequestStep> {
 
 /// 该台阶是否"已放弃关闭思维链"（= 最终形态不含任何关闭参数）
 pub fn gives_up_disabling(step: RequestStep) -> bool {
-    matches!(step, RequestStep::Plan(ThinkingPlan::None) | RequestStep::Minimal)
+    matches!(
+        step,
+        RequestStep::Plan(ThinkingPlan::None) | RequestStep::Minimal
+    )
 }
 
 /// 该台阶是否"诚实可展示的关闭形态"（用于界面标注"当前实际在用"）
@@ -471,17 +469,32 @@ mod tests {
             json!({"thinking": {"type": "disabled"}})
         );
         assert_eq!(
-            extra_body("https://ark.cn-beijing.volces.com/api/v3", "ep-x", true, None),
+            extra_body(
+                "https://ark.cn-beijing.volces.com/api/v3",
+                "ep-x",
+                true,
+                None
+            ),
             json!({"thinking": {"type": "disabled"}})
         );
         // 第三方托管的 deepseek 模型名同样命中（旧行为）
         assert_eq!(
-            extra_body("https://my-gateway.example.com/v1", "deepseek-r1", true, None),
+            extra_body(
+                "https://my-gateway.example.com/v1",
+                "deepseek-r1",
+                true,
+                None
+            ),
             json!({"thinking": {"type": "disabled"}})
         );
         // DashScope / SiliconFlow：扁平 enable_thinking
         assert_eq!(
-            extra_body("https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen3-max", true, None),
+            extra_body(
+                "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                "qwen3-max",
+                true,
+                None
+            ),
             json!({"enable_thinking": false})
         );
         assert_eq!(
@@ -495,7 +508,12 @@ mod tests {
         // 本机跑 deepseek 蒸馏模型：回环端点优先 → 发 reasoning_effort:"none"
         //（本机 LM Studio/llama.cpp 只认这个）
         assert_eq!(
-            extra_body("http://127.0.0.1:8080/v1", "deepseek-r1-distill-7b", true, None),
+            extra_body(
+                "http://127.0.0.1:8080/v1",
+                "deepseek-r1-distill-7b",
+                true,
+                None
+            ),
             json!({"reasoning_effort": "none"})
         );
         assert_eq!(

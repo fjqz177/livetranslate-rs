@@ -53,7 +53,10 @@ fn crash_during_transcribe_reports_exited() {
         &fake_worker_path(),
         fake_config(
             "Crash",
-            lt_asr::worker::EchoOptions { crash_on_transcribe: true, ..Default::default() },
+            lt_asr::worker::EchoOptions {
+                crash_on_transcribe: true,
+                ..Default::default()
+            },
         ),
     )
     .expect("spawn");
@@ -67,7 +70,13 @@ fn crash_during_transcribe_reports_exited() {
 fn worker_exit_before_ready_is_error() {
     let mut c = AsrWorkerClient::spawn_program(
         &fake_worker_path(),
-        fake_config("Die", lt_asr::worker::EchoOptions { crash_on_ready: true, ..Default::default() }),
+        fake_config(
+            "Die",
+            lt_asr::worker::EchoOptions {
+                crash_on_ready: true,
+                ..Default::default()
+            },
+        ),
     )
     .expect("spawn");
     let err = c.wait_ready().unwrap_err();
@@ -78,7 +87,13 @@ fn worker_exit_before_ready_is_error() {
 fn transcribe_timeout_terminates_worker() {
     let mut c = AsrWorkerClient::spawn_program(
         &fake_worker_path(),
-        fake_config("Hang", lt_asr::worker::EchoOptions { hang_ms: 5000, ..Default::default() }),
+        fake_config(
+            "Hang",
+            lt_asr::worker::EchoOptions {
+                hang_ms: 5000,
+                ..Default::default()
+            },
+        ),
     )
     .expect("spawn");
     c.wait_ready().expect("ready");
@@ -102,7 +117,13 @@ fn transcribe_timeout_terminates_worker() {
 fn request_after_gap_death_reports_exited() {
     let mut c = AsrWorkerClient::spawn_program(
         &fake_worker_path(),
-        fake_config("Echo", lt_asr::worker::EchoOptions { exit_after_ms: 500, ..Default::default() }),
+        fake_config(
+            "Echo",
+            lt_asr::worker::EchoOptions {
+                exit_after_ms: 500,
+                ..Default::default()
+            },
+        ),
     )
     .expect("spawn");
     c.wait_ready().expect("ready");
@@ -118,7 +139,13 @@ fn request_after_gap_death_reports_exited() {
 fn shutdown_kills_worker_hung_in_transcribe() {
     let mut c = AsrWorkerClient::spawn_program(
         &fake_worker_path(),
-        fake_config("Hang", lt_asr::worker::EchoOptions { hang_ms: 30_000, ..Default::default() }),
+        fake_config(
+            "Hang",
+            lt_asr::worker::EchoOptions {
+                hang_ms: 30_000,
+                ..Default::default()
+            },
+        ),
     )
     .expect("spawn");
     c.wait_ready().expect("ready");

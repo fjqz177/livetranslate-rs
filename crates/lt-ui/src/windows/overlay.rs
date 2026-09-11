@@ -123,7 +123,15 @@ pub fn overlay_ui(
 
 // ── DragHandle（原版 DragHandle） ──
 
-fn drag_handle(ui: &mut Ui, overlay: &mut OverlayUi, session: &mut SessionView, settings: &mut Settings, modal: &mut ModalUi, compact: bool, opa_pct: u32) {
+fn drag_handle(
+    ui: &mut Ui,
+    overlay: &mut OverlayUi,
+    session: &mut SessionView,
+    settings: &mut Settings,
+    modal: &mut ModalUi,
+    compact: bool,
+    opa_pct: u32,
+) {
     // 原版 DragHandle 是 QWidget 子类且未设 WA_StyledBackground/paintEvent，
     // 其 QSS 背景（含 apply_style 的 header_color）从未被渲染——头部区域即
     // 容器黑玻璃贯穿。header_color/header_opacity 字段与样式页控件 1:1 保留，
@@ -141,7 +149,15 @@ fn drag_handle(ui: &mut Ui, overlay: &mut OverlayUi, session: &mut SessionView, 
 
 /// 行1：拖动标题 + 操作按钮（高度 24；按钮顺序=原版 row1：
 /// 隐藏/字幕/启停/清除/完整/设置/退出）
-fn row1(ui: &mut Ui, overlay: &mut OverlayUi, session: &mut SessionView, settings: &mut Settings, modal: &mut ModalUi, compact: bool, opa_pct: u32) {
+fn row1(
+    ui: &mut Ui,
+    overlay: &mut OverlayUi,
+    session: &mut SessionView,
+    settings: &mut Settings,
+    modal: &mut ModalUi,
+    compact: bool,
+    opa_pct: u32,
+) {
     ui.horizontal(|ui| {
         ui.set_min_height(22.0);
         // 拖动区：标题文本 + 空白拉伸
@@ -662,10 +678,18 @@ fn stats_line(ui: &mut Ui, overlay: &OverlayUi, opa_pct: u32) {
         // 旧实现把美元数字标成人民币，差 ~7 倍）；未知用量时标"部分未知"
         let mut costs: Vec<String> = Vec::new();
         if stats.cost_cny > 0.0 {
-            costs.push(format!("{}{:.4}", lt_proto::Currency::Cny.symbol(), stats.cost_cny));
+            costs.push(format!(
+                "{}{:.4}",
+                lt_proto::Currency::Cny.symbol(),
+                stats.cost_cny
+            ));
         }
         if stats.cost_usd > 0.0 {
-            costs.push(format!("{}{:.4}", lt_proto::Currency::Usd.symbol(), stats.cost_usd));
+            costs.push(format!(
+                "{}{:.4}",
+                lt_proto::Currency::Usd.symbol(),
+                stats.cost_usd
+            ));
         }
         if !costs.is_empty() {
             let mut line = costs.join(" ");
@@ -705,7 +729,16 @@ fn messages_area(
             for msg in &overlay.messages {
                 let mut export: Option<lt_proto::ExportFileMode> = None;
                 let mut clear = false;
-                message_block(ui, settings, ctx, msg, compact, opa_pct, &mut export, &mut clear);
+                message_block(
+                    ui,
+                    settings,
+                    ctx,
+                    msg,
+                    compact,
+                    opa_pct,
+                    &mut export,
+                    &mut clear,
+                );
                 if let Some(mode) = export {
                     overlay.state.export_request = Some(mode);
                 }
@@ -755,10 +788,7 @@ fn message_block(
     let head_font = FontId::new(
         pt(s.original_font_size),
         crate::fonts::font_family_for(
-            crate::fonts::resolve_family(
-                &s.original_font_family,
-                &settings.subtitle_font_family,
-            ),
+            crate::fonts::resolve_family(&s.original_font_family, &settings.subtitle_font_family),
             &ctx.fonts,
         ),
     );
@@ -881,11 +911,8 @@ fn message_block(
             ui.close();
         }
         if ui.button(lt_i18n::t("copy_all")).clicked() {
-            ui.ctx().copy_text(format!(
-                "{}\n{}",
-                msg.original,
-                msg.translation.text()
-            ));
+            ui.ctx()
+                .copy_text(format!("{}\n{}", msg.original, msg.translation.text()));
             ui.close();
         }
         ui.separator();
@@ -1000,10 +1027,7 @@ mod tests {
     #[test]
     fn mic_bar_follows_enable_intent() {
         let base = lt_proto::Settings::default();
-        assert!(
-            !mic_bar_active(&base),
-            "默认 mic_device=None = 禁用"
-        );
+        assert!(!mic_bar_active(&base), "默认 mic_device=None = 禁用");
 
         let mut s = base.clone();
         s.mic_device = Some("__default__".into());
@@ -1021,27 +1045,28 @@ mod tests {
         let ctx = egui::Context::default();
         let mut st = crate::state::AppUi::new(lt_proto::Settings::default());
         let mut acts: Vec<(crate::state::WinId, crate::state::WinAction)> = Vec::new();
-        let run_frame = |ctx: &egui::Context, st: &mut crate::state::AppUi, evs: Vec<egui::Event>| {
-            let mut ri = egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(620.0, 500.0),
-                )),
-                ..Default::default()
+        let run_frame =
+            |ctx: &egui::Context, st: &mut crate::state::AppUi, evs: Vec<egui::Event>| {
+                let mut ri = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(620.0, 500.0),
+                    )),
+                    ..Default::default()
+                };
+                ri.events = evs;
+                let mut out = ctx.run_ui(ri, |ui| {
+                    crate::windows::overlay::overlay_ui(
+                        ui,
+                        &mut st.overlay,
+                        &mut st.session,
+                        &mut st.settings,
+                        &mut st.modal,
+                        &mut st.ctx,
+                    )
+                });
+                out.textures_delta.clear();
             };
-            ri.events = evs;
-            let mut out = ctx.run_ui(ri, |ui| {
-                crate::windows::overlay::overlay_ui(
-                    ui,
-                    &mut st.overlay,
-                    &mut st.session,
-                    &mut st.settings,
-                    &mut st.modal,
-                    &mut st.ctx,
-                )
-            });
-            out.textures_delta.clear();
-        };
         // 注册帧（布局收敛）→ 光标到位 → 按住 → 移动（拖拽判定）→ 释放
         let start = egui::pos2(60.0, 12.0); // 头部行内（拖动区）
         for evs in [
@@ -1071,14 +1096,14 @@ mod tests {
                 st.overlay.state.dragging = true;
             }
             if acts.iter().any(|(w, a)| {
-                *w == crate::state::WinId::Overlay
-                    && *a == crate::state::WinAction::OverlayDragEnd
+                *w == crate::state::WinId::Overlay && *a == crate::state::WinAction::OverlayDragEnd
             }) {
                 st.overlay.state.dragging = false;
             }
         }
         let has = |a: crate::state::WinAction| {
-            acts.iter().any(|(w, x)| *w == crate::state::WinId::Overlay && *x == a)
+            acts.iter()
+                .any(|(w, x)| *w == crate::state::WinId::Overlay && *x == a)
         };
         assert!(
             has(crate::state::WinAction::OverlayDragStart),
@@ -1180,9 +1205,7 @@ mod tests {
             .map(|l| lt_i18n::t_for_lang(l, "err_subtitle_label"))
             .collect();
         assert!(
-            texts
-                .iter()
-                .any(|t| skipped.iter().any(|s| t.contains(s))),
+            texts.iter().any(|t| skipped.iter().any(|s| t.contains(s))),
             "让位句应显示中性文案，实际 {texts:?}"
         );
         assert!(

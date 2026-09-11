@@ -287,7 +287,9 @@ mod tests {
     }
     fn read_f32(name: &str) -> Vec<f32> {
         let b = fixture(name);
-        b.as_chunks::<4>().0.iter()
+        b.as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect()
     }

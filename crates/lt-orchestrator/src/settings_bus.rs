@@ -20,8 +20,8 @@
 
 use lt_audio::VadSettings;
 use lt_proto::{EngineKey, Settings};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 /// qwen3 生效段长上限（AH-8/D-28，自 pipeline.rs 随总线迁入）：`MAX_TOTAL_LEN=512`
 /// 为 audio+输出共享 token 预算，超长段有静默截尾风险；15s 为保守取值，
@@ -279,11 +279,8 @@ mod tests {
             "auto_save_transcript",
             "models_dir",
         ];
-        let classified: std::collections::HashSet<&str> = wired
-            .iter()
-            .chain(raw_direct.iter())
-            .copied()
-            .collect();
+        let classified: std::collections::HashSet<&str> =
+            wired.iter().chain(raw_direct.iter()).copied().collect();
         let mut missing: Vec<&str> = keys
             .iter()
             .map(|s| s.as_str())

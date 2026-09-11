@@ -102,7 +102,10 @@ pub fn save(s: &Settings) -> anyhow::Result<()> {
     // 成功：新档就位，.bak 完成使命（NotFound = 本次未走 .bak 链，忽略）
     if let Err(e) = std::fs::remove_file(&bak) {
         if e.kind() != std::io::ErrorKind::NotFound {
-            tracing::warn!("settings.json 已保存，但清理备份 {} 失败: {e}", bak.display());
+            tracing::warn!(
+                "settings.json 已保存，但清理备份 {} 失败: {e}",
+                bak.display()
+            );
         }
     }
     Ok(())
@@ -219,8 +222,7 @@ mod tests {
     #[test]
     fn save_keeps_bak_when_target_rename_fails() {
         let _g = crate::ENV_LOCK.lock().unwrap();
-        let dir =
-            std::env::temp_dir().join(format!("lt_settings_bak_fail_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("lt_settings_bak_fail_{}", std::process::id()));
         std::env::set_var("LIVETRANSLATE_CONFIG_DIR", &dir);
         let _cleanup = scopeguard(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -240,7 +242,10 @@ mod tests {
         let err = save(&s).expect_err("目录占位应使保存失败");
 
         // .bak 保留且内容仍是旧档；错误信息提到 .bak 可手动恢复
-        assert!(err.to_string().contains(".bak"), "错误信息应提到 .bak: {err}");
+        assert!(
+            err.to_string().contains(".bak"),
+            "错误信息应提到 .bak: {err}"
+        );
         assert!(bak.exists(), "恢复失败后 .bak 应保留");
         assert_eq!(std::fs::read_to_string(&bak).unwrap(), old);
         assert!(!path.is_file(), "目录占位不应被新档顶替");

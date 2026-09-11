@@ -254,24 +254,25 @@ pub fn model_cache_status(
             }
             None => CacheStatus::Unavailable,
         },
-        lt_proto::EngineKey::Whisper => match lt_models::registry::whisper_entry_for(whisper_size)
-        {
-            Some(entry) => {
-                if lt_models::cache::is_whisper_cached(models_dir, whisper_size) {
-                    CacheStatus::Cached(entry.estimated_bytes)
-                } else {
-                    CacheStatus::Missing(entry.estimated_bytes)
+        lt_proto::EngineKey::Whisper => {
+            match lt_models::registry::whisper_entry_for(whisper_size) {
+                Some(entry) => {
+                    if lt_models::cache::is_whisper_cached(models_dir, whisper_size) {
+                        CacheStatus::Cached(entry.estimated_bytes)
+                    } else {
+                        CacheStatus::Missing(entry.estimated_bytes)
+                    }
+                }
+                // 本地 GGML 路径等非 builtin 值：文件存在即缓存（原版同语义）
+                None => {
+                    if std::path::Path::new(whisper_size).is_file() {
+                        CacheStatus::Cached(0)
+                    } else {
+                        CacheStatus::Missing(0)
+                    }
                 }
             }
-            // 本地 GGML 路径等非 builtin 值：文件存在即缓存（原版同语义）
-            None => {
-                if std::path::Path::new(whisper_size).is_file() {
-                    CacheStatus::Cached(0)
-                } else {
-                    CacheStatus::Missing(0)
-                }
-            }
-        },
+        }
         // WP-B：qwen3 复用 manifest 探测（单一模型，B-α 无模型键）
         lt_proto::EngineKey::Qwen3 => {
             let entry = lt_models::registry::qwen3_entry();
@@ -300,7 +301,13 @@ pub fn format_size(size_bytes: u64) -> String {
 // ── UI ──
 
 /// 识别页 UI 总入口
-pub fn page(ui: &mut Ui, panel: &mut PanelUi, session: &mut SessionView, settings: &mut Settings, pal: &Palette) {
+pub fn page(
+    ui: &mut Ui,
+    panel: &mut PanelUi,
+    session: &mut SessionView,
+    settings: &mut Settings,
+    pal: &Palette,
+) {
     // N3/N4：识别页偏离默认值提示 + 恢复本页（ui_lang 为语言偏好，不提示不恢复）
     let diffs = crate::panel_diff::diff_paths(settings);
     let page_diffs: Vec<&str> = diffs
@@ -441,11 +448,10 @@ pub fn page(ui: &mut Ui, panel: &mut PanelUi, session: &mut SessionView, setting
                             {
                                 settings.whisper_model_size = item.key.to_string();
                                 mark_settings_dirty(session);
-                                let cached = lt_models::paths::models_dir(
-                                    settings.models_dir.as_deref(),
-                                )
-                                .map(|d| lt_models::cache::is_whisper_cached(&d, item.key))
-                                .unwrap_or(false);
+                                let cached =
+                                    lt_models::paths::models_dir(settings.models_dir.as_deref())
+                                        .map(|d| lt_models::cache::is_whisper_cached(&d, item.key))
+                                        .unwrap_or(false);
                                 if cached {
                                     send_switch_engine(settings, session);
                                 }
@@ -512,7 +518,11 @@ pub fn page(ui: &mut Ui, panel: &mut PanelUi, session: &mut SessionView, setting
         ui.add_space(4.0);
         let hubs = [lt_i18n::t("hub_modelscope"), lt_i18n::t("hub_huggingface")];
         // E2/D-79：hub 判定走值域透镜（settings.hub() → Hub 枚举）
-        let hub_idx = if settings.hub() == lt_proto::Hub::Hf { 1 } else { 0 };
+        let hub_idx = if settings.hub() == lt_proto::Hub::Hf {
+            1
+        } else {
+            0
+        };
         ui.horizontal(|ui| {
             ui.label(RichText::new(format!("{} ", lt_i18n::t("label_hub"))).color(pal.text));
             egui::ComboBox::from_id_salt("panel_hub")
@@ -543,10 +553,8 @@ pub fn page(ui: &mut Ui, panel: &mut PanelUi, session: &mut SessionView, setting
             let hf_only = match settings.asr_engine.as_str() {
                 "funasr" => lt_models::registry::funasr_entry(&settings.funasr_model)
                     .is_some_and(|e| e.ms.is_none()),
-                "whisper" => {
-                    lt_models::registry::whisper_entry_for(&settings.whisper_model_size)
-                        .is_some_and(|e| e.ms.is_none())
-                }
+                "whisper" => lt_models::registry::whisper_entry_for(&settings.whisper_model_size)
+                    .is_some_and(|e| e.ms.is_none()),
                 "qwen3" => lt_models::registry::qwen3_entry().ms.is_none(),
                 _ => false,
             };
@@ -870,9 +878,7 @@ pub fn page(ui: &mut Ui, panel: &mut PanelUi, session: &mut SessionView, setting
         // 失效——识别页每帧渲染不再递归扫盘
         let probe_key = format!(
             "{}|{}|{}",
-            settings.asr_engine,
-            settings.funasr_model,
-            settings.whisper_model_size
+            settings.asr_engine, settings.funasr_model, settings.whisper_model_size
         );
         let status = match &panel.state.cache_probe {
             Some((at, key, s)) if *key == probe_key && at.elapsed().as_millis() < 2_000 => *s,
@@ -889,11 +895,10 @@ pub fn page(ui: &mut Ui, panel: &mut PanelUi, session: &mut SessionView, setting
         };
         ui.horizontal(|ui| {
             let model_display = match settings.engine_key() {
-                lt_proto::EngineKey::FunAsr => {
-                    funasr_model_items()[funasr_index_for(&settings.funasr_model)]
-                        .display
-                        .clone()
-                }
+                lt_proto::EngineKey::FunAsr => funasr_model_items()
+                    [funasr_index_for(&settings.funasr_model)]
+                .display
+                .clone(),
                 // WP-B：qwen3 显示名取注册表（缓存卡片/下载标题行）
                 lt_proto::EngineKey::Qwen3 => {
                     lt_models::registry::qwen3_entry().display.to_string()
@@ -1120,9 +1125,7 @@ fn restore_vad_page(settings: &mut Settings, session: &mut SessionView) {
     s.asr_language = def.asr_language.clone();
     // 逐条下发即时命令（引擎→语言→设备→padding→增量）
     super::send_switch_engine(settings, session);
-    session.send_cmd(lt_proto::Cmd::SetAsrLanguage(
-        settings.asr_language.clone(),
-    ));
+    session.send_cmd(lt_proto::Cmd::SetAsrLanguage(settings.asr_language.clone()));
     session.send_cmd(lt_proto::Cmd::SetAudioDevice(
         lt_proto::AudioDeviceChoice::SystemDefault,
     ));
@@ -1157,11 +1160,7 @@ pub(crate) fn start_download(panel: &mut PanelUi, session: &SessionView, setting
 
 /// 自动修复路径的下载发起（D-83）：**不清零**自动重试计数（计数即本次修复
 /// 已用次数，由 app.rs 的修复闭环持有）
-pub(crate) fn start_download_auto(
-    panel: &mut PanelUi,
-    session: &SessionView,
-    settings: &Settings,
-) {
+pub(crate) fn start_download_auto(panel: &mut PanelUi, session: &SessionView, settings: &Settings) {
     if panel.download.downloading() {
         return;
     }

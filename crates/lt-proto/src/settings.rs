@@ -737,12 +737,12 @@ mod tests {
             let k = EngineKey::from_settings_str(v);
             assert_eq!(k.as_settings_str(), v, "值域 {v} 往返必须恒等");
         }
-        assert_eq!(
-            EngineKey::from_settings_str("qwen3"),
-            EngineKey::Qwen3
-        );
+        assert_eq!(EngineKey::from_settings_str("qwen3"), EngineKey::Qwen3);
         // 未知值（含旧版残留/手改）回退 FunAsr 而非 panic——与 sanitize 同语义
-        assert_eq!(EngineKey::from_settings_str("sensevoice"), EngineKey::FunAsr);
+        assert_eq!(
+            EngineKey::from_settings_str("sensevoice"),
+            EngineKey::FunAsr
+        );
         assert_eq!(EngineKey::from_settings_str(""), EngineKey::FunAsr);
         // Settings 透镜
         let mut s = Settings::default();
@@ -756,7 +756,10 @@ mod tests {
     fn proxy_mode_roundtrip() {
         for src in ["none", "system", "", "http://p:8080"] {
             let p = ProxyMode::from_settings_str(src);
-            assert_eq!(p.to_settings_str(), if src.is_empty() { "system" } else { src });
+            assert_eq!(
+                p.to_settings_str(),
+                if src.is_empty() { "system" } else { src }
+            );
         }
         assert_eq!(Settings::default().proxy_mode(), ProxyMode::System);
     }
@@ -808,7 +811,10 @@ mod tests {
         // 序列化后不再出现 no_think；disable_thinking=false 必须写盘（非默认值）
         let out = serde_json::to_value(&s).unwrap();
         assert!(out["models"][0].get("no_think").is_none());
-        assert_eq!(out["models"][0]["disable_thinking"], serde_json::json!(false));
+        assert_eq!(
+            out["models"][0]["disable_thinking"],
+            serde_json::json!(false)
+        );
     }
 
     /// W1/方案 §2.3：旧 `thinking_style == "off"`（语义与字面相反）在 sanitize 中
@@ -895,7 +901,10 @@ mod tests {
             input_price: 1.0,
             currency: None,
             output_price: 2.0,
-            overrides: Some(BTreeMap::from([("top_p".to_string(), serde_json::json!(0.9))])),
+            overrides: Some(BTreeMap::from([(
+                "top_p".to_string(),
+                serde_json::json!(0.9),
+            )])),
             extra_body: Some(serde_json::json!({"k": 1})),
         };
         let mut keys: Vec<String> = serde_json::to_value(&full)
@@ -916,10 +925,16 @@ mod tests {
             ("no_system_role", "请求构造（messages 组装）"),
             ("thinking_style", "请求构造（关闭方式，§2.3 规则 3）"),
             ("disable_thinking", "请求构造（关闭总开关，§2.3 规则 1/2）"),
-            ("thinking_unavailable", "请求构造（已确认关不掉：不再注入关闭参数）/ UI 提示"),
+            (
+                "thinking_unavailable",
+                "请求构造（已确认关不掉：不再注入关闭参数）/ UI 提示",
+            ),
             ("temperature", "请求构造（采样温度，None=不发——默认即不发）"),
             ("streaming", "请求构造（stream 开关）"),
-            ("json_response", "请求构造（response_format；W1 起界面不再暴露）"),
+            (
+                "json_response",
+                "请求构造（response_format；W1 起界面不再暴露）",
+            ),
             ("context_turns", "请求构造（上下文历史条数）"),
             ("input_price", "本地展示（成本估算）"),
             ("output_price", "本地展示（成本估算）"),
@@ -1179,7 +1194,8 @@ mod tests {
     /// 老档案（无 currency 键）反序列化后为 None——跟随界面语言，不产生迁移
     #[test]
     fn settings_without_currency_key_loads_as_none() {
-        let json = r#"{"models":[{"name":"m","api_base":"http://x/v1","api_key":"k","model":"d"}]}"#;
+        let json =
+            r#"{"models":[{"name":"m","api_base":"http://x/v1","api_key":"k","model":"d"}]}"#;
         let s: crate::Settings = serde_json::from_str(json).expect("老档案可解");
         assert_eq!(s.models[0].currency, None);
         // 空 currency 不写盘（保持档案干净）

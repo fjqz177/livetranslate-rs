@@ -194,6 +194,9 @@ mod tests {
         };
         assert_eq!(inner.len(), 2);
         // AppCommand 独立变体（不再骑事件）
-        assert!(matches!(UiMsg::AppCommand(AppCommand::Quit), UiMsg::AppCommand(_)));
+        assert!(matches!(
+            UiMsg::AppCommand(AppCommand::Quit),
+            UiMsg::AppCommand(_)
+        ));
     }
 }

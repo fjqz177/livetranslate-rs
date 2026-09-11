@@ -152,5 +152,3 @@ mod tests {
         assert_eq!(guess_language(""), "auto");
     }
 }
-
-

@@ -380,10 +380,7 @@ impl Translator {
         if context_turns == 0 || history.is_empty() {
             return Vec::new();
         }
-        let mut prior: Vec<&(String, String)> = history
-            .range(..seq)
-            .map(|(_, v)| v)
-            .collect();
+        let mut prior: Vec<&(String, String)> = history.range(..seq).map(|(_, v)| v).collect();
         let take = (context_turns as usize).min(prior.len());
         if take == 0 {
             return Vec::new();
@@ -484,7 +481,10 @@ impl Translator {
     ) -> Value {
         let mut body = Map::new();
         body.insert("model".into(), json!(self.model));
-        body.insert("messages".into(), self.build_messages(system_prompt, text, seq));
+        body.insert(
+            "messages".into(),
+            self.build_messages(system_prompt, text, seq),
+        );
         // W1（方案 §2.1）：长度上限与温度皆可缺席——None 时不发送该键
         // （长度上限交给服务端默认：应用强加上限会把"先想再答"的模型憋死）
         if let Some(max_tokens) = self.max_tokens {
@@ -541,12 +541,11 @@ impl Translator {
         seq: u64,
     ) -> SyncOutcome {
         let body = self.build_request_body(system_prompt, text, false, false, seq);
-        let resp: wire::ChatResponse = match self
-            .timeout_block(self.client.chat().create_byot(body), timeout_secs)
-        {
-            Ok(r) => r,
-            Err(e) => return SyncOutcome::failed(e),
-        };
+        let resp: wire::ChatResponse =
+            match self.timeout_block(self.client.chat().create_byot(body), timeout_secs) {
+                Ok(r) => r,
+                Err(e) => return SyncOutcome::failed(e),
+            };
         let (pt, ct) = resp.usage_tokens();
         let usage_known = resp.usage.is_some();
         let reasoning_tokens = resp.reasoning_tokens();
@@ -584,8 +583,11 @@ impl Translator {
     where
         F: std::future::Future<Output = Result<T, async_openai::error::OpenAIError>>,
     {
-        let timeout_msg =
-            || TranslateError::Timeout(format!("Translation exceeded {timeout_secs}s total timeout"));
+        let timeout_msg = || {
+            TranslateError::Timeout(format!(
+                "Translation exceeded {timeout_secs}s total timeout"
+            ))
+        };
         if let Some(flag) = self.cancel.clone() {
             return runtime().block_on(async move {
                 tokio::select! {
@@ -598,9 +600,9 @@ impl Translator {
             });
         }
         // timeout(...) 必须在 runtime 上下文内求值（Sleep 需要 timer 句柄）
-        match runtime().block_on(async {
-            tokio::time::timeout(Duration::from_secs(timeout_secs), fut).await
-        }) {
+        match runtime()
+            .block_on(async { tokio::time::timeout(Duration::from_secs(timeout_secs), fut).await })
+        {
             Ok(inner) => inner.map_err(TranslateError::from),
             Err(_) => Err(TranslateError::Timeout(format!(
                 "Translation exceeded {timeout_secs}s total timeout"
@@ -708,7 +710,7 @@ async fn pump_stream(
             .chat()
             .create_stream_byot::<Value, wire::ChatChunk>(plain)
             .await
-    {
+        {
             Ok(s) => s,
             Err(e) => {
                 let _ = tx.send(StreamMsg::Err(TranslateError::from(e)));
@@ -960,8 +962,7 @@ impl Iterator for TranslateStream {
                         if self.json_response {
                             result = extract_json_translation(&result);
                         }
-                        self.verdict =
-                            Some(classify_response(&result, finish, reasoning_tokens));
+                        self.verdict = Some(classify_response(&result, finish, reasoning_tokens));
                         warn_if_thinking_burned(&result, completion_tokens, self.thinking.name());
                         if check_repetition(&result) {
                             self.finished = true;
@@ -1004,7 +1005,8 @@ impl Iterator for TranslateStream {
 /// 并发 8 worker 下完成序与提交序不同，按序号才能保证上下文只含"更早的句子"。
 fn append_history_locked(st: &mut MutableState, seq: u64, text: &str, result: &str) {
     if st.context_turns > 0 && !result.is_empty() {
-        st.history.insert(seq, (text.to_string(), result.to_string()));
+        st.history
+            .insert(seq, (text.to_string(), result.to_string()));
         let max_keep = st.context_turns as usize + 2;
         while st.history.len() > max_keep {
             let Some((&oldest, _)) = st.history.iter().next() else {
@@ -1083,8 +1085,8 @@ pub fn make_openai_client(
 /// 未知字段由 serde 默认忽略；`finish_reason` 保持字符串、由
 /// [`crate::verdict::finish_kind`] 归一化，未知值落 `FinishKind::Other`。
 pub(crate) mod wire {
-    use serde::Deserialize;
     use crate::verdict::{finish_kind, FinishKind};
+    use serde::Deserialize;
 
     #[derive(Debug, Deserialize, Default)]
     pub struct Delta {
@@ -1176,7 +1178,12 @@ pub(crate) mod wire {
         pub fn usage_tokens(&self) -> (u64, u64) {
             self.usage
                 .as_ref()
-                .map(|u| (u.prompt_tokens.unwrap_or(0), u.completion_tokens.unwrap_or(0)))
+                .map(|u| {
+                    (
+                        u.prompt_tokens.unwrap_or(0),
+                        u.completion_tokens.unwrap_or(0),
+                    )
+                })
                 .unwrap_or((0, 0))
         }
 
@@ -1223,7 +1230,9 @@ pub(crate) mod wire {
             assert_eq!(resp.usage_tokens(), (3, 5));
             assert_eq!(resp.reasoning_tokens(), Some(2));
             assert_eq!(
-                resp.choices.first().and_then(|c| c.message.content.as_deref()),
+                resp.choices
+                    .first()
+                    .and_then(|c| c.message.content.as_deref()),
                 Some("你好")
             );
         }
@@ -1347,7 +1356,10 @@ mod cancel_tests {
             .with_cancel(flag);
         assert!(base.cancel.is_some(), "with_cancel 应挂上令牌");
         assert!(base.minimal().cancel.is_some(), "minimal 必须透传令牌");
-        assert!(base.share_client().cancel.is_some(), "share_client 必须透传令牌");
+        assert!(
+            base.share_client().cancel.is_some(),
+            "share_client 必须透传令牌"
+        );
         assert!(
             base.with_plan(ThinkingPlan::None).cancel.is_some(),
             "with_plan 必须透传令牌"

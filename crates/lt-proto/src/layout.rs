@@ -86,9 +86,7 @@ mod tests {
         );
         assert_eq!(
             hf_style_snapshot(dir, Hub::Hf, "ggml-org/whisper-tiny", "main"),
-            Path::new(
-                "/models/huggingface/hub/models--ggml-org--whisper-tiny/snapshots/main"
-            )
+            Path::new("/models/huggingface/hub/models--ggml-org--whisper-tiny/snapshots/main")
         );
         assert_eq!(
             hf_style_snapshot(dir, Hub::Ms, "iic/SenseVoiceSmall", "master"),
@@ -107,7 +105,11 @@ mod tests {
     fn hub_mapping_and_fallback() {
         assert_eq!(Hub::from_settings_str("ms"), Hub::Ms);
         assert_eq!(Hub::from_settings_str("hf"), Hub::Hf);
-        assert_eq!(Hub::from_settings_str("MS"), Hub::Ms, "大小写敏感，未知即回退");
+        assert_eq!(
+            Hub::from_settings_str("MS"),
+            Hub::Ms,
+            "大小写敏感，未知即回退"
+        );
         assert_eq!(Hub::from_settings_str(""), Hub::Ms);
         for h in [Hub::Ms, Hub::Hf] {
             assert_eq!(Hub::from_settings_str(h.as_settings_str()), h);

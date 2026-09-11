@@ -107,7 +107,13 @@ fn success_path_resets_and_ready() {
 #[test]
 fn crash_restarts_then_exhausts_to_unavailable() {
     let mut m = AsrManager::with_spawner(fake_spawn());
-    let c = cfg_echo("Crash", lt_asr::worker::EchoOptions { crash_on_transcribe: true, ..Default::default() });
+    let c = cfg_echo(
+        "Crash",
+        lt_asr::worker::EchoOptions {
+            crash_on_transcribe: true,
+            ..Default::default()
+        },
+    );
     m.ensure_started(&c).expect("start");
 
     // 每次识别都崩 worker → 恢复重启；配额 3 次耗尽后不可用
@@ -134,7 +140,13 @@ fn crash_restarts_then_exhausts_to_unavailable() {
 #[test]
 fn engine_switch_revives_unavailable() {
     let mut m = AsrManager::with_spawner(fake_spawn());
-    let bad = cfg_echo("Crash", lt_asr::worker::EchoOptions { crash_on_transcribe: true, ..Default::default() });
+    let bad = cfg_echo(
+        "Crash",
+        lt_asr::worker::EchoOptions {
+            crash_on_transcribe: true,
+            ..Default::default()
+        },
+    );
     m.ensure_started(&bad).expect("start");
     for _ in 0..4 {
         let _ = m.transcribe(&audio(), false, &eff());
@@ -151,7 +163,13 @@ fn engine_switch_revives_unavailable() {
 #[test]
 fn three_consecutive_recoverable_errors_mark_unavailable() {
     let mut m = AsrManager::with_spawner(fake_spawn());
-    let c = cfg_echo("Flaky", lt_asr::worker::EchoOptions { fail_transcribe: true, ..Default::default() });
+    let c = cfg_echo(
+        "Flaky",
+        lt_asr::worker::EchoOptions {
+            fail_transcribe: true,
+            ..Default::default()
+        },
+    );
     m.ensure_started(&c).expect("start");
     for n in 1..=3 {
         match m.transcribe(&audio(), false, &eff()) {
@@ -185,8 +203,7 @@ fn config_change_replaces_worker() {
 #[test]
 fn effective_language_applied_and_committed() {
     let mut m = AsrManager::with_spawner(fake_spawn());
-    m.ensure_started(&cfg("Echo"))
-        .expect("start");
+    m.ensure_started(&cfg("Echo")).expect("start");
     assert_eq!(m.config().unwrap().language, "auto");
 
     // 总线快照语言 zh → transcribe 前应用并提交（写回 restart config）
@@ -213,7 +230,11 @@ fn effective_padding_wrong_family_ignored() {
 
     m.transcribe(&audio(), false, &eff_with("auto", 0.5, 3.0))
         .expect("transcribe");
-    assert_eq!(m.config().unwrap().pad_seconds, Some(0.5), "whisper pad 不生效");
+    assert_eq!(
+        m.config().unwrap().pad_seconds,
+        Some(0.5),
+        "whisper pad 不生效"
+    );
 
     // funasr 家族生效值变了 → 应用并提交
     m.transcribe(&audio(), false, &eff_with("auto", 1.5, 3.0))
@@ -229,10 +250,13 @@ fn effective_padding_wrong_family_ignored() {
 #[test]
 fn effective_retries_when_worker_dies_during_apply() {
     let mut m = AsrManager::with_spawner(fake_spawn());
-    let crash = cfg_echo("CrashLang", lt_asr::worker::EchoOptions {
-        crash_on_set_language: true,
-        ..Default::default()
-    });
+    let crash = cfg_echo(
+        "CrashLang",
+        lt_asr::worker::EchoOptions {
+            crash_on_set_language: true,
+            ..Default::default()
+        },
+    );
     m.ensure_started(&crash).expect("start");
 
     // 两次尝试均因 worker 崩溃失败（重启在配额内，非 unavailable）
@@ -246,8 +270,7 @@ fn effective_retries_when_worker_dies_during_apply() {
     assert_eq!(m.config().unwrap().language, "auto");
 
     // 切到正常 worker（配置替换 config≠快照）→ 首次 transcribe 前应用并提交
-    m.ensure_started(&cfg("Echo"))
-        .expect("switch");
+    m.ensure_started(&cfg("Echo")).expect("switch");
     m.transcribe(&audio(), false, &eff_with("zh", 0.5, 0.5))
         .expect("transcribe");
     assert_eq!(m.config().unwrap().language, "zh");
@@ -278,9 +301,7 @@ fn engine_switch_failure_rolls_back() {
 #[test]
 fn first_start_failure_has_no_rollback() {
     let mut m = AsrManager::with_spawner(failing_spawn());
-    let err = m
-        .ensure_started(&cfg("Echo"))
-        .expect_err("首次启动应失败");
+    let err = m.ensure_started(&cfg("Echo")).expect_err("首次启动应失败");
     // 首次启动本就没有旧 worker：仅 Failed，不标记不可用
     assert!(!err.unavailable(), "首次失败应仅 Failed: {err}");
     assert!(!m.is_unavailable());
@@ -294,9 +315,18 @@ fn first_start_failure_has_no_rollback() {
 #[test]
 fn crash_between_requests_restarts_on_next_transcribe() {
     let mut m = AsrManager::with_spawner(fake_spawn());
-    let c = cfg_echo("Echo", lt_asr::worker::EchoOptions { exit_after_ms: 800, ..Default::default() });
+    let c = cfg_echo(
+        "Echo",
+        lt_asr::worker::EchoOptions {
+            exit_after_ms: 800,
+            ..Default::default()
+        },
+    );
     m.ensure_started(&c).expect("start");
-    assert!(m.transcribe(&audio(), false, &eff()).is_ok(), "首次识别应成功");
+    assert!(
+        m.transcribe(&audio(), false, &eff()).is_ok(),
+        "首次识别应成功"
+    );
     std::thread::sleep(std::time::Duration::from_millis(1200));
     // 间隙死亡后的第一次识别：自动恢复（本段丢弃），而非 Failed 死循环
     let err = m.transcribe(&audio(), false, &eff()).unwrap_err();
@@ -312,7 +342,13 @@ fn crash_between_requests_restarts_on_next_transcribe() {
 #[test]
 fn failed_recover_gap_rebuilds_then_marks_unavailable() {
     let mut m = AsrManager::with_spawner(flaky_spawn());
-    let c = cfg_echo("Echo", lt_asr::worker::EchoOptions { exit_after_ms: 800, ..Default::default() });
+    let c = cfg_echo(
+        "Echo",
+        lt_asr::worker::EchoOptions {
+            exit_after_ms: 800,
+            ..Default::default()
+        },
+    );
     m.ensure_started(&c).expect("start");
     assert!(m.transcribe(&audio(), false, &eff()).is_ok());
     std::thread::sleep(std::time::Duration::from_millis(1200));
@@ -325,8 +361,7 @@ fn failed_recover_gap_rebuilds_then_marks_unavailable() {
     assert!(err.unavailable(), "实际: {err}");
     assert!(m.is_unavailable());
     // 换配置（引擎切换语义）→ 复活（注入第 3 次起成功）
-    m.ensure_started(&cfg("Echo2"))
-        .expect("复活");
+    m.ensure_started(&cfg("Echo2")).expect("复活");
     assert!(m.transcribe(&audio(), false, &eff()).is_ok());
     m.shutdown();
 }
@@ -336,7 +371,13 @@ fn failed_recover_gap_rebuilds_then_marks_unavailable() {
 #[test]
 fn load_failure_frame_marks_first_start_failed() {
     let mut m = AsrManager::with_spawner(fake_spawn());
-    let c = cfg_echo("Echo", lt_asr::worker::EchoOptions { fail_load: true, ..Default::default() });
+    let c = cfg_echo(
+        "Echo",
+        lt_asr::worker::EchoOptions {
+            fail_load: true,
+            ..Default::default()
+        },
+    );
     let err = m.ensure_started(&c).unwrap_err();
     assert!(!err.unavailable(), "首次装载失败应仅 Failed: {err}");
     assert!(!m.is_unavailable());
@@ -349,7 +390,10 @@ fn set_language_recoverable_fail_still_commits_effective() {
     let mut m = AsrManager::with_spawner(fake_spawn());
     let c = cfg_echo(
         "Echo",
-        lt_asr::worker::EchoOptions { fail_set_language: true, ..Default::default() },
+        lt_asr::worker::EchoOptions {
+            fail_set_language: true,
+            ..Default::default()
+        },
     );
     m.ensure_started(&c).expect("start");
     let res = m

@@ -89,7 +89,6 @@ fn echo_factory(cfg: &WorkerConfig) -> anyhow::Result<EchoEngine> {
     Ok(EchoEngine::from_options(echo))
 }
 
-
 fn main() {
     // R28/D-76：argv 仅旗标，配置经 stdin 首行（与生产 worker 一致）
     if !std::env::args().any(|a| a == "--asr-worker") {
@@ -122,12 +121,7 @@ fn main() {
             .expect("后台退出线程");
     }
 
-    if let Err(e) = lt_asr::worker::run(
-        stdin,
-        std::io::stdout().lock(),
-        config,
-        echo_factory,
-    ) {
+    if let Err(e) = lt_asr::worker::run(stdin, std::io::stdout().lock(), config, echo_factory) {
         eprintln!("fake worker: 主循环异常退出: {e:#}");
         std::process::exit(1);
     }

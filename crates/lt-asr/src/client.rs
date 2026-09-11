@@ -178,11 +178,7 @@ impl AsrWorkerClient {
         match resp.kind {
             crate::frame::RespKind::Ready(info) => {
                 self.status = Status::Ready;
-                tracing::info!(
-                    "ASR worker ready pid={} {}",
-                    self.child.id(),
-                    info.engine
-                );
+                tracing::info!("ASR worker ready pid={} {}", self.child.id(), info.engine);
                 Ok(info)
             }
             _ => {

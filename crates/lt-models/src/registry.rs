@@ -356,7 +356,11 @@ mod tests {
                 assert!(entry.is_some(), "合法值 '{key}' 缺注册表条目（幽灵值复发）");
             }
         }
-        assert_eq!(FUNASR_KEYS, lt_proto::settings::FUNASR_MODELS, "键表镜像漂移");
+        assert_eq!(
+            FUNASR_KEYS,
+            lt_proto::settings::FUNASR_MODELS,
+            "键表镜像漂移"
+        );
         // R25 归一后的幽灵判定单点行为锁
         assert!(funasr_key_is_ghost(GHOST), "mlt 应判定为幽灵值");
         assert!(!funasr_key_is_ghost("sensevoice-small"));

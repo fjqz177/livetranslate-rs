@@ -24,10 +24,10 @@ pub mod subtitle_page;
 pub mod translation;
 pub mod vad;
 
+use crate::state::TickKind;
 use crate::state::{
     BenchUi, LogUi, ModalUi, PanelPage, PanelUi, SessionView, Settings, UiContext, WinId,
 };
-use crate::state::TickKind;
 use egui::{Color32, Frame, RichText, ScrollArea, Stroke, Ui};
 use std::time::Instant;
 
@@ -209,9 +209,7 @@ pub fn panel_ui(
                     PanelPage::Subtitle => {
                         subtitle_page::page(ui, panel, session, settings, modal, ctx, &pal)
                     }
-                    PanelPage::Benchmark => {
-                        benchmark_tab::page(ui, session, settings, bench, &pal)
-                    }
+                    PanelPage::Benchmark => benchmark_tab::page(ui, session, settings, bench, &pal),
                     PanelPage::Cache => data::page(ui, panel, session, settings, modal, &pal),
                     PanelPage::Changelog => changelog_tab::page(ui, &pal),
                     PanelPage::Log => unreachable!("日志页已在上方特判，不进入页面级滚动区"),
@@ -468,7 +466,10 @@ mod tests {
         let imported = import_settings_json(legacy).expect("legacy 导入应成功");
         assert_eq!(imported.asr_engine, "funasr");
         assert_eq!(imported.funasr_model, "sensevoice-small");
-        assert!(imported.models[0].disable_thinking, "no_think=true → 总开关开");
+        assert!(
+            imported.models[0].disable_thinking,
+            "no_think=true → 总开关开"
+        );
         assert_eq!(imported.models[0].thinking_style, None, "不再合成方式");
     }
 
@@ -537,7 +538,11 @@ mod tests {
     fn panel_apply_debounce_tick_roundtrip() {
         let mut st = crate::state::AppUi::new(Settings::default());
         lt_i18n::set_lang("zh").expect("zh 表解析");
-        crate::state::register_panel_apply(&mut st.panel, &mut st.session, std::time::Instant::now());
+        crate::state::register_panel_apply(
+            &mut st.panel,
+            &mut st.session,
+            std::time::Instant::now(),
+        );
         let due = st.panel.state.apply_due_at.expect("登记后应有到期时刻");
         assert!(st.take_due_panel_apply(due).is_some());
     }

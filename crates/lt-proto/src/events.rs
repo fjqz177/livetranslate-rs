@@ -119,10 +119,7 @@ pub enum UiEvent {
     /// 逐行输出 + 完成语义类型化，基准窗不再借道日志总线）
     Bench(BenchEvent),
     /// 有界队列水位（R15②：翻译池满丢最旧时上报；慢 LLM 积压不再静默）
-    QueuePressure {
-        queue: QueueId,
-        dropped_total: u64,
-    },
+    QueuePressure { queue: QueueId, dropped_total: u64 },
     /// 音频设备枚举结果（W5/R13：`Cmd::RefreshDevices` 的回执——设备探测下线
     /// 到编排域 Supervisor 一次性线程，UI 帧内不再阻塞 COM 枚举）
     Devices(DeviceList),
@@ -236,10 +233,7 @@ pub enum ProbeOutcome {
     /// 打通且拿到非空译文
     Ok,
     /// 失败：分类 + 原始详情（详情原文仅供悬停/次要行展示）
-    Failed {
-        kind: FailureKind,
-        detail: String,
-    },
+    Failed { kind: FailureKind, detail: String },
     /// 用户中断（不是失败）
     Cancelled,
     /// 预算耗尽仍未取得结论（**不是失败**：可重试）
@@ -565,7 +559,9 @@ pub enum Cmd {
         probe_id: u64,
     },
     /// 中断在途连接测试（`probe_id` 与在途不符则忽略，D-85 新增）
-    CancelTranslatorTest { probe_id: u64 },
+    CancelTranslatorTest {
+        probe_id: u64,
+    },
     /// 重新枚举音频设备（W5/R13：面板识别页首次进入/刷新按钮；编排域起
     /// Supervisor 一次性探测线程 → `UiEvent::Devices` 回执——UI 帧内不再
     /// 阻塞 COM 枚举）
@@ -589,7 +585,9 @@ pub enum Cmd {
         dialog_title: String,
     },
     /// 字幕背景图选择框（W5/R19：同上 → `UiEvent::BgImagePicked` 回执）
-    PickBgImage { dialog_title: String },
+    PickBgImage {
+        dialog_title: String,
+    },
 }
 
 /// 音频设备选择（对应 settings.audio_device 语义）
@@ -681,7 +679,10 @@ mod tests {
     /// STATUS 为只读状态行无事件，不产生命令）
     #[test]
     fn app_command_menu_id_mapping() {
-        assert_eq!(AppCommand::from_menu_id("tray_pause"), Some(AppCommand::Pause));
+        assert_eq!(
+            AppCommand::from_menu_id("tray_pause"),
+            Some(AppCommand::Pause)
+        );
         assert_eq!(
             AppCommand::from_menu_id("tray_hide_overlay"),
             Some(AppCommand::OverlayToggle)

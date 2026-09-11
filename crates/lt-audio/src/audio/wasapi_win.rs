@@ -328,19 +328,27 @@ fn read_packet(st: &mut LoopStream) -> anyhow::Result<bool> {
 fn decode_samples(bytes: &[u8], st: SampleType, bits: u16) -> Vec<f32> {
     match (st, bits) {
         (SampleType::Float, 32) => bytes
-            .as_chunks::<4>().0.iter()
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect(),
         (SampleType::Float, 64) => bytes
-            .as_chunks::<8>().0.iter()
+            .as_chunks::<8>()
+            .0
+            .iter()
             .map(|c| f64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]) as f32)
             .collect(),
         (SampleType::Int, 16) => bytes
-            .as_chunks::<2>().0.iter()
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0)
             .collect(),
         (SampleType::Int, 32) => bytes
-            .as_chunks::<4>().0.iter()
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]) as f32 / 2147483648.0)
             .collect(),
         _ => {

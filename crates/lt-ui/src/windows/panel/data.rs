@@ -97,7 +97,14 @@ pub fn scan_cache_entries(models_dir: &std::path::Path) -> Vec<CacheEntry> {
 // ── UI ──
 
 /// 数据与存储页 UI 总入口
-pub fn page(ui: &mut Ui, panel: &mut PanelUi, session: &mut SessionView, settings: &mut Settings, modal: &mut ModalUi, pal: &Palette) {
+pub fn page(
+    ui: &mut Ui,
+    panel: &mut PanelUi,
+    session: &mut SessionView,
+    settings: &mut Settings,
+    modal: &mut ModalUi,
+    pal: &Palette,
+) {
     // ── 转录持久化（原版 ts_group）──
     group_card(ui, pal, &lt_i18n::t("group_transcript"), |ui| {
         ui.horizontal(|ui| {

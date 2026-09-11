@@ -35,10 +35,12 @@ mod win {
     use super::*;
     use std::sync::OnceLock;
     use windows::core::PCWSTR;
-    use windows::Win32::Foundation::{GetLastError, HWND, LPARAM, LRESULT, WPARAM, ERROR_ALREADY_EXISTS};
+    use windows::Win32::Foundation::{
+        GetLastError, ERROR_ALREADY_EXISTS, HWND, LPARAM, LRESULT, WPARAM,
+    };
+    use windows::Win32::Graphics::Gdi::HBRUSH;
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows::Win32::System::Threading::CreateMutexW;
-    use windows::Win32::Graphics::Gdi::HBRUSH;
     use windows::Win32::UI::WindowsAndMessaging::{
         AllowSetForegroundWindow, CreateWindowExW, DefWindowProcW, FindWindowW,
         GetWindowThreadProcessId, PostMessageW, RegisterClassW, HCURSOR, HICON, HWND_MESSAGE,
@@ -77,7 +79,9 @@ mod win {
                 .map_err(|e| anyhow::anyhow!("创建单实例互斥量失败: {e}"))?;
             if GetLastError() == ERROR_ALREADY_EXISTS {
                 activate_first_instance();
-                return Err(anyhow::anyhow!("LiveTranslate 已在运行（单实例；已发起激活）"));
+                return Err(anyhow::anyhow!(
+                    "LiveTranslate 已在运行（单实例；已发起激活）"
+                ));
             }
             // 首实例：建消息窗（消息在泵启动前入队，启动后 WndProc 被调）
             let _ = PROXY.set(proxy);

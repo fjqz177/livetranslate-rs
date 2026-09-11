@@ -58,10 +58,12 @@ pub struct ProbeExitGuard {
 
 impl Drop for ProbeExitGuard {
     fn drop(&mut self) {
-        let _ = self
-            .id
-            .compare_exchange(self.probe_id, 0, std::sync::atomic::Ordering::SeqCst,
-                              std::sync::atomic::Ordering::SeqCst);
+        let _ = self.id.compare_exchange(
+            self.probe_id,
+            0,
+            std::sync::atomic::Ordering::SeqCst,
+            std::sync::atomic::Ordering::SeqCst,
+        );
     }
 }
 
@@ -241,6 +243,4 @@ mod tests {
         }
         assert_eq!(in_flight.load(Ordering::SeqCst), 0);
     }
-
 }
-

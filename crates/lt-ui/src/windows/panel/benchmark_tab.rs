@@ -12,7 +12,13 @@ use crate::windows::bench::{self, BENCH_SRC_LANGS, BENCH_TGT_LANGS, LOG_BG, LOG_
 use egui::{Color32, RichText, ScrollArea, Ui};
 
 /// 基准测试 Tab UI 总入口（panel_ui 按 PanelPage::Benchmark 分派）
-pub fn page(ui: &mut Ui, session: &mut SessionView, settings: &mut Settings, bench: &mut BenchUi, pal: &Palette) {
+pub fn page(
+    ui: &mut Ui,
+    session: &mut SessionView,
+    settings: &mut Settings,
+    bench: &mut BenchUi,
+    pal: &Palette,
+) {
     // 模型勾选与 settings.models 对位（Tab 版 = 全部勾选，原版 _run_benchmark 语义）
     bench::align_selection(&mut bench.selected, settings.models.len());
 
@@ -20,22 +26,10 @@ pub fn page(ui: &mut Ui, session: &mut SessionView, settings: &mut Settings, ben
     group_card(ui, pal, &lt_i18n::t("group_benchmark"), |ui| {
         ui.horizontal(|ui| {
             ui.label(RichText::new(format!("{} ", lt_i18n::t("label_source"))).color(pal.text));
-            lang_combo(
-                ui,
-                "bench_tab_src",
-                &mut bench.src,
-                &BENCH_SRC_LANGS,
-                pal,
-            );
+            lang_combo(ui, "bench_tab_src", &mut bench.src, &BENCH_SRC_LANGS, pal);
             ui.add_space(8.0);
             ui.label(RichText::new(format!("{} ", lt_i18n::t("target_label"))).color(pal.text));
-            lang_combo(
-                ui,
-                "bench_tab_tgt",
-                &mut bench.tgt,
-                &BENCH_TGT_LANGS,
-                pal,
-            );
+            lang_combo(ui, "bench_tab_tgt", &mut bench.tgt, &BENCH_TGT_LANGS, pal);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let btn_text = if bench.running {
                     lt_i18n::t("testing")

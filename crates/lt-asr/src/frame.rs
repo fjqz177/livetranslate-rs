@@ -239,7 +239,9 @@ impl<R: Read> FrameReader<R> {
         };
         let (req, audio_bytes) = split_request_payload(&payload)?;
         let audio = audio_bytes
-            .as_chunks::<4>().0.iter()
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
         Ok(Some(IncomingRequest {

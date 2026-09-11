@@ -13,13 +13,11 @@
 //! - 删除模型时若被删行在活动模型之前，active_model 前移一位
 //!   （原版仅做越界钳制，行前移会错位指向别的模型——有意修正）。
 
-use super::{group_card, hint_line, mark_settings_dirty, Palette, schedule_prompt_apply};
-use crate::state::{
-    ModalUi, ModelEditState, PanelUi, SessionView, Settings, TickKind, WinId,
-};
+use super::{group_card, hint_line, mark_settings_dirty, schedule_prompt_apply, Palette};
+use crate::state::{ModalUi, ModelEditState, PanelUi, SessionView, Settings, TickKind, WinId};
 use egui::{RichText, Ui};
-use std::time::{Duration, Instant};
 use lt_proto::ModelConfig;
+use std::time::{Duration, Instant};
 
 /// 连接测试走秒/看门狗节拍间隔（D-85 §4.8：宿主节拍驱动，非 egui 自动重绘）
 const PROBE_TICK_MS: u64 = 100;
@@ -310,9 +308,15 @@ fn probe_result_line(ui: &mut egui::Ui, res: &crate::state::ProbeResult, pal: &P
     }
 }
 
-
 /// 翻译页 UI 总入口
-pub fn page(ui: &mut Ui, panel: &mut PanelUi, session: &mut SessionView, settings: &mut Settings, modal: &mut ModalUi, pal: &Palette) {
+pub fn page(
+    ui: &mut Ui,
+    panel: &mut PanelUi,
+    session: &mut SessionView,
+    settings: &mut Settings,
+    modal: &mut ModalUi,
+    pal: &Palette,
+) {
     // N3/N4：翻译页偏离默认提示 + 恢复本页（恢复会清掉 API 配置 → 确认框）
     let diffs = crate::panel_diff::diff_paths(settings);
     let page_diffs: Vec<&str> = diffs
@@ -330,7 +334,11 @@ pub fn page(ui: &mut Ui, panel: &mut PanelUi, session: &mut SessionView, setting
             modal.request_confirm(
                 crate::state::ConfirmKind::ResetTranslation,
                 false,
-                session.visible.get(&crate::state::WinId::Panel).copied().unwrap_or(true),
+                session
+                    .visible
+                    .get(&crate::state::WinId::Panel)
+                    .copied()
+                    .unwrap_or(true),
                 lt_i18n::t("reset_confirm_title"),
                 lt_i18n::t("reset_confirm_translation"),
             );
@@ -355,7 +363,9 @@ pub fn page(ui: &mut Ui, panel: &mut PanelUi, session: &mut SessionView, setting
         // D-85/F2：只读「当前使用」状态行 + 使用说明（设置页不提供切换控件——
         // 切换入口唯一在悬浮窗「模型」下拉，见 docs §4.8）
         {
-            let idx = settings.active_model.min(settings.models.len().saturating_sub(1));
+            let idx = settings
+                .active_model
+                .min(settings.models.len().saturating_sub(1));
             let name = settings
                 .models
                 .get(idx)
@@ -430,10 +440,8 @@ pub fn page(ui: &mut Ui, panel: &mut PanelUi, session: &mut SessionView, setting
                     my_row_rendered = true;
                     if ui
                         .add(
-                            egui::Button::new(
-                                RichText::new(lt_i18n::t("probe_cancel")).size(12.0),
-                            )
-                            .corner_radius(6.0),
+                            egui::Button::new(RichText::new(lt_i18n::t("probe_cancel")).size(12.0))
+                                .corner_radius(6.0),
                         )
                         .clicked()
                     {
@@ -498,9 +506,7 @@ pub fn page(ui: &mut Ui, panel: &mut PanelUi, session: &mut SessionView, setting
         // 「测试」：发号 + 置在途 + 排节拍 + 发命令（目标就是这一行，无静默回落）
         if let Some(i) = probe_click {
             if let Some(cfg) = settings.models.get(i).cloned() {
-                let id = panel
-                    .probe
-                    .begin(i, crate::state::cfg_key(&cfg), now);
+                let id = panel.probe.begin(i, crate::state::cfg_key(&cfg), now);
                 // D-85 评审修复：走秒与看门狗都挂在 `TickKind::ProbeTick` 上，
                 // 而该节拍**只有自续拍**——首次排班必须由这里发出，否则
                 // on_probe_tick 永不被调用（走秒冻结、看门狗永不触发）
@@ -575,8 +581,7 @@ pub fn page(ui: &mut Ui, panel: &mut PanelUi, session: &mut SessionView, setting
                     }
                 }
             }
-            let can_remove =
-                settings.models.len() > 1 && panel.state.model_selected.is_some();
+            let can_remove = settings.models.len() > 1 && panel.state.model_selected.is_some();
             if ui
                 .add_enabled(
                     can_remove,
@@ -611,7 +616,8 @@ pub fn page(ui: &mut Ui, panel: &mut PanelUi, session: &mut SessionView, setting
             let idx = settings.active_model.min(settings.models.len() - 1);
             ui.horizontal(|ui| {
                 ui.label(
-                    RichText::new(format!("{} ", lt_i18n::t("label_context_turns"))).color(pal.text),
+                    RichText::new(format!("{} ", lt_i18n::t("label_context_turns")))
+                        .color(pal.text),
                 );
                 let mut turns = settings.models[idx].context_turns as i32;
                 let resp = ui
@@ -919,10 +925,8 @@ fn editor_fields(ui: &mut Ui, ed: &mut ModelEditState, pal: &Palette) {
                 // D-85：币种下拉（跟随界面语言 / 人民币 / 美元）——价格单位与
                 // 费用显示符号都取它；旧实现没有单位说明、符号还按界面语言切
                 ui.label(lt_i18n::t("currency_label"));
-                let cur = lt_proto::effective_currency(
-                    ed.currency.as_deref(),
-                    &lt_i18n::get_lang(),
-                );
+                let cur =
+                    lt_proto::effective_currency(ed.currency.as_deref(), &lt_i18n::get_lang());
                 let selected = match ed.currency.as_deref() {
                     None => lt_i18n::t("currency_follow_lang"),
                     Some(_) => lt_i18n::t(match cur {
@@ -935,7 +939,10 @@ fn editor_fields(ui: &mut Ui, ed: &mut ModelEditState, pal: &Palette) {
                     .width(120.0)
                     .show_ui(ui, |ui| {
                         if ui
-                            .selectable_label(ed.currency.is_none(), lt_i18n::t("currency_follow_lang"))
+                            .selectable_label(
+                                ed.currency.is_none(),
+                                lt_i18n::t("currency_follow_lang"),
+                            )
                             .clicked()
                         {
                             ed.currency = None;
@@ -971,7 +978,6 @@ fn editor_fields(ui: &mut Ui, ed: &mut ModelEditState, pal: &Palette) {
                 );
             });
             ui.end_row();
-
         });
 
     // 方案 §4.7 就地校验（软提示：**不阻断保存**、**不擅自改用户填的地址**——
@@ -1415,7 +1421,11 @@ mod tests {
         let mut ed = ModelEditState::new_add();
         ed.api_base = "http://127.0.0.1:1234/v1".into();
         ed.model = "qwen2.5".into();
-        assert!(config_warnings(&ed).is_empty(), "{:?}", config_warnings(&ed));
+        assert!(
+            config_warnings(&ed).is_empty(),
+            "{:?}",
+            config_warnings(&ed)
+        );
         // 厂商自有版本段（GLM /api/paas/v4）不报"缺 /v1"
         ed.api_base = "https://open.bigmodel.cn/api/paas/v4".into();
         assert!(config_warnings(&ed).is_empty());
@@ -1425,7 +1435,10 @@ mod tests {
         let w = config_warnings(&ed);
         assert!(w.contains(&lt_i18n::t("cfg_warn_api_base_empty")));
         assert!(w.contains(&lt_i18n::t("cfg_warn_model_empty")));
-        assert!(!w.contains(&lt_i18n::t("cfg_warn_api_base_v1")), "空地址不叠加");
+        assert!(
+            !w.contains(&lt_i18n::t("cfg_warn_api_base_v1")),
+            "空地址不叠加"
+        );
         // 无 scheme
         ed.api_base = "127.0.0.1:1234/v1".into();
         assert!(config_warnings(&ed).contains(&lt_i18n::t("cfg_warn_api_base_scheme")));
@@ -1473,10 +1486,7 @@ mod tests {
             let mut out = ctx.run_ui(
                 egui::RawInput {
                     events,
-                    screen_rect: Some(egui::Rect::from_min_size(
-                        egui::Pos2::ZERO,
-                        PANEL_VIEWPORT,
-                    )),
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, PANEL_VIEWPORT)),
                     ..Default::default()
                 },
                 |ui| crate::windows::dispatch(crate::state::WinId::Panel, ui, st),
@@ -1540,7 +1550,10 @@ mod tests {
             .iter()
             .filter(|(_, t)| text_variants("context_turns_hint", "").contains(t))
             .count();
-        assert_eq!(hint_count, 1, "说明只应出现一次（修复前它挂在网络配置组下）");
+        assert_eq!(
+            hint_count, 1,
+            "说明只应出现一次（修复前它挂在网络配置组下）"
+        );
         assert!(
             model_y < label_y && label_y < hint_y && hint_y < net_y,
             "标签与说明都必须在模型配置组内：模型组 {model_y} < 标签 {label_y} < 说明 {hint_y} < 网络组 {net_y}"
@@ -1551,7 +1564,9 @@ mod tests {
             PANEL_VIEWPORT.y
         );
         // 值就在标签同一行右侧（控件可达）
-        let label = find_by_key(&texts, "label_context_turns", " ").expect("标签 rect").0;
+        let label = find_by_key(&texts, "label_context_turns", " ")
+            .expect("标签 rect")
+            .0;
         assert!(
             texts.iter().any(|(r, t)| {
                 !t.is_empty()
@@ -1755,7 +1770,12 @@ mod tests {
     fn probe_ids_start_at_one() {
         let mut st = crate::state::ProbeUiState::default();
         let t0 = Instant::now();
-        let key = ("a".to_string(), "b".to_string(), "c".to_string(), "d".to_string());
+        let key = (
+            "a".to_string(),
+            "b".to_string(),
+            "c".to_string(),
+            "d".to_string(),
+        );
         let first = st.begin(0, key.clone(), t0);
         st.running = None;
         let second = st.begin(0, key, t0);
@@ -1775,10 +1795,11 @@ mod tests {
         st.session.cmd_tx = Some(tx);
         st.panel.state.page = crate::state::PanelPage::Translation;
         // 直接置在途（等价于点过测试）
-        let running_id = st
-            .panel
-            .probe
-            .begin(0, crate::state::cfg_key(&st.settings.models[0]), Instant::now());
+        let running_id = st.panel.probe.begin(
+            0,
+            crate::state::cfg_key(&st.settings.models[0]),
+            Instant::now(),
+        );
 
         let texts = render_translation_page(&mut st, &ctx, vec![vec![], vec![]]);
         // 在途行走秒提示 + 该行按钮是「中断」
@@ -1787,7 +1808,9 @@ mod tests {
             "走秒文本带秒数后缀，find_by_key 精确匹配不该命中"
         );
         assert!(
-            texts.iter().any(|(_, t)| t.starts_with(&lt_i18n::t_for_lang("zh", "probe_running"))),
+            texts
+                .iter()
+                .any(|(_, t)| t.starts_with(&lt_i18n::t_for_lang("zh", "probe_running"))),
             "在途行下应有「测试中… N.Ns」"
         );
         // 其他行的「测试」按钮虽渲染但在**行为上禁用**：点它不得发出新探测
@@ -1923,9 +1946,7 @@ mod tests {
             let texts = render_translation_page(&mut st, &ctx, vec![vec![], vec![]]);
             let variants = text_variants(key, "");
             assert!(
-                texts
-                    .iter()
-                    .any(|(_, t)| variants.iter().any(|v| t == v)),
+                texts.iter().any(|(_, t)| variants.iter().any(|v| t == v)),
                 "币种 {cur:?} 的价格单位应为 {key}，实际 {texts:?}"
             );
         }
@@ -1955,8 +1976,9 @@ mod tests {
             cmds.push(c);
         }
         assert!(
-            cmds.iter()
-                .any(|c| matches!(c, lt_proto::Cmd::CancelTranslatorTest { probe_id } if *probe_id == id)),
+            cmds.iter().any(
+                |c| matches!(c, lt_proto::Cmd::CancelTranslatorTest { probe_id } if *probe_id == id)
+            ),
             "兜底中断应发出携带在途号的取消命令，实际: {cmds:?}"
         );
     }
@@ -2013,9 +2035,14 @@ mod tests {
             .filter(|(r, _)| (r.top() - row.top()).abs() < 10.0)
             .map(|(_, t)| t.as_str())
             .collect();
-        assert_eq!(same_row.len(), 1, "状态行应独占一行（只读），实际: {same_row:?}");
+        assert_eq!(
+            same_row.len(),
+            1,
+            "状态行应独占一行（只读），实际: {same_row:?}"
+        );
         // 切换生效提示
-        st.panel.state.active_model_note = Some((st.settings.models[0].name.clone(), Instant::now()));
+        st.panel.state.active_model_note =
+            Some((st.settings.models[0].name.clone(), Instant::now()));
         let texts = render_translation_page(&mut st, &ctx, vec![vec![], vec![]]);
         let want_switched = format!("{want} · {}", lt_i18n::t_for_lang("zh", "status_switched"));
         assert!(
@@ -2182,16 +2209,19 @@ mod tests {
         apply_preset(&mut ed, lt_proto::preset_by_key("deepseek").unwrap());
         let warns = config_warnings(&ed);
         assert!(
-            !warns.iter().any(|w| w.contains(&lt_i18n::t_for_lang("zh", "cfg_warn_api_base_v1"))),
+            !warns
+                .iter()
+                .any(|w| w.contains(&lt_i18n::t_for_lang("zh", "cfg_warn_api_base_v1"))),
             "预设的官方地址不该弹缺 /v1 提示：{warns:?}"
         );
         // 自建无版本段地址 → 仍提示
         ed.api_base = "https://my.gateway.example".into();
         let warns = config_warnings(&ed);
         assert!(
-            warns.iter().any(|w| w.contains(&lt_i18n::t_for_lang("zh", "cfg_warn_api_base_v1"))),
+            warns
+                .iter()
+                .any(|w| w.contains(&lt_i18n::t_for_lang("zh", "cfg_warn_api_base_v1"))),
             "自建地址应保留提示：{warns:?}"
         );
     }
 }
-

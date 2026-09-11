@@ -21,8 +21,8 @@ pub use thinking::{
     first_step, gives_up_disabling, next_plan, next_step, resolve_thinking_plan, step_name,
     RequestStep, ThinkingPlan,
 };
-pub use verdict::{classify_response, finish_kind, FinishKind, ResponseVerdict};
 pub(crate) use translator::runtime;
+pub use verdict::{classify_response, finish_kind, FinishKind, ResponseVerdict};
 // E3/ADR-10：DEFAULT_PROMPT/PROMPT_PRESETS 已上移 lt-proto（lt-ui 直引 proto，
 // 本 crate 的 re-export 随翻译页常量依赖边裁除而撤下）
 pub use translator::{

@@ -4,7 +4,6 @@
 
 use std::time::Instant;
 
-
 pub const BENCH_SENTENCES: &[(&str, [&str; 5])] = &[
     (
         "ja",
@@ -174,10 +173,10 @@ fn test_model(
         };
         let mut rounds = Vec::new();
         for (idx, text) in sentences.iter().enumerate() {
-        let streaming_body = translator.build_request_body(prompt, text, true, false, 0);
-        let t0 = Instant::now();
-        let streamed = crate::runtime().block_on(async {
-            tokio::time::timeout(
+            let streaming_body = translator.build_request_body(prompt, text, true, false, 0);
+            let t0 = Instant::now();
+            let streamed = crate::runtime().block_on(async {
+                tokio::time::timeout(
                 read_timeout,
                 client
                     .chat()
@@ -186,43 +185,44 @@ fn test_model(
                     ),
             )
             .await
-        });
-        let outcome: Result<BenchRound, BenchErr> = match streamed {
-            Ok(Ok(mut s)) => {
-                use futures::StreamExt;
-                let mut ttft: Option<f64> = None;
-                // 思维链隔离器：思考内容不得进基准输出；未闭合块不产出"可见"文本
-                let mut stripper = crate::reasoning::ReasoningStripper::new();
-                loop {
-                    let next = crate::runtime()
-                        .block_on(async { tokio::time::timeout(read_timeout, s.next()).await });
-                    match next {
-                        Ok(Some(Ok(chunk))) => {
-                            if let Some(delta) = chunk.delta_content().filter(|d| !d.is_empty()) {
-                                let visible = stripper.push(delta);
-                                // TTFT 只认**首个可见增量**（旧实现记首个任意 chunk，
-                                // 思考模型上把推理起点算成了首字）
-                                if ttft.is_none() && !visible.is_empty() {
-                                    ttft = Some(t0.elapsed().as_secs_f64() * 1000.0);
+            });
+            let outcome: Result<BenchRound, BenchErr> = match streamed {
+                Ok(Ok(mut s)) => {
+                    use futures::StreamExt;
+                    let mut ttft: Option<f64> = None;
+                    // 思维链隔离器：思考内容不得进基准输出；未闭合块不产出"可见"文本
+                    let mut stripper = crate::reasoning::ReasoningStripper::new();
+                    loop {
+                        let next = crate::runtime()
+                            .block_on(async { tokio::time::timeout(read_timeout, s.next()).await });
+                        match next {
+                            Ok(Some(Ok(chunk))) => {
+                                if let Some(delta) = chunk.delta_content().filter(|d| !d.is_empty())
+                                {
+                                    let visible = stripper.push(delta);
+                                    // TTFT 只认**首个可见增量**（旧实现记首个任意 chunk，
+                                    // 思考模型上把推理起点算成了首字）
+                                    if ttft.is_none() && !visible.is_empty() {
+                                        ttft = Some(t0.elapsed().as_secs_f64() * 1000.0);
+                                    }
                                 }
                             }
+                            Ok(Some(Err(e))) => break Err(param_err(e)),
+                            Ok(None) => {
+                                let total_ms = t0.elapsed().as_secs_f64() * 1000.0;
+                                let text = stripper.finish().trim().to_string();
+                                break Ok((ttft.unwrap_or(total_ms), total_ms, text));
+                            }
+                            Err(_) => {
+                                break Err(BenchErr::msg(format!("timed out after {timeout_s}s")))
+                            }
                         }
-                        Ok(Some(Err(e))) => break Err(param_err(e)),
-                        Ok(None) => {
-                            let total_ms = t0.elapsed().as_secs_f64() * 1000.0;
-                            let text = stripper.finish().trim().to_string();
-                            break Ok((ttft.unwrap_or(total_ms), total_ms, text));
-                        }
-                        Err(_) => break Err(BenchErr::msg(format!(
-                            "timed out after {timeout_s}s"
-                        ))),
                     }
                 }
-            }
-            // 流式被拒/超时 → 非流式兜底（TTFT=总耗时，原版语义）
-            Ok(Err(_)) | Err(_) => {
-                let plain = translator.build_request_body(prompt, text, false, false, 0);
-                crate::runtime()
+                // 流式被拒/超时 → 非流式兜底（TTFT=总耗时，原版语义）
+                Ok(Err(_)) | Err(_) => {
+                    let plain = translator.build_request_body(prompt, text, false, false, 0);
+                    crate::runtime()
                     .block_on(async {
                         tokio::time::timeout(
                             read_timeout,
@@ -249,23 +249,23 @@ fn test_model(
                         .to_string();
                         (total_ms, total_ms, text)
                     })
-            }
-        };
-        match outcome {
-            Ok(round) => rounds.push(round),
-            Err(e) => {
-                // 首句即被"参数类"拒绝 → 退一级重测整组（与生产阶梯同判据）
-                if e.param_rejected && idx == 0 {
-                    if let Some(next) = crate::next_step(step) {
-                        step = next;
-                        continue 'steps;
-                    }
                 }
-                // 截断规则与原版一致（str(e) 首行、120 字符）
-                let first_line = e.msg.lines().next().unwrap_or("");
-                return Err(first_line.chars().take(120).collect());
+            };
+            match outcome {
+                Ok(round) => rounds.push(round),
+                Err(e) => {
+                    // 首句即被"参数类"拒绝 → 退一级重测整组（与生产阶梯同判据）
+                    if e.param_rejected && idx == 0 {
+                        if let Some(next) = crate::next_step(step) {
+                            step = next;
+                            continue 'steps;
+                        }
+                    }
+                    // 截断规则与原版一致（str(e) 首行、120 字符）
+                    let first_line = e.msg.lines().next().unwrap_or("");
+                    return Err(first_line.chars().take(120).collect());
+                }
             }
-        }
         }
         return Ok(rounds);
     }

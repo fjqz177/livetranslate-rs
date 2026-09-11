@@ -1606,8 +1606,14 @@ impl ProbeUiState {
     }
 
     /// 收敛到终态：落结果并退出在途（回执 / 本地中断 / 看门狗三条路径共用）
-    pub fn settle(&mut self, name: String, outcome: lt_proto::ProbeOutcome, ms: u64,
-                  step_note: Option<String>, preview: Option<String>) {
+    pub fn settle(
+        &mut self,
+        name: String,
+        outcome: lt_proto::ProbeOutcome,
+        ms: u64,
+        step_note: Option<String>,
+        preview: Option<String>,
+    ) {
         if let Some(run) = self.running.take() {
             self.result = Some(ProbeResult {
                 id: run.id,
@@ -2212,7 +2218,11 @@ impl SessionView {
 
     /// 登记节拍（同窗同种覆盖既有时刻：字幕/监视/Setup 等延迟语义）
     pub fn schedule_tick(&mut self, win: WinId, kind: TickKind, at: Instant) {
-        if let Some(t) = self.ticks.iter_mut().find(|t| t.win == win && t.kind == kind) {
+        if let Some(t) = self
+            .ticks
+            .iter_mut()
+            .find(|t| t.win == win && t.kind == kind)
+        {
             t.at = at;
         } else {
             self.ticks.push(Tick { at, win, kind });
@@ -2514,11 +2524,7 @@ impl BenchUi {
 /// 面板设置防抖登记（宿主消费 [`SessionView::take_settings_apply_pending`] 意图后
 /// 调用；原版 _auto_save：控件改 draft 后重启 300ms 单发定时，连续变更不断顺延）。
 /// `now` 可注入时钟（测试用）。
-pub fn register_panel_apply(
-    panel: &mut PanelUi,
-    session: &mut SessionView,
-    now: Instant,
-) {
+pub fn register_panel_apply(panel: &mut PanelUi, session: &mut SessionView, now: Instant) {
     panel.state.mark_dirty_at(now);
     let at = PanelUiState::apply_deadline(now);
     session.schedule_tick(WinId::Panel, TickKind::PanelApply, at);
@@ -2605,8 +2611,13 @@ mod tests {
         // 默认启动流 Ready：面板可见性取 show_panel 环境（测试无该变量 → 隐藏）
         st.session.visible.insert(WinId::Panel, false);
         st.session.visible.insert(WinId::Overlay, true);
-        let panel_visible =
-            |st: &AppUi| st.session.visible.get(&WinId::Panel).copied().unwrap_or(true);
+        let panel_visible = |st: &AppUi| {
+            st.session
+                .visible
+                .get(&WinId::Panel)
+                .copied()
+                .unwrap_or(true)
+        };
 
         // 悬浮窗可宿主 → Overlay，无 panel 标记
         assert!(st.modal.request_confirm(
@@ -2695,7 +2706,8 @@ mod tests {
             log: vec![],
         };
         // 第二个文件开始：进度随新文件归零（机器段为权威值）
-        st.panel.download
+        st.panel
+            .download
             .apply_progress("tokens.txt".into(), 2, 2, 1_048_576, 2_097_152);
         match &st.panel.download {
             DownloadUiState::Downloading {
@@ -2814,7 +2826,8 @@ mod tests {
         st.overlay.push_message(msg(2));
 
         // 流式只入缓冲，50ms 节拍 flush 后才落消息（并置 streaming 标志）
-        st.overlay.update_streaming(&mut st.session, 2, "partial".into());
+        st.overlay
+            .update_streaming(&mut st.session, 2, "partial".into());
         assert_eq!(
             st.overlay.messages.last().unwrap().translation,
             TranslationView::Pending
@@ -2852,9 +2865,14 @@ mod tests {
         let mut st = AppUi::new(Settings::default());
         st.overlay.push_message(msg(7));
         st.overlay.push_message(msg(8));
-        st.overlay.skip_translation(7, lt_proto::SkipReason::SameLanguage);
         st.overlay
-            .fail_translation(8, lt_proto::FailureKind::Empty, "pt=142 ct=256".into(), 3200.0);
+            .skip_translation(7, lt_proto::SkipReason::SameLanguage);
+        st.overlay.fail_translation(
+            8,
+            lt_proto::FailureKind::Empty,
+            "pt=142 ct=256".into(),
+            3200.0,
+        );
         let skipped = &st.overlay.messages[0];
         let failed = &st.overlay.messages[1];
         assert_eq!(
@@ -3118,7 +3136,11 @@ mod tests {
         // **不读也不写全局语言**：并行测试会改它（既有教训），断言走纯函数，
         // 避免偶发假红；再补一条 new() 的默认值恒为二选一的兜底断言。
         assert_eq!(default_hub_index_for_lang("zh"), 0);
-        assert_eq!(default_hub_index_for_lang("zh-CN"), 1, "只认精确 zh（原版语义）");
+        assert_eq!(
+            default_hub_index_for_lang("zh-CN"),
+            1,
+            "只认精确 zh（原版语义）"
+        );
         assert_eq!(default_hub_index_for_lang("en"), 1);
         assert_eq!(default_hub_index_for_lang("ja"), 1);
         let w = WizardState::new();
@@ -3157,7 +3179,8 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel();
         let mut st = AppUi::with_startup(Settings::default(), StartupFlow::Wizard(w));
         st.session.cmd_tx = Some(tx);
-        st.startup.schedule_tick(&mut st.session, Duration::from_secs(1));
+        st.startup
+            .schedule_tick(&mut st.session, Duration::from_secs(1));
 
         st.wizard_auto_start();
 
@@ -3183,10 +3206,7 @@ mod tests {
     #[test]
     fn initial_visibility_hides_main_windows_when_pending() {
         // 首启向导：4 个主窗口初始全部不可见，仅 Setup 可见
-        let visible = initial_visibility(
-            &Settings::default(),
-            &startup_flow(true, vec![]),
-        );
+        let visible = initial_visibility(&Settings::default(), &startup_flow(true, vec![]));
         for id in [WinId::Overlay, WinId::Subtitle, WinId::Panel, WinId::Log] {
             assert!(!*visible.get(&id).unwrap(), "{id:?} 应隐藏");
         }
@@ -3294,7 +3314,10 @@ mod tests {
         let t0 = Instant::now();
         register_panel_apply(&mut st.panel, &mut st.session, t0);
         // 到期前：无快照
-        assert!(!st.panel.state.take_apply_due(t0 + Duration::from_millis(299)));
+        assert!(!st
+            .panel
+            .state
+            .take_apply_due(t0 + Duration::from_millis(299)));
         // 到期：返回当前设置快照
         let snap = st
             .take_due_panel_apply(t0 + Duration::from_millis(300))
@@ -3314,18 +3337,30 @@ mod tests {
         let mut st = AppUi::new(Settings::default());
         let t0 = Instant::now();
         register_panel_apply(&mut st.panel, &mut st.session, t0);
-        register_panel_apply(&mut st.panel, &mut st.session, t0 + Duration::from_millis(100));
-        register_panel_apply(&mut st.panel, &mut st.session, t0 + Duration::from_millis(200));
+        register_panel_apply(
+            &mut st.panel,
+            &mut st.session,
+            t0 + Duration::from_millis(100),
+        );
+        register_panel_apply(
+            &mut st.panel,
+            &mut st.session,
+            t0 + Duration::from_millis(200),
+        );
         // 仅一个 PanelApply 节拍，deadline = 最后一次登记 + 300ms
         let ticks: Vec<_> = st
-            .session.ticks
+            .session
+            .ticks
             .iter()
             .filter(|t| t.win == WinId::Panel && t.kind == TickKind::PanelApply)
             .collect();
         assert_eq!(ticks.len(), 1, "300ms 内连发应合并为单节拍");
         assert_eq!(ticks[0].at, t0 + Duration::from_millis(500));
         // 合并后仍只发一次（draft 最终值即快照）
-        assert!(!st.panel.state.take_apply_due(t0 + Duration::from_millis(400)));
+        assert!(!st
+            .panel
+            .state
+            .take_apply_due(t0 + Duration::from_millis(400)));
         assert!(st
             .take_due_panel_apply(t0 + Duration::from_millis(500))
             .is_some());
@@ -3549,9 +3584,14 @@ mod tests {
         let mut st = AppUi::new(Settings::default());
         let t0 = Instant::now();
         crate::windows::panel::schedule_prompt_apply(&mut st.panel, &mut st.session, t0);
-        crate::windows::panel::schedule_prompt_apply(&mut st.panel, &mut st.session, t0 + Duration::from_millis(200));
+        crate::windows::panel::schedule_prompt_apply(
+            &mut st.panel,
+            &mut st.session,
+            t0 + Duration::from_millis(200),
+        );
         let ticks: Vec<_> = st
-            .session.ticks
+            .session
+            .ticks
             .iter()
             .filter(|t| t.kind == TickKind::PromptApply)
             .collect();
@@ -3561,10 +3601,18 @@ mod tests {
             t0 + Duration::from_millis(800),
             "deadline = 末次登记 + 600ms"
         );
-        assert!(!st.panel.state.take_prompt_apply_due(t0 + Duration::from_millis(799)));
-        assert!(st.panel.state.take_prompt_apply_due(t0 + Duration::from_millis(800)));
+        assert!(!st
+            .panel
+            .state
+            .take_prompt_apply_due(t0 + Duration::from_millis(799)));
+        assert!(st
+            .panel
+            .state
+            .take_prompt_apply_due(t0 + Duration::from_millis(800)));
         assert!(
-            !st.panel.state.take_prompt_apply_due(t0 + Duration::from_millis(800)),
+            !st.panel
+                .state
+                .take_prompt_apply_due(t0 + Duration::from_millis(800)),
             "单发语义"
         );
         // 面板 300ms 防抖独立存在
@@ -3592,8 +3640,10 @@ mod tests {
     fn audio_monitor_tick_scheduling() {
         let mut st = AppUi::new(Settings::default());
         let at = Instant::now() + Duration::from_millis(33);
-        st.session.schedule_tick(WinId::Overlay, TickKind::AudioMonitor, at);
-        st.session.schedule_tick(WinId::Overlay, TickKind::AudioMonitor, at);
+        st.session
+            .schedule_tick(WinId::Overlay, TickKind::AudioMonitor, at);
+        st.session
+            .schedule_tick(WinId::Overlay, TickKind::AudioMonitor, at);
         let n = st
             .session
             .ticks
@@ -3623,7 +3673,11 @@ mod tests {
     #[test]
     fn editor_defaults_map_to_contract_fields() {
         let mut st = ModelEditState::new_add();
-        assert_eq!(st.temperature_value, lt_proto::DEFAULT_TEMPERATURE, "数值预填默认温度");
+        assert_eq!(
+            st.temperature_value,
+            lt_proto::DEFAULT_TEMPERATURE,
+            "数值预填默认温度"
+        );
         assert!(!st.temperature_enabled, "默认未勾选 = 不发送");
         assert!(!st.thinking_unavailable);
         let cfg = st.build().unwrap();
@@ -3656,7 +3710,11 @@ mod tests {
         let st2 = ModelEditState::new_edit(0, &cfg);
         assert!(!st2.disable_thinking);
         assert!(!st2.temperature_enabled);
-        assert_eq!(st2.temperature_value, lt_proto::DEFAULT_TEMPERATURE, "未启用时回填默认值");
+        assert_eq!(
+            st2.temperature_value,
+            lt_proto::DEFAULT_TEMPERATURE,
+            "未启用时回填默认值"
+        );
         assert_eq!(st2.thinking_index, 3);
     }
 
@@ -3679,35 +3737,27 @@ mod tests {
             ],
             ..Default::default()
         };
-        assert!(apply_translator_degraded(
-            &mut s,
-            "http://b:1234/v1",
-            "m1"
-        ));
+        assert!(apply_translator_degraded(&mut s, "http://b:1234/v1", "m1"));
         assert!(!s.models[0].thinking_unavailable, "同端点不同模型不误伤");
         assert!(s.models[1].thinking_unavailable, "命中条目置标记");
         assert!(!s.models[1].disable_thinking, "命中条目取消勾选");
         assert!(!s.models[2].thinking_unavailable, "同名不同端点不误伤");
         assert!(s.models[0].disable_thinking, "未命中条目不动");
         // 幂等：重复回执结果一致
-        assert!(apply_translator_degraded(
-            &mut s,
-            "http://b:1234/v1",
-            "m1"
-        ));
+        assert!(apply_translator_degraded(&mut s, "http://b:1234/v1", "m1"));
         assert!(s.models[1].thinking_unavailable && !s.models[1].disable_thinking);
         let snapshot = s.models.clone();
         // 首尾空白容错（用户手填地址可能带空格）
         s.models[0].api_base = "  http://a:1234/v1 ".into();
-        assert!(apply_translator_degraded(
-            &mut s,
-            "http://a:1234/v1",
-            "m1"
-        ));
+        assert!(apply_translator_degraded(&mut s, "http://a:1234/v1", "m1"));
         assert!(s.models[0].thinking_unavailable, "首尾空白不阻断定位");
         // 幽灵回执（端点/模型名不存在）→ false 且不改任何条目
         assert!(!apply_translator_degraded(&mut s, "http://ghost/v1", "m1"));
-        assert!(!apply_translator_degraded(&mut s, "http://b:1234/v1", "nope"));
+        assert!(!apply_translator_degraded(
+            &mut s,
+            "http://b:1234/v1",
+            "nope"
+        ));
         assert_eq!(s.models[1], snapshot[1]);
     }
 
@@ -3808,7 +3858,10 @@ mod tests {
         assert!(!st.tick(later), "超时后应停拍");
         assert!(st.running.is_none(), "超时应退出在途态");
         let r = st.result.as_ref().expect("应落结果");
-        assert_eq!(r.outcome, lt_proto::ProbeOutcome::Inconclusive { attempted: 0 });
+        assert_eq!(
+            r.outcome,
+            lt_proto::ProbeOutcome::Inconclusive { attempted: 0 }
+        );
         assert_eq!(r.row, 2, "结果归属行不得丢");
         assert_eq!(r.ms, 21_000, "ms 应为实际等待时长");
     }
@@ -3826,12 +3879,23 @@ mod tests {
     fn probe_settle_is_id_scoped() {
         let mut st = ProbeUiState::default();
         let t0 = Instant::now();
-        let key = ("a".to_string(), "b".to_string(), "c".to_string(), "d".to_string());
+        let key = (
+            "a".to_string(),
+            "b".to_string(),
+            "c".to_string(),
+            "d".to_string(),
+        );
         let id = st.begin(0, key.clone(), t0);
         // 「中断」本地收敛后，旧回执到达：running 已清 → settle 是空操作
         let running_id = st.running.as_ref().map(|r| r.id);
         assert_eq!(running_id, Some(id));
-        st.settle("被中断的那次".into(), lt_proto::ProbeOutcome::Cancelled, 5, None, None);
+        st.settle(
+            "被中断的那次".into(),
+            lt_proto::ProbeOutcome::Cancelled,
+            5,
+            None,
+            None,
+        );
         let before = st.result.clone();
         st.settle("陈旧回执".into(), lt_proto::ProbeOutcome::Ok, 9, None, None);
         assert_eq!(st.result, before, "无在途时 settle 不得改写已有结果");

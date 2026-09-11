@@ -12,13 +12,10 @@
 //! 不变——本管理器在命令线程上下文被调用（start/cancel 非阻塞，
 //! 下载全量工作在会话线程内完成）。
 
+use lt_download::{hf_endpoint_for, hub_chain, DlError, DownloadEvent, Downloader, Hub, ProxyMode};
 use lt_models::cache::MissingModel;
-use lt_download::{
-    hf_endpoint_for, hub_chain, DlError, DownloadEvent, Downloader, Hub, ProxyMode,
-};
 use lt_proto::{
-    DownloadEvent as ProtoDownload, DownloadFailKind, DownloadPhase, Settings, ThreadRole,
-    UiEvent,
+    DownloadEvent as ProtoDownload, DownloadFailKind, DownloadPhase, Settings, ThreadRole, UiEvent,
 };
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::TryRecvError;
@@ -78,33 +75,38 @@ impl DownloadManager {
         // INV3：会话线程出生唯一＝监督器；Policy::Never（常量回收语义）。
         // factory 惰性持有（INV5 干净初态），catch_unwind 兜底层 panic →
         // 终态事件（下载卡不再可能停驻"下载中"，R1 同源防线）。
-        self.sup.spawn(ThreadRole::Download, DL_SESSION_THREAD, Policy::Never, move || {
-            let artery = artery.clone();
-            let session_settings = session_settings.clone();
-            let missing = missing.clone();
-            let session_proxy = session_proxy.clone();
-            let cancel_for_run = cancel_for_run.clone();
-            Box::new(move || {
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    run_download(
-                        &artery,
-                        first_launch,
-                        &session_settings,
-                        &missing,
-                        hub,
-                        session_proxy,
-                        cancel_for_run,
-                    );
-                }));
-                if result.is_err() {
-                    fail(
-                        &artery,
-                        DownloadFailKind::Other,
-                        "下载会话异常退出（panic，详情见 crash 文件与日志）",
-                    );
-                }
-            })
-        });
+        self.sup.spawn(
+            ThreadRole::Download,
+            DL_SESSION_THREAD,
+            Policy::Never,
+            move || {
+                let artery = artery.clone();
+                let session_settings = session_settings.clone();
+                let missing = missing.clone();
+                let session_proxy = session_proxy.clone();
+                let cancel_for_run = cancel_for_run.clone();
+                Box::new(move || {
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        run_download(
+                            &artery,
+                            first_launch,
+                            &session_settings,
+                            &missing,
+                            hub,
+                            session_proxy,
+                            cancel_for_run,
+                        );
+                    }));
+                    if result.is_err() {
+                        fail(
+                            &artery,
+                            DownloadFailKind::Other,
+                            "下载会话异常退出（panic，详情见 crash 文件与日志）",
+                        );
+                    }
+                })
+            },
+        );
         self.cancel = Some(cancel);
     }
 
@@ -144,7 +146,11 @@ fn run_download(
     let models_dir = match lt_models::paths::models_dir(settings.models_dir.as_deref()) {
         Ok(d) => d,
         Err(e) => {
-            fail(artery, DownloadFailKind::Disk, &format!("模型目录不可用: {e:#}"));
+            fail(
+                artery,
+                DownloadFailKind::Disk,
+                &format!("模型目录不可用: {e:#}"),
+            );
             return;
         }
     };
@@ -421,7 +427,10 @@ mod tests {
             ProxyMode::from_settings_str("system"),
             ProxyMode::System
         ));
-        assert!(matches!(ProxyMode::from_settings_str(""), ProxyMode::System));
+        assert!(matches!(
+            ProxyMode::from_settings_str(""),
+            ProxyMode::System
+        ));
         assert!(matches!(
             ProxyMode::from_settings_str("http://127.0.0.1:7890"),
             ProxyMode::Url(_)

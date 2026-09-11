@@ -24,10 +24,10 @@ use crate::event_artery::EventSink;
 use crate::settings_bus::{EffectiveSettings, SettingsBus};
 use crate::supervisor::{artery_sink, Policy, Supervisor};
 use crate::Msg;
+use arc_swap::ArcSwap;
 use lt_asr::{AsrEffectiveSettings, AsrManager, WorkerConfig};
-use lt_models::registry;
-use lt_audio::audio::wasapi_win::WasapiBackend;
 use lt_audio::audio::capture::VadSource;
+use lt_audio::audio::wasapi_win::WasapiBackend;
 use lt_audio::interim::{
     is_short_utterance, pending_merge, split_sentences, strip_committed_overlap, trim_samples,
     InterimState,
@@ -35,16 +35,16 @@ use lt_audio::interim::{
 use lt_audio::{
     AudioBackend, BoundedDropQueue, CaptureLoop, InterimControl, SegmentSource, VadProcessor,
 };
+use lt_models::registry;
 use lt_proto::{
-    ASR_ENGINES, AudioRole, CaptureEvent, EngineKey, FailureKind, ModelFault, MonitorSample,
-    QueueId, SkipReason, ThreadRole, UiEvent,
+    AudioRole, CaptureEvent, EngineKey, FailureKind, ModelFault, MonitorSample, QueueId,
+    SkipReason, ThreadRole, UiEvent, ASR_ENGINES,
 };
 use lt_translate::Translator;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use arc_swap::ArcSwap;
 
 /// 段队列容量（对齐原版 _asr_queue maxsize=16，满丢最旧）
 const SEGMENT_QUEUE_CAP: usize = 16;
@@ -155,22 +155,22 @@ impl JobPool {
                 Policy::backoff(),
                 stopped.clone(),
                 move || {
-                let queue = queue.clone();
-                let stopped = stopped.clone();
-                let alive_workers = alive_workers.clone();
-                Box::new(move || {
-                    alive_workers.fetch_add(1, Ordering::Relaxed);
-                    // RAII 减计数：panic 路径同样归零（线程死亡即不存活）
-                    let _alive = WorkerAliveGuard(alive_workers);
-                    // 停止标志置位后 worker 在 ≤500ms 内退出，由 join_all 回收；
-                    // panic 由监督器重生（干净循环状态，INV5）
-                    while !stopped.load(Ordering::Relaxed) {
-                        match queue.pop_timeout(Duration::from_millis(500)) {
-                            Some(job) => job.run(),
-                            None => continue,
+                    let queue = queue.clone();
+                    let stopped = stopped.clone();
+                    let alive_workers = alive_workers.clone();
+                    Box::new(move || {
+                        alive_workers.fetch_add(1, Ordering::Relaxed);
+                        // RAII 减计数：panic 路径同样归零（线程死亡即不存活）
+                        let _alive = WorkerAliveGuard(alive_workers);
+                        // 停止标志置位后 worker 在 ≤500ms 内退出，由 join_all 回收；
+                        // panic 由监督器重生（干净循环状态，INV5）
+                        while !stopped.load(Ordering::Relaxed) {
+                            match queue.pop_timeout(Duration::from_millis(500)) {
+                                Some(job) => job.run(),
+                                None => continue,
+                            }
                         }
-                    }
-                })
+                    })
                 },
             );
         }
@@ -444,10 +444,7 @@ fn translator_for_step(base: &Translator, step: lt_translate::RequestStep) -> Tr
 fn should_advance(step: lt_translate::RequestStep, attempt: &Attempt, allow_verdict: bool) -> bool {
     use lt_translate::TranslateError as E;
     if let Some(e) = &attempt.error {
-        return matches!(
-            e,
-            E::Status { code: 400, .. } | E::Status { code: 422, .. }
-        );
+        return matches!(e, E::Status { code: 400, .. } | E::Status { code: 422, .. });
     }
     allow_verdict
         && matches!(
@@ -985,13 +982,7 @@ impl TlRig {
     /// W4：目标语言/超时在 **任务执行时** 读总线（排队期间设置变更与旧
     /// `set_target_language` 改运行时可变面的语义同为"执行时最新"——旧实现
     /// worker 开始执行才取 state 锁；此处等价且无锁）
-    fn submit_translation(
-        &self,
-        sink: &EventSink,
-        id: u64,
-        text: String,
-        source_lang: String,
-    ) {
+    fn submit_translation(&self, sink: &EventSink, id: u64, text: String, source_lang: String) {
         let translator = self.translator.clone();
         let stats = self.stats.clone();
         let prices = self.prices;
@@ -1188,9 +1179,7 @@ pub struct Pipeline {
 /// 四臂被设置总线派生视图吸收：真实重建/切换动作才必须走线程命令）
 pub(crate) enum TlSwitch {
     /// 整体重建翻译装置（切模型；历史随旧实例丢弃，与原版重建 Translator 一致）
-    ReplaceRig {
-        config: Box<lt_proto::ModelConfig>,
-    },
+    ReplaceRig { config: Box<lt_proto::ModelConfig> },
     /// 运行时切换 ASR 引擎/模型（原版 _switch_asr_engine；ensure_started
     /// 内部带替换+失败回滚，此处只补路由与 UI 事件）
     ReplaceEngine {
@@ -1315,49 +1304,53 @@ impl Pipeline {
             let mode = vad_settings.mode.clone();
             // INV3/INV5：经监督器出生；panic 重生 = 工厂重建干净循环状态
             //（消费前清 chunk 陈旧积压——宕机期间音频已满丢旧轮转，续读=句中撕裂）
-            sup.spawn(ThreadRole::Capture, "lt-capture", Policy::backoff(), move || {
-                let stop = stop.clone();
-                let paused = paused.clone();
-                let segment_queue = segment_queue.clone();
-                let monitor_cell = monitor_cell.clone();
-                let monitor_seq = monitor_seq.clone();
-                let vad_tick = vad_tick.clone();
-                let vad = vad.clone();
-                let interim = interim.clone();
-                let mode = mode.clone();
-                let chunk_queue = chunk_queue.clone();
-                Box::new(move || {
-                    chunk_queue.clear();
-                    // 原版 _capture_loop：monitor 直接跨线程信号（此处写监视快照格，
-                    // vad 转换为 UI 侧 f32），段直接塞 _asr_queue 等价队列（满丢旧）
-                    let mut loop_ = CaptureLoop {
-                        chunk_rx: chunk_queue,
-                        segment_tx: segment_queue,
-                        monitor: move |rms, vad, mic_rms| {
-                            let seq = monitor_seq.fetch_add(1, Ordering::Relaxed) + 1;
-                            monitor_cell.store(Arc::new(MonitorSample {
-                                rms,
-                                vad: vad as f32,
-                                mic_rms,
-                                seq,
-                            }));
-                        },
-                        paused,
-                        vad_tick,
-                        interim,
-                        // R2/D-60：初值=启动模式；模式热切换时 capture 换置信度源
-                        current_mode: mode,
-                    };
-                    loop_.run(&vad, &stop);
-                })
-            });
+            sup.spawn(
+                ThreadRole::Capture,
+                "lt-capture",
+                Policy::backoff(),
+                move || {
+                    let stop = stop.clone();
+                    let paused = paused.clone();
+                    let segment_queue = segment_queue.clone();
+                    let monitor_cell = monitor_cell.clone();
+                    let monitor_seq = monitor_seq.clone();
+                    let vad_tick = vad_tick.clone();
+                    let vad = vad.clone();
+                    let interim = interim.clone();
+                    let mode = mode.clone();
+                    let chunk_queue = chunk_queue.clone();
+                    Box::new(move || {
+                        chunk_queue.clear();
+                        // 原版 _capture_loop：monitor 直接跨线程信号（此处写监视快照格，
+                        // vad 转换为 UI 侧 f32），段直接塞 _asr_queue 等价队列（满丢旧）
+                        let mut loop_ = CaptureLoop {
+                            chunk_rx: chunk_queue,
+                            segment_tx: segment_queue,
+                            monitor: move |rms, vad, mic_rms| {
+                                let seq = monitor_seq.fetch_add(1, Ordering::Relaxed) + 1;
+                                monitor_cell.store(Arc::new(MonitorSample {
+                                    rms,
+                                    vad: vad as f32,
+                                    mic_rms,
+                                    seq,
+                                }));
+                            },
+                            paused,
+                            vad_tick,
+                            interim,
+                            // R2/D-60：初值=启动模式；模式热切换时 capture 换置信度源
+                            current_mode: mode,
+                        };
+                        loop_.run(&vad, &stop);
+                    })
+                },
+            );
         }
 
         // W3/裁决 2：会话内学习记忆（只记内存；跨装置重建保留）
         let degraded_notified: Arc<Mutex<std::collections::HashSet<(String, String)>>> =
             Arc::new(Mutex::new(std::collections::HashSet::new()));
-        let learned: Learned =
-            Arc::new(Mutex::new(HashMap::new()));
+        let learned: Learned = Arc::new(Mutex::new(HashMap::new()));
 
         // ── 翻译装置（M3）：models 非空即构建；配置无效必须让用户可见
         //（TranslatorUnavailable → 面板翻译页状态行 + 悬浮窗译文占位）──
@@ -1428,12 +1421,12 @@ impl Pipeline {
                                     role: AudioRole::Mic,
                                     error: e,
                                 },
-                                AudioStatus::OutputRecovered => {
-                                    CaptureEvent::Recovered { role: AudioRole::Loopback }
-                                }
-                                AudioStatus::InputRecovered => {
-                                    CaptureEvent::Recovered { role: AudioRole::Mic }
-                                }
+                                AudioStatus::OutputRecovered => CaptureEvent::Recovered {
+                                    role: AudioRole::Loopback,
+                                },
+                                AudioStatus::InputRecovered => CaptureEvent::Recovered {
+                                    role: AudioRole::Mic,
+                                },
                             };
                             sink.push(UiEvent::Capture(ev));
                         }
@@ -1458,44 +1451,49 @@ impl Pipeline {
             let transcript_asr = transcript.clone();
             let session_stats_asr = session_stats.clone();
             // INV3：经监督器出生；panic 重生 = 待命/装配路径干净重启（INV5）
-            sup.spawn(ThreadRole::AsrMain, "lt-asr-main", Policy::backoff(), move || {
-                let stop = stop.clone();
-                let sink = sink.clone();
-                let segment_queue = segment_queue.clone();
-                let settings = settings.clone();
-                let bus = bus_asr.clone();
-                let tl = tl.clone();
-                let vad = vad.clone();
-                let interim = interim.clone();
-                let sup = sup_asr.clone();
-                let tl_switch = tl_switch_rx.clone();
-                let msg = msg_asr.clone();
-                let transcript = transcript_asr.clone();
-                let learned = learned.clone();
-                let degraded_notified = degraded_notified.clone();
-                let session_stats = session_stats_asr.clone();
-                Box::new(move || {
-                    run_asr_thread(
-                        &settings,
-                        AsrThreadCtx {
-                            segment_queue,
-                            vad,
-                            interim,
-                            bus,
-                            stop,
-                            sink,
-                            tl_switch,
-                            sup,
-                            transcript,
-                            msg,
-                            learned,
-                            degraded_notified,
-                            session_stats,
-                        },
-                        tl,
-                    );
-                })
-            });
+            sup.spawn(
+                ThreadRole::AsrMain,
+                "lt-asr-main",
+                Policy::backoff(),
+                move || {
+                    let stop = stop.clone();
+                    let sink = sink.clone();
+                    let segment_queue = segment_queue.clone();
+                    let settings = settings.clone();
+                    let bus = bus_asr.clone();
+                    let tl = tl.clone();
+                    let vad = vad.clone();
+                    let interim = interim.clone();
+                    let sup = sup_asr.clone();
+                    let tl_switch = tl_switch_rx.clone();
+                    let msg = msg_asr.clone();
+                    let transcript = transcript_asr.clone();
+                    let learned = learned.clone();
+                    let degraded_notified = degraded_notified.clone();
+                    let session_stats = session_stats_asr.clone();
+                    Box::new(move || {
+                        run_asr_thread(
+                            &settings,
+                            AsrThreadCtx {
+                                segment_queue,
+                                vad,
+                                interim,
+                                bus,
+                                stop,
+                                sink,
+                                tl_switch,
+                                sup,
+                                transcript,
+                                msg,
+                                learned,
+                                degraded_notified,
+                                session_stats,
+                            },
+                            tl,
+                        );
+                    })
+                },
+            );
         }
 
         tracing::info!("管道已启动（capture + VAD + ASR + 翻译；线程全部受监督）");
@@ -1924,7 +1922,11 @@ fn report_load_failure(
     let model_name = trust_files_for_config(models_dir, config)
         .map(|t| t.display)
         .unwrap_or_else(|| config.engine.clone());
-    tracing::error!("模型加载失败（指纹与登记一致，重下无解）: {} / {}", model_name, detail);
+    tracing::error!(
+        "模型加载失败（指纹与登记一致，重下无解）: {} / {}",
+        model_name,
+        detail
+    );
     sink.push(UiEvent::ModelIntegrityFailed {
         model: model_name,
         fault: ModelFault::Unloadable {
@@ -2029,7 +2031,6 @@ fn route_translator_switch(
     }
 }
 
-
 /// 排空翻译器命令（D-85/F1）。
 ///
 /// 提取自 ASR 主循环的空闲分支——**同一份实现**现在挂在主循环每轮开头：
@@ -2086,8 +2087,7 @@ fn drain_tl_switch(
         ) {
             // R3/D-61：每次切换尝试重解析 models_dir（与待命臂一致；
             // 运行中目录损坏时切换路径同样可恢复）
-            let Ok(models_dir) =
-                lt_models::paths::models_dir(ctx.settings.models_dir.as_deref())
+            let Ok(models_dir) = lt_models::paths::models_dir(ctx.settings.models_dir.as_deref())
             else {
                 ctx.sink.push(UiEvent::AsrUnavailable);
                 tracing::warn!("引擎切换尝试：模型目录不可用，跳过本轮");
@@ -2111,9 +2111,8 @@ fn drain_tl_switch(
                     // 已隔离 + 事件已发；恢复旧标签（旧引擎继续工作，P0-4）
                     // 并中止本次切换——修复下载完成后 shell 会重发切换
                     if !trust_gate(Some(&models_dir), &config, ctx.sink) {
-                        ctx.sink.push(UiEvent::AsrDevice(
-                            format!("{} [cpu]", current_display),
-                        ));
+                        ctx.sink
+                            .push(UiEvent::AsrDevice(format!("{} [cpu]", current_display)));
                         tracing::warn!(
                             "引擎切换中止：{} 未通过完整性校验（坏文件已隔离）",
                             engine_model_key(&engine, &funasr_model, &whisper_model_size)
@@ -2124,24 +2123,17 @@ fn drain_tl_switch(
                     if let Err(e) = manager.ensure_started_explicit(&config) {
                         // D-83 §2.4：装载失败复验分流——文件被改过 → Hash
                         // 故障（可修复）；指纹一致仍失败 → Unloadable（重下无解）
-                        report_load_failure(
-                            Some(&models_dir),
-                            &config,
-                            &e.to_string(),
-                            ctx.sink,
-                        );
+                        report_load_failure(Some(&models_dir), &config, &e.to_string(), ctx.sink);
                         // 回滚后旧 worker 仍在工作：恢复旧标签而非
                         // 发 AsrUnavailable（避免状态与行为矛盾，P0-4）
-                        ctx.sink.push(UiEvent::AsrDevice(
-                            format!("{} [cpu]", current_display),
-                        ));
+                        ctx.sink
+                            .push(UiEvent::AsrDevice(format!("{} [cpu]", current_display)));
                         tracing::error!("引擎切换失败（已回滚）: {e}");
                     } else {
                         *current_display = display.clone();
                         *asr_unavailable_notified = false;
-                        ctx.sink.push(UiEvent::AsrDevice(
-                            format!("{display} [cpu]"),
-                        ));
+                        ctx.sink
+                            .push(UiEvent::AsrDevice(format!("{display} [cpu]")));
                         // AH-3：切换后增量会话状态复位——旧引擎的
                         // committed_tail/active 对新引擎输出无意义，且
                         // 切换后首个收尾段经 commit_interim_final 绕过
@@ -2163,12 +2155,9 @@ fn drain_tl_switch(
                     // 未缓存/未知档：旧引擎继续运行——不发
                     // AsrUnavailable（P0-4），恢复标签并落日志；
                     // 面板侧缓存卡片「未缓存 + 下载按钮」给出下一步
-                    ctx.sink.push(UiEvent::AsrDevice(format!(
-                        "{} [cpu]",
-                        current_display
-                    )));
-                    let model_key =
-                        engine_model_key(&engine, &funasr_model, &whisper_model_size);
+                    ctx.sink
+                        .push(UiEvent::AsrDevice(format!("{} [cpu]", current_display)));
+                    let model_key = engine_model_key(&engine, &funasr_model, &whisper_model_size);
                     tracing::warn!(
                         "切换目标未缓存/未知，保持当前引擎: {engine}/{model_key}（去识别页下载）"
                     );
@@ -2786,7 +2775,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let content = b"good-model-bytes";
-        let want = lt_download::hash_file_hex(&std::fs::write(dir.join("m.bin"), content).map(|_| dir.join("m.bin")).unwrap()).unwrap();
+        let want = lt_download::hash_file_hex(
+            &std::fs::write(dir.join("m.bin"), content)
+                .map(|_| dir.join("m.bin"))
+                .unwrap(),
+        )
+        .unwrap();
         let t = TrustFiles {
             display: "Synthetic Model".into(),
             root: dir.clone(),
@@ -3091,14 +3085,15 @@ mod tests {
     }
 
     fn test_transcript() -> Arc<lt_audio::transcript::TranscriptWriter> {
-        Arc::new(lt_audio::transcript::TranscriptWriter::new(tmp_models_dir("transcript")))
+        Arc::new(lt_audio::transcript::TranscriptWriter::new(tmp_models_dir(
+            "transcript",
+        )))
     }
 
     /// 测试设置总线（W4：from_settings 改读总线；发布即版本 1）
     fn test_bus(settings: lt_proto::Settings) -> Arc<SettingsBus> {
         Arc::new(SettingsBus::new(settings))
     }
-
 
     // ── 回退阶梯（第二轮评审 ③/④/⑤；方案 §4.4 表） ──
 
@@ -3189,7 +3184,11 @@ mod tests {
         assert!(body.get("enable_thinking").is_none());
         assert!(body.get("thinking").is_none());
         // Minimal 起步且体检说"还在推理"时也不再退（已到端点）
-        assert!(!should_advance(lt_translate::RequestStep::Minimal, &verdict, true));
+        assert!(!should_advance(
+            lt_translate::RequestStep::Minimal,
+            &verdict,
+            true
+        ));
     }
 
     /// 用户**显式选定**关闭方式 → 体检驱动的降级被禁（尊重用户选择）；
@@ -3206,8 +3205,14 @@ mod tests {
             Some(lt_translate::ResponseVerdict::EmptyReasoningBudget),
             None,
         );
-        assert!(!should_advance(step, &verdict, false), "显式方式不受体检驱动");
-        assert!(should_advance(step, &param_rejected(), false), "400 仍须降级");
+        assert!(
+            !should_advance(step, &verdict, false),
+            "显式方式不受体检驱动"
+        );
+        assert!(
+            should_advance(step, &param_rejected(), false),
+            "400 仍须降级"
+        );
     }
 
     /// 非参数类错误不降级（网络/鉴权/404 与请求内容无关，退级只会白试）
@@ -3236,11 +3241,9 @@ mod tests {
     #[test]
     fn ladder_raises_budget_on_empty_truncation() {
         let base = test_translator(true);
-        let with_budget = translator_for_step(
-            &base,
-            lt_translate::RequestStep::Plan(base.thinking_plan()),
-        )
-        .with_max_tokens(4096);
+        let with_budget =
+            translator_for_step(&base, lt_translate::RequestStep::Plan(base.thinking_plan()))
+                .with_max_tokens(4096);
         let body = with_budget.build_request_body("s", "t", true, false, 0);
         assert_eq!(body["max_tokens"], 4096);
     }
@@ -3255,7 +3258,8 @@ mod tests {
             ..Default::default()
         })
         .unwrap();
-        let normal = translator_for_step(&base, lt_translate::RequestStep::Plan(base.thinking_plan()));
+        let normal =
+            translator_for_step(&base, lt_translate::RequestStep::Plan(base.thinking_plan()));
         assert_eq!(
             normal.build_request_body("s", "t", true, false, 0)["temperature"],
             0.7
@@ -3324,7 +3328,12 @@ mod tests {
         // 已经标记过 → 不重复报
         assert!(!should_report_cannot_disable(true, true, true, gave_up));
         // 还在注入关闭参数 → 还没到"关不掉"的结论
-        assert!(!should_report_cannot_disable(true, true, false, still_injecting));
+        assert!(!should_report_cannot_disable(
+            true,
+            true,
+            false,
+            still_injecting
+        ));
     }
 
     /// 阶梯端到端（死端口）：连接类错误**不得**白走阶梯——只在起点试一次，
@@ -3363,7 +3372,10 @@ mod tests {
             "实际: {:?}",
             outcome.attempt.error
         );
-        assert!(t0.elapsed() < Duration::from_secs(10), "不得逐级重试耗尽时间");
+        assert!(
+            t0.elapsed() < Duration::from_secs(10),
+            "不得逐级重试耗尽时间"
+        );
     }
 
     /// 台阶名（"当前实际在用"回执用）不得出现厂商词（INV-E）
@@ -3382,7 +3394,11 @@ mod tests {
     #[test]
     fn attempt_success_uses_verdict_first() {
         // 有 url 文本但体检判空（理论矛盾情形）→ 以体检为准
-        assert!(!attempt(Some(lt_translate::ResponseVerdict::EmptyNoOutput), Some("x")).succeeded());
+        assert!(!attempt(
+            Some(lt_translate::ResponseVerdict::EmptyNoOutput),
+            Some("x")
+        )
+        .succeeded());
         assert!(attempt(Some(lt_translate::ResponseVerdict::Ok), Some("x")).succeeded());
         // 无体检结论时退回"有文本即成功"
         assert!(attempt(None, Some("x")).succeeded());
@@ -3404,9 +3420,18 @@ mod tests {
         let settings = lt_proto::Settings::default();
         let sup = test_sup();
         let bus = test_bus(settings);
-        let rig = TlRig::from_settings(&bus, &sup, EventArtery::new(), test_transcript(), test_learned(), test_degraded_notified(), &test_session_stats(), "zh")
-            .expect("默认设置不应报配置错误")
-            .expect("默认 settings 带一个默认模型，应能构建");
+        let rig = TlRig::from_settings(
+            &bus,
+            &sup,
+            EventArtery::new(),
+            test_transcript(),
+            test_learned(),
+            test_degraded_notified(),
+            &test_session_stats(),
+            "zh",
+        )
+        .expect("默认设置不应报配置错误")
+        .expect("默认 settings 带一个默认模型，应能构建");
         // W4：目标语言不再存实例态（逐调用经总线 tl 视图传入）——验证总线视图
         assert_eq!(bus.load().tl.target_language, "zh");
         // 收尾：先停池再 join——worker 以 stopped 为退出条件，不先置标志
@@ -3458,7 +3483,18 @@ mod tests {
             ..Default::default()
         };
         let sup = test_sup();
-        assert!(TlRig::from_settings(&test_bus(settings), &sup, EventArtery::new(), test_transcript(), test_learned(), test_degraded_notified(), &test_session_stats(), "zh").unwrap().is_none());
+        assert!(TlRig::from_settings(
+            &test_bus(settings),
+            &sup,
+            EventArtery::new(),
+            test_transcript(),
+            test_learned(),
+            test_degraded_notified(),
+            &test_session_stats(),
+            "zh"
+        )
+        .unwrap()
+        .is_none());
         sup.join_all();
     }
 
@@ -3467,7 +3503,18 @@ mod tests {
         let mut settings = lt_proto::Settings::default();
         settings.models.clear();
         let sup = test_sup();
-        assert!(TlRig::from_settings(&test_bus(settings), &sup, EventArtery::new(), test_transcript(), test_learned(), test_degraded_notified(), &test_session_stats(), "zh").unwrap().is_none());
+        assert!(TlRig::from_settings(
+            &test_bus(settings),
+            &sup,
+            EventArtery::new(),
+            test_transcript(),
+            test_learned(),
+            test_degraded_notified(),
+            &test_session_stats(),
+            "zh"
+        )
+        .unwrap()
+        .is_none());
         sup.join_all();
     }
 
@@ -3572,12 +3619,34 @@ mod tests {
     fn replaced_rig_workers_shutdown_on_drop() {
         let sup = test_sup();
         let bus = test_bus(lt_proto::Settings::default());
-        let rig = TlRig::from_settings(&bus, &sup, EventArtery::new(), test_transcript(), test_learned(), test_degraded_notified(), &test_session_stats(), "zh").unwrap().unwrap();
+        let rig = TlRig::from_settings(
+            &bus,
+            &sup,
+            EventArtery::new(),
+            test_transcript(),
+            test_learned(),
+            test_degraded_notified(),
+            &test_session_stats(),
+            "zh",
+        )
+        .unwrap()
+        .unwrap();
         let old_alive = rig.pool.alive_workers.clone();
         wait_for(|| old_alive.load(Ordering::Relaxed) == TL_POOL_WORKERS);
         // 模拟 ReplaceRig 的替换语义（route_translator_switch：
         // `*tl = Some(Arc::new(rig))`——旧 rig 被 Drop，无人显式关机）
-        let replacement = TlRig::from_settings(&bus, &sup, EventArtery::new(), test_transcript(), test_learned(), test_degraded_notified(), &test_session_stats(), "zh").unwrap().unwrap();
+        let replacement = TlRig::from_settings(
+            &bus,
+            &sup,
+            EventArtery::new(),
+            test_transcript(),
+            test_learned(),
+            test_degraded_notified(),
+            &test_session_stats(),
+            "zh",
+        )
+        .unwrap()
+        .unwrap();
         wait_for(|| replacement.pool.alive_worker_count() == TL_POOL_WORKERS);
         drop(rig);
         // 旧池经 JobPool::Drop 自动停机：3s 内应归零（500ms pop_timeout 节拍）
@@ -3594,7 +3663,18 @@ mod tests {
     fn test_rig_dropped_with_job_shuts_down_pool() {
         let sup = test_sup();
         let bus = test_bus(lt_proto::Settings::default());
-        let rig = TlRig::from_settings(&bus, &sup, EventArtery::new(), test_transcript(), test_learned(), test_degraded_notified(), &test_session_stats(), "zh").unwrap().unwrap();
+        let rig = TlRig::from_settings(
+            &bus,
+            &sup,
+            EventArtery::new(),
+            test_transcript(),
+            test_learned(),
+            test_degraded_notified(),
+            &test_session_stats(),
+            "zh",
+        )
+        .unwrap()
+        .unwrap();
         let alive = rig.pool.alive_workers.clone();
         wait_for(|| alive.load(Ordering::Relaxed) == TL_POOL_WORKERS);
         // 等价于任务闭包 Drop 时 rig 的丢弃语义
@@ -4022,8 +4102,9 @@ mod tests {
         let degraded = test_degraded_notified();
         let transcript = test_transcript();
         // 段队列**非空**（连续识别场景）：切换命令必须仍在本轮被消费
-        let queue =
-            Arc::new(BoundedDropQueue::<(SegmentSource, Vec<f32>)>::new(8, "seg-test"));
+        let queue = Arc::new(BoundedDropQueue::<(SegmentSource, Vec<f32>)>::new(
+            8, "seg-test",
+        ));
         queue.push((SegmentSource::VadFlush, vec![0.0f32; 16]));
         tx.send(TlSwitch::ReplaceRig {
             config: Box::new(settings.models[0].clone()),
@@ -4053,10 +4134,7 @@ mod tests {
             );
         });
         assert!(seg.is_some(), "队列里的段应被取出");
-        assert!(
-            tl.is_some(),
-            "取段之前必须先完成切换（队列非空也不例外）"
-        );
+        assert!(tl.is_some(), "取段之前必须先完成切换（队列非空也不例外）");
         if let Some(rig) = tl.take() {
             rig.pool.shutdown();
         }
@@ -4163,7 +4241,10 @@ mod tests {
                 ..
             } => {
                 assert_eq!(tl_n, 3, "句数跨装置累计");
-                assert!((cost_cny - 3.0).abs() < 1e-6, "人民币账本=1+2，实际 {cost_cny}");
+                assert!(
+                    (cost_cny - 3.0).abs() < 1e-6,
+                    "人民币账本=1+2，实际 {cost_cny}"
+                );
                 assert!((cost_usd - 1.0).abs() < 1e-6, "美元账本=1，实际 {cost_usd}");
                 assert!(usage_known);
             }

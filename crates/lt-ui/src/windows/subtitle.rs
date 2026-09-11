@@ -1159,7 +1159,10 @@ mod tests {
     #[test]
     fn refresh_display_marks_failed_lines_and_keeps_original() {
         let mut sub = SubtitleUiState {
-            sentences: vec![failed_sentence("识别到的原句", lt_proto::FailureKind::Empty)],
+            sentences: vec![failed_sentence(
+                "识别到的原句",
+                lt_proto::FailureKind::Empty,
+            )],
             ..Default::default()
         };
         let lines = vec![
@@ -1473,13 +1476,15 @@ mod tests {
                 events,
                 ..Default::default()
             };
-            let mut out = ctx.run_ui(ri, |ui| crate::windows::subtitle::subtitle_ui(
-                ui,
-                &mut st.subtitle,
-                &mut st.session,
-                &mut st.settings,
-                &mut st.ctx,
-            ));
+            let mut out = ctx.run_ui(ri, |ui| {
+                crate::windows::subtitle::subtitle_ui(
+                    ui,
+                    &mut st.subtitle,
+                    &mut st.session,
+                    &mut st.settings,
+                    &mut st.ctx,
+                )
+            });
             out.textures_delta.clear();
             let acts = st.session.drain_actions();
             if acts.iter().any(|(w, a)| {
@@ -1499,7 +1504,9 @@ mod tests {
         let ctx = egui::Context::default();
         let mut st = crate::state::AppUi::new(lt_proto::Settings::default());
         st.settings.subtitle_mode.enabled = true;
-        st.session.visible.insert(crate::state::WinId::Subtitle, true);
+        st.session
+            .visible
+            .insert(crate::state::WinId::Subtitle, true);
         let acts = run_drag_frames(
             &ctx,
             &mut st,
@@ -1522,7 +1529,9 @@ mod tests {
         let ctx = egui::Context::default();
         let mut st = crate::state::AppUi::new(lt_proto::Settings::default());
         st.settings.subtitle_mode.enabled = true;
-        st.session.visible.insert(crate::state::WinId::Subtitle, true);
+        st.session
+            .visible
+            .insert(crate::state::WinId::Subtitle, true);
         let acts = run_drag_frames(
             &ctx,
             &mut st,
@@ -1546,7 +1555,9 @@ mod tests {
         let ctx = egui::Context::default();
         let mut st = crate::state::AppUi::new(lt_proto::Settings::default());
         st.settings.subtitle_mode.enabled = true;
-        st.session.visible.insert(crate::state::WinId::Subtitle, true);
+        st.session
+            .visible
+            .insert(crate::state::WinId::Subtitle, true);
         st.subtitle.state.locked = true;
         let acts = run_drag_frames(
             &ctx,
@@ -1560,7 +1571,9 @@ mod tests {
         );
         let mut st2 = crate::state::AppUi::new(lt_proto::Settings::default());
         st2.settings.subtitle_mode.enabled = true;
-        st2.session.visible.insert(crate::state::WinId::Subtitle, true);
+        st2.session
+            .visible
+            .insert(crate::state::WinId::Subtitle, true);
         st2.subtitle.state.locked = true;
         let acts2 = run_drag_frames(
             &ctx,
@@ -1585,7 +1598,9 @@ mod tests {
         let ctx = egui::Context::default();
         let mut st = crate::state::AppUi::new(lt_proto::Settings::default());
         st.settings.subtitle_mode.enabled = true;
-        st.session.visible.insert(crate::state::WinId::Subtitle, true);
+        st.session
+            .visible
+            .insert(crate::state::WinId::Subtitle, true);
         // 悬停终态（宿主 Win32 轮询注入同款置位）：顶条按钮可命中
         st.subtitle.state.toolbar_hover = true;
         st.subtitle.state.toolbar_anim = None;
@@ -1616,21 +1631,29 @@ mod tests {
                 events,
                 ..Default::default()
             };
-            let mut out = ctx.run_ui(ri, |ui| crate::windows::subtitle::subtitle_ui(
-                ui,
-                &mut st.subtitle,
-                &mut st.session,
-                &mut st.settings,
-                &mut st.ctx,
-            ));
+            let mut out = ctx.run_ui(ri, |ui| {
+                crate::windows::subtitle::subtitle_ui(
+                    ui,
+                    &mut st.subtitle,
+                    &mut st.session,
+                    &mut st.settings,
+                    &mut st.ctx,
+                )
+            });
             out.textures_delta.clear();
             acts.extend(st.session.drain_actions());
         }
 
         // 隐藏语义：enabled 翻 false + ToggleSubtitle 入队（悬浮窗"字幕"按钮同路径）
-        assert!(!st.settings.subtitle_mode.enabled, "隐藏后 enabled 应为 false");
         assert!(
-            acts.contains(&(crate::state::WinId::Subtitle, crate::state::WinAction::ToggleSubtitle)),
+            !st.settings.subtitle_mode.enabled,
+            "隐藏后 enabled 应为 false"
+        );
+        assert!(
+            acts.contains(&(
+                crate::state::WinId::Subtitle,
+                crate::state::WinAction::ToggleSubtitle
+            )),
             "隐藏应入队 ToggleSubtitle"
         );
         // R7 主张（W5 意图化）：跨域请求置位会话意图；宿主消费（register_panel_apply
@@ -1645,11 +1668,12 @@ mod tests {
             &mut st.session,
             std::time::Instant::now(),
         );
-        assert!(st.panel.state.apply_due_at.is_some(), "宿主消费后应有到期时刻");
+        assert!(
+            st.panel.state.apply_due_at.is_some(),
+            "宿主消费后应有到期时刻"
+        );
         let snap = st
-            .take_due_panel_apply(
-                std::time::Instant::now() + std::time::Duration::from_millis(300),
-            )
+            .take_due_panel_apply(std::time::Instant::now() + std::time::Duration::from_millis(300))
             .expect("脏标记应在 300ms 防抖到期后被消费");
         assert!(!snap.subtitle_mode.enabled, "落盘快照中 enabled 应为 false");
     }

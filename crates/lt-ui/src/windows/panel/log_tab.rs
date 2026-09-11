@@ -59,9 +59,7 @@ fn toolbar(ui: &mut Ui, log: &mut LogUi) {
                 open_log_dir();
             }
             // 复制全部（当前可见行）；成功后短时切换为「已复制 N 行」
-            let flashing = log.logwin
-                .copy_at
-                .is_some_and(|t| t.elapsed() < COPY_FLASH);
+            let flashing = log.logwin.copy_at.is_some_and(|t| t.elapsed() < COPY_FLASH);
             let n_visible = log.logwin.visible_count();
             let copy_label = if flashing {
                 lt_i18n::t("log_copied").replace("{n}", &n_visible.to_string())
@@ -157,10 +155,12 @@ fn latest_log_file_in(dir: &std::path::Path) -> Option<std::path::PathBuf> {
     for e in std::fs::read_dir(dir).ok()?.flatten() {
         let p = e.path();
         let name = p.file_name()?.to_string_lossy().into_owned();
-        if name.starts_with("livetrans_") && name.ends_with(".log")
-            && best.as_ref().is_none_or(|(bn, _)| *bn < name) {
-                best = Some((name, p));
-            }
+        if name.starts_with("livetrans_")
+            && name.ends_with(".log")
+            && best.as_ref().is_none_or(|(bn, _)| *bn < name)
+        {
+            best = Some((name, p));
+        }
     }
     best.map(|(_, p)| p)
 }

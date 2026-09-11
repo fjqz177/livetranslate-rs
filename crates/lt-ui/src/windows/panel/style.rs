@@ -48,7 +48,13 @@ pub fn reset_style(style: &mut Style) {
 // ── UI ──
 
 /// 样式页 UI 总入口
-pub fn page(ui: &mut Ui, session: &mut SessionView, settings: &mut Settings, ctx: &mut UiContext, pal: &Palette) {
+pub fn page(
+    ui: &mut Ui,
+    session: &mut SessionView,
+    settings: &mut Settings,
+    ctx: &mut UiContext,
+    pal: &Palette,
+) {
     // N3/N4：样式页偏离默认提示 + 恢复本页（Style 14 键 + 两把主字体键；
     // 窗口几何（overlay_x 等）不纳入——样式页已有「重置窗口位置」按钮）
     let diffs = crate::panel_diff::diff_paths(settings);
@@ -351,8 +357,7 @@ fn style_pct_row(
     ui.push_id(id, |ui| {
         ui.horizontal(|ui| {
             ui.label(RichText::new(format!("{label} ")).color(ui.visuals().text_color()));
-            let mut pct =
-                (f64::from(*field(&mut settings.style)) / 255.0 * 100.0).round() as i32;
+            let mut pct = (f64::from(*field(&mut settings.style)) / 255.0 * 100.0).round() as i32;
             let resp = ui
                 .add(
                     egui::Slider::new(&mut pct, 0..=100)

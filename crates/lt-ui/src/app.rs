@@ -10,7 +10,7 @@
 //! - 点击穿透由窗口层按 50ms 轮询处理（M4 接入），本宿主只负责窗口创建与 flags。
 
 use crate::state::{
-    push_log_line, initial_visibility, AppUi, ConfirmKind, DownloadUiState, OverlayMessage,
+    initial_visibility, push_log_line, AppUi, ConfirmKind, DownloadUiState, OverlayMessage,
     OverlayMode, PanelPage, StartupFlow, SubtitleFeed, TickKind, WinAction, WinId,
 };
 use crate::tray::{self, Tray};
@@ -19,9 +19,9 @@ use crate::windows::subtitle::{
     clamp_to_screen, is_pos_visible, rects_intersect, resolve_overlap, transparent_desired,
     zone_for_cursor, MonoRect, SubtitleZone,
 };
+use arc_swap::ArcSwap;
 use egui::{Context, ViewportId};
 use egui_wgpu::winit::Painter;
-use arc_swap::ArcSwap;
 use lt_proto::{MonitorSample, Settings, UiEvent, UiMsg};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -521,7 +521,11 @@ impl MultiWindowApp {
     /// 刷新托盘状态行（● 状态 · 引擎 · 模型 · 源 → 目标；原版 status_action）
     fn update_tray_status(&mut self) {
         let s = &self.app_state;
-        let state = if s.session.running { "运行" } else { "暂停" };
+        let state = if s.session.running {
+            "运行"
+        } else {
+            "暂停"
+        };
         let engine = s.overlay.asr_label.clone().unwrap_or_else(|| "--".into());
         let model = s
             .settings
@@ -736,7 +740,8 @@ impl MultiWindowApp {
         hw.window.set_window_level(level);
         #[cfg(windows)]
         {
-            hw.window.set_skip_taskbar(!self.app_state.overlay.ov_taskbar);
+            hw.window
+                .set_skip_taskbar(!self.app_state.overlay.ov_taskbar);
         }
     }
 
@@ -898,10 +903,13 @@ impl MultiWindowApp {
                     w.countdown -= 1;
                 }
                 // 原版 _tick_countdown：归零即自动开始下载，否则按 1s 续拍
-                if matches!(&self.app_state.startup.flow, StartupFlow::Wizard(w) if w.countdown <= 0) {
+                if matches!(&self.app_state.startup.flow, StartupFlow::Wizard(w) if w.countdown <= 0)
+                {
                     self.app_state.wizard_auto_start();
                 } else {
-                    self.app_state.startup.schedule_tick(&mut self.app_state.session, Duration::from_secs(1));
+                    self.app_state
+                        .startup
+                        .schedule_tick(&mut self.app_state.session, Duration::from_secs(1));
                 }
             }
             Action::Finish => {
@@ -993,82 +1001,88 @@ impl MultiWindowApp {
                 }
                 self.redraw(WinId::Panel);
             }
-                // 新识别消息 → 追加到悬浮窗消息链并重绘
-                lt_proto::UiEvent::AddMessage {
+            // 新识别消息 → 追加到悬浮窗消息链并重绘
+            lt_proto::UiEvent::AddMessage {
+                id,
+                timestamp,
+                original,
+                lang,
+                asr_ms,
+            } => {
+                self.app_state.overlay.push_message(OverlayMessage {
                     id,
                     timestamp,
                     original,
                     lang,
                     asr_ms,
-                } => {
-                    self.app_state.overlay.push_message(OverlayMessage {
-                        id,
-                        timestamp,
-                        original,
-                        lang,
-                        asr_ms,
-                        translation: crate::state::TranslationView::Pending,
-                        tl_ms: 0.0,
-                    });
-                    if let Some(hw) = self.find_mut(WinId::Overlay) {
-                        hw.window.request_redraw();
-                    }
+                    translation: crate::state::TranslationView::Pending,
+                    tl_ms: 0.0,
+                });
+                if let Some(hw) = self.find_mut(WinId::Overlay) {
+                    hw.window.request_redraw();
                 }
-                // 流式译文增量（原版 update_streaming；50ms 节流渲染随 M4）
-                lt_proto::UiEvent::UpdateStreaming { id, partial } => {
-                    self.app_state.overlay.update_streaming(&mut self.app_state.session, id, partial);
-                    if let Some(hw) = self.find_mut(WinId::Overlay) {
-                        hw.window.request_redraw();
-                    }
+            }
+            // 流式译文增量（原版 update_streaming；50ms 节流渲染随 M4）
+            lt_proto::UiEvent::UpdateStreaming { id, partial } => {
+                self.app_state
+                    .overlay
+                    .update_streaming(&mut self.app_state.session, id, partial);
+                if let Some(hw) = self.find_mut(WinId::Overlay) {
+                    hw.window.request_redraw();
                 }
-                // 译文完成（W2 起**只表示成功译文**——空串不再流经此处）
-                lt_proto::UiEvent::UpdateTranslation { id, text, tl_ms } => {
-                    self.app_state.overlay.update_translation(id, text.clone(), tl_ms);
-                    if let Some(hw) = self.find_mut(WinId::Overlay) {
-                        hw.window.request_redraw();
-                    }
-                    // W4/方案 §2.5 规则 4（回执闭环）：真的翻出来了 = 装置已恢复，
-                    // 清掉翻译页的红字（此前只写不清，修好后横幅常驻误导用户）
-                    if self.app_state.panel.translator_error.take().is_some() {
-                        self.redraw(WinId::Panel);
-                    }
-                    self.feed_subtitle(id, SubtitleFeed::Translation(&text));
+            }
+            // 译文完成（W2 起**只表示成功译文**——空串不再流经此处）
+            lt_proto::UiEvent::UpdateTranslation { id, text, tl_ms } => {
+                self.app_state
+                    .overlay
+                    .update_translation(id, text.clone(), tl_ms);
+                if let Some(hw) = self.find_mut(WinId::Overlay) {
+                    hw.window.request_redraw();
                 }
-                // W2：同语言免翻译（显式结论；字幕窗喂原文，原版语义）
-                lt_proto::UiEvent::TranslationSkipped { id, reason } => {
-                    self.app_state.overlay.skip_translation(id, reason);
-                    if let Some(hw) = self.find_mut(WinId::Overlay) {
-                        hw.window.request_redraw();
-                    }
-                    self.feed_subtitle(id, SubtitleFeed::Skipped);
+                // W4/方案 §2.5 规则 4（回执闭环）：真的翻出来了 = 装置已恢复，
+                // 清掉翻译页的红字（此前只写不清，修好后横幅常驻误导用户）
+                if self.app_state.panel.translator_error.take().is_some() {
+                    self.redraw(WinId::Panel);
                 }
-                // W2：失败/无输出（带原因；字幕窗按失败态渲染 ⚠ + 警示色而
-                // **不喂原文**——不给"没翻出来"伪装成翻译成功的机会）
-                lt_proto::UiEvent::TranslationFailed {
-                    id,
-                    kind,
-                    detail,
-                    tl_ms,
-                } => {
-                    self.app_state
-                        .overlay
-                        .fail_translation(id, kind, detail, tl_ms);
-                    if let Some(hw) = self.find_mut(WinId::Overlay) {
-                        hw.window.request_redraw();
-                    }
-                    self.feed_subtitle(id, SubtitleFeed::Failed(kind));
+                self.feed_subtitle(id, SubtitleFeed::Translation(&text));
+            }
+            // W2：同语言免翻译（显式结论；字幕窗喂原文，原版语义）
+            lt_proto::UiEvent::TranslationSkipped { id, reason } => {
+                self.app_state.overlay.skip_translation(id, reason);
+                if let Some(hw) = self.find_mut(WinId::Overlay) {
+                    hw.window.request_redraw();
                 }
-                // 翻译/用量统计（原版 update_stats）
-                lt_proto::UiEvent::UpdateStats {
-                    asr_n,
-                    tl_n,
-                    prompt_tokens,
-                    completion_tokens,
-                    cost_cny,
-                    cost_usd,
-                    usage_known,
-                } => {
-                    self.app_state.overlay.update_stats(crate::state::OverlayStats {
+                self.feed_subtitle(id, SubtitleFeed::Skipped);
+            }
+            // W2：失败/无输出（带原因；字幕窗按失败态渲染 ⚠ + 警示色而
+            // **不喂原文**——不给"没翻出来"伪装成翻译成功的机会）
+            lt_proto::UiEvent::TranslationFailed {
+                id,
+                kind,
+                detail,
+                tl_ms,
+            } => {
+                self.app_state
+                    .overlay
+                    .fail_translation(id, kind, detail, tl_ms);
+                if let Some(hw) = self.find_mut(WinId::Overlay) {
+                    hw.window.request_redraw();
+                }
+                self.feed_subtitle(id, SubtitleFeed::Failed(kind));
+            }
+            // 翻译/用量统计（原版 update_stats）
+            lt_proto::UiEvent::UpdateStats {
+                asr_n,
+                tl_n,
+                prompt_tokens,
+                completion_tokens,
+                cost_cny,
+                cost_usd,
+                usage_known,
+            } => {
+                self.app_state
+                    .overlay
+                    .update_stats(crate::state::OverlayStats {
                         asr_n,
                         tl_n,
                         prompt_tokens,
@@ -1077,375 +1091,374 @@ impl MultiWindowApp {
                         cost_usd,
                         usage_known,
                     });
+            }
+            // 翻译装置切换生效（D-85/F2）：面板「当前使用」状态行给一次确认
+            lt_proto::UiEvent::TranslatorSwitched { name, .. } => {
+                self.app_state.panel.state.active_model_note = Some((name, Instant::now()));
+                self.redraw(WinId::Panel);
+            }
+            // ASR 设备标签（悬浮窗 MonitorBar device 段）；同时视作加载框关闭信号
+            //（原版 App.model_load_done 在设备就绪/不可用时都会被调用）
+            lt_proto::UiEvent::AsrDevice(label) => {
+                // D-83：装载成功 = 修复闭环的成功判据 → 自动重试计数清零
+                self.app_state.panel.auto_retry = crate::state::DownloadAutoRetry::default();
+                self.app_state.overlay.asr_label = Some(label);
+                if let Some(t) = &self.tray {
+                    let status = if self.app_state.session.running {
+                        tray::IconStatus::Run
+                    } else {
+                        tray::IconStatus::Pause
+                    };
+                    t.set_status(status);
                 }
-                // 翻译装置切换生效（D-85/F2）：面板「当前使用」状态行给一次确认
-                lt_proto::UiEvent::TranslatorSwitched { name, .. } => {
-                    self.app_state.panel.state.active_model_note =
-                        Some((name, Instant::now()));
-                    self.redraw(WinId::Panel);
+                if let Some(hw) = self.find_mut(WinId::Overlay) {
+                    hw.window.request_redraw();
                 }
-                // ASR 设备标签（悬浮窗 MonitorBar device 段）；同时视作加载框关闭信号
-                //（原版 App.model_load_done 在设备就绪/不可用时都会被调用）
-                lt_proto::UiEvent::AsrDevice(label) => {
-                    // D-83：装载成功 = 修复闭环的成功判据 → 自动重试计数清零
-                    self.app_state.panel.auto_retry = crate::state::DownloadAutoRetry::default();
-                    self.app_state.overlay.asr_label = Some(label);
-                    if let Some(t) = &self.tray {
-                        let status = if self.app_state.session.running {
-                            tray::IconStatus::Run
-                        } else {
-                            tray::IconStatus::Pause
-                        };
-                        t.set_status(status);
-                    }
-                    if let Some(hw) = self.find_mut(WinId::Overlay) {
-                        hw.window.request_redraw();
-                    }
-                    self.close_load_dialog();
+                self.close_load_dialog();
+            }
+            // ASR 完全不可用（沿用原版字面文案）；同样关闭加载框 + 托盘错误图标
+            lt_proto::UiEvent::AsrUnavailable => {
+                self.app_state.overlay.asr_label = Some(lt_i18n::t("asr_unavailable"));
+                if let Some(t) = &self.tray {
+                    t.set_status(tray::IconStatus::Error);
                 }
-                // ASR 完全不可用（沿用原版字面文案）；同样关闭加载框 + 托盘错误图标
-                lt_proto::UiEvent::AsrUnavailable => {
-                    self.app_state.overlay.asr_label = Some(lt_i18n::t("asr_unavailable"));
-                    if let Some(t) = &self.tray {
-                        t.set_status(tray::IconStatus::Error);
-                    }
-                    if let Some(hw) = self.find_mut(WinId::Overlay) {
-                        hw.window.request_redraw();
-                    }
-                    self.close_load_dialog();
+                if let Some(hw) = self.find_mut(WinId::Overlay) {
+                    hw.window.request_redraw();
                 }
-                // 翻译装置配置无效：状态行红字（翻译页）+ 日志已由 pipeline 落
-                lt_proto::UiEvent::TranslatorUnavailable { reason } => {
-                    self.app_state.panel.translator_error = Some(reason);
-                    self.redraw(WinId::Panel);
-                }
-                // 翻译装置运行期降级回执（2026-09-10 第二轮评审 item 5 / 用户裁决）：
-                // 回退阶梯试完全部关闭形态仍关不掉思维链 → 界面按"一比一"取消该模型
-                // 的「关闭模型思考」勾选、写入持久化标记 `thinking_unavailable`，
-                // 并落盘走既有设置链路（mark_settings_dirty → 宿主 about_to_wait
-                // register_panel_apply 300ms 防抖 → Cmd::ApplySettings → shell 保存）。
-                // 阶梯最终成功关闭（cannot_disable_thinking=false）→ 不动（裁决 5）。
-                lt_proto::UiEvent::TranslatorDegraded {
-                    name,
-                    api_base,
-                    model,
-                    actual,
-                    cannot_disable_thinking,
-                } => {
-                    tracing::warn!(
-                        "翻译装置降级: {name}（{api_base} / {model}）实际在用 {actual}，\
+                self.close_load_dialog();
+            }
+            // 翻译装置配置无效：状态行红字（翻译页）+ 日志已由 pipeline 落
+            lt_proto::UiEvent::TranslatorUnavailable { reason } => {
+                self.app_state.panel.translator_error = Some(reason);
+                self.redraw(WinId::Panel);
+            }
+            // 翻译装置运行期降级回执（2026-09-10 第二轮评审 item 5 / 用户裁决）：
+            // 回退阶梯试完全部关闭形态仍关不掉思维链 → 界面按"一比一"取消该模型
+            // 的「关闭模型思考」勾选、写入持久化标记 `thinking_unavailable`，
+            // 并落盘走既有设置链路（mark_settings_dirty → 宿主 about_to_wait
+            // register_panel_apply 300ms 防抖 → Cmd::ApplySettings → shell 保存）。
+            // 阶梯最终成功关闭（cannot_disable_thinking=false）→ 不动（裁决 5）。
+            lt_proto::UiEvent::TranslatorDegraded {
+                name,
+                api_base,
+                model,
+                actual,
+                cannot_disable_thinking,
+            } => {
+                tracing::warn!(
+                    "翻译装置降级: {name}（{api_base} / {model}）实际在用 {actual}，\
                          关不掉思考={cannot_disable_thinking}"
+                );
+                if cannot_disable_thinking {
+                    // (api_base, model) 双键定位（同名模型不误伤）——纯函数在
+                    // state.rs，带回执落点单测
+                    let matched = crate::state::apply_translator_degraded(
+                        &mut self.app_state.settings,
+                        &api_base,
+                        &model,
                     );
-                    if cannot_disable_thinking {
-                        // (api_base, model) 双键定位（同名模型不误伤）——纯函数在
-                        // state.rs，带回执落点单测
-                        let matched = crate::state::apply_translator_degraded(
-                            &mut self.app_state.settings,
-                            &api_base,
-                            &model,
+                    // 编辑器打开中且指向同一条目 → 草稿同步（否则"确定"一次会把
+                    // 标记与取消勾选一并抹掉，回执闭环失效）
+                    if let Some(ed) = self.app_state.panel.state.model_editor.as_mut() {
+                        if ed.api_base.trim() == api_base.trim() && ed.model.trim() == model.trim()
+                        {
+                            ed.apply_thinking_unavailable();
+                        }
+                    }
+                    if matched {
+                        crate::windows::panel::mark_settings_dirty(&mut self.app_state.session);
+                    }
+                    self.redraw(WinId::Panel);
+                }
+            }
+            // 连接测试回执（D-85：按 probe_id 归位——迟到/被取代者一律丢弃，
+            // 否则旧探测的结果会顶替新探测的状态）
+            lt_proto::UiEvent::TestTranslatorResult {
+                probe_id,
+                name,
+                outcome,
+                ms,
+                step_note,
+                preview,
+            } => {
+                let adopted = self
+                    .app_state
+                    .panel
+                    .probe
+                    .settle_from_receipt(probe_id, name, outcome, ms, step_note, preview);
+                if !adopted {
+                    tracing::debug!("丢弃过期连接测试回执 #{probe_id}");
+                }
+                self.redraw(WinId::Panel);
+            }
+            // ── 启动流：下载进度（向导/缺模型对话框共用；W2 类型化，
+            // 人读行由本臂按原格式生成；进度条直取事件字段）──
+            lt_proto::UiEvent::Download(ev) => {
+                let human = format_download_line(&ev);
+                match &mut self.app_state.startup.flow {
+                    StartupFlow::Wizard(w) => push_log_line(&mut w.log, human),
+                    StartupFlow::DownloadMissing { log, .. } => push_log_line(log, human),
+                    StartupFlow::Ready => {
+                        // D-19 直进主界面 → 运行期下载：进度写识别页缓存卡片
+                        self.app_state.panel.download.apply_progress(
+                            ev.file.clone(),
+                            ev.index,
+                            ev.count,
+                            ev.done,
+                            ev.total.unwrap_or(0),
                         );
-                        // 编辑器打开中且指向同一条目 → 草稿同步（否则"确定"一次会把
-                        // 标记与取消勾选一并抹掉，回执闭环失效）
-                        if let Some(ed) = self.app_state.panel.state.model_editor.as_mut() {
-                            if ed.api_base.trim() == api_base.trim()
-                                && ed.model.trim() == model.trim()
-                            {
-                                ed.apply_thinking_unavailable();
-                            }
-                        }
-                        if matched {
-                            crate::windows::panel::mark_settings_dirty(
-                                &mut self.app_state.session,
-                            );
-                        }
+                        self.app_state.panel.download.push_log(human);
                         self.redraw(WinId::Panel);
                     }
                 }
-                // 连接测试回执（D-85：按 probe_id 归位——迟到/被取代者一律丢弃，
-                // 否则旧探测的结果会顶替新探测的状态）
-                lt_proto::UiEvent::TestTranslatorResult {
-                    probe_id,
-                    name,
-                    outcome,
-                    ms,
-                    step_note,
-                    preview,
-                } => {
-                    let adopted = self.app_state.panel.probe.settle_from_receipt(
-                        probe_id, name, outcome, ms, step_note, preview,
-                    );
-                    if !adopted {
-                        tracing::debug!("丢弃过期连接测试回执 #{probe_id}");
+                self.redraw_setup();
+            }
+            // ── 启动流：下载失败（可重试；恢复控件 / 显示"关闭"按钮）──
+            lt_proto::UiEvent::DownloadFailed { kind, message } => {
+                let failed_line = lt_i18n::t("download_failed").replace("{error}", &message);
+                match &mut self.app_state.startup.flow {
+                    StartupFlow::Wizard(w) => {
+                        w.phase = crate::state::WizardPhase::Failed;
+                        push_log_line(&mut w.log, failed_line);
                     }
-                    self.redraw(WinId::Panel);
-                }
-                // ── 启动流：下载进度（向导/缺模型对话框共用；W2 类型化，
-                // 人读行由本臂按原格式生成；进度条直取事件字段）──
-                lt_proto::UiEvent::Download(ev) => {
-                    let human = format_download_line(&ev);
-                    match &mut self.app_state.startup.flow {
-                        StartupFlow::Wizard(w) => push_log_line(&mut w.log, human),
-                        StartupFlow::DownloadMissing { log, .. } => push_log_line(log, human),
-                        StartupFlow::Ready => {
-                            // D-19 直进主界面 → 运行期下载：进度写识别页缓存卡片
-                            self.app_state.panel.download.apply_progress(
-                                ev.file.clone(),
-                                ev.index,
-                                ev.count,
-                                ev.done,
-                                ev.total.unwrap_or(0),
-                            );
-                            self.app_state.panel.download.push_log(human);
-                            self.redraw(WinId::Panel);
-                        }
+                    StartupFlow::DownloadMissing { failed, log, .. } => {
+                        *failed = Some(message);
+                        push_log_line(log, failed_line);
                     }
-                    self.redraw_setup();
-                }
-                // ── 启动流：下载失败（可重试；恢复控件 / 显示"关闭"按钮）──
-                lt_proto::UiEvent::DownloadFailed { kind, message } => {
-                    let failed_line = lt_i18n::t("download_failed").replace("{error}", &message);
-                    match &mut self.app_state.startup.flow {
-                        StartupFlow::Wizard(w) => {
-                            w.phase = crate::state::WizardPhase::Failed;
-                            push_log_line(&mut w.log, failed_line);
-                        }
-                        StartupFlow::DownloadMissing { failed, log, .. } => {
-                            *failed = Some(message);
-                            push_log_line(log, failed_line);
-                        }
-                        StartupFlow::Ready => {
-                            // 运行期下载失败：分类提示 + 历史日志收进卡片（P0-1/P1-6）
-                            let mut log = match &self.app_state.panel.download {
-                                DownloadUiState::Downloading { log, .. }
-                                | DownloadUiState::Cancelled { log }
-                                | DownloadUiState::Failed { log, .. } => log.clone(),
-                                _ => Vec::new(),
-                            };
-                            log.push(failed_line.clone());
-                            self.app_state.panel.download =
-                                DownloadUiState::Failed { kind, detail: message.clone(), log };
-                            // DL-6/F12：磁盘内容已变，探测缓存失效
-                            self.app_state.panel.state.cache_probe = None;
-                            // D-83 §2.3：自动重试（上限 3 次；磁盘/取消不自动）。
-                            // 用尽仍失败 → 提醒用户（卡片保持失败态 + 原生通知）
-                            if !self.schedule_auto_retry(crate::state::download_failure_retryable(kind))
-                            {
-                                self.notify_repair_giveup(&message);
-                            }
-                            self.redraw(WinId::Panel);
-                        }
-                    }
-                    self.redraw_setup();
-                }
-                // ── 下载取消（DL-4/D-23：卡片进「已取消，进度已保留」态）──
-                lt_proto::UiEvent::DownloadCancelled => {
-                    // 启动流（向导/缺模型）无取消入口，仅运行期卡片处理
-                    if let StartupFlow::Ready = self.app_state.startup.flow {
+                    StartupFlow::Ready => {
+                        // 运行期下载失败：分类提示 + 历史日志收进卡片（P0-1/P1-6）
                         let mut log = match &self.app_state.panel.download {
                             DownloadUiState::Downloading { log, .. }
                             | DownloadUiState::Cancelled { log }
                             | DownloadUiState::Failed { log, .. } => log.clone(),
                             _ => Vec::new(),
                         };
-                        log.push(lt_i18n::t("download_cancelled_title").to_string());
-                        self.app_state.panel.download = DownloadUiState::Cancelled { log };
+                        log.push(failed_line.clone());
+                        self.app_state.panel.download = DownloadUiState::Failed {
+                            kind,
+                            detail: message.clone(),
+                            log,
+                        };
                         // DL-6/F12：磁盘内容已变，探测缓存失效
+                        self.app_state.panel.state.cache_probe = None;
+                        // D-83 §2.3：自动重试（上限 3 次；磁盘/取消不自动）。
+                        // 用尽仍失败 → 提醒用户（卡片保持失败态 + 原生通知）
+                        if !self.schedule_auto_retry(crate::state::download_failure_retryable(kind))
+                        {
+                            self.notify_repair_giveup(&message);
+                        }
+                        self.redraw(WinId::Panel);
+                    }
+                }
+                self.redraw_setup();
+            }
+            // ── 下载取消（DL-4/D-23：卡片进「已取消，进度已保留」态）──
+            lt_proto::UiEvent::DownloadCancelled => {
+                // 启动流（向导/缺模型）无取消入口，仅运行期卡片处理
+                if let StartupFlow::Ready = self.app_state.startup.flow {
+                    let mut log = match &self.app_state.panel.download {
+                        DownloadUiState::Downloading { log, .. }
+                        | DownloadUiState::Cancelled { log }
+                        | DownloadUiState::Failed { log, .. } => log.clone(),
+                        _ => Vec::new(),
+                    };
+                    log.push(lt_i18n::t("download_cancelled_title").to_string());
+                    self.app_state.panel.download = DownloadUiState::Cancelled { log };
+                    // DL-6/F12：磁盘内容已变，探测缓存失效
+                    self.app_state.panel.state.cache_probe = None;
+                    self.redraw(WinId::Panel);
+                }
+            }
+            // ── D-83 模型完整性故障（零信任加载闸门）──
+            // Hash：坏文件已隔离 → 探测判缺 → 计数内自动重下；
+            // Unloadable：指纹一致仍加载失败（重下无解）→ 只提醒
+            lt_proto::UiEvent::ModelIntegrityFailed { model, fault } => {
+                self.on_model_integrity_failed(model, fault);
+            }
+            // ── 启动流：下载成功（应用下发设置 + 500ms 后收尾关窗）──
+            lt_proto::UiEvent::DownloadSucceeded { .. } => {
+                // DL-4/DEC-4：UI 是 settings 事实源，不再用事件载荷覆盖本状态
+                //（F6 回踩）；落盘走单写者 shell.persist_settings——启动流在此
+                // 发 PersistSettings，运行期由 AppShell 重发 SwitchEngine 顺带落盘
+                if !matches!(self.app_state.startup.flow, StartupFlow::Ready) {
+                    let s = self.app_state.settings.clone();
+                    self.app_state
+                        .session
+                        .send_cmd(lt_proto::Cmd::PersistSettings(Box::new(s)));
+                }
+                let done_line = lt_i18n::t("download_complete");
+                match &mut self.app_state.startup.flow {
+                    StartupFlow::Wizard(w) => {
+                        push_log_line(&mut w.log, done_line);
+                        w.phase = crate::state::WizardPhase::Done;
+                    }
+                    StartupFlow::DownloadMissing { log, finished, .. } => {
+                        push_log_line(log, done_line);
+                        *finished = true;
+                    }
+                    StartupFlow::Ready => {
+                        // 运行期下载成功：卡片回到已缓存（探测缓存已失效，
+                        // 下一次渲染重扫磁盘翻转）+ 引擎热切换由 AppShell 处理
+                        self.app_state.panel.download = DownloadUiState::Idle;
                         self.app_state.panel.state.cache_probe = None;
                         self.redraw(WinId::Panel);
                     }
                 }
-                // ── D-83 模型完整性故障（零信任加载闸门）──
-                // Hash：坏文件已隔离 → 探测判缺 → 计数内自动重下；
-                // Unloadable：指纹一致仍加载失败（重下无解）→ 只提醒
-                lt_proto::UiEvent::ModelIntegrityFailed { model, fault } => {
-                    self.on_model_integrity_failed(model, fault);
-                }
-                // ── 启动流：下载成功（应用下发设置 + 500ms 后收尾关窗）──
-                lt_proto::UiEvent::DownloadSucceeded { .. } => {
-                    // DL-4/DEC-4：UI 是 settings 事实源，不再用事件载荷覆盖本状态
-                    //（F6 回踩）；落盘走单写者 shell.persist_settings——启动流在此
-                    // 发 PersistSettings，运行期由 AppShell 重发 SwitchEngine 顺带落盘
-                    if !matches!(self.app_state.startup.flow, StartupFlow::Ready) {
-                        let s = self.app_state.settings.clone();
-                        self.app_state
-                            .session
-                            .send_cmd(lt_proto::Cmd::PersistSettings(Box::new(s)));
-                    }
-                    let done_line = lt_i18n::t("download_complete");
+                // 原版 QTimer.singleShot(500, accept)：安排 500ms 收尾节拍
+                self.app_state
+                    .startup
+                    .cancel_tick(&mut self.app_state.session);
+                self.app_state
+                    .startup
+                    .schedule_tick(&mut self.app_state.session, Duration::from_millis(500));
+                self.redraw_setup();
+            }
+            // 日志行（常驻桥接线程全程转发 → 日志窗；级别过滤在窗口状态内）。
+            // target=="download"：下载人读行（W2）——除日志窗外同步进
+            // 向导日志 / 识别页下载卡片（原 DownloadProgress 的日志面）
+            lt_proto::UiEvent::LogLine { level, target, msg } => {
+                if target == "download" {
                     match &mut self.app_state.startup.flow {
-                        StartupFlow::Wizard(w) => {
-                            push_log_line(&mut w.log, done_line);
-                            w.phase = crate::state::WizardPhase::Done;
-                        }
-                        StartupFlow::DownloadMissing { log, finished, .. } => {
-                            push_log_line(log, done_line);
-                            *finished = true;
-                        }
+                        StartupFlow::Wizard(w) => push_log_line(&mut w.log, msg.clone()),
+                        StartupFlow::DownloadMissing { log, .. } => push_log_line(log, msg.clone()),
                         StartupFlow::Ready => {
-                            // 运行期下载成功：卡片回到已缓存（探测缓存已失效，
-                            // 下一次渲染重扫磁盘翻转）+ 引擎热切换由 AppShell 处理
-                            self.app_state.panel.download = DownloadUiState::Idle;
-                            self.app_state.panel.state.cache_probe = None;
+                            self.app_state.panel.download.push_log(msg.clone());
                             self.redraw(WinId::Panel);
                         }
                     }
-                    // 原版 QTimer.singleShot(500, accept)：安排 500ms 收尾节拍
-                    self.app_state.startup.cancel_tick(&mut self.app_state.session);
-                    self.app_state
-                        .startup
-                        .schedule_tick(&mut self.app_state.session, Duration::from_millis(500));
                     self.redraw_setup();
                 }
-                // 日志行（常驻桥接线程全程转发 → 日志窗；级别过滤在窗口状态内）。
-                // target=="download"：下载人读行（W2）——除日志窗外同步进
-                // 向导日志 / 识别页下载卡片（原 DownloadProgress 的日志面）
-                lt_proto::UiEvent::LogLine { level, target, msg } => {
-                    if target == "download" {
-                        match &mut self.app_state.startup.flow {
-                            StartupFlow::Wizard(w) => push_log_line(&mut w.log, msg.clone()),
-                            StartupFlow::DownloadMissing { log, .. } => {
-                                push_log_line(log, msg.clone())
-                            }
-                            StartupFlow::Ready => {
-                                self.app_state.panel.download.push_log(msg.clone());
-                                self.redraw(WinId::Panel);
-                            }
-                        }
-                        self.redraw_setup();
-                    }
-                    if self.app_state.log.logwin.push(crate::state::LogLineEntry {
-                        time: chrono::Local::now().format("%H:%M:%S").to_string(),
-                        level,
-                        target,
-                        msg,
-                    }) {
-                        self.redraw(WinId::Log);
-                        // LT-5：面板「日志」tab 与日志窗共用同一缓冲——该 tab
-                        // 正在展示时一并重绘，否则面板无输入事件不刷新，新日志
-                        // 落不到画面（观感为"日志卡住"）
-                        if self.app_state.panel.state.page == PanelPage::Log
-                            && self.visible.get(&WinId::Panel).copied()
-                                .unwrap_or(false)
-                        {
-                            self.redraw(WinId::Panel);
-                        }
-                    }
-                }
-                // ── 性能基准流（W2：Line 逐行 → 基准窗渲染；Finished 复位
-                // 运行态 + 完成提示——替代 LogLine[benchmark] + 完成哨兵）──
-                lt_proto::UiEvent::Bench(ev) => match ev {
-                    lt_proto::BenchEvent::Line(l) => {
-                        self.app_state.bench.push_line(l);
-                        self.redraw(WinId::Benchmark);
-                    }
-                    lt_proto::BenchEvent::Finished { ok, elapsed_ms } => {
-                        self.app_state.bench.push_line(format!(
-                            "=== {} ({elapsed_ms}ms) ===",
-                            lt_i18n::t("bench_done_title")
-                        ));
-                        self.redraw(WinId::Benchmark);
-                        if self.app_state.bench.running {
-                            self.app_state.bench.running = false;
-                            tracing::info!("性能基准完成（ok={ok}，{elapsed_ms}ms）");
-                            // D-33/H-5：完成提示改原生通知（原位 rfd 同步框
-                            // 在事件循环线程内阻塞）
-                            if let Err(e) = crate::notifications::show(
-                                &lt_i18n::t("bench_done_title"),
-                                &lt_i18n::t("bench_done_msg"),
-                            ) {
-                                tracing::warn!("基准完成提示（原生通知）失败: {e}");
-                            }
-                        }
-                    }
-                },
-                // ── 有界队列水位（R15②：翻译池丢最旧段——日志窗可见告警；
-                // 队列原语内部已按同节奏落 tracing warn，此事件保证类型化
-                // 信号存在，W5 起的呈现深化钩子）──
-                lt_proto::UiEvent::QueuePressure { queue, dropped_total } => {
-                    let text = format!(
-                        "{}（{queue:?}，累计丢弃 {dropped_total}）",
-                        lt_i18n::t("queue_pressure")
-                            .replace("{dropped}", &dropped_total.to_string())
-                    );
-                    self.push_log_line(30, "queue", &text);
-                }
-                // ── 音频采集可用性（架构 2.0 W1/R4/D-62）：日志窗可见告警。
-                // 事件本身边沿触发（Unavailable 转坏一次/Recovered 转好一次），
-                // 语义对齐 AsrUnavailable；面板设备卡片深化呈现随 W5 ──
-                lt_proto::UiEvent::Capture(ev) => {
-                    use lt_proto::{AudioRole, CaptureEvent};
-                    let (key, role, detail, level) = match ev {
-                        CaptureEvent::Unavailable { role, error } => {
-                            tracing::warn!("音频采集不可用: {role:?} {error}");
-                            ("capture_unavailable", role, error, 30u8)
-                        }
-                        CaptureEvent::Recovered { role } => {
-                            tracing::info!("音频采集已恢复: {role:?}");
-                            ("capture_recovered", role, String::new(), 20u8)
-                        }
-                    };
-                    let role_text = match role {
-                        AudioRole::Loopback => lt_i18n::t("capture_role_loopback"),
-                        AudioRole::Mic => lt_i18n::t("capture_role_mic"),
-                    };
-                    let text = if detail.is_empty() {
-                        format!("{}（{role_text}）", lt_i18n::t(key))
-                    } else {
-                        format!("{}（{role_text}）：{detail}", lt_i18n::t(key))
-                    };
-                    self.push_log_line(level, "capture", &text);
-                }
-                // ── 被监督线程死亡（架构 2.0 W1/R1/D-62）：线程 panic 不再黑洞
-                // ——panic 详情由 hook 落 crash 文件与 tracing，此处日志窗可见 ──
-                lt_proto::UiEvent::ThreadDied(d) => {
-                    tracing::error!(
-                        "线程死亡: {:?} restarted={} detail={}",
-                        d.role,
-                        d.restarted,
-                        d.detail
-                    );
-                    let state = if d.restarted {
-                        lt_i18n::t("thread_restarted")
-                    } else {
-                        lt_i18n::t("thread_not_restarted")
-                    };
-                    let text = format!("{}（{state}）：{}", lt_i18n::t("thread_died"), d.detail);
-                    self.push_log_line(40, "supervisor", &text);
-                }
-                // ── 模型加载对话框打开（标题固定 "LiveTranslate"）──
-                lt_proto::UiEvent::ModelLoadStart(label) => {
-                    self.app_state.startup.load_dialog = Some(label);
-                    self.set_visible(WinId::Setup, true);
-                    self.set_setup_title("LiveTranslate");
-                    self.redraw_setup();
-                }
-                // ── 模型加载结束：关闭加载框（仅 load_dialog 显示中才动作）──
-                lt_proto::UiEvent::ModelLoadDone { .. } => self.close_load_dialog(),
-                // ── 音频设备枚举回执（W5/R13）：`Cmd::RefreshDevices` 的响应——
-                // 面板识别页设备缓存替换为事件载荷（帧内 COM 枚举已下线）；
-                // 空表也落 Ready（收敛在途态，避免 Probe 重发）──
-                lt_proto::UiEvent::Devices(list) => {
-                    self.app_state.panel.state.devices =
-                        crate::state::DevicesState::Ready(list);
-                    self.redraw(WinId::Panel);
-                }
-                // ── 导出保存路径回执（W5/R19）：rfd 对话框在编排域一次性线程
-                // 弹出（事件循环零阻塞）；选中后按模式组行写文件 ──
-                lt_proto::UiEvent::ExportSave { mode, path } => {
-                    if let Some(path) = path {
-                        self.write_export_file(&path, mode);
-                    }
-                }
-                // ── 字幕背景图路径回执（W5/R19）：同上；选中即写设置 + 防抖 ──
-                lt_proto::UiEvent::BgImagePicked { path } => {
-                    if let Some(path) = path {
-                        self.app_state.settings.subtitle_mode.bg_image = path;
-                        crate::windows::panel::mark_settings_dirty(
-                            &mut self.app_state.session,
-                        );
+                if self.app_state.log.logwin.push(crate::state::LogLineEntry {
+                    time: chrono::Local::now().format("%H:%M:%S").to_string(),
+                    level,
+                    target,
+                    msg,
+                }) {
+                    self.redraw(WinId::Log);
+                    // LT-5：面板「日志」tab 与日志窗共用同一缓冲——该 tab
+                    // 正在展示时一并重绘，否则面板无输入事件不刷新，新日志
+                    // 落不到画面（观感为"日志卡住"）
+                    if self.app_state.panel.state.page == PanelPage::Log
+                        && self.visible.get(&WinId::Panel).copied().unwrap_or(false)
+                    {
                         self.redraw(WinId::Panel);
                     }
                 }
+            }
+            // ── 性能基准流（W2：Line 逐行 → 基准窗渲染；Finished 复位
+            // 运行态 + 完成提示——替代 LogLine[benchmark] + 完成哨兵）──
+            lt_proto::UiEvent::Bench(ev) => match ev {
+                lt_proto::BenchEvent::Line(l) => {
+                    self.app_state.bench.push_line(l);
+                    self.redraw(WinId::Benchmark);
+                }
+                lt_proto::BenchEvent::Finished { ok, elapsed_ms } => {
+                    self.app_state.bench.push_line(format!(
+                        "=== {} ({elapsed_ms}ms) ===",
+                        lt_i18n::t("bench_done_title")
+                    ));
+                    self.redraw(WinId::Benchmark);
+                    if self.app_state.bench.running {
+                        self.app_state.bench.running = false;
+                        tracing::info!("性能基准完成（ok={ok}，{elapsed_ms}ms）");
+                        // D-33/H-5：完成提示改原生通知（原位 rfd 同步框
+                        // 在事件循环线程内阻塞）
+                        if let Err(e) = crate::notifications::show(
+                            &lt_i18n::t("bench_done_title"),
+                            &lt_i18n::t("bench_done_msg"),
+                        ) {
+                            tracing::warn!("基准完成提示（原生通知）失败: {e}");
+                        }
+                    }
+                }
+            },
+            // ── 有界队列水位（R15②：翻译池丢最旧段——日志窗可见告警；
+            // 队列原语内部已按同节奏落 tracing warn，此事件保证类型化
+            // 信号存在，W5 起的呈现深化钩子）──
+            lt_proto::UiEvent::QueuePressure {
+                queue,
+                dropped_total,
+            } => {
+                let text = format!(
+                    "{}（{queue:?}，累计丢弃 {dropped_total}）",
+                    lt_i18n::t("queue_pressure").replace("{dropped}", &dropped_total.to_string())
+                );
+                self.push_log_line(30, "queue", &text);
+            }
+            // ── 音频采集可用性（架构 2.0 W1/R4/D-62）：日志窗可见告警。
+            // 事件本身边沿触发（Unavailable 转坏一次/Recovered 转好一次），
+            // 语义对齐 AsrUnavailable；面板设备卡片深化呈现随 W5 ──
+            lt_proto::UiEvent::Capture(ev) => {
+                use lt_proto::{AudioRole, CaptureEvent};
+                let (key, role, detail, level) = match ev {
+                    CaptureEvent::Unavailable { role, error } => {
+                        tracing::warn!("音频采集不可用: {role:?} {error}");
+                        ("capture_unavailable", role, error, 30u8)
+                    }
+                    CaptureEvent::Recovered { role } => {
+                        tracing::info!("音频采集已恢复: {role:?}");
+                        ("capture_recovered", role, String::new(), 20u8)
+                    }
+                };
+                let role_text = match role {
+                    AudioRole::Loopback => lt_i18n::t("capture_role_loopback"),
+                    AudioRole::Mic => lt_i18n::t("capture_role_mic"),
+                };
+                let text = if detail.is_empty() {
+                    format!("{}（{role_text}）", lt_i18n::t(key))
+                } else {
+                    format!("{}（{role_text}）：{detail}", lt_i18n::t(key))
+                };
+                self.push_log_line(level, "capture", &text);
+            }
+            // ── 被监督线程死亡（架构 2.0 W1/R1/D-62）：线程 panic 不再黑洞
+            // ——panic 详情由 hook 落 crash 文件与 tracing，此处日志窗可见 ──
+            lt_proto::UiEvent::ThreadDied(d) => {
+                tracing::error!(
+                    "线程死亡: {:?} restarted={} detail={}",
+                    d.role,
+                    d.restarted,
+                    d.detail
+                );
+                let state = if d.restarted {
+                    lt_i18n::t("thread_restarted")
+                } else {
+                    lt_i18n::t("thread_not_restarted")
+                };
+                let text = format!("{}（{state}）：{}", lt_i18n::t("thread_died"), d.detail);
+                self.push_log_line(40, "supervisor", &text);
+            }
+            // ── 模型加载对话框打开（标题固定 "LiveTranslate"）──
+            lt_proto::UiEvent::ModelLoadStart(label) => {
+                self.app_state.startup.load_dialog = Some(label);
+                self.set_visible(WinId::Setup, true);
+                self.set_setup_title("LiveTranslate");
+                self.redraw_setup();
+            }
+            // ── 模型加载结束：关闭加载框（仅 load_dialog 显示中才动作）──
+            lt_proto::UiEvent::ModelLoadDone { .. } => self.close_load_dialog(),
+            // ── 音频设备枚举回执（W5/R13）：`Cmd::RefreshDevices` 的响应——
+            // 面板识别页设备缓存替换为事件载荷（帧内 COM 枚举已下线）；
+            // 空表也落 Ready（收敛在途态，避免 Probe 重发）──
+            lt_proto::UiEvent::Devices(list) => {
+                self.app_state.panel.state.devices = crate::state::DevicesState::Ready(list);
+                self.redraw(WinId::Panel);
+            }
+            // ── 导出保存路径回执（W5/R19）：rfd 对话框在编排域一次性线程
+            // 弹出（事件循环零阻塞）；选中后按模式组行写文件 ──
+            lt_proto::UiEvent::ExportSave { mode, path } => {
+                if let Some(path) = path {
+                    self.write_export_file(&path, mode);
+                }
+            }
+            // ── 字幕背景图路径回执（W5/R19）：同上；选中即写设置 + 防抖 ──
+            lt_proto::UiEvent::BgImagePicked { path } => {
+                if let Some(path) = path {
+                    self.app_state.settings.subtitle_mode.bg_image = path;
+                    crate::windows::panel::mark_settings_dirty(&mut self.app_state.session);
+                    self.redraw(WinId::Panel);
+                }
+            }
         }
     }
 
@@ -1461,8 +1474,7 @@ impl MultiWindowApp {
         }) {
             self.redraw(WinId::Log);
             if self.app_state.panel.state.page == PanelPage::Log
-                && self.visible.get(&WinId::Panel).copied()
-                    .unwrap_or(false)
+                && self.visible.get(&WinId::Panel).copied().unwrap_or(false)
             {
                 self.redraw(WinId::Panel);
             }
@@ -1497,11 +1509,17 @@ impl MultiWindowApp {
         let mut tl = std::collections::BTreeMap::new();
         let failed = match feed {
             SubtitleFeed::Translation(text) => {
-                tl.insert(self.app_state.settings.target_language.clone(), text.to_string());
+                tl.insert(
+                    self.app_state.settings.target_language.clone(),
+                    text.to_string(),
+                );
                 None
             }
             SubtitleFeed::Skipped => {
-                tl.insert(self.app_state.settings.target_language.clone(), original.clone());
+                tl.insert(
+                    self.app_state.settings.target_language.clone(),
+                    original.clone(),
+                );
                 None
             }
             SubtitleFeed::Failed(kind) => Some(kind),
@@ -1541,9 +1559,8 @@ impl MultiWindowApp {
                             }
                             let pos = window.outer_position().ok()?;
                             unsafe {
-                                let _ = ::windows::Win32::UI::Input::KeyboardAndMouse::SetCapture(
-                                    hwnd,
-                                );
+                                let _ =
+                                    ::windows::Win32::UI::Input::KeyboardAndMouse::SetCapture(hwnd);
                             };
                             Some((pt.x - pos.x, pt.y - pos.y))
                         });
@@ -1597,14 +1614,17 @@ impl MultiWindowApp {
                             crate::notifications::show_subtitle_hint();
                         }
                         // D-36：可见即续 100ms 分区穿透/悬停轮询（不再仅穿透开启时）
-                        self.app_state.subtitle.schedule_window_poll(&mut self.app_state.session);
+                        self.app_state
+                            .subtitle
+                            .schedule_window_poll(&mut self.app_state.session);
                     }
                 }
                 WinAction::ApplyOverlayFlags => {
                     self.apply_overlay_flags();
                 }
                 WinAction::ToggleMode => {
-                    let compact = self.app_state.overlay.state.mode == crate::state::OverlayMode::Compact;
+                    let compact =
+                        self.app_state.overlay.state.mode == crate::state::OverlayMode::Compact;
                     let cur_h = window
                         .inner_size()
                         .to_logical::<f32>(window.scale_factor())
@@ -1735,7 +1755,9 @@ impl MultiWindowApp {
                             f64::from(y),
                         ));
                     }
-                    self.app_state.subtitle.schedule_pos_save(&mut self.app_state.session, (x, y));
+                    self.app_state
+                        .subtitle
+                        .schedule_pos_save(&mut self.app_state.session, (x, y));
                 }
                 WinAction::ResetSubtitlePos => {
                     // D-36 字幕窗复位（顶条右键菜单/字幕页按钮）：回 (100,100)，
@@ -1895,7 +1917,9 @@ impl MultiWindowApp {
                     f64::from(nx),
                     f64::from(ny),
                 ));
-            self.app_state.subtitle.schedule_pos_save(&mut self.app_state.session, (nx, ny));
+            self.app_state
+                .subtitle
+                .schedule_pos_save(&mut self.app_state.session, (nx, ny));
         }
     }
 
@@ -2220,11 +2244,13 @@ impl MultiWindowApp {
             chrono::Local::now().format("%Y%m%d_%H%M%S"),
             mode.suffix()
         );
-        self.app_state.session.send_cmd(lt_proto::Cmd::PickExportFile {
-            mode,
-            default_name,
-            dialog_title: lt_i18n::t("export_dialog_title"),
-        });
+        self.app_state
+            .session
+            .send_cmd(lt_proto::Cmd::PickExportFile {
+                mode,
+                default_name,
+                dialog_title: lt_i18n::t("export_dialog_title"),
+            });
     }
 
     /// 导出写文件（`UiEvent::ExportSave` 回执后执行；三种模式行格式不变）
@@ -2250,8 +2276,14 @@ impl MultiWindowApp {
                 }
             }
         }
-        let body = lines.join("
-").trim_end().to_string() + "
+        let body = lines
+            .join(
+                "
+",
+            )
+            .trim_end()
+            .to_string()
+            + "
 ";
         if let Err(e) = std::fs::write(path, body) {
             tracing::error!("{}: {e}", lt_i18n::t("export_failed"));
@@ -2269,7 +2301,9 @@ impl MultiWindowApp {
             TickKind::Monitor,
             Instant::now() + Duration::from_secs(1),
         );
-        self.app_state.startup.kick_tick(&mut self.app_state.session);
+        self.app_state
+            .startup
+            .kick_tick(&mut self.app_state.session);
         if self.app_state.overlay.ov_click_through {
             self.app_state
                 .overlay
@@ -2294,9 +2328,10 @@ impl MultiWindowApp {
     /// 在监视节拍触发时调用。CPU 占用需两次采样才有意义，首次为 0 属预期。
     fn sample_system(&mut self) {
         let now = Instant::now();
-        if !self.sys_last.is_none_or(|t| {
-            now.duration_since(t) >= std::time::Duration::from_secs(1)
-        }) {
+        if !self
+            .sys_last
+            .is_none_or(|t| now.duration_since(t) >= std::time::Duration::from_secs(1))
+        {
             return;
         }
         self.sys_last = Some(now);
@@ -2490,21 +2525,21 @@ impl ApplicationHandler<UiMsg> for MultiWindowApp {
                         .auto_hide_animation
                         .clone();
                     let dur = self.app_state.settings.subtitle_mode.auto_hide_duration;
-                    if self
-                        .app_state
-                        .subtitle
-                        .state
-                        .on_auto_hide_timeout(&anim, dur, Instant::now())
-                    {
+                    if self.app_state.subtitle.state.on_auto_hide_timeout(
+                        &anim,
+                        dur,
+                        Instant::now(),
+                    ) {
                         self.redraw(WinId::Subtitle);
                     }
                 }
                 // 字幕窗排队句子到点（原版 _pending_segment_timers 的 singleShot 到期）
                 TickKind::SubtitlePending => {
-                    if self.app_state.subtitle.flush_pending(
-                        &mut self.app_state.session,
-                        &self.app_state.settings,
-                    ) {
+                    if self
+                        .app_state
+                        .subtitle
+                        .flush_pending(&mut self.app_state.session, &self.app_state.settings)
+                    {
                         self.redraw(WinId::Subtitle);
                     }
                 }
@@ -2518,7 +2553,12 @@ impl ApplicationHandler<UiMsg> for MultiWindowApp {
                 // 翻译页 prompt 600ms 防抖到期（原版 _prompt_debounce → _apply_prompt：
                 // system_prompt 已实时写入 settings，此处重建活动模型翻译器）
                 TickKind::PromptApply => {
-                    if self.app_state.panel.state.take_prompt_apply_due(Instant::now()) {
+                    if self
+                        .app_state
+                        .panel
+                        .state
+                        .take_prompt_apply_due(Instant::now())
+                    {
                         let s = &self.app_state;
                         if let Some(cfg) = s.settings.models.get(s.settings.active_model).cloned() {
                             tracing::info!("System prompt updated（600ms 防抖到期，重建翻译器）");
@@ -2699,10 +2739,7 @@ mod tests {
             phase: lt_proto::DownloadPhase::Progress,
         };
         assert_eq!(format_download_line(&ev), "[a/b] m.onnx 1.0 KB / 2.0 KB");
-        let ev_none = lt_proto::DownloadEvent {
-            total: None,
-            ..ev
-        };
+        let ev_none = lt_proto::DownloadEvent { total: None, ..ev };
         assert_eq!(format_download_line(&ev_none), "[a/b] m.onnx 1.0 KB");
     }
 

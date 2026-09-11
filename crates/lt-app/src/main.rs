@@ -68,7 +68,9 @@ fn main() -> anyhow::Result<()> {
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<Cmd>();
     // W2/D-67：音频监视快照格（capture 写、UI 33ms 节拍读；跨管道生命周期）
     let monitor_cell: std::sync::Arc<arc_swap::ArcSwap<lt_proto::MonitorSample>> =
-        std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(lt_proto::MonitorSample::default()));
+        std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(
+            lt_proto::MonitorSample::default(),
+        ));
     let mut app = lt_ui::MultiWindowApp::new(
         lt_ui::AppUi::new(initial_settings.clone()),
         &event_loop,
@@ -87,9 +89,8 @@ fn main() -> anyhow::Result<()> {
     }
     // ── 事件动脉（W2/INV1：后台 → UI 事件的唯一通路；满丢最旧 cap 4096）──
     let artery = lt_orchestrator::EventArtery::new();
-    let app_sup = lt_orchestrator::Supervisor::new(lt_orchestrator::supervisor::artery_sink(
-        artery.clone(),
-    ));
+    let app_sup =
+        lt_orchestrator::Supervisor::new(lt_orchestrator::supervisor::artery_sink(artery.clone()));
     // 常驻日志桥接：广播 hub → 动脉（日志窗数据源）。
     // W1 起经监督器出生（死亡可见 + 重生）；stop 标志由 main 在停机序置位
     let bridge_stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -132,9 +133,11 @@ fn fatal_early(msg: &str) {
     use windows::Win32::UI::WindowsAndMessaging::{
         MessageBoxW, MB_ICONERROR, MB_OK, MB_SETFOREGROUND, MB_TOPMOST,
     };
-    let text: Vec<u16> = format!("LiveTranslate 启动失败\r\n{msg}\r\n\r\n（详情见日志目录；本窗口关闭后应用退出）\0")
-        .encode_utf16()
-        .collect();
+    let text: Vec<u16> = format!(
+        "LiveTranslate 启动失败\r\n{msg}\r\n\r\n（详情见日志目录；本窗口关闭后应用退出）\0"
+    )
+    .encode_utf16()
+    .collect();
     let caption: Vec<u16> = "LiveTranslate\0".encode_utf16().collect();
     unsafe {
         let _ = MessageBoxW(
@@ -151,7 +154,6 @@ fn fatal_early(msg: &str) {
     eprintln!("LiveTranslate 启动失败: {msg}");
 }
 
-
 /// worker 子进程主循环：SenseVoice / Whisper（M5.1）/ Fun-ASR-Nano（WP-A）/ Qwen3-ASR（WP-B）
 fn asr_worker_entry() -> anyhow::Result<()> {
     // AH-7/H14：worker 分支在主进程 logging::init 之前 return，引擎里的
@@ -166,56 +168,37 @@ fn asr_worker_entry() -> anyhow::Result<()> {
     std::io::BufRead::read_line(&mut stdin, &mut cfg_line)?;
     let config: lt_asr::WorkerConfig = serde_json::from_str(cfg_line.trim())?;
     match config.engine.as_str() {
-        "sensevoice" => lt_asr::worker::run(
-            stdin,
-            std::io::stdout().lock(),
-            config,
-            move |cfg| {
+        "sensevoice" => lt_asr::worker::run(stdin, std::io::stdout().lock(), config, move |cfg| {
+            let dir = match &cfg.options {
+                lt_asr::WorkerOptions::ModelDir(d) => d,
+                other => anyhow::bail!("sensevoice 应带 ModelDir，实际 {other:?}"),
+            };
+            lt_asr::sensevoice::SenseVoiceEngine::load(dir, cfg.pad_seconds, &cfg.language)
+                .map_err(|e| anyhow::anyhow!("{e}"))
+        }),
+        "nano" => {
+            lt_asr::worker::run(stdin, std::io::stdout().lock(), config, move |cfg| {
                 let dir = match &cfg.options {
                     lt_asr::WorkerOptions::ModelDir(d) => d,
-                    other => anyhow::bail!("sensevoice 应带 ModelDir，实际 {other:?}"),
+                    other => anyhow::bail!("nano 应带 ModelDir，实际 {other:?}"),
                 };
-                lt_asr::sensevoice::SenseVoiceEngine::load(dir, cfg.pad_seconds, &cfg.language)
-                    .map_err(|e| anyhow::anyhow!("{e}"))
-            },
-        ),
-        "nano" => {
-            lt_asr::worker::run(
-                stdin,
-                std::io::stdout().lock(),
-                config,
-                move |cfg| {
-                    let dir = match &cfg.options {
-                        lt_asr::WorkerOptions::ModelDir(d) => d,
-                        other => anyhow::bail!("nano 应带 ModelDir，实际 {other:?}"),
-                    };
-                    // nano 无 padding 语义（pad_seconds 恒 None），语言为创建期参数
-                    lt_asr::NanoEngine::load(dir, &cfg.language)
-                        .map_err(|e| anyhow::anyhow!("{e}"))
-                },
-            )
+                // nano 无 padding 语义（pad_seconds 恒 None），语言为创建期参数
+                lt_asr::NanoEngine::load(dir, &cfg.language).map_err(|e| anyhow::anyhow!("{e}"))
+            })
         }
         "qwen3" => {
-            lt_asr::worker::run(
-                stdin,
-                std::io::stdout().lock(),
-                config,
-                move |cfg| {
-                    let dir = match &cfg.options {
-                        lt_asr::WorkerOptions::ModelDir(d) => d,
-                        other => anyhow::bail!("qwen3 应带 ModelDir，实际 {other:?}"),
-                    };
-                    // qwen3 无 padding/语言参数（pad_seconds 恒 None，纯 auto-LID）
-                    lt_asr::Qwen3AsrEngine::load(dir).map_err(|e| anyhow::anyhow!("{e}"))
-                },
-            )
+            lt_asr::worker::run(stdin, std::io::stdout().lock(), config, move |cfg| {
+                let dir = match &cfg.options {
+                    lt_asr::WorkerOptions::ModelDir(d) => d,
+                    other => anyhow::bail!("qwen3 应带 ModelDir，实际 {other:?}"),
+                };
+                // qwen3 无 padding/语言参数（pad_seconds 恒 None，纯 auto-LID）
+                lt_asr::Qwen3AsrEngine::load(dir).map_err(|e| anyhow::anyhow!("{e}"))
+            })
         }
-        "whisper" => lt_asr::worker::run(
-            stdin,
-            std::io::stdout().lock(),
-            config,
-            move |cfg| lt_asr::WhisperEngine::from_config(cfg).map_err(|e| anyhow::anyhow!("{e}")),
-        ),
+        "whisper" => lt_asr::worker::run(stdin, std::io::stdout().lock(), config, move |cfg| {
+            lt_asr::WhisperEngine::from_config(cfg).map_err(|e| anyhow::anyhow!("{e}"))
+        }),
         other => anyhow::bail!("未知 worker 引擎: {other}"),
     }
 }

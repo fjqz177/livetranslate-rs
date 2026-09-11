@@ -10,7 +10,9 @@
 //! 语言最终由 [`resolve_language`] 三优先决策：显式设置 > 模型标签 > 启发式。
 
 use crate::engine::AsrEngine;
-use crate::engines::{describe_model_files, guess_language, normalize_language, sherpa_create_failure_hint};
+use crate::engines::{
+    describe_model_files, guess_language, normalize_language, sherpa_create_failure_hint,
+};
 use lt_proto::{AsrResult, EngineError};
 use sherpa_onnx::{OfflineRecognizer, OfflineRecognizerConfig, OfflineSenseVoiceModelConfig};
 use std::path::{Path, PathBuf};

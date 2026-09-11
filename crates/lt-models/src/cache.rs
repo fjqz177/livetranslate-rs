@@ -589,7 +589,10 @@ mod tests {
 
         let dst = quarantine_file(&f).expect("隔离应成功");
         assert_eq!(dst, snap.join("model.bin.corrupt"));
-        assert!(!f.exists(), "原路径必须消失（否则探测仍判已缓存、重下空转）");
+        assert!(
+            !f.exists(),
+            "原路径必须消失（否则探测仍判已缓存、重下空转）"
+        );
         assert_eq!(fs::read(&dst).unwrap().len(), 2_000, "内容不变（保留现场）");
         assert!(!dir_has_manifest(&snap, files, mins), "隔离后清单判缺");
 

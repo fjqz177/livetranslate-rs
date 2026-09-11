@@ -122,9 +122,7 @@ impl AppShell {
     ) -> Self {
         // 总线先于一切读者就绪：初值 = 当前设置（pipeline None 期间的
         // 发布同样有效——StartDownload 等经总线读）
-        let bus = std::sync::Arc::new(SettingsBus::new(
-            start_settings.clone().unwrap_or_default(),
-        ));
+        let bus = std::sync::Arc::new(SettingsBus::new(start_settings.clone().unwrap_or_default()));
         // 下载编排（W3 起在 orchestrator；first_launch 恒 false——首启直进
         // 主界面 D-19，无向导下载会话）；W7：会话线程经本监督器出生
         //（INV3——Death 可见，不再裸 spawn）
@@ -256,11 +254,7 @@ impl AppShell {
                 match self.pipeline.as_mut() {
                     Some(p) => {
                         p.switch_translator(&config);
-                        tracing::info!(
-                            "Switching translator: {} ({})",
-                            config.name,
-                            config.model
-                        );
+                        tracing::info!("Switching translator: {} ({})", config.name, config.model);
                     }
                     None => {
                         tracing::warn!(
@@ -449,7 +443,9 @@ impl AppShell {
                         id: id_cell,
                         probe_id,
                     };
-                    lt_orchestrator::probe::run_probe(probe_id, &config, &bus, cancel, &msg, &artery);
+                    lt_orchestrator::probe::run_probe(
+                        probe_id, &config, &bus, cancel, &msg, &artery,
+                    );
                 })
             },
         );
@@ -463,7 +459,10 @@ impl AppShell {
         timeout: u32,
         prompt: String,
     ) {
-        if self.bench_active.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        if self
+            .bench_active
+            .swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
             tracing::warn!("基准已在途，忽略重复 RunBench（模型边界截停协议不叠加）");
             return;
         }
@@ -473,39 +472,43 @@ impl AppShell {
         let artery = self.artery.clone();
         let cancel = self.bench_cancel.clone();
         let bench_active = self.bench_active.clone();
-        self.sup.spawn(ThreadRole::Bench, "lt-bench", Policy::Never, move || {
-            // factory 为 Fn（死亡可重生）：每次构造干净的运行闭包（INV5）
-            let artery = artery.clone();
-            let bench_models = bench_models.clone();
-            let src = src.clone();
-            let tgt = tgt.clone();
-            let prompt = prompt.clone();
-            let cancel = cancel.clone();
-            let bench_active = bench_active.clone();
-            Box::new(move || {
-                // 任何退出路径（含 panic unwind——监督器上报）都复位在途标志
-                let _guard = BenchActiveGuard(bench_active);
-                lt_translate::bench::run_benchmark(
-                    bench_models,
-                    &src,
-                    &tgt,
-                    timeout,
-                    &prompt,
-                    cancel,
-                    move |out| {
-                        let ev = match out {
-                            lt_translate::bench::BenchOutput::Line(l) => {
-                                UiEvent::Bench(lt_proto::BenchEvent::Line(l))
-                            }
-                            lt_translate::bench::BenchOutput::Finished { ok, elapsed_ms } => {
-                                UiEvent::Bench(lt_proto::BenchEvent::Finished { ok, elapsed_ms })
-                            }
-                        };
-                        artery.push(ev);
-                    },
-                );
-            })
-        });
+        self.sup
+            .spawn(ThreadRole::Bench, "lt-bench", Policy::Never, move || {
+                // factory 为 Fn（死亡可重生）：每次构造干净的运行闭包（INV5）
+                let artery = artery.clone();
+                let bench_models = bench_models.clone();
+                let src = src.clone();
+                let tgt = tgt.clone();
+                let prompt = prompt.clone();
+                let cancel = cancel.clone();
+                let bench_active = bench_active.clone();
+                Box::new(move || {
+                    // 任何退出路径（含 panic unwind——监督器上报）都复位在途标志
+                    let _guard = BenchActiveGuard(bench_active);
+                    lt_translate::bench::run_benchmark(
+                        bench_models,
+                        &src,
+                        &tgt,
+                        timeout,
+                        &prompt,
+                        cancel,
+                        move |out| {
+                            let ev = match out {
+                                lt_translate::bench::BenchOutput::Line(l) => {
+                                    UiEvent::Bench(lt_proto::BenchEvent::Line(l))
+                                }
+                                lt_translate::bench::BenchOutput::Finished { ok, elapsed_ms } => {
+                                    UiEvent::Bench(lt_proto::BenchEvent::Finished {
+                                        ok,
+                                        elapsed_ms,
+                                    })
+                                }
+                            };
+                            artery.push(ev);
+                        },
+                    );
+                })
+            });
     }
 
     /// 文件对话框一次性线程（W5/R19）：rfd 同步 Dialog 的阻塞面被隔离到该
@@ -521,16 +524,25 @@ impl AppShell {
         let artery = self.artery.clone();
         let make_event: std::sync::Arc<dyn Fn(Option<String>) -> UiEvent + Send + Sync> =
             make_event.into();
-        self.sup.spawn(ThreadRole::FileDialog, "lt-file-dialog", Policy::Never, move || {
-            // factory 为 Fn（死亡可重生）：每次构造干净运行闭包（INV5）
-            let artery = artery.clone();
-            let make_event = make_event.clone();
-            let dialog_title = dialog_title.clone();
-            let default_name = default_name.clone();
-            Box::new(move || {
-                artery.push(make_event(pick_file_path(&dialog_title, &default_name, kind)));
-            })
-        });
+        self.sup.spawn(
+            ThreadRole::FileDialog,
+            "lt-file-dialog",
+            Policy::Never,
+            move || {
+                // factory 为 Fn（死亡可重生）：每次构造干净运行闭包（INV5）
+                let artery = artery.clone();
+                let make_event = make_event.clone();
+                let dialog_title = dialog_title.clone();
+                let default_name = default_name.clone();
+                Box::new(move || {
+                    artery.push(make_event(pick_file_path(
+                        &dialog_title,
+                        &default_name,
+                        kind,
+                    )));
+                })
+            },
+        );
     }
 
     /// 设置落盘（主线程直写；原子写由 settings_io 保证）
@@ -600,9 +612,7 @@ impl ApplicationHandler<UiMsg> for AppShell {
         // 于 ActiveEventLoop，故 shell 持构造期代理）
         while let Ok(cmd) = self.cmd_rx.try_recv() {
             if let Cmd::Stop = cmd {
-                let _ = self
-                    .proxy
-                    .send_event(UiMsg::AppCommand(AppCommand::Quit));
+                let _ = self.proxy.send_event(UiMsg::AppCommand(AppCommand::Quit));
                 continue;
             }
             self.handle_cmd(cmd);
@@ -620,9 +630,21 @@ mod tests {
     #[test]
     fn set_padding_writes_draft_from_payload() {
         let mut s = Settings::default();
-        apply_settings_side_effects(&mut s, &Cmd::SetPadding { engine: "funasr".into(), secs: 1.5 });
+        apply_settings_side_effects(
+            &mut s,
+            &Cmd::SetPadding {
+                engine: "funasr".into(),
+                secs: 1.5,
+            },
+        );
         assert_eq!(s.sensevoice_pad_seconds, 1.5);
-        apply_settings_side_effects(&mut s, &Cmd::SetPadding { engine: "whisper".into(), secs: 2.0 });
+        apply_settings_side_effects(
+            &mut s,
+            &Cmd::SetPadding {
+                engine: "whisper".into(),
+                secs: 2.0,
+            },
+        );
         assert_eq!(s.whisper_pad_seconds, 2.0);
         assert_eq!(s.sensevoice_pad_seconds, 1.5, "另一族 pad 不得被串写");
     }
@@ -631,7 +653,13 @@ mod tests {
     #[test]
     fn incremental_asr_writes_draft_from_payload() {
         let mut s = Settings::default();
-        apply_settings_side_effects(&mut s, &Cmd::IncrementalAsr { enabled: true, interval: 3.0 });
+        apply_settings_side_effects(
+            &mut s,
+            &Cmd::IncrementalAsr {
+                enabled: true,
+                interval: 3.0,
+            },
+        );
         assert!(s.incremental_asr);
         assert_eq!(s.interim_interval, 3.0);
     }
@@ -640,7 +668,13 @@ mod tests {
     #[test]
     fn set_padding_unknown_engine_is_ignored() {
         let mut s = Settings::default();
-        apply_settings_side_effects(&mut s, &Cmd::SetPadding { engine: "qwen3".into(), secs: 9.0 });
+        apply_settings_side_effects(
+            &mut s,
+            &Cmd::SetPadding {
+                engine: "qwen3".into(),
+                secs: 9.0,
+            },
+        );
         assert_eq!(s.sensevoice_pad_seconds, 0.5, "默认值不动");
         assert_eq!(s.whisper_pad_seconds, 0.5);
     }

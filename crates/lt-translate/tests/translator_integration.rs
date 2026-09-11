@@ -163,7 +163,8 @@ fn chunk_finish(reason: &str) -> String {
     .to_string()
 }
 
-fn non_streaming_response(status_line: &str, body: &Value) -> Vec<u8> {    let body = body.to_string();
+fn non_streaming_response(status_line: &str, body: &Value) -> Vec<u8> {
+    let body = body.to_string();
     format!(
         "HTTP/1.1 {status_line}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
@@ -253,7 +254,10 @@ fn streaming_yields_partials_then_final_with_usage() {
     // W1/方案 §2.1 + 2026-09-10 裁决：默认不发送长度上限，**也不发送温度**
     // （高级参数默认全部不发送，只有用户手动指定才发）
     assert!(body.get("max_tokens").is_none(), "默认不应发送 max_tokens");
-    assert!(body.get("temperature").is_none(), "默认不应发送 temperature");
+    assert!(
+        body.get("temperature").is_none(),
+        "默认不应发送 temperature"
+    );
     assert_eq!(body["messages"][0]["role"], "system");
     assert_eq!(body["messages"].as_array().unwrap().len(), 2);
 }
@@ -268,9 +272,9 @@ fn streaming_strips_inline_reasoning_never_leaks() {
     let close = "\u{3c}/think\u{3e}".to_string();
     let server = MockServer::start(Arc::new(move |_| {
         sse_response(&[
-            chunk_delta(&open),                    // 开标签单独一片
-            chunk_delta("先分析一下用户的问题"),   // 思考正文
-            chunk_delta(&close),                   // 闭标签单独一片
+            chunk_delta(&open),                  // 开标签单独一片
+            chunk_delta("先分析一下用户的问题"), // 思考正文
+            chunk_delta(&close),                 // 闭标签单独一片
             chunk_delta("译文在这里"),
             chunk_usage(10, 20),
         ])
@@ -418,7 +422,9 @@ fn repetition_error_detected() {
         sse_response(&[chunk_delta(&loop_text), chunk_usage(9, 9)])
     }));
     let t = translator(&server.base_url);
-    let err = t.translate("hello", "en", "zh", 10, 0).expect_err("应检出重复");
+    let err = t
+        .translate("hello", "en", "zh", 10, 0)
+        .expect_err("应检出重复");
     assert!(
         matches!(err, lt_translate::TranslateError::Repetition(_)),
         "实际: {err:?}"
@@ -551,7 +557,10 @@ fn hidden_override_keys_are_ignored() {
     // 仍在界面上的键照发
     assert_eq!(body["top_p"], 0.9);
     // 已撤出界面的键一律不发（温度走一等字段，默认未指定）
-    assert!(body.get("temperature").is_none(), "隐藏温度不得反杀: {body}");
+    assert!(
+        body.get("temperature").is_none(),
+        "隐藏温度不得反杀: {body}"
+    );
     assert!(body.get("max_tokens").is_none(), "隐藏上限不得反杀: {body}");
     assert!(body.get("seed").is_none(), "隐藏 seed 不得参与: {body}");
 }
@@ -609,7 +618,10 @@ fn thinking_body_merged_into_request() {
     .unwrap();
     let body = t.build_request_body("system", "text", true, false, 0);
     assert_eq!(body["reasoning_effort"], "none");
-    assert!(body.get("enable_thinking").is_none(), "不得再盲发 enable_thinking");
+    assert!(
+        body.get("enable_thinking").is_none(),
+        "不得再盲发 enable_thinking"
+    );
 }
 
 #[test]
@@ -708,10 +720,16 @@ fn minimal_request_drops_every_optional_field() {
 
     let minimal = t.minimal();
     let body = minimal.build_request_body("system", "text", true, false, 0);
-    assert!(body.get("temperature").is_none(), "最小请求不带温度: {body}");
+    assert!(
+        body.get("temperature").is_none(),
+        "最小请求不带温度: {body}"
+    );
     assert!(body.get("max_tokens").is_none(), "最小请求不带输出上限");
     assert!(body.get("top_k").is_none(), "最小请求不带用户额外参数");
-    assert!(body.get("reasoning_effort").is_none(), "最小请求不带推理参数");
+    assert!(
+        body.get("reasoning_effort").is_none(),
+        "最小请求不带推理参数"
+    );
     assert!(body.get("thinking").is_none());
     // 翻译所必需的三件仍在：模型名 + 系统提示词 + 待译文本
     assert_eq!(body["model"], "test-model");
@@ -812,7 +830,10 @@ fn preview_matches_actual_body() {
     let actual = request_body(&server.requests()[0]);
     // 预览：用实发请求里的 system prompt 回灌同一构造函数（键集与全部非消息字段
     // 必须逐键一致——任何"只在一侧加参数"的漂移都会被这条挡下）
-    let sys = actual["messages"][0]["content"].as_str().unwrap().to_string();
+    let sys = actual["messages"][0]["content"]
+        .as_str()
+        .unwrap()
+        .to_string();
     let preview = t.build_request_body(&sys, "hello", true, true, 1);
     assert_eq!(preview, actual, "预览体与实发体不一致");
     // 顺带钉住参数面：关闭思考参数在、温度照发、无输出上限
@@ -845,7 +866,8 @@ fn benchmark_degrades_like_production_on_param_rejection() {
         disable_thinking: true,
         thinking_style: None,
     };
-    let results = lt_translate::bench::run_benchmark_blocking(&[model], "en", 5, "translate: {text}");
+    let results =
+        lt_translate::bench::run_benchmark_blocking(&[model], "en", 5, "translate: {text}");
     assert_eq!(results.len(), 1);
     assert!(
         results[0].error.is_none(),
@@ -895,8 +917,14 @@ fn benchmark_blocking_against_mock() {
     // 第二轮评审 ⑫：基准必须走与生产**同一套请求构造**——不再硬编码
     // max_tokens:256 / temperature:0.3，且本地端点应带上关闭思考参数
     let body = request_body(&server.requests()[0]);
-    assert!(body.get("max_tokens").is_none(), "基准不得自带输出上限: {body}");
-    assert!(body.get("temperature").is_none(), "基准不得自带温度: {body}");
+    assert!(
+        body.get("max_tokens").is_none(),
+        "基准不得自带输出上限: {body}"
+    );
+    assert!(
+        body.get("temperature").is_none(),
+        "基准不得自带温度: {body}"
+    );
     assert_eq!(
         body["reasoning_effort"], "none",
         "本地端点的关闭思考参数应随生产构造一并生效: {body}"
@@ -969,7 +997,11 @@ fn translator_with_cancel(base_url: &str, streaming: bool, flag: Arc<AtomicBool>
 #[test]
 fn cancel_stops_streaming_within_poll_interval() {
     let server = SlowSseServer::start(
-        vec![chunk_delta("第一片"), chunk_delta("第二片"), chunk_delta("第三片")],
+        vec![
+            chunk_delta("第一片"),
+            chunk_delta("第二片"),
+            chunk_delta("第三片"),
+        ],
         Duration::from_millis(300),
     );
     let flag = Arc::new(AtomicBool::new(false));
@@ -1000,7 +1032,11 @@ fn cancel_works_on_sync_path() {
         non_streaming_response("200 OK", &completion_response("迟到", 1, 1))
     }));
     let flag = Arc::new(AtomicBool::new(false));
-    let t = Arc::new(translator_with_cancel(&server.base_url, false, flag.clone()));
+    let t = Arc::new(translator_with_cancel(
+        &server.base_url,
+        false,
+        flag.clone(),
+    ));
     let f2 = flag.clone();
     std::thread::spawn(move || {
         std::thread::sleep(Duration::from_millis(250));

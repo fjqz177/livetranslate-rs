@@ -51,8 +51,8 @@ fn state() -> &'static RwLock<State> {
         let lang = detect_system_lang().to_string();
         // 内嵌资产损坏（构建期后）是致命故障：此处无 Result 面（懒初始化
         // 取引用），直接 panic——boot 期 get 前会先经 set_lang 硬错呈现
-        let map = parse_yaml(yaml_for_lang(&lang))
-            .unwrap_or_else(|e| panic!("内嵌 i18n 资产损坏: {e}"));
+        let map =
+            parse_yaml(yaml_for_lang(&lang)).unwrap_or_else(|e| panic!("内嵌 i18n 资产损坏: {e}"));
         RwLock::new(State { lang, map })
     })
 }

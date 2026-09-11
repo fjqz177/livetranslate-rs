@@ -243,13 +243,7 @@ fn cancel_during_backoff_returns_promptly() {
     });
     let t0 = std::time::Instant::now();
     let err = downloader_at(&dir, port)
-        .download_files(
-            Hub::Ms,
-            "iic/Test",
-            &[("model.bin", 1, "")],
-            &cancel,
-            None,
-        )
+        .download_files(Hub::Ms, "iic/Test", &[("model.bin", 1, "")], &cancel, None)
         .expect_err("取消应返回错误");
     let el = t0.elapsed();
     assert!(err.to_string().contains("[cancel]"), "{err}");
@@ -665,7 +659,11 @@ fn stalled_stream_times_out_and_retries() {
         )
         .expect("沉默首轮应超时判死、退避后重试成功");
     assert_eq!(std::fs::read(out.join("model.bin")).unwrap(), BODY);
-    assert_eq!(served.load(Ordering::SeqCst), 2, "恰好两次请求（1 卡流 + 1 成功）");
+    assert_eq!(
+        served.load(Ordering::SeqCst),
+        2,
+        "恰好两次请求（1 卡流 + 1 成功）"
+    );
     assert!(
         t0.elapsed() < std::time::Duration::from_secs(30),
         "收敛必须快于长挂起，实际 {:?}",

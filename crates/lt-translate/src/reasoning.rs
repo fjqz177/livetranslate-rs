@@ -36,10 +36,7 @@ const TAGS: [(&str, &str); 5] = [
         "\u{3c}|end|\u{3e}",
     ),
     ("\u{25c1}think\u{25b7}", "\u{25c1}/think\u{25b7}"),
-    (
-        "\u{3c}|inner_prefix|\u{3e}",
-        "\u{3c}|inner_suffix|\u{3e}",
-    ),
+    ("\u{3c}|inner_prefix|\u{3e}", "\u{3c}|inner_suffix|\u{3e}"),
 ];
 
 /// ASCII 大小写不敏感查找（标签全是 ASCII 关键字；`◁▷` 等非 ASCII 字节按原样
@@ -253,10 +250,7 @@ mod tests {
                 "\u{3c}|end|\u{3e}",
             ),
             ("\u{25c1}think\u{25b7}", "\u{25c1}/think\u{25b7}"),
-            (
-                "\u{3c}|inner_prefix|\u{3e}",
-                "\u{3c}|inner_suffix|\u{3e}",
-            ),
+            ("\u{3c}|inner_prefix|\u{3e}", "\u{3c}|inner_suffix|\u{3e}"),
         ];
         assert_eq!(TAGS, want, "标签表被改动/破坏");
         assert_eq!(TAGS.len(), 5);
@@ -330,7 +324,10 @@ mod tests {
         );
         // 流式：喂到一半也不得泄露
         let mut s = ReasoningStripper::new();
-        assert_eq!(s.push(&format!("正常文本  {}推理中", THINK.0)), "正常文本  ");
+        assert_eq!(
+            s.push(&format!("正常文本  {}推理中", THINK.0)),
+            "正常文本  "
+        );
     }
 
     #[test]
@@ -347,7 +344,8 @@ mod tests {
     }
 
     #[test]
-    fn streaming_matches_batch_on_same_input() {        let raw = format!("a {0}r1{1} b {0}r2{1} c", THINK.0, THINK.1);
+    fn streaming_matches_batch_on_same_input() {
+        let raw = format!("a {0}r1{1} b {0}r2{1} c", THINK.0, THINK.1);
         let mut s = ReasoningStripper::new();
         let mut streamed = Vec::new();
         for ch in raw.chars() {
@@ -399,9 +397,11 @@ mod tests {
     /// 修法 = 以累积原文为权威（破坏性规则触发后整段重建）。
     #[test]
     fn streaming_strips_stray_close_shape() {
-        let raw = format!("预览…SECRET
+        let raw = format!(
+            "预览…SECRET
 
-{THINK_1}译文在这里");
+{THINK_1}译文在这里"
+        );
         assert_eq!(strip_reasoning(&raw), "译文在这里");
         let mut s = ReasoningStripper::new();
         let mut last = String::new();
@@ -414,9 +414,11 @@ mod tests {
         // 分片（非逐字）喂入同样成立
         let mut s = ReasoningStripper::new();
         let _ = s.push("预览…SEC");
-        let _ = s.push("RET
+        let _ = s.push(
+            "RET
 
-");
+",
+        );
         assert_eq!(s.push(&format!("{THINK_1}译文在这里")), "译文在这里");
         assert_eq!(s.finish(), "译文在这里");
     }
@@ -433,15 +435,25 @@ mod tests {
         );
         let shout_o = THINK.0.to_uppercase();
         let shout_c = THINK.1.to_uppercase();
-        assert_eq!(strip_reasoning(&format!("{shout_o}SECRET{shout_c}译文")), "译文");
+        assert_eq!(
+            strip_reasoning(&format!("{shout_o}SECRET{shout_c}译文")),
+            "译文"
+        );
         // 兼容写法（thinking）同样容忍大小写
         let (o2, c2) = TAGS[1];
         assert_eq!(
-            strip_reasoning(&format!("{}SECRET{}译文", o2.replace('t', "T"), c2.replace('t', "T"))),
+            strip_reasoning(&format!(
+                "{}SECRET{}译文",
+                o2.replace('t', "T"),
+                c2.replace('t', "T")
+            )),
             "译文"
         );
         // 正常小写形态不受影响
-        assert_eq!(strip_reasoning(&format!("{}SECRET{}译文", THINK.0, THINK.1)), "译文");
+        assert_eq!(
+            strip_reasoning(&format!("{}SECRET{}译文", THINK.0, THINK.1)),
+            "译文"
+        );
     }
 
     /// 收尾残尾（未成形的标签前缀）不得被当成正文——即使正文看起来像标签开头

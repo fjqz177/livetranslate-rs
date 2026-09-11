@@ -233,7 +233,8 @@ mod tests {
     /// 平铺 `{code,message}`（阿里系形状）也要能挖出状态码
     #[test]
     fn flat_error_body_yields_status() {
-        let (code, msg) = extract_error_fields(r#"{"code":429,"message":"Requests throttling triggered."}"#);
+        let (code, msg) =
+            extract_error_fields(r#"{"code":429,"message":"Requests throttling triggered."}"#);
         assert_eq!(code, Some(429));
         assert_eq!(msg.as_deref(), Some("Requests throttling triggered."));
     }
@@ -253,7 +254,10 @@ mod tests {
         let (code, msg) = extract_error_fields(r#"{"code":"401","msg":"bad key"}"#);
         assert_eq!(code, Some(401));
         assert_eq!(msg.as_deref(), Some("bad key"));
-        assert_eq!(extract_error_fields("<html>502 Bad Gateway</html>"), (None, None));
+        assert_eq!(
+            extract_error_fields("<html>502 Bad Gateway</html>"),
+            (None, None)
+        );
     }
 
     /// 挖到码 → 归入正确的 FailureKind（而不是"未知原因"）

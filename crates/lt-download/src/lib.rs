@@ -1042,10 +1042,15 @@ mod probe_whisper_tmp {
                 DownloadEvent::FileDone { file, .. } => {
                     println!("✓ FileDone {file}  t={:?}", t0.elapsed())
                 }
-                DownloadEvent::Done { dir, .. } => println!("★ Done → {dir:?}  t={:?}", t0.elapsed()),
+                DownloadEvent::Done { dir, .. } => {
+                    println!("★ Done → {dir:?}  t={:?}", t0.elapsed())
+                }
             }
         }
-        let snapshot = worker.join().expect("下载线程 panic").expect("下载失败（含校验）");
+        let snapshot = worker
+            .join()
+            .expect("下载线程 panic")
+            .expect("下载失败（含校验）");
         let el = t0.elapsed();
 
         let path = snapshot.join(entry.files[0]);

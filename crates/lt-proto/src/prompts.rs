@@ -82,9 +82,16 @@ mod tests {
     fn prompts_carry_both_placeholders() {
         assert!(DEFAULT_PROMPT.contains("{source_lang}"));
         assert!(DEFAULT_PROMPT.contains("{target_lang}"));
-        assert_eq!(PROMPT_PRESETS.len(), 4, "预设数与原版一致（daily/esports/anime/webid）");
+        assert_eq!(
+            PROMPT_PRESETS.len(),
+            4,
+            "预设数与原版一致（daily/esports/anime/webid）"
+        );
         for (key, body) in PROMPT_PRESETS {
-            assert!(body.contains("{source_lang}") && body.contains("{target_lang}"), "预设 {key} 缺占位符");
+            assert!(
+                body.contains("{source_lang}") && body.contains("{target_lang}"),
+                "预设 {key} 缺占位符"
+            );
         }
     }
 }

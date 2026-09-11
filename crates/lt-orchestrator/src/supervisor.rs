@@ -211,10 +211,7 @@ impl Supervisor {
         self.begin_shutdown();
         let handles: Vec<JoinHandle<()>> = {
             let mut entries = self.entries.lock().unwrap();
-            entries
-                .iter_mut()
-                .filter_map(|e| e.handle.take())
-                .collect()
+            entries.iter_mut().filter_map(|e| e.handle.take()).collect()
         };
         for h in handles {
             let _ = h.join();
@@ -378,7 +375,9 @@ impl Supervisor {
 
 /// 生产死亡出口：UiEvent::ThreadDied 经事件动脉回流 UI（W2：与全部后台
 /// 事件同路——INV1 回流通路唯一；sink.push 非阻塞，monitor 线程安全）
-pub fn artery_sink(sink: Arc<crate::event_artery::EventArtery>) -> impl Fn(ThreadDied) + Send + Sync + 'static {
+pub fn artery_sink(
+    sink: Arc<crate::event_artery::EventArtery>,
+) -> impl Fn(ThreadDied) + Send + Sync + 'static {
     move |d: ThreadDied| {
         sink.push(UiEvent::ThreadDied(d));
     }
@@ -388,8 +387,8 @@ pub fn artery_sink(sink: Arc<crate::event_artery::EventArtery>) -> impl Fn(Threa
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicUsize;
-    use std::time::Instant;
     use std::sync::mpsc;
+    use std::time::Instant;
 
     fn setup() -> (Arc<Supervisor>, mpsc::Receiver<ThreadDied>) {
         let (tx, rx) = mpsc::channel();
@@ -431,7 +430,9 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         assert!(born.load(Ordering::SeqCst) >= 2, "Always 策略应重生");
-        let d = rx.recv_timeout(Duration::from_secs(2)).expect("应有死亡上报");
+        let d = rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("应有死亡上报");
         assert_eq!(d.role, ThreadRole::TlWorker);
         assert!(d.restarted);
         assert!(d.detail.contains("panic"));
@@ -446,7 +447,9 @@ mod tests {
         sup.spawn(ThreadRole::Bench, "test-never", Policy::Never, || {
             Box::new(|| panic!("一次性线程炸（监督测试注入）"))
         });
-        let d = rx.recv_timeout(Duration::from_secs(5)).expect("应有死亡上报");
+        let d = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("应有死亡上报");
         assert_eq!(d.role, ThreadRole::Bench);
         assert!(!d.restarted);
         std::thread::sleep(Duration::from_millis(800));
@@ -460,12 +463,18 @@ mod tests {
     #[test]
     fn never_policy_normal_exit_silent_and_reaped() {
         let (sup, rx) = setup();
-        sup.spawn(ThreadRole::DeviceProbe, "test-oneshot", Policy::Never, || {
-            Box::new(|| {})
-        });
-        sup.spawn(ThreadRole::FileDialog, "test-oneshot-2", Policy::Never, || {
-            Box::new(|| {})
-        });
+        sup.spawn(
+            ThreadRole::DeviceProbe,
+            "test-oneshot",
+            Policy::Never,
+            || Box::new(|| {}),
+        );
+        sup.spawn(
+            ThreadRole::FileDialog,
+            "test-oneshot-2",
+            Policy::Never,
+            || Box::new(|| {}),
+        );
         // 等 monitor 两轮心跳（500ms/轮）+ 收割
         std::thread::sleep(Duration::from_millis(1200));
         assert!(rx.try_recv().is_err(), "正常退出不得上报 ThreadDied");
@@ -512,9 +521,12 @@ mod tests {
     fn spawn_after_shutdown_is_noop() {
         let (sup, _rx) = setup();
         sup.begin_shutdown();
-        sup.spawn(ThreadRole::Capture, "test-late-spawn", Policy::Always, || {
-            Box::new(|| panic!("停机后出生的线程不应存在（E1-3 拒绝失守）"))
-        });
+        sup.spawn(
+            ThreadRole::Capture,
+            "test-late-spawn",
+            Policy::Always,
+            || Box::new(|| panic!("停机后出生的线程不应存在（E1-3 拒绝失守）")),
+        );
         assert!(sup.entries.lock().unwrap().is_empty(), "拒绝出生不得入表");
         sup.join_all();
     }
@@ -528,31 +540,31 @@ mod tests {
         let enter2 = enter.clone();
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let stop2 = stop.clone();
-        sup.spawn(ThreadRole::Download, "test-dl-session", Policy::Never, move || {
-            let enter = enter2.clone();
-            let stop = stop2.clone();
-            Box::new(move || {
-                enter.store(true, Ordering::SeqCst);
-                // 退出前让调用方先观察到 in-flight
-                std::thread::sleep(Duration::from_millis(300));
-                let _ = stop.load(Ordering::SeqCst);
-            })
-        });
+        sup.spawn(
+            ThreadRole::Download,
+            "test-dl-session",
+            Policy::Never,
+            move || {
+                let enter = enter2.clone();
+                let stop = stop2.clone();
+                Box::new(move || {
+                    enter.store(true, Ordering::SeqCst);
+                    // 退出前让调用方先观察到 in-flight
+                    std::thread::sleep(Duration::from_millis(300));
+                    let _ = stop.load(Ordering::SeqCst);
+                })
+            },
+        );
         // 出生窗口内必为在途（spawn 返回时线程已启动，enter 很快置位）
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
         while !enter.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(5));
         }
         assert!(enter.load(Ordering::SeqCst), "线程应已启动");
-        assert!(
-            !sup.is_thread_finished("test-dl-session"),
-            "运行中应判在途"
-        );
+        assert!(!sup.is_thread_finished("test-dl-session"), "运行中应判在途");
         // 等退出 + monitor 收割（500ms 轮询）→ 判"已结束"
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while !sup.is_thread_finished("test-dl-session")
-            && std::time::Instant::now() < deadline
-        {
+        while !sup.is_thread_finished("test-dl-session") && std::time::Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(50));
         }
         assert!(

@@ -43,15 +43,7 @@ pub fn run_probe(
     msg: &Msg,
     sink: &EventSink,
 ) {
-    run_probe_with_budget(
-        probe_id,
-        config,
-        bus,
-        cancel,
-        msg,
-        sink,
-        PROBE_TOTAL_BUDGET,
-    );
+    run_probe_with_budget(probe_id, config, bus, cancel, msg, sink, PROBE_TOTAL_BUDGET);
 }
 
 /// 带预算注入的探测实现（`run_probe` = 以契约常量调用它）。
@@ -230,7 +222,6 @@ pub(crate) fn run_probe_with_budget(
     finish(ProbeOutcome::Failed { kind, detail }, None, None);
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -306,11 +297,13 @@ mod tests {
             "usage":{"prompt_tokens":10,"completion_tokens":50,"total_tokens":60,
                      "completion_tokens_details":{"reasoning_tokens":50}}
         });
-        let body = format!("data: {usage}
+        let body = format!(
+            "data: {usage}
 
 data: [DONE]
 
-");
+"
+        );
         format!(
             "HTTP/1.1 200 OK
 Content-Type: text/event-stream
@@ -386,17 +379,18 @@ Connection: close
     }
 
     /// 取唯一回执（顺带钉住"恰好一条"——多一条少一条都算失败）
-    fn run_with_budget(
-        config: &ModelConfig,
-        cancel: Arc<AtomicBool>,
-        budget: Duration,
-    ) -> UiEvent {
+    fn run_with_budget(config: &ModelConfig, cancel: Arc<AtomicBool>, budget: Duration) -> UiEvent {
         let all = run_all(config, cancel, budget);
         let results: Vec<&UiEvent> = all
             .iter()
             .filter(|e| matches!(e, UiEvent::TestTranslatorResult { .. }))
             .collect();
-        assert_eq!(results.len(), 1, "探测必须恰好回执一次，实际 {} 条", results.len());
+        assert_eq!(
+            results.len(),
+            1,
+            "探测必须恰好回执一次，实际 {} 条",
+            results.len()
+        );
         results[0].clone()
     }
 
@@ -577,7 +571,10 @@ Connection: close
         assert_eq!(hits.load(Ordering::SeqCst), 2, "截断补发应真的发起一次");
         match outcome_of(&ev).0.clone() {
             ProbeOutcome::Inconclusive { attempted } => {
-                assert_eq!(attempted, 2, "补发那次也要计入 attempted（方案 §4.4 计数口径）");
+                assert_eq!(
+                    attempted, 2,
+                    "补发那次也要计入 attempted（方案 §4.4 计数口径）"
+                );
             }
             other => panic!("期望 Inconclusive，实际 {other:?}"),
         }

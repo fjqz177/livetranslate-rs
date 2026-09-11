@@ -137,7 +137,10 @@ impl AsrManager {
     /// 这一条：配置签名未变（如刚修好同一个模型文件）时也必须能重试，
     /// 否则用户会陷入"文件修好了也起不来，必须先切到别的引擎再切回来"。
     /// 调用方 = 引擎切换/待命唤醒路径（显式用户意图或修复后重载）。
-    pub fn ensure_started_explicit(&mut self, config: &WorkerConfig) -> Result<(), AsrManagerError> {
+    pub fn ensure_started_explicit(
+        &mut self,
+        config: &WorkerConfig,
+    ) -> Result<(), AsrManagerError> {
         if self.unavailable {
             tracing::info!("显式重试：清除不可用标记与重启/错误计数后重新装配");
             self.unavailable = false;
@@ -155,10 +158,7 @@ impl AsrManager {
     /// 确保就绪：配置签名一致则复用；不可用后换新配置可复活（原版引擎切换语义）
     pub fn ensure_started(&mut self, config: &WorkerConfig) -> Result<(), AsrManagerError> {
         if self.unavailable {
-            let same = self
-                .config
-                .as_ref()
-                .is_some_and(|c| sig(c) == sig(config));
+            let same = self.config.as_ref().is_some_and(|c| sig(c) == sig(config));
             if same {
                 return Err(AsrManagerError::Unavailable("重启配额已耗尽".into()));
             }
@@ -168,12 +168,7 @@ impl AsrManager {
             self.restart_count = 0;
             self.error_count = 0;
         }
-        if self.client.is_some()
-            && self
-                .config
-                .as_ref()
-                .is_some_and(|c| sig(c) == sig(config))
-        {
+        if self.client.is_some() && self.config.as_ref().is_some_and(|c| sig(c) == sig(config)) {
             return Ok(()); // 已就绪且配置一致
         }
         // 配置变更：关旧起新（generation 推进）；新配置加载失败回滚旧 worker
@@ -253,15 +248,11 @@ impl AsrManager {
         // worker 死亡/超时 → 直接上抛（生效值在总线快照中，下段比对自动重试，
         // 等价旧"挂起保持"——挂起存根即总线当前值）
         self.apply_effective_settings(eff)?;
-        let result = self
-            .client
-            .as_mut()
-            .unwrap()
-            .transcribe_with_profile(
-                audio,
-                word_timestamps,
-                Some((eff.transcribe_base_secs, eff.transcribe_per_audio_secs)),
-            );
+        let result = self.client.as_mut().unwrap().transcribe_with_profile(
+            audio,
+            word_timestamps,
+            Some((eff.transcribe_base_secs, eff.transcribe_per_audio_secs)),
+        );
         match result {
             Ok(res) => {
                 self.error_count = 0;

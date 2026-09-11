@@ -49,7 +49,12 @@ pub fn align_selection(selected: &mut Vec<bool>, models_len: usize) {
 // ── UI ──
 
 /// Benchmark 窗 UI 总入口（windows::dispatch 按 WinId::Benchmark 分派到这里）
-pub fn bench_ui(ui: &mut Ui, bench: &mut BenchUi, session: &mut SessionView, settings: &mut Settings) {
+pub fn bench_ui(
+    ui: &mut Ui,
+    bench: &mut BenchUi,
+    session: &mut SessionView,
+    settings: &mut Settings,
+) {
     align_selection(&mut bench.selected, settings.models.len());
 
     // ── 控制行（原版 ctrl_row：源语言/目标语言/开始）──
