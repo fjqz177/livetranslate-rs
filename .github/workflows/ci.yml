@@ -32,7 +32,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Rustfmt check
         run: cargo fmt --all -- --check
@@ -54,15 +54,15 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 150
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v10.1.0   # 该仓库不发浮动大标签 v10，只能钉精确版
 
       - name: Sync pinned toolchain (libclang + cmake via uv)
         run: uv sync
 
       - name: Cache sherpa-onnx prebuilt libs
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: .cache/sherpa-onnx
           # 键含 Cargo.lock：锁文件变更（sherpa 版本升）自动换缓存；restore-keys 兜底
@@ -88,7 +88,7 @@ jobs:
         run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package_release.ps1
 
       - name: Upload distribution zip
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: LiveTranslate-windows-x64
           path: dist/LiveTranslate-*.zip
