@@ -5,6 +5,11 @@
 # relative=true 使路径相对本配置文件所在目录解析（零机器相关绝对路径）；force=true
 # 覆盖系统残留的 LIBCLANG_PATH（clang-sys 对已设变量只搜该目录，残留会短路内置搜索）
 LIBCLANG_PATH = { value = ".venv/Lib/site-packages/clang/native", relative = true, force = true }
+# whisper-rs-sys 构建 vendored whisper.cpp 走 cmake crate，默认在 PATH 找 cmake。
+# 改为用仓库内 .venv 里 uv 钉版的那份（pyproject.toml dev 组 cmake==4.4.3）——
+# cmake crate 的 cmake_executable() 优先读 CMAKE 环境变量（cmake-0.1.58 lib.rs:900-903），
+# 设此变量即可免装系统 CMake。实测该路径走 VS 2022 生成器（不依赖 ninja）。
+CMAKE = { value = ".venv/Scripts/cmake.exe", relative = true, force = true }
 # sherpa-onnx-sys 构建期默认从 GitHub Releases 下载 120MB 预编译静态库（缓存落在 target/，
 # cargo clean 即丢）。改为预取到仓库内 .cache/sherpa-onnx（gitignore；relative 相对本文件）：
 # 先跑 scripts/fetch_sherpa_libs.ps1（GitHub 慢可用 -Mirror <前缀> 或 SHERPA_ONNX_MIRROR 走

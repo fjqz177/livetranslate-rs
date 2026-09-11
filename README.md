@@ -60,16 +60,15 @@ Rust 原生实时音频翻译应用：实时捕获系统声音（可选叠加麦
 
 > 本节写给开发者：装机 → 克隆 → 首次构建 → 测试 → 冒烟，以及改代码前要知道的分层规矩、提交纪律与常见排错。改码前务必先读一次 [AGENTS.md](AGENTS.md)（项目定位/硬性约束/已知大坑/当前待办）。
 
-### 1. 装环境（一次性，四件套）
+### 1. 装环境（一次性，三件套）
 
 | 软件 | 用途 | 安装 |
 |---|---|---|
 | **Rust stable**（`x86_64-pc-windows-msvc` 工具链） | 主语言 | [rustup.rs](https://rustup.rs) 后执行 `rustup default stable-x86_64-pc-windows-msvc` |
-| **VS Build Tools 2019/2022**，工作负载「使用 C++ 的桌面开发」（MSVC + Windows SDK） | whisper.cpp / sherpa-onnx 的 C++ 链接器与 Windows SDK | [下载页](https://visualstudio.microsoft.com/visual-cpp-build-tools/) |
-| **CMake** | whisper-rs-sys 构建 whisper.cpp | `winget install Kitware.CMake` 或 [cmake.org/download](https://cmake.org/download/) |
-| **uv** | 构建期 libclang：钉版 18.1.1 装进仓库内 `.venv`，供 whisper-rs-sys 的 bindgen 用（约 25MB，免装整套 LLVM） | `winget install astral-sh.uv` 或 [uv 官网](https://docs.astral.sh/uv/) |
+| **VS Build Tools 2019/2022**，工作负载「使用 C++ 的桌面开发」（MSVC + Windows SDK） | whisper.cpp / sherpa-onnx 的 C/C++ 编译器与链接器、Windows SDK | [下载页](https://visualstudio.microsoft.com/visual-cpp-build-tools/) |
+| **uv** | 仓库内构建工具分发：libclang 18.1.1（bindgen 用）+ cmake 4.4.3（编 whisper.cpp 用）都装进 `.venv`——**免装系统级 LLVM 与 CMake** | `winget install astral-sh.uv` 或 [uv 官网](https://docs.astral.sh/uv/) |
 
-装完自检：`rustc -V`、`cmake --version`、`uv --version` 都能出版本号即可开工。首次构建约十几分钟（要编译 whisper.cpp、跑 bindgen、链接 sherpa-onnx 预编译库）；之后日常构建是增量。**clone 后不需要任何本机路径配置**——libclang 怎么来的见第 2 节。
+装完自检：`rustc -V`、`uv --version` 都能出版本号即可开工（cmake/libclang 由 `uv sync` 装进仓库内，不在系统里，无需系统级自检）。首次构建约十几分钟（要编译 whisper.cpp、跑 bindgen、链接 sherpa-onnx 预编译库）；之后日常构建是增量。**clone 后不需要任何本机路径配置，也不需要系统安装 CMake/LLVM**——它们怎么来的见第 2 节。
 
 > 备选路线：机器上已装有默认位置（如 `C:\Program Files\LLVM`）的 LLVM 时，删掉 `.cargo/config.toml` 里的 `LIBCLANG_PATH` 行也能编（clang-sys 会按内置目录自动发现）。uv 路线与 LLVM 路线**二选一，不混用**。
 
@@ -78,15 +77,16 @@ Rust 原生实时音频翻译应用：实时捕获系统声音（可选叠加麦
 ```bash
 git clone <你的仓库地址> livetranslate-rs
 cd livetranslate-rs
-uv sync                                                             # ① libclang（bindgen 用，约 25MB）
+uv sync                                                             # ① 仓库内构建工具：libclang（bindgen）+ cmake（编 whisper.cpp）
 powershell -ExecutionPolicy Bypass -File scripts/fetch_sherpa_libs.ps1   # ② sherpa-onnx 预编译库（约 120MB）
 ```
 
-**① 为什么要 uv sync**：whisper-rs-sys 构建时用 bindgen 生成绑定，bindgen 需要一个 `libclang.dll`。仓库用 uv 把 libclang 钉死（`pyproject.toml` dev 组 `libclang==18.1.1`，`uv.lock` 锁 wheel 哈希），装进仓库内 `.venv`，再由 cargo 配置指过去：
+**① 为什么要 uv sync**：whisper-rs-sys 构建时要（a）用 bindgen 生成绑定 → 需要 `libclang.dll`，（b）用 cmake 编译 vendored whisper.cpp → 需要 `cmake` 可执行文件。仓库把这两样都用 uv 钉死（`pyproject.toml` dev 组 `libclang==18.1.1`、`cmake==4.4.3`；`uv.lock` 锁 wheel 哈希），装进仓库内 `.venv`，再由 cargo 配置指过去——**系统级既不装 LLVM 也不装 CMake**：
 
 ```toml
 [env]
 LIBCLANG_PATH = { value = ".venv/Lib/site-packages/clang/native", relative = true, force = true }
+CMAKE         = { value = ".venv/Scripts/cmake.exe",               relative = true, force = true }
 ```
 
 **② 为什么要预取 sherpa 库**：sherpa-onnx-sys 构建期默认从 GitHub Releases 下载 120MB 预编译静态库（缓存落在 `target/`，`cargo clean` 即丢、每次重下）。本仓库改为**预取到仓库内 `.cache/sherpa-onnx/`**，构建时从本地复制：全程零联网、`cargo clean` 不再重下。GitHub 慢/失败时脚本支持任意 Release 镜像：
@@ -211,7 +211,7 @@ lt-proto → lt-i18n → lt-models → lt-audio → lt-asr → lt-translate → 
 | 构建报 `couldn't find any valid shared libraries ... set the LIBCLANG_PATH` | 没跑 `uv sync`，或 `.venv` 被删 → 执行 `uv sync` |
 | 构建报 `SHERPA_ONNX_ARCHIVE_DIR does not contain expected archive` | 没跑预取脚本（这条**不回落联网**）→ 执行 `scripts\fetch_sherpa_libs.ps1` |
 | 构建器 120MB 下载慢/失败（GitHub 直连） | 换镜像：`-Mirror https://gh-proxy.com/`（已实测可用、支持断点续传），或设 `HTTPS_PROXY` 走代理 |
-| `cmake` 命令找不到 / CMake 报错 | 未装 CMake → `winget install Kitware.CMake` |
+| `cmake` 命令找不到 / CMake 报错 | `uv sync` 未跑或 `.venv` 被删（cmake 由它装入仓库内 `.venv`，不依赖系统安装）→ 执行 `uv sync` |
 | 链接报 LNK2005 / LNK1169（CRT 冲突） | `.cargo/config.toml` 里两行 `CMAKE_*` 被改动（双栈 CRT 对齐，**勿动**） |
 | 测试报 StorageFull / GDI+ Save 失败（假死） | C 盘满，默认 TEMP 在 C 盘 → 临时把 `TMPDIR` 指到 D 盘 |
 | 模型下载失败 / 极慢 | 在「设置 → VAD/ASR」切下载源（ModelScope 国内快）与代理模式；无 MS 源的模型自动走 hf-mirror.com |

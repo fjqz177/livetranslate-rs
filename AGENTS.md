@@ -19,7 +19,7 @@ Rust 原生实时音频翻译应用 **LiveTranslate-rs**（Python(PyQt6) 原版 
 ## 构建与测试
 
 ```bash
-uv sync                           # 首次/换机器后：构建期 libclang 由 uv 钉版管理（pyproject.toml dev 组 libclang==18.1.1；.cargo/config.toml [env] LIBCLANG_PATH relative=.venv + force 覆盖残留），clone 后零本机路径配置
+uv sync                           # 首次/换机器后：仓库内构建工具一次装齐（libclang 18.1.1 供 whisper-rs-sys 的 bindgen；cmake 4.4.3 供编 vendored whisper.cpp）——由 uv 装入仓库内 .venv，cargo [env] LIBCLANG_PATH/CMAKE 均 relative+force 指向，clone 后零本机路径配置、免系统安装 LLVM/CMake
 powershell -File scripts/fetch_sherpa_libs.ps1   # 首次：预取 sherpa-onnx 预编译库（120MB GitHub Release，默认联网下载）到 .cache/sherpa-onnx；构建期零联网、cargo clean 不丢；GitHub 慢用 -Mirror <前缀>/SHERPA_ONNX_MIRROR 走 Release 镜像（例 https://gh-proxy.com/，已实测）；build.rs 对 ARCHIVE_DIR 缺失不回落联网（硬报错），首次构建前必须跑
 cargo test --workspace            # 全量测试（滚动基线：当前 603+9 测全绿 + 9 个 ignored = 真模型/真网络探针离线纪律；PH-1 后 smoke 探针转 ignored 面，见 docs/path-hygiene.md），收工前提
 cargo build --release -p lt-app   # 单 exe（现有 ~76.0MB；onnxruntime.dll + silero_vad.onnx 内嵌；前者启动解压到配置目录，后者内存直载——C5 勘正 2026-09-09）
@@ -44,7 +44,7 @@ powershell -File scripts/precommit.ps1   # 提交前门禁（2026-09-11 起）�
 2. egui 0.36：`set_inner_size` → `request_inner_size`；`ctx.fonts()` 是闭包 API 不能取 owned；Color32 仅 premultiplied 常量是 const。
 3. lt-ui 内 `crate::windows` 模块**遮蔽 windows crate**——引用必须写 `::windows::`。
 4. 外部 `MoveWindow` 移动 winit 透明窗口会 DXGI 表面失配白屏——兜底 = `Moved` 事件时以当前尺寸强制 `painter.on_window_resized`（幂等）。
-5. **双栈 CRT 已解决勿动**：sherpa-onnx（静态 CRT）与 whisper-rs（/MD）冲突由 `.cargo/config.toml` 的 `CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded` + `CMAKE_POLICY_DEFAULT_CMP0091=NEW` 解决；`LIBCLANG_PATH` 由 uv 管理（钉版 `libclang==18.1.1` 装进仓库内 `.venv`，cargo `[env]` `relative=true`+`force=true` 指向它，见根目录 pyproject.toml）——首次构建前必须 `uv sync`，勿改回本机绝对路径（data-lifecycle ③ 已根治）。
+5. **双栈 CRT 已解决勿动**：sherpa-onnx（静态 CRT）与 whisper-rs（/MD）冲突由 `.cargo/config.toml` 的 `CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded` + `CMAKE_POLICY_DEFAULT_CMP0091=NEW` 解决；`LIBCLANG_PATH` 与 `CMAKE` 都由 uv 管理（钉版 `libclang==18.1.1` / `cmake==4.4.3` 装进仓库内 `.venv`，cargo `[env]` `relative=true`+`force=true` 指向它，见根目录 pyproject.toml）——首次构建前必须 `uv sync`，勿改回本机绝对路径、勿改回依赖系统 LLVM/CMake（data-lifecycle ③ 已根治）。
 6. `block_on` 外求值 `tokio::time::timeout` 必 panic；async-openai 0.41 需显式 `_api` feature。
 7. tray-icon 0.24 无气泡 API（做气泡需 Shell_NotifyIcon 直调或换库）。
 8. 字幕窗 30% 黑底叠白窗呈现的 179 灰是正常 alpha 合成，勿误判为渲染 bug。

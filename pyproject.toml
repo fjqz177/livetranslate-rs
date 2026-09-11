@@ -1,7 +1,10 @@
-# 构建期辅助依赖：libclang（whisper-rs-sys 的 bindgen 需要）。
-# 不打包任何 Python 项目产物，uv 仅用于把钉版 libclang.dll 装进仓库内 .venv，
-# .cargo/config.toml 的 LIBCLANG_PATH 经 relative=true 指向它（零绝对路径）。
+# 构建期辅助依赖（uv 仅作"仓库内工具分发器"，不打包任何 Python 项目产物）：
+#   libclang —— whisper-rs-sys 的 bindgen 需要；
+#   cmake    —— whisper-rs-sys 构建 vendored whisper.cpp 需要（cmake crate 读 CMAKE 环境变量）。
+# 二者均由 uv 装进仓库内 .venv，.cargo/config.toml 以 relative=true 指向（零绝对路径，
+# 免系统级安装 LLVM / CMake）。
 [dependency-groups]
 dev = [
     "libclang==18.1.1",
+    "cmake==4.4.3",
 ]

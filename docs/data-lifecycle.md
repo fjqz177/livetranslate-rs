@@ -8,7 +8,7 @@
 
 | 阶段 | 一句话结论 |
 |---|---|
-| 开发环境 | clone **≠ 零配置**：硬前置 Rustup(MSVC)+VS Build Tools+CMake+LLVM 四件套，`.cargo/config.toml` 的 `LIBCLANG_PATH` 固化为本机绝对路径必须处理；首次构建需联网（657 crates + ~115MB sherpa 预编译库） |
+| 开发环境 | clone **≠ 零配置**：硬前置 Rustup(MSVC)+VS Build Tools+CMake+LLVM 四件套，`.cargo/config.toml` 的 `LIBCLANG_PATH` 固化为本机绝对路径必须处理；首次构建需联网（657 crates + ~115MB sherpa 预编译库）**〔2026-09-08 快照；2026-09-11 起 CMake/LLVM 已收敛进仓库内 `.venv`（uv 管理），系统级只需 Rustup+VS Build Tools+uv，见 §1 修订〕** |
 | 日常命令 | `cargo test --workspace` 全绿=收工前提（6 个 ignored 真模型/真网络探针默认不跑）；GUI 冒烟必须设 `LIVETRANSLATE_CONFIG_DIR` + settings 显式 `models_dir`；`cargo test` 不污染真实配置，**裸 `cargo run` 会** |
 | 分发产物 | 单文件 `livetranslate.exe`（72.2 MiB，内嵌 ~33.2MB 资产，无旁置文件）；但干净 Win10/11 **需装 VC++ 2015-2022 x64 Redist**（PE 导入表实锤，`distribution.md`「无 VC 运行库依赖」断言是错的）；WD-1~WD-5 未施工，当前分发形态=手工拷裸 exe |
 | 运行足迹·文件 | 全部集中一个根目录 `~/.config/livetranslate`（本机实测 2.26GB，其中模型 2.2GB）；日志每次启动新建、**无保留策略无限累积**；`models_dir` 重定向只带走模型树 |
@@ -27,6 +27,8 @@
 ## §1 干净机器开发环境搭建（A）
 
 > 【一眼结论】装好 Rustup(MSVC) + VS Build Tools(C++ 工作负载) + CMake + LLVM，处理掉 `LIBCLANG_PATH` 一行，联网即可构建。NASM 不需要；工具链无版本锁定；whisper.cpp 免下载（vendored），sherpa 需从 GitHub 拉 ~115MB 预编译库。
+
+> **修订（2026-09-11）**：本节为 2026-09-08 审计快照（保留证据原貌）。此后前置已收敛为"仓库内完成"：**libclang 与 cmake 均由 uv 装入仓库内 `.venv`**（`pyproject.toml` dev 组钉版 18.1.1 / 4.4.3；`.cargo/config.toml` 的 `LIBCLANG_PATH`/`CMAKE` 经 `relative=true`+`force=true` 指向），系统级只需 **Rustup(MSVC) + VS Build Tools(C++ 工作负载) + uv** 三件。故 1.2 所记"本机绝对路径/非 force"与 1.4 的第 3、4 步均已失效；CMake 走 VS 2022 生成器（不需要 ninja）。现状以 README §1 为准。
 
 ### 1.1 预装软件清单（逐个排查推导）
 
