@@ -29,7 +29,7 @@ powershell -File scripts/precommit.ps1   # 提交前门禁（2026-09-11 起）�
 
 - **冒烟**：设临时 `LIVETRANSLATE_CONFIG_DIR`，其中 settings.json 必须显式 `models_dir` 指真实模型缓存（如 `~/.config/livetranslate/models`），否则引擎探测全部失败。
 - **原版参照截图（2026-09-09 全量重拍）**：`assets/reference/` zh/en 各 10 张——控制面板 7 个标签页（`panel_<lang>.png` = 识别落地页 + `panel_{translation,style,subtitle,benchmark,cache,changelog}_<lang>.png`）+ 悬浮窗/字幕窗/日志窗。**旧一套（2026-09-06）误拍自外部爆改版**（其 panel 侧边栏布局与副本 7 标签页结构完全不符），已作废。截图对象 = 工作区 `LiveTranslate/` 参考副本，出厂缺省状态 + 脚本注入示例内容（api_key 占位，不读 user_settings.json，不写副本）。生成脚本已重建：`scripts/grab_reference_ui.py`（QWidget.grab 程序化截图，无 computer use；解释器用外部原版仓 venv——仅当带 PyQt6 的 Python 解释器用，跑的代码严格限于工作区副本，本机具体路径不入库、见项目记忆）。已知怪癖：Qt 6.11 `grab()` 不渲染 QTextEdit 自身样式表背景（真实显示正常），脚本对 viewport 补同色解决。
-- **CI 已建**（`.github/workflows/ci.yml`，W1/R16，2026-09-11 起含 fmt gate：windows-latest + uv sync + sherpa 缓存 + `cargo fmt --all -- --check` + 全量测试 + 四守护脚本 + clippy `-D warnings`）；无 PR 门禁，依赖提交前自查（本地门禁与 CI 六项同源）。
+- **CI 已建**（`.github/workflows/ci.yml`，W1/R16；2026-09-11 按开发流程重构为两 job：`gate` = 静态面〔`cargo fmt --all -- --check` + 四守护脚本，纯文本扫描不编译，秒级红灯〕、`build` = 编译面〔uv sync + sherpa 缓存 + clippy `-D warnings` + `cargo test --workspace` + `cargo build --release -p lt-app` + `package_release.ps1` 打包 zip 传 Artifact〕；触发面 = 全分支 push〔开发主线在 arch-v2，main-only 会漏检〕+ PR + 手动 dispatch）；无 PR 门禁，依赖提交前自查（本地 `precommit.ps1` 六项 = CI `gate` 五项 + `build` 的 clippy，增删须双边同步）。
 
 ## 工作区结构（依赖方向 = 分层规则）
 

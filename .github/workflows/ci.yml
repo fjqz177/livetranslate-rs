@@ -1,59 +1,96 @@
-# LiveTranslate-rs CI（架构 2.0 W1/R16）
-# windows-latest = Server 2025：工作目录已在 D:（target/ 随 checkout 落 D:）；
-# uv 钉版 libclang（.venv 相对路径由 .cargo/config.toml [env] 解析）；
-# sherpa-onnx 预编译库缓存（键 = fetch 脚本哈希）；ignored 探针保持离线纪律。
-# 门禁六项与 scripts/precommit.ps1 同源（fmt/clippy/四守护）——增删须双边同步。
+# LiveTranslate-rs CI（架构 2.0 W1/R16；2026-09-11 按开发流程重构为两 job）
+#
+# 与 AGENTS.md 的两道门禁同源，本地过关 ⇔ CI 过关：
+#   gate  = 提交前门禁的静态面 = scripts/precommit.ps1 前五项（fmt + 四守护）：
+#           纯文本扫描，不联网、不编译 → 秒级出结论（格式/分层/禁令类问题先红灯）；
+#   build = 提交前门禁的 clippy + 收工门禁（cargo test --workspace）+ 分发演练
+#           （release 单 exe → scripts/package_release.ps1 → zip 传 Artifact）。
+# 门禁项增删须与 scripts/precommit.ps1 双边同步（本地六项 = gate 五项 + clippy）。
+#
+# 触发面 = 全分支 push + PR + 手动 dispatch：开发主线在 arch-v2（main 落后），
+# main-only 会漏检。ignored 探针（真模型/真网络）在 CI 保持跳过 = 离线纪律。
+# windows-latest = Server 2025：工作目录在 D:（target/ 随 checkout 落 D:）；
+# uv 钉版 libclang/cmake（.venv 相对路径由 .cargo/config.toml [env] 解析）。
 name: ci
 
 on:
   push:
-    branches: [main]
+    branches: ['**']
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  test:
+  gate:
+    name: 静态门禁（fmt + 四守护）
     runs-on: windows-latest
-    timeout-minutes: 120
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rustfmt check
+        run: cargo fmt --all -- --check
+
+      - name: Path hygiene gate (PH-5)
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check_personal_paths.ps1
+
+      - name: Dependency direction guard (W7)
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check_deps.ps1
+
+      - name: Source ban guards (W7)
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check_guards.ps1
+
+      - name: Dead contract guard (E6)
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check_dead_contract.ps1
+
+  build:
+    name: 编译与全量测试（+ 分发打包）
+    runs-on: windows-latest
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
 
       - uses: astral-sh/setup-uv@v5
 
-      - name: Sync pinned toolchain (libclang via uv)
+      - name: Sync pinned toolchain (libclang + cmake via uv)
         run: uv sync
 
       - name: Cache sherpa-onnx prebuilt libs
         uses: actions/cache@v4
         with:
           path: .cache/sherpa-onnx
-          key: sherpa-${{ hashFiles('scripts/fetch_sherpa_libs.ps1') }}
+          # 键含 Cargo.lock：锁文件变更（sherpa 版本升）自动换缓存；restore-keys 兜底
+          # 复用旧缓存（脚本按版本化文件名判断是否需重下，版本未变即不联网）
+          key: sherpa-${{ hashFiles('scripts/fetch_sherpa_libs.ps1', 'Cargo.lock') }}
+          restore-keys: sherpa-
 
       - name: Fetch sherpa-onnx libs
-        run: powershell -ExecutionPolicy Bypass -File scripts/fetch_sherpa_libs.ps1
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/fetch_sherpa_libs.ps1
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Rustfmt check
-        run: cargo fmt --all -- --check
+      - name: Clippy (deny warnings)
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
-      - name: Run tests
+      - name: Test workspace
         run: cargo test --workspace
 
-      - name: Path hygiene gate
-        run: powershell -ExecutionPolicy Bypass -File scripts/check_personal_paths.ps1
+      - name: Build release single exe
+        run: cargo build --release -p lt-app
 
-      - name: Dependency direction guard (W7)
-        run: powershell -ExecutionPolicy Bypass -File scripts/check_deps.ps1
+      - name: Package distribution zip (WD-1)
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package_release.ps1
 
-      - name: Source ban guards (W7)
-        run: powershell -ExecutionPolicy Bypass -File scripts/check_guards.ps1
-
-      - name: Dead contract guard (E6)
-        run: powershell -ExecutionPolicy Bypass -File scripts/check_dead_contract.ps1
-
-      - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Upload distribution zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: LiveTranslate-windows-x64
+          path: dist/LiveTranslate-*.zip
+          if-no-files-found: error
+          retention-days: 30

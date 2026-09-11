@@ -128,6 +128,8 @@ git commit -m "fix(overlay): 中文说明"  # 提交信息用中文
 
 设过钩子之后，`git commit` 会**自动跑六项检查**（代码格式 / clippy 零告警 / 依赖白名单 / 源码禁令 / 路径卫生 / 死契约），约 10 秒，全过才生成提交；只改文档的提交自动跳过。应急可以用 `--no-verify` 绕过，但 CI 会拦。
 
+推上去之后 GitHub Actions 跑同一套（`gate` 静态门禁 + `build` 编译门禁：clippy / 全量测试 / release 单 exe 打包），任何分支的 push 和 PR 都会触发；每次全绿的构建都在 Actions 页面挂一个可下载的 zip 产物（Artifacts）。**本地绿而 CI 红基本只有一个原因：忘了跑门禁**——两边同源，跑法见上。
+
 另外两条规矩：计划/调研类文档要先于实现单独提交；生成物（`docs/architecture/`、`docs/ui-audit/`）不入库。
 
 ### 5. 代码怎么分（10 个 crate，依赖单向）
