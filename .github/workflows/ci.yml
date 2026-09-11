@@ -84,6 +84,10 @@ jobs:
       - name: Build release single exe
         run: cargo build --release -p lt-app
 
+      - name: Smoke release exe (--version)
+        # WD-2 旗标零初始化短路（不动 GUI/音频）——证明产物真能启动、打印版本退出 0
+        run: .\target\release\livetranslate.exe --version
+
       - name: Package distribution zip (WD-1)
         run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package_release.ps1
 
