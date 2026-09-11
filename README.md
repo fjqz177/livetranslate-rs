@@ -110,15 +110,15 @@ SHERPA_ONNX_ARCHIVE_DIR = { value = ".cache/sherpa-onnx", relative = true, force
 ### 3. 构建与测试（质量门）
 
 ```bash
-cargo test --workspace              # 全量：399 测全绿 + 6 个 ignored（真模型/真网络探针的离线纪律，平时不联网不跑）
-cargo build --release -p lt-app     # 单 exe：target/release/livetranslate.exe（约 75.6MB；分发请一并附 VC 运行库说明）
+cargo test --workspace              # 全量：603 测全绿 + 9 个 ignored（真模型/真网络探针的离线纪律，平时不联网不跑）
+cargo build --release -p lt-app     # 单 exe：target/release/livetranslate.exe（约 76MB；分发请一并附 VC 运行库说明）
 cargo run -p lt-app                 # GUI 冒烟
 ```
 
 **收工前提（两条都满足才算完成）**：
 
-1. `cargo test --workspace` 全绿；
-2. `cargo clippy --workspace` **不新增告警**（存量基线：lt-ui 20 条，零净增）。
+1. `cargo test --workspace` 全绿（滚动基线：603 测 + 9 个 ignored 探针）；
+2. 提交前门禁过：`cargo fmt --all -- --check` + `cargo clippy --workspace --all-targets -- -D warnings`（全仓零告警，已是硬门禁）+ 四个架构守卫——启用钩子后 `git commit` 自动跑（见 §6），未启用时手动 `powershell -File scripts/precommit.ps1`。
 
 - 只跑某个 crate：`cargo test -p lt-ui`（其余类似 lt-proto / lt-models / lt-asr …）；
 - 手动跑 ignored 探针：`cargo test --workspace -- --ignored`（需真模型/真网络，**平时不要跑**）。
@@ -156,17 +156,18 @@ cargo run -p lt-app
 
 ### 5. 代码结构（分层规则）
 
-workspace 9 crates（架构 2.0 W0~W3 已合入；十 crate 终局另加 lt-download，见 docs/architecture-v2.md），依赖链**单向**，改码不得违反：
+workspace **10 crates**（架构 2.0 W0~W7 已全部合入；**依赖白名单由 `scripts/check_deps.ps1` 断言、CI 强制**，精确边见 [docs/architecture-v2.md](docs/architecture-v2.md) §3.1）。大致单向序：
 
 ```
-lt-proto → lt-i18n → lt-models → lt-audio → lt-asr → lt-translate → lt-orchestrator → lt-ui → lt-app
+lt-proto → lt-i18n → lt-models → lt-download → lt-audio → lt-asr → lt-translate → lt-orchestrator → lt-ui → lt-app
 ```
 
 | crate | 职责 |
 |---|---|
 | `lt-proto` | 事件/命令/数据契约。**已冻结**：值域扩展（如 ASR 引擎增项）允许，结构字段/Cmd/Event 增删需评审 |
 | `lt-i18n` | UI 字符串。zh/en 两份 yaml **必须同步修改**（`assets/i18n/zh.yaml` + `en.yaml`，各 579 键） |
-| `lt-models` | Settings 读写、模型注册表（仓库映射/文件清单/体积/sha256）、下载器 |
+| `lt-models` | Settings 读写、模型注册表（仓库映射/文件清单/体积/sha256）、缓存探测；**零网络依赖**（W6 起下载域分家） |
+| `lt-download` | 下载器（reqwest + 退避 + 完整性校验；依赖仅 lt-proto） |
 | `lt-audio` | wasapi 采集、silero VAD、onnxruntime 内嵌与解压（W3 改名自 lt-pipeline） |
 | `lt-asr` | ASR worker 子进程 + IPC（worker 由主进程用**同 exe `--asr-worker`** 自拉起，Job Object 孤儿兜底） |
 | `lt-translate` | async-openai LLM 调用 |
@@ -176,9 +177,9 @@ lt-proto → lt-i18n → lt-models → lt-audio → lt-asr → lt-translate → 
 
 **红线**：
 
-- `lt-ui` 允许**只读**依赖 `lt-models`（注册表/缓存探测）与 `lt-translate`（bench 直调），这是 f266a8b 的有意决策，**不得依赖 lt-app**；
-- `lt-orchestrator` 依赖白名单 = proto/models/audio/asr/translate（禁 ui/winit/i18n——用户文案经 `Msg` 注入，W3）；
-- 新增 UI 能力**不得扩 lt-proto 契约**（日志经 `LogLine { target }` 回流）；Settings 运行时落盘走 `Cmd::PersistSettings`，由 backend 统一写（300ms 防抖对齐原版）；
+- `lt-ui` 内部依赖**只允许 proto / i18n / models 三条**（E3 起为纯投影 crate：翻译域常量已上移 lt-proto、bench 已迁 lt-orchestrator）——**不得依赖 lt-translate 或 lt-app**；
+- `lt-orchestrator` 依赖白名单 = proto/models/download/audio/asr/translate（禁 ui/winit/i18n——用户文案经 `Msg` 注入，W3）；
+- 新增 UI 能力**不得扩 lt-proto 契约**（日志经 `LogLine { target }` 回流）；Settings 运行时落盘走 `Cmd::PersistSettings`，由 shell 统一写（W4 起两跳控制面，300ms 防抖对齐原版）；
 - 参考副本 `LiveTranslate/`（Python 原版）仅供参考，新功能不必拘泥其行为。
 
 **新功能从哪改**：新增 ASR 引擎 → `crates/lt-models/src/registry.rs` 登记 + `crates/lt-app/src/main.rs` 加 worker 臂（做法详见 [docs/archive/asr-engine-expansion.md](docs/archive/asr-engine-expansion.md)，已完工归档）；新增 UI 字符串 → 按红线见 `lt-i18n`；引擎/性能实测记录 → `docs/archive/asr-hardening.md` 等已完工归档文档。
@@ -188,13 +189,14 @@ lt-proto → lt-i18n → lt-models → lt-audio → lt-asr → lt-translate → 
 1. **自主中文提交**：里程碑/任务卡完成且测试全绿即提交，格式 `feat(scope): 中文主题`（如 `feat(subtitle-drag): D-37 字幕窗拖动修复`）；文档类 `docs(scope): …`。多代理并行期提交前 `git status` / `git diff` 复核。
 2. **docs 先于实现**：计划/调研/决策文档定稿即独立 `docs(scope)` 提交，且先于对应实现；计划完成标记随工作包提交同步，**禁止事后补 docs 提交**。
 3. **不用 `git add -A` / `git add .`**：逐项显式 pathspec，提交前核对「提交主题 vs 文件清单」；生成副产物不入库（`docs/architecture/`、`docs/ui-audit/` 已 gitignore）。
+4. **提交门禁（自动，2026-09-11 起）**：clone 后一次性 `git config core.hooksPath .githooks` 启用版本化钩子；此后每次 `git commit` 自动跑 `scripts/precommit.ps1` = `cargo fmt --all -- --check` + `cargo clippy --workspace --all-targets -- -D warnings` + 四个架构守卫（个人路径卫生 / §3.1 依赖白名单 / §6.2 源码禁令 / 死契约），任一不过即拒绝提交（纯 docs/资产提交自动跳过，不浪费时间）。应急 `--no-verify` 可绕，但 CI 六项同源仍会拦；全量测试不在钩子内，它是收工门禁。
 
 ### 7. 改码前必读：AGENTS.md「已知大坑」
 
 [AGENTS.md](AGENTS.md) 里总结了 17 条实测血泪坑，动代码前先读。最高频几条：
 
 1. **egui 多窗口 repaint 回环**（头号坑）：`if resp.repaint && !matches!(event, WindowEvent::RedrawRequested) { window.request_redraw(); }`——照单全收会 1350fps 自旋、CPU 161%、其他窗口饿死白屏。
-2. **窗口拖动弃用 winit `drag_window()`**（D-37）：Windows 上它走系统标题栏模态循环，被自家哑 `WM_MOUSEMOVE(0,0)` 提前取消，且中键根本不启动循环。字幕窗已是宿主 `SetCapture` + `GetCursorPos` 绝对跟踪，悬浮窗 `WinAction::Drag` 同病待修，新窗口拖动照同法写。
+2. **窗口拖动弃用 winit `drag_window()`**（D-37/D-71）：Windows 上它走系统标题栏模态循环，被自家哑 `WM_MOUSEMOVE(0,0)` 提前取消，且中键根本不启动循环。字幕窗与悬浮窗均已改为宿主 `SetCapture` + `GetCursorPos` 绝对跟踪，新窗口拖动照同法写。
 3. **`PROPVARIANT` 带 Drop**：`VT_LPWSTR` 值必须 `CoTaskMemAlloc` 分配（所有权交给 `PropVariantClear`），挂 Rust `Vec<u16>` 指针 = 非 COM 内存释放 → 堆损坏 `0xc0000374`（D-33 实锤）。
 4. **托盘菜单 = `TrackPopupMenu` 模态循环**（D-35）：tray-icon 0.24 在托盘窗 WndProc 内直调，托盘必须放专用线程；退出用命令 + ack 限时等待，**勿用 `PostThreadMessageW(WM_QUIT)`**。
 5. **事件循环线程禁止同步 MessageBox/模态**（D-33）：`rfd::MessageDialog::show()` 阻塞 winit 循环 + 无 owner 被置顶窗压盖。统一用 egui 内嵌模态或原生通知。
