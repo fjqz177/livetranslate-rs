@@ -2,6 +2,7 @@
 # windows-latest = Server 2025：工作目录已在 D:（target/ 随 checkout 落 D:）；
 # uv 钉版 libclang（.venv 相对路径由 .cargo/config.toml [env] 解析）；
 # sherpa-onnx 预编译库缓存（键 = fetch 脚本哈希）；ignored 探针保持离线纪律。
+# 门禁六项与 scripts/precommit.ps1 同源（fmt/clippy/四守护）——增删须双边同步。
 name: ci
 
 on:
@@ -35,6 +36,9 @@ jobs:
         run: powershell -ExecutionPolicy Bypass -File scripts/fetch_sherpa_libs.ps1
 
       - uses: Swatinem/rust-cache@v2
+
+      - name: Rustfmt check
+        run: cargo fmt --all -- --check
 
       - name: Run tests
         run: cargo test --workspace

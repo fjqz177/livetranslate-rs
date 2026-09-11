@@ -603,6 +603,16 @@ jobs:
 | 10 | 隐藏→托盘重显半透明保持 | D-34 遗留 | 重显后仍半透明 |
 | 11 | 托盘菜单打开期间主界面持续出帧可操作 | D-35 遗留 | 无冻结 |
 
+### 6.5 本地提交前门禁（2026-09-11 增补）
+
+`scripts/precommit.ps1` = 提交前**单一入口**，六项顺序执行、任一失败即停（实测全项 ~10s）：`cargo fmt --all -- --check` + `cargo clippy --workspace --all-targets -- -D warnings` + 四守护脚本（check_personal_paths / check_deps / check_guards / check_dead_contract）。与 CI 同源——本地过关 ⇔ CI 过关。
+
+起因：61b651d「rustfmt 全量收口（72 文件）」之后，W6/D-83/D-85 等批次手写格式回漂（57 文件 323 处），暴露「格式与 lint 缺本地强制」。增补把 fmt/clippy 提升到与四守护同级的提交前硬门禁：
+
+- **CI**：新增 `cargo fmt --all -- --check` 步骤（clippy 已于 W7 转 gate；§6.3 yaml 为 W1 落地快照，现行步骤以 `.github/workflows/ci.yml` 为准）。
+- **git 钩子**：`.githooks/pre-commit`（版本化入库；`.gitattributes` 钉 LF 防 CRLF 使 sh 解析失败静默失效）→ 调 `precommit.ps1`；clone 后一次性 `git config core.hooksPath .githooks` 启用；暂存区含 `.rs` / `Cargo.toml` / `.cargo/**` 才触发（纯 docs/资产提交放行，判定为纯 shell glob、不依赖 grep 方言）；`--no-verify` 仅限应急（CI 仍拦）。
+- **边界**：`cargo test --workspace` 不在本门禁内——它是收工门禁（AGENTS「构建与测试」）。
+
 ---
 
 ## 7. 非目标（明确不做，防止范围蔓延）

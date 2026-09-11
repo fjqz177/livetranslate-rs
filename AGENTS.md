@@ -24,11 +24,12 @@ powershell -File scripts/fetch_sherpa_libs.ps1   # 首次：预取 sherpa-onnx �
 cargo test --workspace            # 全量测试（滚动基线：当前 603+9 测全绿 + 9 个 ignored = 真模型/真网络探针离线纪律；PH-1 后 smoke 探针转 ignored 面，见 docs/path-hygiene.md），收工前提
 cargo build --release -p lt-app   # 单 exe（现有 ~76.0MB；onnxruntime.dll + silero_vad.onnx 内嵌；前者启动解压到配置目录，后者内存直载——C5 勘正 2026-09-09）
 cargo run -p lt-app               # GUI 冒烟
+powershell -File scripts/precommit.ps1   # 提交前门禁（2026-09-11 起）：cargo fmt --all -- --check + cargo clippy --workspace --all-targets -- -D warnings + 四守护脚本，六项与 CI 同源；退出码非 0 禁止提交
 ```
 
 - **冒烟**：设临时 `LIVETRANSLATE_CONFIG_DIR`，其中 settings.json 必须显式 `models_dir` 指真实模型缓存（如 `~/.config/livetranslate/models`），否则引擎探测全部失败。
 - **原版参照截图（2026-09-09 全量重拍）**：`assets/reference/` zh/en 各 10 张——控制面板 7 个标签页（`panel_<lang>.png` = 识别落地页 + `panel_{translation,style,subtitle,benchmark,cache,changelog}_<lang>.png`）+ 悬浮窗/字幕窗/日志窗。**旧一套（2026-09-06）误拍自外部爆改版**（其 panel 侧边栏布局与副本 7 标签页结构完全不符），已作废。截图对象 = 工作区 `LiveTranslate/` 参考副本，出厂缺省状态 + 脚本注入示例内容（api_key 占位，不读 user_settings.json，不写副本）。生成脚本已重建：`scripts/grab_reference_ui.py`（QWidget.grab 程序化截图，无 computer use；解释器用外部原版仓 venv——仅当带 PyQt6 的 Python 解释器用，跑的代码严格限于工作区副本，本机具体路径不入库、见项目记忆）。已知怪癖：Qt 6.11 `grab()` 不渲染 QTextEdit 自身样式表背景（真实显示正常），脚本对 viewport 补同色解决。
-- **CI 已建**（`.github/workflows/ci.yml`，W1/R16：windows-latest + uv sync + sherpa 缓存 + 全量测试 + 路径卫生 + clippy advisory）；无 PR 门禁，依赖提交前自查。
+- **CI 已建**（`.github/workflows/ci.yml`，W1/R16，2026-09-11 起含 fmt gate：windows-latest + uv sync + sherpa 缓存 + `cargo fmt --all -- --check` + 全量测试 + 四守护脚本 + clippy `-D warnings`）；无 PR 门禁，依赖提交前自查（本地门禁与 CI 六项同源）。
 
 ## 工作区结构（依赖方向 = 分层规则）
 
@@ -61,7 +62,7 @@ cargo run -p lt-app               # GUI 冒烟
 
 - **自主中文 commit**：每个里程碑/任务卡完成且测试全绿即提交，格式 `feat(scope): 中文主题`（沿用历史风格，如 `feat(m4-panel-gaps): …`）。多代理并行期提交前必须 `git status`/`git diff` 复核——历史教训：stash 手术曾把他人暂存文件混入我方提交（af0ff58）。
 - **docs 提交时机（2026-09-07 整改归档）**：① 计划/调研/决策文档定稿即独立 `docs(scope)` 提交，且必须先于对应实现提交；② 计划完成标记/提交索引随工作包提交同步，禁止事后补 docs 提交；③ 收尾不用 `git add -A`/`git add .`，逐项显式 pathspec，提交前核对「提交主题 vs 文件清单」；④ 生成副产物不入库——`docs/architecture/`（archify 校验图）与 `docs/ui-audit/` 已 gitignore。
-- **架构守护自查（2026-09-09，W7 收口）**：提交前连跑 `powershell -File scripts/check_personal_paths.ps1` + `scripts/check_deps.ps1` + `scripts/check_guards.ps1`（均为 CI gate，退出码非 0 禁止提交）——路径卫生（入库文件禁个人绝对路径；用户名经 `$env:USERNAME` 动态匹配不写字面；`C:\Windows`/`C:\Program Files` 系统级确定性豁免；docs/archive 仅告警）/ §3.1 依赖白名单 / §6.2 五组源码禁令（裸 spawn、直发 proxy、字符串协议、panic hook 越位、契约旁路）。
+- **提交前门禁（2026-09-11 起单一入口）**：提交前跑 `powershell -File scripts/precommit.ps1`——顺序六项、任一非 0 禁止提交：①`cargo fmt --all -- --check`（2026-09-11 新增；起因=61b651d 全量收口后 W6/D-83/D-85 等批次手写格式回漂 57 文件）②`cargo clippy --workspace --all-targets -- -D warnings`（W7 起 CI 已是 gate）③`check_personal_paths.ps1` 路径卫生（入库文件禁个人绝对路径；用户名经 `$env:USERNAME` 动态匹配不写字面；`C:\Windows`/`C:\Program Files` 系统级确定性豁免；docs/archive 仅告警）④`check_deps.ps1` §3.1 依赖白名单 ⑤`check_guards.ps1` §6.2 五组源码禁令（裸 spawn、直发 proxy、字符串协议、panic hook 越位、契约旁路）⑥`check_dead_contract.ps1` 死契约。**git 钩子 `.githooks/pre-commit` 已备**（版本化、`.gitattributes` 钉 LF）：clone 后一次性 `git config core.hooksPath .githooks` 启用，暂存区含 `.rs`/`Cargo.toml`/`.cargo/**` 才触发（纯 docs/资产提交放行），`--no-verify` 仅限应急且 CI 仍拦。**`cargo test --workspace` 不在此列 = 收工门禁**（见上方构建与测试）。
 - i18n：zh/en 两份 yaml 必须同步修改。
 - **字体策略（D-17，2026-09-07 用户裁决）**：仓库自洽为硬保证——内嵌思源（中英韩）+ 等宽 MonoCJK（chrome）+ 符号 NotoSansSymbols2（✗ 等）三字体覆盖全部 UI 字符（`assets/fonts/`，均 OFL 1.1，SOURCES.md 有来源/sha256），任何系统字体缺失都不方块；系统字体（Consolas/注册表扫描/用户自选）仅锦上添花，**不读取系统符号字体（seguisym 已移出）；系统字体缺失不报错不阻断，回退内嵌**；体积：字体以 brotli 压缩资产入库（~12.7MB），运行时一次性解压（启动 ~100ms 级，字形零损失），解压后 FontData::from_static 零拷贝；行级字体键（style.original/translation_font_family、subtitle.lines[].font_family）空串 = 跟随 `subtitle_font_family`（级联），显式族名 = 独立指定；系统字体列表来自 HKLM+HKCU 注册表扫描（`lt-ui/src/fonts.rs`），选择器在样式页「字体」组与字幕行编辑处（搜索/刷新/预览/缺字提示）；改字体键 → 立即 `fonts::apply_fonts(ui.ctx(), …)`（共享单 Context 全窗口下一帧生效）+ `mark_settings_dirty` 防抖落盘；**渲染侧禁用 `FontFamily::Name` 臆造**——未注册族名经 `font_family_for` 回落 Proportional。
 - 子代理分工：general-purpose/Explore 建议设 glm-5.3-flash 做执行/检索；架构承重墙（Win32、下载器、算法移植、CRT/链接问题）由主线程亲自做。
