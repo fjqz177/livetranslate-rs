@@ -7,8 +7,8 @@
 #           （release 单 exe → scripts/package_release.ps1 → zip 传 Artifact）。
 # 门禁项增删须与 scripts/precommit.ps1 双边同步（本地六项 = gate 五项 + clippy）。
 #
-# 触发面 = 全分支 push + PR + 手动 dispatch：开发主线在 arch-v2（main 落后），
-# main-only 会漏检。ignored 探针（真模型/真网络）在 CI 保持跳过 = 离线纪律。
+# 触发面 = 全分支 push + PR + 手动 dispatch：不限定分支——feature 分支与主线一视同仁，
+# 避免「只监听 main」时漏检。ignored 探针（真模型/真网络）在 CI 保持跳过 = 离线纪律。
 # windows-latest = Server 2025：工作目录在 D:（target/ 随 checkout 落 D:）；
 # uv 钉版 libclang/cmake（.venv 相对路径由 .cargo/config.toml [env] 解析）。
 name: ci
