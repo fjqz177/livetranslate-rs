@@ -3775,7 +3775,13 @@ mod tests {
     // ── build_worker_config：whisper 分支（M5.1） ──
 
     fn tmp_models_dir(name: &str) -> std::path::PathBuf {
-        let base = std::env::temp_dir().join(format!("lt_bwc_test_{name}_{}", std::process::id()));
+        // 同名目录曾被 17 个测试并发共享（test_transcript 等）：remove+create 非原子，
+        // Windows 下 create_dir_all 的 AlreadyExists+is_dir 复查窗口会被并发 remove 打穿
+        // （实跑偶发 code 183 panic）——每次调用取唯一序号根治；各测试自带收尾清理
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let base =
+            std::env::temp_dir().join(format!("lt_bwc_test_{name}_{}_{}", std::process::id(), n));
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(&base).unwrap();
         base
