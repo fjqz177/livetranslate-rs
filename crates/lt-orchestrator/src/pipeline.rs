@@ -1641,7 +1641,7 @@ fn reject_segment(
 }
 
 /// funasr 模型键 → (条目, 是否回退)。
-/// mlt 无上游 ONNX 转换、待上游产出（D-14）；mlt/非法键统一回退 sensevoice-small（bool = true）。
+/// 非法/退役键（D-86 后含 mlt 旧档残留）统一回退 sensevoice-small（bool = true）。
 fn resolve_funasr_entry(key: &str) -> (registry::ModelEntry, bool) {
     match registry::funasr_entry(key) {
         Some(e) => (e, false),
@@ -2216,7 +2216,7 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
     // 启动后每次引擎装配/段过滤均重新 load()，无"记得补同步边"）
     let mut worker = None;
     if let Some(models_dir) = &models_dir {
-        // 模型键 → 条目；mlt/非法键回退 sensevoice-small（不阻断 UI，也不得用 nano 冒充）。
+        // 模型键 → 条目；非法/退役键回退 sensevoice-small（不阻断 UI）。
         // 诊断仅 funasr 引擎相关：whisper/qwen3 启动诊断走 build_worker_config 对应分支
         // （E2/D-79：判定走引擎值域透镜，零字面量比较）
         let (entry, fell_back) = match settings.engine_key() {
@@ -2226,13 +2226,8 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
             EngineKey::Whisper => (registry::SENSEVOICE_SMALL.clone(), false),
         };
         if fell_back {
-            let reason = if registry::funasr_key_is_ghost(&settings.funasr_model) {
-                "mlt 无上游 ONNX 转换，待上游产出（D-14）"
-            } else {
-                "非法模型键"
-            };
             tracing::warn!(
-                "funasr 模型 {:?} 不可用（{reason}），回退 sensevoice-small",
+                "funasr 模型 {:?} 非法/退役（D-86），回退 sensevoice-small",
                 settings.funasr_model
             );
         }
@@ -2993,7 +2988,7 @@ mod tests {
         assert_eq!(cfg2.pad_seconds, Some(0.5));
         assert_eq!(display2, "SenseVoice Small");
 
-        // mlt 无注册表条目（D-14）→ 回退 sensevoice-small 条目装配
+        // D-86：退役键 mlt 与非法键同路 → 回退 sensevoice-small 条目装配（旧档兼容锁）
         let (cfg3, display3) = build_worker_config(
             &base,
             "funasr",
@@ -3748,13 +3743,13 @@ mod tests {
         assert_eq!(reject_segment("", 3.0, "zh", "en"), Some(REJECT_EMPTY));
     }
 
-    // ── resolve_funasr_entry：mlt/非法键回退（D-14） ──
+    // ── resolve_funasr_entry：非法/退役键回退（D-86） ──
 
     #[test]
-    fn mlt_falls_back_to_sensevoice() {
+    fn retired_mlt_falls_back_to_sensevoice() {
         let (entry, fell_back) = resolve_funasr_entry("funasr-mlt-nano-2512");
         assert!(fell_back);
-        // 绝不能静默用 nano 冒充 mlt（D-14）
+        // D-86：退役键与 bogus 同路回退，绝不冒充 nano
         assert_eq!(entry, registry::funasr_entry("sensevoice-small").unwrap());
     }
 

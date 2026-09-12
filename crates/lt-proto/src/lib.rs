@@ -22,7 +22,7 @@ pub mod settings;
 /// 结构体 + `probe_id`、`UiEvent::TestTranslatorResult` 改型为
 /// `ProbeOutcome` 判别 + id 归位；`FailureKind`/`ThreadRole` 的新增属加法
 /// 豁免不计）= 6。
-pub const PROTO_VERSION: u32 = 6;
+pub const PROTO_VERSION: u32 = 7; // D-86：FUNASR_MODELS 删 funasr-mlt-nano-2512（值域成员删除，评审留痕）
 
 /// 连接探测总预算（秒，D-85 用户裁决 B）：编排域据此设 deadline，
 /// UI 域据此设看门狗（+10s 裕量）。放契约层是为了让两个域同源又不越依赖边

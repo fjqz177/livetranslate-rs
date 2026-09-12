@@ -9,7 +9,6 @@
 //!   vad_whisper.py 的本地 GGML 枚举/下载对话框不做——`whisper_model_size` 直接
 //!   接受本地路径（settings 手填，`resolve_whisper_model` 文件直通），枚举入口另卡；
 //! - vad_tab.py 的下载源折叠组（hub/镜像/代理）本批不做（下载按钮读 settings 默认值）；
-//! - D-14：funasr-mlt-nano-2512 无上游 ONNX 转换 → 模型下拉灰显；
 //! - "性能基准"按钮在页头（mod.rs），点击仅记日志（窗口随 M4.4 接入）。
 
 use super::{group_card, hint_line, mark_settings_dirty, send_switch_engine, Palette};
@@ -54,12 +53,11 @@ pub fn engine_index_for(engine: &str) -> usize {
         .unwrap_or(0)
 }
 
-/// FunASR 模型下拉项（原版 funasr_model_options()：(键, 显示名)；enabled 为 Rust 版
-/// 附加语义——mlt 无上游 ONNX（D-14）灰显，nano 标注实验性）
+/// FunASR 模型下拉项（原版 funasr_model_options()：(键, 显示名)；nano 标注实验性。
+/// D-86：mlt 灰显项与 enabled 门控随幽灵值机制移除）
 pub struct FunasrModelItem {
     pub key: &'static str,
     pub display: String,
-    pub enabled: bool,
 }
 
 /// 模型表：键列表 = lt_proto::FUNASR_MODELS 单源；可用性/显示名 = 注册表推导
@@ -69,27 +67,16 @@ pub fn funasr_model_items() -> Vec<FunasrModelItem> {
     let exp = lt_i18n::t("model_experimental");
     lt_proto::settings::FUNASR_MODELS
         .into_iter()
-        .map(|key| match lt_models::registry::funasr_entry(key) {
-            Some(e) => {
-                // 实验性标注为 UI 侧语义（能力未定，默认放行但显式提示）
-                let display = if key == "funasr-nano-2512" {
-                    format!("{}{exp}", e.display)
-                } else {
-                    e.display.to_string()
-                };
-                FunasrModelItem {
-                    key,
-                    display,
-                    enabled: true,
-                }
-            }
-            None => FunasrModelItem {
-                // 值域幽灵（D-14 唯一在案 mlt；`funasr_key_is_ghost` 防线测试保证
-                // 此分支只可能是 mlt）：无注册表条目 → 灰显不可选
-                key,
-                display: "Fun-ASR-MLT-Nano".into(),
-                enabled: false,
-            },
+        .map(|key| {
+            let entry =
+                lt_models::registry::funasr_entry(key).expect("R25 防线：值域成员必有注册表条目");
+            // 实验性标注为 UI 侧语义（能力未定，默认放行但显式提示）
+            let display = if key == "funasr-nano-2512" {
+                format!("{}{exp}", entry.display)
+            } else {
+                entry.display.to_string()
+            };
+            FunasrModelItem { key, display }
         })
         .collect()
 }
@@ -227,7 +214,7 @@ pub enum CacheStatus {
     Cached(u64),
     /// 未缓存（携带估计字节）
     Missing(u64),
-    /// 无注册表条目（mlt，D-14）
+    /// 无注册表条目（未知/退役键——防御面：sanitize 后正常不可达）
     Unavailable,
 }
 
@@ -402,13 +389,7 @@ pub fn page(
                     .width(240.0)
                     .show_ui(ui, |ui| {
                         for (i, item) in items.iter().enumerate() {
-                            if !item.enabled {
-                                // D-14：mlt 灰显（无上游 ONNX）
-                                ui.add_enabled(
-                                    false,
-                                    egui::Button::selectable(false, item.display.clone()),
-                                );
-                            } else if ui
+                            if ui
                                 .selectable_label(m_idx == i, item.display.clone())
                                 .clicked()
                                 && m_idx != i
@@ -419,9 +400,6 @@ pub fn page(
                         }
                     });
             });
-            if m_idx == 2 {
-                hint_line(ui, pal, &lt_i18n::t("model_mlt_disabled_hint"));
-            }
         }
 
         // Whisper 档位（原版 _whisper_size_combo；仅 whisper 引擎显示）。
@@ -1065,7 +1043,7 @@ pub fn page(
                         }
                     }
                     CacheStatus::Unavailable => {
-                        hint_line(ui, pal, &lt_i18n::t("model_mlt_disabled_hint"));
+                        hint_line(ui, pal, &lt_i18n::t("model_unavailable_hint"));
                     }
                 },
             }
@@ -1263,7 +1241,7 @@ fn apply_mic_setting(settings: &mut Settings, session: &SessionView, setting: Op
 
 /// 引擎状态提示（原版 _refresh_engine_status 的 Rust 化简版）：
 /// 按当前引擎模型缓存判定 → 已缓存 = 可用；未缓存 = needs-model（识别页缓存组
-/// 可下载；mlt 等无条目模型同样落此文案，与既有 funasr 行为一致）
+/// 可下载；未知/退役键等无条目情形同样落此文案）
 fn engine_status(settings: &Settings, engine: &str, pal: &Palette) -> (String, egui::Color32) {
     let models_dir = lt_models::paths::models_dir(settings.models_dir.as_deref())
         .unwrap_or_else(|_| std::env::temp_dir());
@@ -1327,32 +1305,27 @@ mod tests {
         assert_eq!(engine_display("nope"), "nope");
     }
 
-    /// FunASR 模型表：顺序同 FUNASR_MODELS，mlt 灰显（D-14），nano 带实验性标注
+    /// FunASR 模型表：顺序同 FUNASR_MODELS，nano 带实验性标注（D-86：mlt 项已移除）
     #[test]
-    fn funasr_model_items_order_and_gating() {
+    fn funasr_model_items_order_and_labels() {
         let items = funasr_model_items();
         assert_eq!(
             items.iter().map(|m| m.key).collect::<Vec<_>>(),
-            [
-                "sensevoice-small",
-                "funasr-nano-2512",
-                "funasr-mlt-nano-2512"
-            ]
+            ["sensevoice-small", "funasr-nano-2512"]
         );
-        assert!(items[0].enabled);
-        assert!(items[1].enabled);
-        // 实验性标注随界面语言（i18n 全局态在并行测试下不确定）→ 双语等价断言
         assert!(
             items[1].display.contains("experimental") || items[1].display.contains("实验性"),
             "nano 应带实验性标注: {}",
             items[1].display
         );
-        assert!(!items[2].enabled, "mlt 应灰显（D-14）");
         // 索引映射：合法值命中、非法值回退 0（sanitize 语义）
         assert_eq!(funasr_index_for("funasr-nano-2512"), 1);
         assert_eq!(funasr_index_for("bogus"), 0);
-        // 已存 mlt 时索引仍指到灰显项（展示但不可改选其它后再选回）
-        assert_eq!(funasr_index_for("funasr-mlt-nano-2512"), 2);
+        assert_eq!(
+            funasr_index_for("funasr-mlt-nano-2512"),
+            0,
+            "D-86：退役键回退首项"
+        );
     }
 
     /// Whisper 档位表：顺序同注册表（5 原版档 + turbo，D-15）、large-v3 唯一慢速提示档
@@ -1528,7 +1501,7 @@ mod tests {
     }
 
     /// 空目录 → Missing（含注册表体积估计）；MS 侧命中 → Cached；
-    /// mlt（无注册表条目）→ Unavailable
+    /// 退役键（无注册表条目）→ Unavailable
     #[test]
     fn cache_status_probes_models_dir() {
         let dir = tmpdir("probe");
@@ -1561,7 +1534,7 @@ mod tests {
             model_cache_status(&dir, "funasr", "sensevoice-small", ""),
             CacheStatus::Cached(sensevoice_bytes)
         );
-        // mlt 无条目 → Unavailable（D-14）
+        // D-86：退役键无条目 → Unavailable（防御分支）
         assert_eq!(
             model_cache_status(&dir, "funasr", "funasr-mlt-nano-2512", ""),
             CacheStatus::Unavailable

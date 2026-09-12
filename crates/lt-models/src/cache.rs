@@ -221,7 +221,7 @@ pub fn missing_models(
 ) -> Vec<MissingModel> {
     match engine {
         "funasr" => {
-            // mlt/非法键回退 sensevoice-small（与 pipeline 装载一致，D-14）
+            // 非法/退役键回退 sensevoice-small（与 pipeline 装载一致，D-86）
             let entry = registry::funasr_entry(funasr_model)
                 .or_else(|| registry::funasr_entry("sensevoice-small"))
                 .expect("sensevoice-small 常量条目必存在");
@@ -529,7 +529,7 @@ mod tests {
             miss[0].files.len(),
             "下限须与清单等长"
         );
-        // mlt 键回退后同样报 sensevoice-small 缺失（D-14）
+        // D-86：退役键 mlt 与非法键同路——回退后报 sensevoice-small 缺失
         let miss = missing_models(&dir, "funasr", "funasr-mlt-nano-2512", "");
         assert_eq!(miss[0].display, "SenseVoice Small");
         // whisper builtin 档缺；本地路径不触发下载

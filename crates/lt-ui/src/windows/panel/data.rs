@@ -67,7 +67,7 @@ pub fn scan_cache_entries(models_dir: &std::path::Path) -> Vec<CacheEntry> {
             }
         }
     };
-    // funasr 系（注册表键序；mlt 无上游条目自然跳过）
+    // funasr 系（注册表键序）
     for key in lt_models::registry::FUNASR_KEYS {
         if let Some(entry) = lt_models::registry::funasr_entry(key) {
             push_entry(entry.display, entry.ms, entry.hf);

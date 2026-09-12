@@ -235,30 +235,15 @@ pub const WHISPER_ENTRIES: [ModelEntry; 6] = [
 ];
 
 /// 合法 funasr 模型键（与 lt_proto::FUNASR_MODELS 对齐）
-pub const FUNASR_KEYS: [&str; 3] = [
-    "sensevoice-small",
-    "funasr-nano-2512",
-    "funasr-mlt-nano-2512",
-];
+pub const FUNASR_KEYS: [&str; 2] = ["sensevoice-small", "funasr-nano-2512"];
 
 /// 按键取 funasr 条目；None = 该键当前不可用
 pub fn funasr_entry(key: &str) -> Option<ModelEntry> {
     match key {
         "sensevoice-small" => Some(SENSEVOICE_SMALL.clone()),
         "funasr-nano-2512" => Some(FUNASR_NANO.clone()),
-        // mlt 是独立模型，无上游 ONNX 转换，待上游产出（D-14）；不得用 nano 冒充
-        "funasr-mlt-nano-2512" => None,
-        _ => None,
+        _ => None, // 非法/退役键（D-86 后含 mlt 旧档残留；sanitize 已收敛，此为防御面）
     }
-}
-
-/// D-14 幽灵值判定（R25 归一单点）：键在合法值域（FUNASR_MODELS）内却无注册表
-/// 条目——当前唯一在案幽灵值 = funasr-mlt-nano-2512（无上游 ONNX 转换，运行时
-/// 统一回退 sensevoice-small）。值域成员/表项/幽灵三者的裁决收敛于此与
-/// `funasr_entry`：`every_funasr_key_has_entry_or_is_the_documented_ghost`
-/// 防线保证新键入值域必有表项（幽灵例外仅此一案）。
-pub fn funasr_key_is_ghost(key: &str) -> bool {
-    lt_proto::settings::FUNASR_MODELS.contains(&key) && funasr_entry(key).is_none()
 }
 
 /// whisper 条目（size 为合法档位时）
@@ -336,35 +321,28 @@ mod tests {
     fn funasr_entry_keys() {
         assert!(funasr_entry("sensevoice-small").is_some());
         assert!(funasr_entry("funasr-nano-2512").is_some());
-        // mlt 无上游 ONNX 转换（D-14）→ None，运行时回退 sensevoice-small
+        // D-86：退役键 mlt 无条目（旧档经 sanitize 收敛，正常流不会到此）
         assert!(funasr_entry("funasr-mlt-nano-2512").is_none());
         assert!(funasr_entry("bogus").is_none());
     }
 
-    /// R25 防线：合法值域 ↔ 注册表一致性。FUNASR_MODELS 每个合法值要么有
-    /// 注册表条目，要么是唯一在案的幽灵值（D-14 mlt：无上游转换，运行时统一
-    /// 回退 sensevoice-small）。今后给值域加键而忘登记表（幽灵值复发）在此爆掉；
-    /// FUNASR_KEYS 镜像与 lt_proto::FUNASR_MODELS 漂移同样在此爆掉。
+    /// R25 防线：合法值域 ↔ 注册表一致性。FUNASR_MODELS 每个合法值必有注册表条目
+    /// （D-86：幽灵值机制随 mlt 移除——要么有表项，要么根本不进值域）。
+    /// 今后给值域加键而忘登记表（幽灵值复发）在此爆掉；FUNASR_KEYS 镜像与
+    /// lt_proto::FUNASR_MODELS 漂移同样在此爆掉。
     #[test]
-    fn every_funasr_key_has_entry_or_is_the_documented_ghost() {
-        const GHOST: &str = "funasr-mlt-nano-2512"; // D-14 唯一在案幽灵值
+    fn every_funasr_key_has_entry() {
         for key in lt_proto::settings::FUNASR_MODELS {
-            let entry = funasr_entry(key);
-            if key == GHOST {
-                assert!(entry.is_none(), "D-14：mlt 仍无上游转换，不得偷偷登记表项");
-            } else {
-                assert!(entry.is_some(), "合法值 '{key}' 缺注册表条目（幽灵值复发）");
-            }
+            assert!(
+                funasr_entry(key).is_some(),
+                "合法值 '{key}' 缺注册表条目（幽灵值复发）"
+            );
         }
         assert_eq!(
             FUNASR_KEYS,
             lt_proto::settings::FUNASR_MODELS,
             "键表镜像漂移"
         );
-        // R25 归一后的幽灵判定单点行为锁
-        assert!(funasr_key_is_ghost(GHOST), "mlt 应判定为幽灵值");
-        assert!(!funasr_key_is_ghost("sensevoice-small"));
-        assert!(!funasr_key_is_ghost("bogus"), "值域外键不是幽灵，是非法键");
     }
 
     #[test]

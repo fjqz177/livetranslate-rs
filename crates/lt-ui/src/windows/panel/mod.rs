@@ -518,7 +518,7 @@ mod tests {
     fn panel_ui_smoke_renders_all_pages_headless() {
         let ctx = egui::Context::default();
         let mut st = crate::state::AppUi::new(Settings::default());
-        // VAD/ASR 页强制走设备枚举 + 缓存探测双分支（mlt 保存值 → Unavailable 提示）
+        // VAD/ASR 页强制走设备枚举 + 缓存探测双分支（退役键 → Unavailable 防御分支）
         st.settings.funasr_model = "funasr-mlt-nano-2512".into();
         for page in PanelPage::ALL {
             st.panel.state.page = page;

@@ -85,20 +85,16 @@ impl ProxyMode {
         }
     }
 }
-/// 合法 funasr 模型（mlt 置灰但仍是合法存量值）
-pub const FUNASR_MODELS: [&str; 3] = [
-    "sensevoice-small",
-    "funasr-nano-2512",
-    "funasr-mlt-nano-2512",
-];
+/// 合法 funasr 模型（D-86：mlt 值域成员移除——退役键经 sanitize 回退 sensevoice-small）
+pub const FUNASR_MODELS: [&str; 2] = ["sensevoice-small", "funasr-nano-2512"];
 /// 合法 whisper 档位（r8：+turbo）
 pub const WHISPER_SIZES: [&str; 6] = ["tiny", "base", "small", "medium", "large-v3", "turbo"];
 /// 旧版独立引擎名 → funasr 模型（对照原版 FUNASR_LEGACY_ENGINE_ALIASES；
 /// 引擎别名命中时必须覆盖 funasr_model，即使其已是合法值）
-pub const ASR_ENGINE_LEGACY_ALIASES: [(&str, &str); 3] = [
+/// D-86 注记：旧档 funasr-mlt-nano 经"非法引擎→funasr"+"模型归一→sensevoice-small"双重收敛
+pub const ASR_ENGINE_LEGACY_ALIASES: [(&str, &str); 2] = [
     ("sensevoice", "sensevoice-small"),
     ("funasr-nano", "funasr-nano-2512"),
-    ("funasr-mlt-nano", "funasr-mlt-nano-2512"),
 ];
 
 /// 语言代码归一（D-74）：小写 + 主子标签（"-" 前），`"zh-CN"` → `"zh"`、
@@ -115,8 +111,7 @@ fn normalize_funasr_model(v: &str) -> String {
     match v {
         "sensevoice" => "sensevoice-small".into(),
         "funasr-nano" => "funasr-nano-2512".into(),
-        "funasr-mlt-nano" => "funasr-mlt-nano-2512".into(),
-        "sensevoice-small" | "funasr-nano-2512" | "funasr-mlt-nano-2512" => v.into(),
+        "sensevoice-small" | "funasr-nano-2512" => v.into(),
         _ => "sensevoice-small".into(),
     }
 }
@@ -970,12 +965,23 @@ mod tests {
         assert_eq!(s.asr_engine, "funasr");
         assert_eq!(s.funasr_model, "sensevoice-small");
 
-        // funasr-mlt-nano → funasr + funasr-mlt-nano-2512
+        // D-86：funasr-mlt-nano 别名已删——旧档经"非法引擎→funasr"+"模型归一"收敛
         let s = Settings::from_value_compatible(serde_json::json!({
             "asr_engine": "funasr-mlt-nano"
         }));
         assert_eq!(s.asr_engine, "funasr");
-        assert_eq!(s.funasr_model, "funasr-mlt-nano-2512");
+        assert_eq!(s.funasr_model, "sensevoice-small");
+    }
+
+    /// D-86：退役键两条收敛路径的端到端锁（mlt 从值域删除后旧档不炸、不落死值）
+    #[test]
+    fn retired_mlt_values_converge() {
+        let s = Settings::from_value_compatible(serde_json::json!({
+            "asr_engine": "funasr",
+            "funasr_model": "funasr-mlt-nano-2512"
+        }));
+        assert_eq!(s.asr_engine, "funasr");
+        assert_eq!(s.funasr_model, "sensevoice-small");
     }
 
     /// 正常引擎值不触发别名迁移，funasr_model 保持原样
@@ -983,10 +989,10 @@ mod tests {
     fn normal_engine_values_untouched() {
         let s = Settings::from_value_compatible(serde_json::json!({
             "asr_engine": "funasr",
-            "funasr_model": "funasr-mlt-nano-2512"
+            "funasr_model": "funasr-nano-2512"
         }));
         assert_eq!(s.asr_engine, "funasr");
-        assert_eq!(s.funasr_model, "funasr-mlt-nano-2512");
+        assert_eq!(s.funasr_model, "funasr-nano-2512");
 
         let s = Settings::from_value_compatible(serde_json::json!({
             "asr_engine": "whisper"
