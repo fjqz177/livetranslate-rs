@@ -10,3 +10,5 @@ docs/ui-audit/
 docs/architecture/
 # WD-1 打包产物（scripts/package_release.ps1 写入），禁止入库
 /dist/
+# 文档纪律草稿区（未拍板的调研稿/方案稿，永不入库；定稿即 mv 进 docs/ 并 git add）
+docs/drafts/

@@ -1,7 +1,9 @@
 # LiveTranslate-rs 架构 2.0 方案：目标架构与迁移路线
 
+> 修订（2026-09-13）：本文档已归档。**拓扑现行权威 = `scripts/check_deps.ps1` §3.1 白名单断言**（CI gate，随代码演进）；本文为设计决策史（D-60+ 登记表见 §3.7，全局索引 `docs/decisions.md`）。
+
 - **定稿日期**：2026-09-09
-- **证据基线**：commit `314644b`（评审基线）+ `4d7d84f`（评审报告 `docs/architecture-review.md`）；405 测 = 398 常规 + 7 ignored
+- **证据基线**：commit `314644b`（评审基线）+ `4d7d84f`（评审报告 `docs/archive/architecture-review.md`）；405 测 = 398 常规 + 7 ignored
 - **取证方法**：评审报告（6 只读子代理七维度 + 主线程交叉验证）之上，本方案另派 4 路专项取证——①lt-app 装配层全测绘 ②lt-ui 窗口巨石全测绘 ③契约/设置镜像/字符串旁路精确定性 ④外部选型调研（arc-swap / winit 事件模型 / panic 监督 / 单实例激活 / 依赖治理 / channel 生态 / CI runner 现状，来源见 §8.3）。主线程另通读 `crates/lt-app/src/main.rs` 全文与根 `Cargo.toml` 复核。
 - **效力**：阶段二活跃施工依据（本目录，非归档）。各波次（§5）为独立工作包，可按裁决调整顺序与取舍；契约变更本身仍随波次落地。**本文档先行独立 `docs(arch)` 提交，先于一切实现提交**（docs 提交时机纪律）。
 - **状态**：方案定稿 v1.1（2026-09-09 二次严审修订：补硬约束 INV1~INV12、线程清单 v2、停机协议〔封堵停机-respawn 竞态设计洞〕、TlSwitch 七臂收敛三臂、lt-backend 线程退役决策、行为偏差登记表 D-60+、ADR 备选记录、波次依赖与回滚语义）。**W0（a677559）/W1（a829ad0+1ab4f97）/W2（5907c52+6362661+a525aa9）/W3（编排域独立+拓扑勘正）/W4（设置总线）/W5（lt-ui 解放）/W6（子系统精修）/W7（守护收口）已全部合入**——W5 施工实记见 §3.4 各节注；W7 施工实记（2026-09-09 收口波）：①下载会话线程入监督器（Supervisor `is_thread_finished` 查询 + `ThreadRole::Download` + worker join panic 转失败终态 + session catch_unwind 兜底，修复「下载线程 panic → 下载卡永久卡住」，行为登记 **D-77**）②`scripts/check_deps.ps1`（§3.1 白名单断言，10 crate 21 条边）与 `scripts/check_guards.ps1`（§6.2 五组禁令，白名单按实测编目：worker I/O 泵/wasapi 读环/bench 内层/下载 worker 子线程为注记例外）双双落地进 CI ③clippy 全仓 125 条清零转 gate（`-D warnings`）④lt-app 组织收口：W5 下沉三路助手拆入 `shell_helpers.rs`（总行数 1181，验收口径修订为 ≤1200——组合根 + 三项宿主职责〔W5 三路下沉/W6 单实例〕的自然结果，shell.rs 512 行 = 命令路由+事件分发+停机，无域逻辑）⑤§6.4 实机走查总清单定稿（见该节）。
@@ -175,7 +177,7 @@ impl Supervisor {
 
 **Supervisor 自身边界与停机协议**：①monitor 线程死亡不自动重生（监督者自举无解，接受）——hook crash 文件兜底可见性，monitor 循环零 unwrap 零阻塞调用把死亡概率压到最低；②**停机竞态封堵（INV4）**：`Supervisor::stopping`（AtomicBool）先于一切线程停止信号置位，monitor 判定 respawn 前必须复查 stopping——panic 恰好发生在置位瞬间时，宁可漏一次 respawn 不可多一次；③**重启语义（INV5）**：factory 必须构造干净初态，capture/asr 重生一律会话复位，ASR 重生固定走待命态入口（等价 AH-1 路径），不得从主循环中段恢复。E1 延伸：`Supervisor::spawn` 出生口自身在 stopping 置位后拒绝（非 monitor respawn 面的封堵）。
 
-**施工实记（E1~E4 波 / 2026-09-09，详见 docs/architecture-v2-improvements.md）**：
+**施工实记（E1~E4 波 / 2026-09-09，详见 docs/archive/architecture-v2-improvements.md）**：
 - **D-80 Backoff 实装**：`Policy::Backoff`（`backoff()` 预设 = 500ms 起步指数翻倍 / 30s 封顶 / 8 连败放弃并告警 / 60s 健康存活清零连败计数）——capture/ASR/翻译池/日志桥四类常驻线程迁移；**动脉桥保持 Always**（UI 活性本身死透 = 界面全死，其循环体仅 pop/send/take 无 panic 源）。
 - **监督器为双实例（ADR-8 勘正，本表单表系简化记法）**：app 侧实例（lt-app main：动脉桥/日志桥/设备探测/基准/文件框/下载会话）与管道侧实例（`Pipeline::start` 内建：capture/ASR/tl/AudioBridge）各带 monitor，边界 = 线程出生域与生命周期域（管道线程随 Pipeline 生灭、app 线程随进程生灭）——合并需引入分组实体，裁定不值。
 - **`ThreadRole` 枚举勘正**：无 `Tray`/`Singleton` 变体——托盘线程为 lt-ui 白名单裸 spawn（依赖方向不可达监督器；死亡**仅 crash 文件可见**，非本表 W1 时所记"ThreadDied 可见"）；单实例为 message-only 窗方案（**无线程**，实现优于原表设计的 Supervisor(Never) 线程）。
@@ -397,7 +399,7 @@ WinId::Overlay => { let AppUi { overlay, session, settings, modal, .. } = app;
 
 ### 3.7 行为偏差登记表（INV12 载体，预占 D-60+）
 
-> **E 波续编登记（2026-09-09）**：D-78 向导子系统保留并定位为待开发面 / D-79 `Cmd::StartDownload` 载荷改型 `Hub`/`ProxyMode`（PROTO_VERSION=4）/ D-80 常驻线程 Backoff——登记详情与论证见 **docs/architecture-v2-improvements.md §6**。
+> **E 波续编登记（2026-09-09）**：D-78 向导子系统保留并定位为待开发面 / D-79 `Cmd::StartDownload` 载荷改型 `Hub`/`ProxyMode`（PROTO_VERSION=4）/ D-80 常驻线程 Backoff——登记详情与论证见 **docs/archive/architecture-v2-improvements.md §6**。
 
 结构波次禁止夹带行为变化；下表是本方案**全部**用户可见行为变化的事先登记——合入对应波次时以实际 D 号落决策史并过验收，未登记的行为变化一律不得合入：
 
@@ -642,7 +644,7 @@ jobs:
 - **契约与设置**：外层 `UiMsg{Event,Tray,Menu,Cmd}`（events.rs:12-21）；`UiEvent` 17 变体、`Cmd` 16 变体（Start 死）；Settings **33 字段**定义于 lt-proto/src/settings.rs:46-89（lt-models re-export）；**镜像 7 处**（§3.2.3 表）；下载进度格式权威在生产端 backend.rs:389-397（无版本无转义，`total=None` 编码为 `0`）；前缀枚举 UI 侧 6 项 vs 生产端 7 前缀（checksum/cancel 落 Other）；`__DONE__` 三端（bench.rs:402 → app.rs:1053 → benchmark_tab.rs:80）；i18n `parse_yaml` `unwrap_or_default`（lib.rs:42-45）、键集测试仅 `quit` 一键（:138-155）；settings_io remove+rename 窗口 :37-40、坏档=warn+None；VAD `ConfidenceSource` trait :57-61、`conf: C` 私有无替换方法（:224）、`make_confidence_source` 唯一调用点 lt-app/pipeline.rs:378；lt-asr `request_timeout=60s`（client.rs:127，覆写器 :149-156 已存在）；lt-pipeline 对 lt-proto **src 零使用**（对 lt-models 有真实使用）；SetMic 不清 chunk 队列（wasapi_win.rs:460-471）而 SetDevice 清（:438-459）。
 - **外部选型**（详见 8.3）：arc-swap 1.9.2 / winit 0.30.13 逐条 PostMessage / PanicHookInfo / tauri single-instance 模式 / cargo-deny 无正向边规则 → 自写脚本 / `ArrayQueue::force_push` / windows-latest D: 工作目录。
 
-### 8.2 与评审报告（docs/architecture-review.md）的差异勘定
+### 8.2 与评审报告（docs/archive/architecture-review.md）的差异勘定
 
 1. pipeline.rs 行数：评审"1490 行码"→ 实为 1890 总行（码 ~1487 + 测 ~403），锚点全部命中，无实质影响。
 2. 设置镜像数：评审"6 个表示"→ 精化为 **7 处**（VadProcessor 内部生效值与 vad_update 槽分计）。

@@ -1,4 +1,4 @@
-//! 事件动脉（架构 2.0 W2，docs/architecture-v2.md §3.2.2）：后台线程 → UI
+//! 事件动脉（架构 2.0 W2，docs/archive/architecture-v2.md §3.2.2）：后台线程 → UI
 //! 事件的统一有界通路的**队列侧**（W3 自 lt-app 迁入编排域：生产端全在本
 //! crate 的线程域，队列随生产者走；代理 waker 桥线程留 lt-app——桥需
 //! `EventLoopProxy`，编排域零 winit 依赖）。

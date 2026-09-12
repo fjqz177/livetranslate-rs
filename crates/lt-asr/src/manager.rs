@@ -131,7 +131,7 @@ impl AsrManager {
         Ok(())
     }
 
-    /// 显式重试（D-83 死锁 C；docs/model-trust-repair.md §3 表 DL-C）：
+    /// 显式重试（D-83 死锁 C；docs/archive/model-trust-repair.md §3 表 DL-C）：
     /// 用户/修复驱动的重装配请求——`unavailable` 标记与重启/错误计数清零后
     /// 重新装配。与 [`Self::ensure_started`] 的差异只在"同配置被配额拒绝"
     /// 这一条：配置签名未变（如刚修好同一个模型文件）时也必须能重试，

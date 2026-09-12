@@ -82,7 +82,7 @@
 | 关闭方式（手动指定） | 自动 | 五档：自动 / DeepSeek / Qwen / vLLM / OpenAI——自动链不灵时的人工覆盖 |
 | `top_p` | 留空=不发 | 主流通用，翻译通常不需要 |
 | 频率惩罚 / 存在惩罚 | 留空=不发 | 同上 |
-| `context_turns` | 0 | 上下文轮数（2026-09-10 补充：翻译页「模型配置」组另设当前活跃模型的直达行，见 `docs/context-turns-ui.md`，**D-84**） |
+| `context_turns` | 0 | 上下文轮数（2026-09-10 补充：翻译页「模型配置」组另设当前活跃模型的直达行，见 `docs/archive/context-turns-ui.md`，**D-84**） |
 | 无 system 角色 | 不勾 | 少数端点兼容开关 |
 | `extra_body`（JSON） | 空 | 逃生舱：原样透传 |
 

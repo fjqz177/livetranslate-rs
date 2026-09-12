@@ -11,7 +11,7 @@
 //! 全套为「保留待开发面」**——当前未接线（StartupFlow::Wizard/DownloadMissing
 //! 零生产者，Setup 窗创建即隐藏），后续将在此继续开发首启引导。现状地图与三处
 //! 接线点（initial_visibility 门 / Setup show 分支 / DownloadSucceeded→
-//! start_pipeline 链）见 docs/architecture-v2-improvements.md §5.4；
+//! start_pipeline 链）见 docs/archive/architecture-v2-improvements.md §5.4；
 //! WD-6 首启轻引导横幅的接口预留（设置键/UI 挂点/触发语义）亦登记在该节。
 //! `Cmd::Stop`（向导关闭→退出）因本保留裁决而合法存续，勿删。
 

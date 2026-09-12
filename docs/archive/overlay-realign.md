@@ -5,7 +5,7 @@
 
 
 > 范围：**仅主界面**（程序启动时打开的黑色半透明悬浮窗）。控制面板/托盘/字幕窗不在本方案内。
-> 参考权威 = 工作区内 `LiveTranslate/subtitle_overlay.py`（1286 行；用户明确：与工作区外的外部仓 LiveTranslate、LiveTranslate-NG（本机具体位置不入库）无关）。【2026-09-09 脱敏修订：移除本机盘符路径，见 docs/path-hygiene.md PH-3】
+> 参考权威 = 工作区内 `LiveTranslate/subtitle_overlay.py`（1286 行；用户明确：与工作区外的外部仓 LiveTranslate、LiveTranslate-NG（本机具体位置不入库）无关）。【2026-09-09 脱敏修订：移除本机盘符路径，见 docs/archive/path-hygiene.md PH-3】
 > 用户反馈两点：① 半透明没实现（整窗全黑不透明）；② UI 观感"非常怪"。
 > 证据：实机截图（Rust 实拍、双版头部并排对照）均不入仓库（涉个人隐私，走查后已删除），结论以文字为准。
 

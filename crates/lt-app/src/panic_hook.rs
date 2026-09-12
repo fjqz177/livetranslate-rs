@@ -1,4 +1,4 @@
-//! 全局 panic hook（架构 2.0 W1/R1，docs/architecture-v2.md §3.2.1）。
+//! 全局 panic hook（架构 2.0 W1/R1，docs/archive/architecture-v2.md §3.2.1）。
 //!
 //! 实现约束（INV11 受限，P0 修复）：
 //! ① hook 内零 unwrap、分配最小化——allocator 中毒时仍须存活；

@@ -1,4 +1,4 @@
-//! 线程监督器（架构 2.0 W1，docs/architecture-v2.md §3.2.1）。
+//! 线程监督器（架构 2.0 W1，docs/archive/architecture-v2.md §3.2.1）。
 //!
 //! 不变量落地：
 //! - INV3 出生唯一：全仓合法线程出生点 = [`Supervisor::spawn`]（白名单特例

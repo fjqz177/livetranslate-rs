@@ -1868,7 +1868,7 @@ impl WizardState {
 
 /// 启动流状态机（替代原版 main() 里的模态对话框序列：SetupWizardDialog / ModelDownloadDialog）。
 /// **D-78 保留待开发面**：当前 Ready 恒真（Wizard/DownloadMissing 零生产者），
-/// 接线点与现状地图见 docs/architecture-v2-improvements.md §5.4——后续首启
+/// 接线点与现状地图见 docs/archive/architecture-v2-improvements.md §5.4——后续首启
 /// 引导开发在此状态机上继续，勿删变体。
 #[derive(Debug, Clone)]
 pub enum StartupFlow {
@@ -1987,7 +1987,7 @@ pub struct PanelUi {
 /// 下载自动重试上限（2026-09-10 用户裁决 2：自动重试 3 次，仍失败提醒用户）
 pub const DOWNLOAD_AUTO_RETRY_MAX: u32 = 3;
 
-/// 下载自动重试状态（D-83 §2.3，docs/model-trust-repair.md）。
+/// 下载自动重试状态（D-83 §2.3，docs/archive/model-trust-repair.md）。
 ///
 /// 触发：模型校验失败（坏文件已隔离 → 探测判缺 → 重下真正执行）或下载失败
 /// （可自动重试类别）。计数在装载成功（`AsrDevice`）或用户手动点下载时清零。

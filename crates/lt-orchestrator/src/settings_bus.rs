@@ -1,4 +1,4 @@
-//! 设置总线（架构 2.0 W4，docs/architecture-v2.md §3.2.3）。
+//! 设置总线（架构 2.0 W4，docs/archive/architecture-v2.md §3.2.3）。
 //!
 //! 病灶：Settings 运行时存在 7 个副本 + 人肉同步边（§8.2-3/§3.2.3 表），
 //! qwen3 钳制直接写穿共享 VAD 生效值（R18）。

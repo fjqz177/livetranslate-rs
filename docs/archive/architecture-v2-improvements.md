@@ -166,12 +166,12 @@
 ADR-11 裁决后，本波由「删除」改为「**留空间的具象化**」：
 
 1. **向导子系统现状地图**落档（内容见 §5.4，作为独立小节随本波同步进 AGENTS 待办区或本方案附录）；
-2. **向导域标注**：setup.rs 与 `StartupFlow`/`WizardState` 顶部加模块注释「D-78：向导子系统保留为待开发面（2026-09-09 用户裁决），现状地图见 docs/architecture-v2-improvements.md §5.4；接线点三处：initial_visibility / Setup show 分支 / DownloadSucceeded→start_pipeline 链」；
+2. **向导域标注**：setup.rs 与 `StartupFlow`/`WizardState` 顶部加模块注释「D-78：向导子系统保留为待开发面（2026-09-09 用户裁决），现状地图见 docs/archive/architecture-v2-improvements.md §5.4；接线点三处：initial_visibility / Setup show 分支 / DownloadSucceeded→start_pipeline 链」；
 3. **WD-6 首启轻引导横幅接口预留**（用户裁决「先留接口，之后开发」）——只落文档与注释，不实现：
    - 设置键预留（**本波仅设计登记，不新增键**）：WD-6 开工时以加法豁免新增 `first_run_banner_dismissed: bool`（serde default）；
    - UI 挂点预留：面板识别页顶部提示条（与 `pipeline_error` 同通道形态，互斥显示）；
    - 触发语义预留：settings.json 首次创建（`settings_io::load` 返回 None 分支）时视为首启；
-4. **data-lifecycle 裁决回写**：docs/data-lifecycle.md §8 表增「裁决」列——C3=A（文档承认 VC Redist 前置，2026-09-09 用户裁决：装 Redist 对用户只有好处，重复分发微软系统组件多此一举）；C1/C2=无限积累不清理（用户裁决，理由：日志/转写属用户数据与排障证据，自动删除越权）；C11/C8 标注已被后续工作解决（uv 钉版 96ac36a / W1 fatal_early）；
+4. **data-lifecycle 裁决回写**：docs/archive/data-lifecycle.md §8 表增「裁决」列——C3=A（文档承认 VC Redist 前置，2026-09-09 用户裁决：装 Redist 对用户只有好处，重复分发微软系统组件多此一举）；C1/C2=无限积累不清理（用户裁决，理由：日志/转写属用户数据与排障证据，自动删除越权）；C11/C8 标注已被后续工作解决（uv 钉版 96ac36a / W1 fatal_early）；
 5. **文档杂项清欠**（用户授权「其余你自己处理好」）：**C3 VC Redist 前置文档化（§6 已裁决 A 案的执行落点）：distribution.md 分发要求节 + README.txt 明写「需预装 Microsoft Visual C++ 2015-2022 x64 Redist」**/ C4 卸载说明补 lnk+models_dir（distribution.md + README.txt 核对补齐）/ C5 AGENTS silero 措辞改「onnxruntime.dll 启动解压；silero 内存直载」/ C6 用户文档补 models_dir 不跟随 logs/ort 的提示 / C7 数据页清理提示行加「仅清理注册内模型」（一行 UI + i18n 键）/ C9 记录不处理（D-75 `.bak` 链已兜底，ReplaceFileW 收益不抵风险）/ C10 distribution.md 数字刷新（59MB→实测值重录）/ C12 AGENTS ignored 计数勘正（7）/ AGENTS「data-lifecycle 12 项整改候选待裁决」行勘正（候选已全部裁决，指针指本文件 §6）。
 
 **验收**：全测绿；data-lifecycle §8 有裁决列；向导域注释三处就位。**规模**：~120 行（多为文档）+ 1 行 UI。
@@ -246,7 +246,7 @@ ADR-11 裁决后，本波由「删除」改为「**留空间的具象化**」：
 
 | # | 事项 | 裁决 |
 |---|---|---|
-| 1 | 本方案落档为单一文档 | ✓ 本文件（docs/architecture-v2-improvements.md） |
+| 1 | 本方案落档为单一文档 | ✓ 本文件（docs/archive/architecture-v2-improvements.md） |
 | 2 | 向导子系统 | **保留并定位为待开发面**（D-78，维持并强化 D-19）；§5.4 地图交付 |
 | 8 | 流程纪律三条（ADR-14） | ✓ 采纳，违反时 commit 自曝 |
 | 9 | 验收节奏 | **A 案**：E1+E2+E3 一批交付审看、E4+E5+E6 第二批 |

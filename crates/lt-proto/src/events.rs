@@ -163,7 +163,7 @@ pub enum UiEvent {
         /// 是否"无法关闭思维链"（true → UI 取消勾选并持久化标记）
         cannot_disable_thinking: bool,
     },
-    /// 模型完整性/可加载性故障（D-83 零信任加载闸门：docs/model-trust-repair.md）。
+    /// 模型完整性/可加载性故障（D-83 零信任加载闸门：docs/archive/model-trust-repair.md）。
     /// 编排域在每次装配模型前逐文件复验注册表 sha256；不通过即隔离坏文件并发本
     /// 事件——UI 据此自动重下（上限 3 次）或提醒用户。纯新增变体（冻结规则加法
     /// 豁免，PROTO_VERSION 不递增）。

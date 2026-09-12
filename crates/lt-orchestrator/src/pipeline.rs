@@ -1757,7 +1757,7 @@ fn engine_model_key<'a>(engine: &str, funasr_model: &'a str, whisper_model: &'a 
     }
 }
 
-// ── D-83 零信任加载闸门（docs/model-trust-repair.md）──────────────────────
+// ── D-83 零信任加载闸门（docs/archive/model-trust-repair.md）──────────────────────
 //
 // 规格：每次装配模型前（启动 / 待命唤醒 / 运行时切换三条路径）逐文件复验
 // 注册表 sha256；不通过 → 隔离坏文件 + 发 ModelIntegrityFailed(Hash) → 中止
@@ -2745,7 +2745,7 @@ mod tests {
     use super::*;
     use crate::event_artery::EventArtery;
 
-    // ── D-83 零信任闸门（docs/model-trust-repair.md）──
+    // ── D-83 零信任闸门（docs/archive/model-trust-repair.md）──
 
     /// 合成清单（真实注册表条目内容无法伪造——那正是零信任的意义，
     /// 故闸门核心用可注入清单测）

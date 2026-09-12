@@ -2,7 +2,7 @@
 
 > 状态：**调研完成、计划定稿，待施工**（2026-09-09）。行号均以 commit `64e3c1d` 为准，施工时如有漂移以符号名为锚。
 > 发起：用户规则（2026-09-09）——**入库文件不写个人电脑绝对路径**，相对路径或系统级确定性路径（`C:\Windows`、`C:\Program Files\LLVM` 等标准位置）之外一律禁止；亦不暴露个人机器其他信息。起因：参考图重拍时把本机 venv 绝对路径写进了脚本 docstring 与 AGENTS.md（已在 `5ccdefb` 修复该两处 + AGENTS 冒烟示例行）。
-> 关联：`docs/data-lifecycle.md` ③（LIBCLANG_PATH 相对路径化已根治，本计划是其同类问题的全量收口）。
+> 关联：`docs/archive/data-lifecycle.md` ③（LIBCLANG_PATH 相对路径化已根治，本计划是其同类问题的全量收口）。
 
 ## 1. 目标与非目标
 
@@ -73,7 +73,7 @@ git grep -nE "/d/tmp" -- README.md                                    # E
 
 | # | 位置 | 证据 | 说明 |
 |---|---|---|---|
-| 8 | `docs/data-lifecycle.md:49` | LIBCLANG 行引用 `C:/Users/<原开发者>/AppData/Local/Programs/Python/Python313/Lib/site-packages/clang/native` | 病灶历史证据（该行自述"本机绝对路径，指向原开发者的…"）；保留证据价值、脱敏用户名 |
+| 8 | `docs/archive/data-lifecycle.md:49` | LIBCLANG 行引用 `C:/Users/<原开发者>/AppData/Local/Programs/Python/Python313/Lib/site-packages/clang/native` | 病灶历史证据（该行自述"本机绝对路径，指向原开发者的…"）；保留证据价值、脱敏用户名 |
 
 ### 4.2 P1：本机外部布局（2 处）
 
@@ -121,7 +121,7 @@ git grep -nE "/d/tmp" -- README.md                                    # E
 
 - **`C:\Windows` 系**（系统根，标准位置）：`crates/lt-ui/src/fonts.rs:180/184`（`SystemRoot` env 兜底缺省——正确姿势本体）、`:479` 注释、`:538/551/552/553/565/567`（系统字体目录语义即被测对象）、`crates/lt-ui/src/windows/panel/font_picker.rs:174`（注册表字体路径缓存键，系统常量拼接）；docs 引述：`docs/archive/font-system.md:50/60/161/300`、`rewrite-plan.md:171`、`rewrite-research.md:570`。
 - **`C:\Program Files\LLVM`**：`README.md:74`（LLVM 标准安装位，clang-sys 内置搜索路径，属"系统级确定性"豁免的典型）。
-- **显式占位符**：`README.md:135/148` `C:/Users/<你的用户名>/…`、`docs/data-lifecycle.md:101/172/177` `C:\Users\<u>\…`、`docs/archive/rewrite-research.md:479` `C:\Users\<u>\…`。注意 README 两处**必须保留绝对写法**：`settings.json` 的 `models_dir` 值由 `paths.rs` 作字面路径使用，`~` 不会被展开。
+- **显式占位符**：`README.md:135/148` `C:/Users/<你的用户名>/…`、`docs/archive/data-lifecycle.md:101/172/177` `C:\Users\<u>\…`、`docs/archive/rewrite-research.md:479` `C:\Users\<u>\…`。注意 README 两处**必须保留绝对写法**：`settings.json` 的 `models_dir` 值由 `paths.rs` 作字面路径使用，`~` 不会被展开。
 - **误报剔除**：`assets/i18n/en.yaml` 的 `Rules:\n`（字符串转义）；各处 `https://` URL；`\\t`、`\\'` 转义序列。
 
 ### 4.5 附注：非路径的个人机器信息（单独裁决）
@@ -211,7 +211,7 @@ let base = std::env::temp_dir();
 
 - `data-lifecycle.md:49`：路径中用户名脱敏为 `C:/Users/<原开发者>/AppData/Local/Programs/Python/Python313/Lib/site-packages/clang/native`——保留"病灶长什么样"的证据价值，去掉用户名。活跃文档直接改。
 - `AGENTS.md:7`：改写为"与工作区外的外部仓库（LiveTranslate、LiveTranslate-NG 等，本机具体位置不入库）无关"。
-- `docs/archive/overlay-realign.md:8`：归档文档"只读 + 仅允许修订注记"惯例的**脱敏例外**——就地脱敏（`外部仓 LiveTranslate（本机位置不入库）`）并在行尾加 `【2026-09-09 脱敏修订：移除本机盘符路径，见 docs/path-hygiene.md】`。理由：隐私脱敏不可逆、必须彻底，注记本身不得复现被删路径；这是修订注记惯例的唯一允许变体，仅限 P0/P1 脱敏场景。
+- `docs/archive/overlay-realign.md:8`：归档文档"只读 + 仅允许修订注记"惯例的**脱敏例外**——就地脱敏（`外部仓 LiveTranslate（本机位置不入库）`）并在行尾加 `【2026-09-09 脱敏修订：移除本机盘符路径，见 docs/archive/path-hygiene.md】`。理由：隐私脱敏不可逆、必须彻底，注记本身不得复现被删路径；这是修订注记惯例的唯一允许变体，仅限 P0/P1 脱敏场景。
 
 ### PH-4 README 冒烟示例 %TEMP% 化（P2 #24）
 
@@ -235,7 +235,7 @@ cat > /tmp/lt-smoke/settings.json <<'EOF'
 - **Tier1 硬失败**（退出码 1）：本机 `$env:USERNAME` 动态匹配；`C:[/]Users[/]<实名字母>`（负向断言排除 `<`、`<u>`、`<你的用户名>`、`<原开发者>` 占位）。
 - **Tier2 硬失败**：任意盘符路径 `\b[A-Za-z]:[\\/]`，白名单 `C:[/]Windows`、`C:[/]Program Files`（大小写不敏感）、`https?://`、`ftp://`。
 - 命中输出 `文件:行: 内容`；零命中退出码 0。
-- AGENTS.md「约定」段加一行：**提交前自查跑 `powershell -File scripts/check_personal_paths.ps1`（路径卫生守护，见 docs/path-hygiene.md）**。
+- AGENTS.md「约定」段加一行：**提交前自查跑 `powershell -File scripts/check_personal_paths.ps1`（路径卫生守护，见 docs/archive/path-hygiene.md）**。
 
 备选否决：build.rs 内嵌检查（拖慢每次构建）、xtask（新增 crate 过重）、CI（无 CI，WD-7 归阶段二——脚本届时可直接挂 CI）。
 

@@ -151,7 +151,7 @@ lt-proto → lt-i18n → lt-models → lt-download → lt-audio → lt-asr → l
 | `lt-ui` | egui 多窗口界面（只依赖 proto/i18n/models） |
 | `lt-app` | 组合根：启动、命令路由、worker 分派 |
 
-依赖规则是**机器强制**的（`scripts/check_deps.ps1` + CI），改依赖前先看 `docs/architecture-v2.md` §3.1。
+依赖规则是**机器强制**的（`scripts/check_deps.ps1` + CI），改依赖前先看 `docs/archive/architecture-v2.md` §3.1。
 
 ### 6. 卡住了看这里
 
@@ -173,7 +173,7 @@ lt-proto → lt-i18n → lt-models → lt-download → lt-audio → lt-asr → l
 | [AGENTS.md](AGENTS.md) | 项目定位、硬性约束、分层规则、已知大坑、当前待办（**施工第一参考**） |
 | [docs/README.md](docs/README.md) | 文档总索引（活跃文档 + 归档决策史） |
 | [docs/distribution.md](docs/distribution.md) | 分发路线：打包规范、发布手册、待办 |
-| [docs/architecture-v2.md](docs/architecture-v2.md) | 架构 2.0：十 crate 拓扑与依赖白名单 |
+| [docs/archive/architecture-v2.md](docs/archive/architecture-v2.md) | 架构 2.0：十 crate 拓扑与依赖白名单 |
 | [docs/archive/](docs/archive/) | 历史决策与已完工工作包（**只读**） |
 
 ---

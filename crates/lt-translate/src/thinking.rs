@@ -1,4 +1,4 @@
-//! 思维链（thinking/reasoning）关闭策略（W1 重写：docs/llm-api-redesign.md §2.3）。
+//! 思维链（thinking/reasoning）关闭策略（W1 重写：docs/archive/llm-api-redesign.md §2.3）。
 //!
 //! 语义由两处决定：
 //! - `disable_thinking`（模型条目总开关，默认 true）：false → 不发送任何推理相关参数
@@ -9,7 +9,7 @@
 //! W1 期 auto 的首选 = 顶层 `reasoning_effort: "none"`——事实标准（OpenAI 5.1+ 谱系、
 //! Azure、Ollama 在册、OpenRouter、vLLM 官方记载自动映射为 `enable_thinking=false`、
 //! llama.cpp server 文档明载 "If `none`, reasoning/thinking is disabled"）。
-//! 2026-09-11 溯源复核的边界（docs/translator-probe-hotswap.md §十"官方来源"表）：
+//! 2026-09-11 溯源复核的边界（docs/archive/translator-probe-hotswap.md §十"官方来源"表）：
 //! - **xAI 不在列**：官方无 `none` 且明载 "Reasoning cannot be disabled"；
 //! - **LM Studio 官方未文档化** `reasoning_effort`（native 在册是 `reasoning:"off"`），
 //!   本仓实测有效（43.7s→0.46s）——经验证据，保留；

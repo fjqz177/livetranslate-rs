@@ -1,5 +1,5 @@
 ﻿# ============================================================
-# 依赖方向守护（架构 2.0 W7，docs/architecture-v2.md §6.1 / §3.1 白名单表）
+# 依赖方向守护（架构 2.0 W7，docs/archive/architecture-v2.md §6.1 / §3.1 白名单表）
 #
 # 断言十 crate 内部依赖图严格符合白名单：表内未列的内部依赖一律非法
 # （含 dev-dependencies——测试代码同样受分层约束；dev-dependencies 例外
@@ -15,7 +15,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-# ── §3.1 白名单（源 = docs/architecture-v2.md §3.1 白名单表 + E3/ADR-10 修订；
+# ── §3.1 白名单（源 = docs/archive/architecture-v2.md §3.1 白名单表 + E3/ADR-10 修订；
 #    lt-app 允许十库全部） ──
 $Whitelist = [ordered]@{
     'lt-proto'       = @()

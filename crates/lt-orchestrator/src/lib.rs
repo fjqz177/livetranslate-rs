@@ -1,4 +1,4 @@
-//! lt-orchestrator：编排域（架构 2.0 W3，docs/architecture-v2.md §3.1）。
+//! lt-orchestrator：编排域（架构 2.0 W3，docs/archive/architecture-v2.md §3.1）。
 //!
 //! 自 lt-app/pipeline.rs 迁入：整条识别/翻译管道（采集撮合、VAD 状态机、
 //! ASR 子进程管理、翻译池、引擎切换）+ 线程监督器 + 事件动脉（队列侧）。

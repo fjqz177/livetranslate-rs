@@ -642,7 +642,7 @@ mod tests {
 
 #[cfg(test)]
 mod probe_tmp {
-    /// 真实缓存只读探针（只打印不断言；docs/path-hygiene.md PH-1）：
+    /// 真实缓存只读探针（只打印不断言；docs/archive/path-hygiene.md PH-1）：
     /// 路径走 paths 派生（LIVETRANSLATE_CONFIG_DIR 可重定向，默认 ~/.config/livetranslate）
     #[test]
     fn probe_real_cache() {
@@ -662,7 +662,7 @@ mod probe_tmp {
 
 #[cfg(test)]
 mod probe_settings_tmp {
-    /// 冒烟目录 settings 加载探针（docs/path-hygiene.md PH-1）：
+    /// 冒烟目录 settings 加载探针（docs/archive/path-hygiene.md PH-1）：
     /// 不再在测试内 set_var（进程级环境修改与并行测试竞态）——
     /// 外部设 LIVETRANSLATE_CONFIG_DIR 指向冒烟目录后 --ignored 运行
     #[test]

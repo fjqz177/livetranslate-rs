@@ -1,4 +1,4 @@
-//! 事件动脉的代理桥侧（架构 2.0 W2/W3，docs/architecture-v2.md §3.2.2）。
+//! 事件动脉的代理桥侧（架构 2.0 W2/W3，docs/archive/architecture-v2.md §3.2.2）。
 //!
 //! 队列本体（`BoundedDropQueue<UiEvent>` 封装）在
 //! `lt_orchestrator::event_artery`——生产端（管道/下载/监督器/日志桥）全部

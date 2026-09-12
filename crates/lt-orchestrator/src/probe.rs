@@ -1,6 +1,6 @@
 //! 供应商连接探测（D-85）：翻译页每行「测试」按钮的执行面。
 //!
-//! 设计要点（docs/translator-probe-hotswap.md §4.3）：
+//! 设计要点（docs/archive/translator-probe-hotswap.md §4.3）：
 //! - **不依赖 ASR 线程**：由组合根经监督器起一次性线程调用 [`run_probe`]，
 //!   管道繁忙/待命/未装配都能测；
 //! - **判据与生产同源**：走同一条回退阶梯（[`crate::pipeline::run_ladder`]）

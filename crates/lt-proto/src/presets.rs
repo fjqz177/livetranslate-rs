@@ -1,7 +1,7 @@
-//! 厂商预设（D-85 决策 J/K，docs/translator-probe-hotswap.md §十）。
+//! 厂商预设（D-85 决策 J/K，docs/archive/translator-probe-hotswap.md §十）。
 //!
 //! 数据来源：2026-09-10 逐家核对官方文档（API 参考 / 定价页），URL 见
-//! `docs/translator-probe-hotswap.md` §十 表格。三条硬约束：
+//! `docs/archive/translator-probe-hotswap.md` §十 表格。三条硬约束：
 //! 1. `api_base` 一律取**官方形态**（DeepSeek 官方就不带 `/v1`，照抄；
 //!    `config_warnings` 对预设地址豁免"缺 /v1"软提示，见 lt-ui）；
 //! 2. `thinking_style` 取**官方能接受且我们已支持**的关闭姿态——DeepSeek/GLM/

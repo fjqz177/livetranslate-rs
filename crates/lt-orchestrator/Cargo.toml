@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-# 编排域（自 lt-app/pipeline.rs 迁入，W3）：白名单见 docs/architecture-v2.md §3.1
+# 编排域（自 lt-app/pipeline.rs 迁入，W3）：白名单见 docs/archive/architecture-v2.md §3.1
 # —— 禁依赖 lt-ui/winit；文案经 Msg 注入（不依赖 lt-i18n），见 pipeline.rs
 lt-proto = { workspace = true }
 lt-models = { workspace = true }

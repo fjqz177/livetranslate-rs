@@ -1,4 +1,4 @@
-﻿# 个人路径卫生守护（docs/path-hygiene.md PH-5）
+﻿# 个人路径卫生守护（docs/archive/path-hygiene.md PH-5）
 # 用法：powershell -File scripts/check_personal_paths.ps1
 # 扫描全部已跟踪文本文件，命中即退出码 1（提交前自查用，配合 AGENTS.md 约定）。
 #
@@ -47,7 +47,7 @@ foreach ($f in $files) {
   }
 }
 if ($hits -gt 0) {
-  Write-Output "FAIL: $hits 处命中个人/非白名单路径（处置见 docs/path-hygiene.md）"
+  Write-Output "FAIL: $hits 处命中个人/非白名单路径（处置见 docs/archive/path-hygiene.md）"
   exit 1
 }
 Write-Output "OK: 已跟踪文本文件零个人路径命中（archive Tier2 告警 $warns 处不阻断）"

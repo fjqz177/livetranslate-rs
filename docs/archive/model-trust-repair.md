@@ -20,7 +20,7 @@
 ASR 线程装配点：`build_worker_config` 成功（说明清单长度达标）→ **校验闸门** → `ensure_started`（起 worker）。三条装配路径共用此闸门：启动装配 / 待命唤醒装配 / 运行时引擎切换。
 
 - 检查对象：该模型注册表清单的**全部文件**逐个 sha256（whisper 1 个、SenseVoice 2 个、nano/qwen3 各 6 个）。
-- 期望值：注册表 `files_sha256`（2026-09-10 起 20/20 全量登记，见 `docs/architecture-v2-improvements.md` §6 whisper sha256 行）。
+- 期望值：注册表 `files_sha256`（2026-09-10 起 20/20 全量登记，见 `docs/archive/architecture-v2-improvements.md` §6 whisper sha256 行）。
 - 本地自定义模型（whisper 档位填磁盘路径、无注册表条目）**不校验**——无指纹可比，仅保留"能加载"判定，行为与今相同。
 - 成本（release 实测 sha2 ≈ 1.5GB/s，Ryzen 9 7945HX）：tiny 0.02s / base 0.04s / small 0.12s / SenseVoice 0.15s / turbo 0.37s / large-v3·nano·qwen3 ~0.7s；冷缓存另加一次磁盘读。
 

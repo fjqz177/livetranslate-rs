@@ -1,5 +1,5 @@
 ﻿# ============================================================
-# 死契约守卫（架构 v2.1 E6，docs/architecture-v2-improvements.md ADR-13②）
+# 死契约守卫（架构 v2.1 E6，docs/archive/architecture-v2-improvements.md ADR-13②）
 #
 # 断言 lt-proto 契约枚举的每个变体在定义之外至少有一次真实引用（生产或
 # 消费）——「纯加法豁免」冻结规则的回收机制：变体只进不出的熵增通道封死。
@@ -21,7 +21,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-# 预留白名单（Enum.Variant）——增删须与 docs/architecture-v2-improvements.md §3 ADR-13 同步
+# 预留白名单（Enum.Variant）——增删须与 docs/archive/architecture-v2-improvements.md §3 ADR-13 同步
 $ReservedWhitelist = @(
     'DownloadPhase.Start',
     'DownloadPhase.Integrity',

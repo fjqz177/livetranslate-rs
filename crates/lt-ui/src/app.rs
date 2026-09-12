@@ -770,7 +770,7 @@ impl MultiWindowApp {
         }
     }
 
-    // ── D-83 模型零信任修复闭环（docs/model-trust-repair.md §2.2/§2.3）──
+    // ── D-83 模型零信任修复闭环（docs/archive/model-trust-repair.md §2.2/§2.3）──
 
     /// 追加一行到下载卡片日志（失败/取消/进行中态通用；上限 200 与卡片一致）
     fn push_download_log(&mut self, line: &str) {

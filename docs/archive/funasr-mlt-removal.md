@@ -562,7 +562,7 @@ model_unavailable_hint: "Unknown model — cache status unavailable."
 | `CacheStatus::Unavailable` 变体 | 两个可达路径仍在：未知引擎早退 + `funasr_entry` None 防御臂；删变体反而缩小防御面 |
 | sanitize 结构（别名优先→引擎域→模型域的顺序与兜底臂） | 正是旧档收敛的机制本体，一字不动 |
 | `docs/archive/**` | 只读纪律；D-14 决策史保留原文 |
-| `docs/architecture-review.md` R25 条目、`docs/architecture-v2.md` R25 行 | 评审/修复的历史记录，记录的是当时事实 |
+| `docs/archive/architecture-review.md` R25 条目、`docs/archive/architecture-v2.md` R25 行 | 评审/修复的历史记录，记录的是当时事实 |
 | `docs/asr-model-survey-2026.md` | 未跟踪待裁决稿；批准本方案即视为其决策 G（维持幽灵键）改判为移除，稿件本身施工时不改 |
 | lt-asr crate 全部 | mlt 从未有引擎实现，零触点 |
 | `model_experimental` i18n 键与 nano 实验性标注 | nano 的 UI 语义，保留 |

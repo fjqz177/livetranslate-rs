@@ -11,7 +11,7 @@ use lt_proto::Settings;
 /// R17 补全（D-75）：settings.json 缺失但 `.bak` 在位时自动恢复——`save` 的
 /// 原子链在「现档→bak」与「tmp→现档」之间崩溃会留下该中间态，自动恢复旧档
 /// 免于静默回默认值；代价：手动删除 settings.json 的重置意图同样被 .bak 复活，
-/// 崩溃自愈优先（取舍登记于 docs/architecture-v2.md §3.7 D-75）。
+/// 崩溃自愈优先（取舍登记于 docs/archive/architecture-v2.md §3.7 D-75）。
 pub fn load() -> anyhow::Result<Option<Settings>> {
     let path = settings_file()?;
     if !path.exists() {
