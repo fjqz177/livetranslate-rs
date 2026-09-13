@@ -8,7 +8,7 @@
 #   ├─ NOTICES.md          （第三方组件与许可）
 #   └─ OFL.txt             （三内嵌字体许可）
 #
-# 用法：  powershell -File scripts/package_release.ps1
+# 用法：  pwsh -File scripts/package_release.ps1
 # ============================================================
 
 param(

@@ -1,5 +1,5 @@
 ﻿# 个人路径卫生守护（docs/archive/path-hygiene.md PH-5）
-# 用法：powershell -File scripts/check_personal_paths.ps1
+# 用法：pwsh -File scripts/check_personal_paths.ps1
 # 扫描全部已跟踪文本文件，命中即退出码 1（提交前自查用，配合 AGENTS.md 约定）。
 #
 # Tier1 硬失败（任何文件，含归档）：

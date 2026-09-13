@@ -1,25 +1,32 @@
 #!/bin/sh
-# 提交前门禁钩子（2026-09-11）——内容 = scripts/precommit.ps1
-# （cargo fmt --all -- --check + cargo clippy -D warnings + 四守护脚本，
+# 提交前门禁钩子——内容 = scripts/precommit.ps1（本仓 pwsh-only，ADR-16）
+# （cargo fmt --all -- --check + cargo clippy -D warnings + 五守护，
 #  与 .github/workflows/ci.yml 同源）。
 #
 # 启用（每 clone 一次）：git config core.hooksPath .githooks
-# 触发条件：暂存区含 *.rs / Cargo.toml / .cargo/** 改动；纯 docs/资产提交放行。
+# 触发条件：暂存区含 *.rs / Cargo.toml / .cargo/** / AGENTS.md / docs/gotchas.md /
+# docs/prompts/** 改动；其余纯 docs/资产提交放行。
 # 应急跳过：git commit --no-verify（CI 仍会拦截）。
+
+if ! command -v pwsh >/dev/null 2>&1; then
+    echo "precommit: 未找到 pwsh（PowerShell 7）——本仓门禁已统一切 PS7（ADR-16）"
+    echo "安装：winget install Microsoft.PowerShell"
+    exit 1
+fi
 
 run_gate=0
 for f in $(git diff --cached --name-only --diff-filter=ACMR); do
     # 尾随 * 容忍 CR（autocrlf 克隆的 name 列表可能带 \r）；方向取 fail-safe——
-    # 误判为"有 Rust 改动"只多跑一次门禁，漏判则会静默放行（不可接受）。
+    # 误判为"有改动"只多跑一次门禁，漏判则会静默放行（不可接受）。
     case "$f" in
-        *.rs* | *Cargo.toml* | .cargo/*) run_gate=1 ;;
+        *.rs* | *Cargo.toml* | .cargo/* | AGENTS.md* | docs/gotchas.md* | docs/prompts/*) run_gate=1 ;;
     esac
 done
 
 if [ "$run_gate" -eq 0 ]; then
-    echo "precommit: 暂存区无 Rust/Cargo 改动，跳过硬门禁"
+    echo "precommit: 暂存区无 Rust/Cargo/总纲/坑册/流程卡改动，跳过硬门禁"
     exit 0
 fi
 
-echo "precommit: fmt + clippy + 四守护（scripts/precommit.ps1）…"
-exec powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/precommit.ps1
+echo "precommit: fmt + clippy + 五守护（scripts/precommit.ps1，pwsh）…"
+exec pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/precommit.ps1

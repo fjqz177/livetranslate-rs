@@ -1,11 +1,11 @@
 # LiveTranslate-rs CI（架构 2.0 W1/R16；2026-09-11 按开发流程重构为两 job）
 #
 # 与 AGENTS.md 的两道门禁同源，本地过关 ⇔ CI 过关：
-#   gate  = 提交前门禁的静态面 = scripts/precommit.ps1 前五项（fmt + 四守护）：
+#   gate  = 提交前门禁的静态面 = scripts/precommit.ps1 前六项（fmt + 五守护，含总纲健康）：
 #           纯文本扫描，不联网、不编译 → 秒级出结论（格式/分层/禁令类问题先红灯）；
 #   build = 提交前门禁的 clippy + 收工门禁（cargo test --workspace）+ 分发演练
 #           （release 单 exe → scripts/package_release.ps1 → zip 传 Artifact）。
-# 门禁项增删须与 scripts/precommit.ps1 双边同步（本地六项 = gate 五项 + clippy）。
+# 门禁项增删须与 scripts/precommit.ps1 双边同步（本地七项 = gate 六项 + clippy）。
 #
 # 触发面 = 全分支 push + PR + 手动 dispatch：不限定分支——feature 分支与主线一视同仁，
 # 避免「只监听 main」时漏检。ignored 探针（真模型/真网络）在 CI 保持跳过 = 离线纪律。
@@ -28,7 +28,7 @@ concurrency:
 
 jobs:
   gate:
-    name: 静态门禁（fmt + 四守护）
+    name: 静态门禁（fmt + 五守护）
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
@@ -38,16 +38,19 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Path hygiene gate (PH-5)
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check_personal_paths.ps1
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/check_personal_paths.ps1
 
       - name: Dependency direction guard (W7)
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check_deps.ps1
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/check_deps.ps1
 
       - name: Source ban guards (W7)
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check_guards.ps1
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/check_guards.ps1
 
       - name: Dead contract guard (E6)
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check_dead_contract.ps1
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/check_dead_contract.ps1
+
+      - name: Agents health guard (ADR-15)
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/check_agents_health.ps1
 
   build:
     name: 编译与全量测试（+ 分发打包）
@@ -71,7 +74,7 @@ jobs:
           restore-keys: sherpa-
 
       - name: Fetch sherpa-onnx libs
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/fetch_sherpa_libs.ps1
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/fetch_sherpa_libs.ps1
 
       - uses: Swatinem/rust-cache@v2
 
@@ -89,7 +92,7 @@ jobs:
         run: .\target\release\livetranslate.exe --version
 
       - name: Package distribution zip (WD-1)
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package_release.ps1
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/package_release.ps1
 
       - name: Upload distribution zip
         uses: actions/upload-artifact@v7

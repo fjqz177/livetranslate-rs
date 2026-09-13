@@ -5,7 +5,7 @@
 # （含 dev-dependencies——测试代码同样受分层约束；dev-dependencies 例外
 # 见 $DevExtra，均为「探针/集成测试需真实 crate」的已记录决策）。
 #
-# 用法：  powershell -File scripts/check_deps.ps1
+# 用法：  pwsh -File scripts/check_deps.ps1
 # 退出码：0 = 通过；非 0 = 存在违规边（输出逐条 VIOLATION）
 # ============================================================
 

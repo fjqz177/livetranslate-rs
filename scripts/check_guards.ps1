@@ -6,7 +6,7 @@
 # 夹具目录（tests/ 与 cfg(test) 内的 spawn 是测试自身基建，非生产线程树）。
 # 字符串协议禁令（INV9）与 panic hook 位置（§3.2.1）零白名单。
 #
-# 用法：  powershell -File scripts/check_guards.ps1
+# 用法：  pwsh -File scripts/check_guards.ps1
 # ============================================================
 
 param(

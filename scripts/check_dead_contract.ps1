@@ -12,7 +12,7 @@
 #   DownloadPhase.Start / DownloadPhase.Integrity —— E2 契约预留（下载
 #   起止相位，下载器当前仅产 Progress）
 #
-# 用法：  powershell -File scripts/check_dead_contract.ps1
+# 用法：  pwsh -File scripts/check_dead_contract.ps1
 # ============================================================
 
 param(

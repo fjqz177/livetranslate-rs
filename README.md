@@ -81,7 +81,7 @@ Windows 上的实时音频翻译工具：**把系统声音抓下来 → 在本�
 ```bash
 git clone <仓库地址> && cd livetranslate-rs
 uv sync                                                                 # 约 10 秒：把 libclang + cmake 装进项目内 .venv
-powershell -ExecutionPolicy Bypass -File scripts/fetch_sherpa_libs.ps1  # 约 120MB 预编译库，只需一次
+pwsh -ExecutionPolicy Bypass -File scripts/fetch_sherpa_libs.ps1  # 约 120MB 预编译库，只需一次
 ```
 
 三条都跑完就能编译了——**首次约十几分钟**（要现场编译 whisper.cpp），之后都是增量：
@@ -93,7 +93,7 @@ cargo run -p lt-app     # 跑起来看看
 下不动那 120MB（国内直连 GitHub 常见）就加镜像参数重跑：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts/fetch_sherpa_libs.ps1 -Mirror https://gh-proxy.com/
+pwsh -ExecutionPolicy Bypass -File scripts/fetch_sherpa_libs.ps1 -Mirror https://gh-proxy.com/
 ```
 
 > 换机器、或不小心删了 `.venv` / `.cache` 时，把上面两条命令重跑一遍就好。项目需要的工具都在仓库内的 `.venv` 里，缓存都在 `.cache` 和 `target` 里，**系统里只有那三样工具**。
