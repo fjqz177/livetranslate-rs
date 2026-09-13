@@ -1,7 +1,8 @@
 # AGENTS.md 全面重写 + 开发流程提示词套件（工作包：agents-md-overhaul）
 
-> 状态：定稿
-> 日期：2026-09-14
+> 状态：完工已归档
+> 日期：2026-09-14（定稿与完工同日）
+> 修订（2026-09-14 收口）：落盘暂存件 AGENTS-FINAL.md / gotchas-draft.md / check_agents_health.ps1（草稿）已消费删除；四提交 = 定稿 99544be → 施工一 e9d383b → 施工二 3417cca → 收口本提交。
 > 触发：用户 /init 十轮指令（…→Q9 裁决全仓 pwsh-only→索要最终稿 AGENTS-FINAL.md→最终稿内容终审四修：§0 生效行〔防 archive 死引用，指向 decisions.md+git〕、G-23 入 §4 守护行、§5「D 号」改「决策号（D/ADR）」、§2 钩子注释去同义反复）
 > 前缀：AO-（slug 派生自文件名 agents-md-overhaul，头注声明；局部号出本档必带路径；G- 前缀归属 docs/gotchas.md，施工前置核对全局唯一）
 

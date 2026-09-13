@@ -16,7 +16,7 @@
 
 | 文档 | 状态 | 内容一句话 |
 |---|---|---|
-| `agents-md-overhaul.md` | 定稿 | AGENTS 总纲重写+坑册+七卡+守护+pwsh-only（Q1~Q9 已照准，ADR-15/16） |
+| （无） | | |
 
 ## 长期文档（有完结条件，满足即归档）
 
@@ -31,6 +31,7 @@
 
 | 文档 | 一句话（D-xx） | 完工日期 |
 |---|---|---|
+| `agents-md-overhaul.md` | 指令体系四层化：AGENTS 总纲+坑册+七卡+守护第七项+pwsh-only（ADR-15/16） | 2026-09-14 |
 | `funasr-mlt-removal.md` | Fun-ASR-MLT-Nano 幽灵值全量移除（D-86，PROTO_VERSION=7） | 2026-09-12 |
 | `translator-probe-hotswap.md` | 翻译供应商测试/热切换/配置体验改造（D-85） | 2026-09-10 |
 | `context-turns-ui.md` | 「上下文数」设置界面补完（D-84） | 2026-09-10 |

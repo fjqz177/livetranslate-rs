@@ -93,5 +93,5 @@
 | ADR-12 | 2026-09-09 | 监督器 Backoff 按原设计补齐，参数默认（D-80） | docs/archive/architecture-v2-improvements.md |
 | ADR-13 | 2026-09-09 | 死契约治理 = 派生覆盖率测试 + 零引用守卫脚本（A 硬 gate） | docs/archive/architecture-v2-improvements.md |
 | ADR-14 | 2026-09-09 | process 纪律三条：验收漂移登记/方案偏离留痕/收口两问 | docs/archive/architecture-v2-improvements.md |
-| ADR-15 | 2026-09-14 | 工程指令体系四层化：AGENTS 重写为宪法+路由表（两档预算入守护）+ 大坑迁 docs/gotchas.md + 流程七卡 docs/prompts/ + 健康守护第七项与钩子触发面扩展；docs 纪律①增常青参考类 | docs/agents-md-overhaul.md |
-| ADR-16 | 2026-09-14 | 守护/脚本调用面统一切 PowerShell 7（pwsh-only）：5.1 feature-frozen 随 OS 生命周期，脚本 5.1∩7 公共子集零改动；钩子加 pwsh 探测兜底 | docs/agents-md-overhaul.md |
+| ADR-15 | 2026-09-14 | 工程指令体系四层化：AGENTS 重写为宪法+路由表（两档预算入守护）+ 大坑迁 docs/gotchas.md + 流程七卡 docs/prompts/ + 健康守护第七项与钩子触发面扩展；docs 纪律①增常青参考类 | docs/archive/agents-md-overhaul.md |
+| ADR-16 | 2026-09-14 | 守护/脚本调用面统一切 PowerShell 7（pwsh-only）：5.1 feature-frozen 随 OS 生命周期，脚本 5.1∩7 公共子集零改动；钩子加 pwsh 探测兜底 | docs/archive/agents-md-overhaul.md |

@@ -145,10 +145,11 @@ git config core.hooksPath .githooks            # 每 clone 一次启用提交钩
 
 ### 施工中
 
-- **agents-md-overhaul**（施工中）：AGENTS 重写为宪法+路由表 + gotchas 坑册 23 条 + prompts 七卡 + 守护第七项 + pwsh-only 迁移（ADR-15/16；Q1~Q9 已照准）。依据 docs/agents-md-overhaul.md
+- （无）
 
 ### 遗留（完工包的实机走查与未了项，一行一包，清零即删）
 
+- agents-md-overhaul（ADR-15/16）：gotchas 候选回读（visual-parity/overlay-realign 怪癖收编为新条目）/ prompts 技能化验证（ZCode 工作区级 .zcode/skills）/ 两档预算两周后按实测回调 / i18n 键集 parity 守护候选（docs/archive/agents-md-overhaul.md §五）
 - 架构 v2/2.1：实机走查 11 项 + WP-9 性能预算（后续单独方案）（docs/archive/architecture-v2.md §6.4）；W5 走查 6 项——悬浮窗拖动/字幕窗拖动穿透回归/导出保存框/背景图选择框/设备下拉/Monitor 条（同文档 W5 节）
 - translator（D-85）：实机走查 13 项（docs/archive/translator-probe-hotswap.md §6.2）
 - model-trust（D-83）：实机走查——改坏一个模型文件应自动隔离+重下+装载（docs/archive/model-trust-repair.md）
