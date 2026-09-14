@@ -187,6 +187,7 @@ whisper_slow_hint: "large-v3 is large and slow on pure CPU — prefer small or t
 btn_open_folder: "Open Models Folder"
 btn_delete_selected: "Delete Selected Models"
 btn_refresh: "Refresh"
+confirm_delete: "Delete"
 delete_selected_confirm_title: "Delete Model"
 delete_selected_confirm_msg: "Delete model \"{name}\"? This frees {size} of space."
 cache_select_hint: "Click a model to select it; click empty space to deselect. Selected models can be deleted."

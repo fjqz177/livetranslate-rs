@@ -171,7 +171,7 @@ pub fn page(
                 )
                 .clicked();
             if delete_all {
-                delete_all_models(modal, &entries);
+                delete_all_models(modal, session, &entries);
             }
         });
 
@@ -218,7 +218,7 @@ pub fn page(
                 )
                 .clicked();
             if del {
-                delete_selected(panel, modal);
+                delete_selected(panel, modal, session);
             }
             if ui
                 .add(
@@ -264,9 +264,9 @@ fn open_models_dir(settings: &Settings) {
 }
 
 /// 删除所选模型（原版 _delete_selected：warning 确认 → rmtree → 刷新）。
-/// D-33/H-5：确认改 egui 模态（rfd 同步框阻塞事件循环线程；确认后执行见
-/// [`apply_delete_selected`]）。
-fn delete_selected(panel: &mut PanelUi, modal: &mut ModalUi) {
+/// D-87：确认走专用窗；载荷存身份键 path（确认期间列表可变，下标会漂移删错
+/// 行——见 ConfirmKind::DeleteModel 注）；确认后执行见 [`apply_delete_selected`]。
+fn delete_selected(panel: &mut PanelUi, modal: &mut ModalUi, session: &mut SessionView) {
     let entries = panel.state.cache_entries.clone().unwrap_or_default();
     let Some(i) = panel.state.cache_selected else {
         return;
@@ -276,24 +276,33 @@ fn delete_selected(panel: &mut PanelUi, modal: &mut ModalUi) {
         .replace("{name}", &e.name)
         .replace("{size}", &super::vad::format_size(e.size));
     modal.request_confirm(
-        crate::state::ConfirmKind::DeleteModel { index: i },
-        false,
-        true,
+        crate::state::ConfirmKind::DeleteModel {
+            path: e.path.clone(),
+        },
         lt_i18n::t("delete_selected_confirm_title"),
         msg,
     );
+    session.enqueue_action(
+        crate::state::WinId::Confirm,
+        crate::state::WinAction::ShowConfirm,
+    );
 }
 
-/// 模态确认后的执行：删除索引条目并刷新缓存（索引对位请求时的 cache_entries）
+/// 模态确认后的执行：按身份键定位删除并刷新缓存
+/// （D-87：查不到 = 确认期间列表已变 → 静默取消，绝不删错行）
 pub(crate) fn apply_delete_selected(
     panel: &mut PanelUi,
     session: &mut SessionView,
     settings: &mut Settings,
-    index: usize,
+    path: &std::path::Path,
 ) {
     let entries = panel.state.cache_entries.clone().unwrap_or_default();
-    if let Some(e) = entries.get(index) {
-        remove_entry(e);
+    match entries.iter().find(|e| e.path == path) {
+        Some(e) => remove_entry(e),
+        None => tracing::debug!(
+            "删除确认失效：目标已不在缓存列表（{}），静默取消",
+            path.display()
+        ),
     }
     refresh_cache(panel, settings);
     let _ = session;
@@ -301,18 +310,20 @@ pub(crate) fn apply_delete_selected(
 
 /// 删除全部缓存（原版 _delete_all_and_exit：warning 确认 → 逐个 rmtree）。
 /// Rust 版不退出应用，改为"重启生效"原生通知（见模块注释偏差说明）。
-/// D-33/H-5：确认与完成提示均改非阻塞载体（egui 模态 + 原生通知）。
-fn delete_all_models(modal: &mut ModalUi, entries: &[CacheEntry]) {
+/// D-87：确认走专用窗；完成提示仍走原生通知。
+fn delete_all_models(modal: &mut ModalUi, session: &mut SessionView, entries: &[CacheEntry]) {
     let total: u64 = entries.iter().map(|e| e.size).sum();
     let msg = lt_i18n::t("dialog_delete_msg")
         .replace("{count}", &entries.len().to_string())
         .replace("{size}", &super::vad::format_size(total));
     modal.request_confirm(
         crate::state::ConfirmKind::DeleteAll,
-        false,
-        true,
         lt_i18n::t("dialog_delete_title"),
         msg,
+    );
+    session.enqueue_action(
+        crate::state::WinId::Confirm,
+        crate::state::WinAction::ShowConfirm,
     );
 }
 

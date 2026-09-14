@@ -5,7 +5,7 @@ use lt_proto::{Cmd, SubtitleMode};
 pub use lt_proto::Settings;
 use std::time::{Duration, Instant};
 
-/// 窗口标识（4 个常驻窗口 + 启动流对话框 + Benchmark 工具窗）
+/// 窗口标识（4 个常驻窗口 + 启动流对话框 + Benchmark 工具窗 + 确认窗）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum WinId {
     Overlay,
@@ -17,6 +17,10 @@ pub enum WinId {
     Setup,
     /// 性能基准独立工具窗（原版 BenchmarkDialog；识别页页头按钮打开，默认隐藏）
     Benchmark,
+    /// 通用确认小窗（D-87：六种确认唯一载体——专用独立原生窗，无边框自绘、
+    /// 暗色半透明圆角、弹出期置顶、常驻隐藏；替代旧「借画布」宿主模态，
+    /// 确认永不改变任何窗口可见性）
+    Confirm,
 }
 
 impl WinId {
@@ -29,6 +33,7 @@ impl WinId {
             WinId::Log => "log",
             WinId::Setup => "setup",
             WinId::Benchmark => "benchmark",
+            WinId::Confirm => "confirm",
         }
     }
 
@@ -43,6 +48,8 @@ impl WinId {
             WinId::Setup => "LiveTranslate".into(),
             // 原版 BenchmarkDialog.setWindowTitle(t("benchmark_dialog_title"))
             WinId::Benchmark => lt_i18n::t("benchmark_dialog_title"),
+            // 无边框自绘窗：原生标题不可见，仅 viewport 兜底
+            WinId::Confirm => "LiveTranslate".into(),
         }
     }
 }
@@ -221,8 +228,10 @@ pub enum WinAction {
     Hide,
     /// 显示/置前控制面板（原版 settings_requested）
     ShowPanel,
-    /// 隐藏控制面板（确认模态取消后恢复临时显示的面板；H-3）
-    HidePanel,
+    /// 显示确认窗（D-87：面板/悬浮窗侧确认触发点；宿主定位后显示）
+    ShowConfirm,
+    /// 隐藏确认窗（D-87：确认收敛后；确定/取消/X/ESC 同路）
+    HideConfirm,
     /// 切换字幕窗可见性（悬浮窗"字幕"按钮 = settings.subtitle_mode.enabled 翻转后）
     ToggleSubtitle,
     /// 置顶/任务栏复选变化 → 重新应用窗口 flags
@@ -274,23 +283,23 @@ pub enum ConfirmKind {
     ResetSubtitle,
     /// 翻译页恢复默认（models/prompt/timeout；破坏性——确认后清 API 配置）
     ResetTranslation,
-    /// 删除所选缓存模型（index 对位 data 页 cache_entries，模态期间页面不可变）
-    DeleteModel { index: usize },
+    /// 删除所选缓存模型（D-87：载荷改存身份键 path——专用窗方案无属主阻塞，
+    /// 确认期间列表可变（如下载完成入列），下标会漂移删错行；path 唯一定位，
+    /// 应用时查不到 = 列表已变 → 静默取消）
+    DeleteModel { path: std::path::PathBuf },
     /// 删除全部缓存模型（data 页；"重启生效"提示保留在效果执行处）
     DeleteAll,
 }
 
-/// 确认模态 UI 状态（渲染帧按 host 匹配窗口；确定/取消在确认框内收敛）
+/// 确认窗 UI 状态（D-87：专用 WinId::Confirm 帧内渲染；确定/取消窗内收敛）
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConfirmUi {
-    /// 宿主窗口（Overlay 或 Panel；仅宿主窗口的帧内渲染）
-    pub host: WinId,
     pub kind: ConfirmKind,
     /// 标题/正文（请求时按 kind 取 i18n 当前语言，含 Delete 系动态参数）
     pub title: String,
     pub msg: String,
-    /// 宿主=Panel 且面板因确认**临时显示**（Quit 取消后回隐藏；H-3）
-    pub panel_shown_for_confirm: bool,
+    /// 请求时刻（入场淡入动效基准；reduce_motion 时窗口侧直切不动画）
+    pub opened_at: Instant,
 }
 
 /// 紧凑模式高度动画（原版 QPropertyAnimation 200ms OutCubic）
@@ -2492,39 +2501,45 @@ impl SubtitleUi {
 }
 
 impl ModalUi {
-    /// 打开确认模态（D-33/H-3~H-5）。已有模态打开则幂等忽略（单模态源防嵌套）。
-    /// `overlay_ok`：悬浮窗可作宿主（可见且非紧凑且高度充足，由调用方判定）；
-    /// `panel_visible`：面板当前可见（W5b 起真值在宿主，调用方传只读快照值）。
-    /// 否则宿主=面板（调用方负责面板不可见时入队 ShowPanel/HidePanel 平衡）。
-    /// 标题/正文由调用方按 kind 装配（i18n 当前语言；Delete 系含动态参数）。
-    pub fn request_confirm(
+    /// 请求确认（D-87：宿主概念已删——六确认统一走 WinId::Confirm 专用窗，
+    /// 调用方随后入队 `WinAction::ShowConfirm`；已有确认打开则幂等 false
+    /// （单模态源防嵌套）。标题/正文由调用方按 kind 装配 i18n，Delete 系含动态参数）
+    pub fn request_confirm(&mut self, kind: ConfirmKind, title: String, msg: String) -> bool {
+        self.insert_confirm(kind, title, msg, false)
+    }
+
+    /// 请求确认并**替换**在开确认（仅 Quit 用：单槽下其他确认开着时退出
+    /// 静默无效是死端——用户在托盘旁未必看得见旧框挂在哪。未收敛确认
+    /// 无副作用，替换安全，退出请求永远有可见反馈）
+    pub fn request_confirm_replacing(
         &mut self,
         kind: ConfirmKind,
-        overlay_ok: bool,
-        panel_visible: bool,
         title: String,
         msg: String,
     ) -> bool {
-        if self.confirm.is_some() {
+        self.insert_confirm(kind, title, msg, true)
+    }
+
+    fn insert_confirm(
+        &mut self,
+        kind: ConfirmKind,
+        title: String,
+        msg: String,
+        replace: bool,
+    ) -> bool {
+        if self.confirm.is_some() && !replace {
             return false;
         }
-        let host = if overlay_ok {
-            WinId::Overlay
-        } else {
-            WinId::Panel
-        };
-        let panel_shown_for_confirm = host == WinId::Panel && !panel_visible;
         self.confirm = Some(ConfirmUi {
-            host,
             kind,
             title,
             msg,
-            panel_shown_for_confirm,
+            opened_at: Instant::now(),
         });
         true
     }
 
-    /// 关闭确认模态并返回原状态（渲染帧执行确定效果 / 取消恢复逻辑）
+    /// 关闭确认窗状态并返回原状态（渲染帧执行确定效果 / 取消隐藏）
     pub fn take_confirm(&mut self) -> Option<ConfirmUi> {
         self.confirm.take()
     }
@@ -2606,6 +2621,8 @@ pub fn initial_visibility(
     visible.insert(WinId::Setup, startup_pending);
     // Benchmark 工具窗：启动即建但隐藏（原版仅点识别页"性能基准…"时 exec）
     visible.insert(WinId::Benchmark, false);
+    // 确认窗（D-87）：常驻隐藏，确认请求时由宿主定位显示
+    visible.insert(WinId::Confirm, false);
     visible
 }
 
@@ -2655,39 +2672,22 @@ mod tests {
         assert_eq!(sub2.toolbar_opacity(t0), 0.0);
     }
 
-    /// D-33/H-3：确认模态——打开/幂等/宿主选择/取消恢复标记（单模态源防嵌套）
+    /// D-87：确认窗状态——打开/幂等/替换语义/取走（单模态源防嵌套）
     #[test]
-    fn confirm_modal_request_idempotent_and_host_choice() {
+    fn confirm_modal_request_idempotent_and_replacing() {
         let mut st = AppUi::new(Settings::default());
-        // 默认启动流 Ready：面板可见性取 show_panel 环境（测试无该变量 → 隐藏）
-        st.session.visible.insert(WinId::Panel, false);
-        st.session.visible.insert(WinId::Overlay, true);
-        let panel_visible = |st: &AppUi| {
-            st.session
-                .visible
-                .get(&WinId::Panel)
-                .copied()
-                .unwrap_or(true)
-        };
 
-        // 悬浮窗可宿主 → Overlay，无 panel 标记
+        // 打开 → 状态在位（宿主概念已删，专用窗渲染）
         assert!(st.modal.request_confirm(
             ConfirmKind::Quit,
-            true,
-            panel_visible(&st),
             lt_i18n::t("quit_confirm_title"),
             lt_i18n::t("quit_confirm_msg"),
         ));
-        let c = st.modal.confirm.as_ref().unwrap();
-        assert_eq!(c.host, WinId::Overlay);
-        assert_eq!(c.kind, ConfirmKind::Quit);
-        assert!(!c.panel_shown_for_confirm);
+        assert_eq!(st.modal.confirm.as_ref().unwrap().kind, ConfirmKind::Quit);
 
         // 已开 → 幂等忽略（不叠加/不换 kind）
         assert!(!st.modal.request_confirm(
             ConfirmKind::Clear,
-            true,
-            panel_visible(&st),
             lt_i18n::t("clear_confirm_title"),
             lt_i18n::t("clear_confirm_msg"),
         ));
@@ -2698,41 +2698,30 @@ mod tests {
         assert!(st.modal.confirm.is_none());
         assert_eq!(taken.kind, ConfirmKind::Quit);
 
-        // 悬浮窗不可宿主（隐藏/紧凑）→ Panel + 临时显示标记
+        // 替换语义（仅 Quit）：删模型确认开着 → 托盘退出仍必达（换 kind 重开）
         assert!(st.modal.request_confirm(
+            ConfirmKind::DeleteModel {
+                path: std::path::PathBuf::from("m")
+            },
+            lt_i18n::t("delete_selected_confirm_title"),
+            lt_i18n::t("delete_selected_confirm_msg"),
+        ));
+        assert!(st.modal.request_confirm_replacing(
             ConfirmKind::Quit,
-            false,
-            panel_visible(&st),
             lt_i18n::t("quit_confirm_title"),
             lt_i18n::t("quit_confirm_msg"),
         ));
-        let c = st.modal.confirm.as_ref().unwrap();
-        assert_eq!(c.host, WinId::Panel);
-        assert!(c.panel_shown_for_confirm, "面板原本隐藏应标记临时显示");
-
-        // 面板已可见 → 取消不触发回藏（无临时标记）
-        let _ = st.modal.take_confirm();
-        st.session.visible.insert(WinId::Panel, true);
-        assert!(st.modal.request_confirm(
-            ConfirmKind::ResetSubtitle,
-            false,
-            panel_visible(&st),
-            lt_i18n::t("reset_confirm_title"),
-            lt_i18n::t("subwin_reset_confirm"),
-        ));
-        assert!(!st.modal.confirm.as_ref().unwrap().panel_shown_for_confirm);
+        assert_eq!(st.modal.confirm.as_ref().unwrap().kind, ConfirmKind::Quit);
         let _ = st.modal.take_confirm();
     }
 
-    /// D-33/H-3：Quit 确认 → quit_requested（宿主 about_to_wait 收敛路径不变）
+    /// D-87：Quit 确认 → quit_requested（宿主 about_to_wait 收敛路径不变）
     #[test]
     fn confirm_quit_sets_quit_requested() {
         let mut st = AppUi::new(Settings::default());
         assert!(!st.modal.quit_requested);
         st.modal.request_confirm(
             ConfirmKind::Quit,
-            false,
-            false,
             lt_i18n::t("quit_confirm_title"),
             lt_i18n::t("quit_confirm_msg"),
         );

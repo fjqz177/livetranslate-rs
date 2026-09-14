@@ -129,17 +129,15 @@ pub fn page(
         .collect();
     if !page_diffs.is_empty() {
         super::reset_toolbar(ui, pal, page_diffs.len(), &page_diffs.join("、"), |_| {
-            // D-33/H-5：确认改 egui 模态（原位 rfd 同步框阻塞事件循环线程）
+            // D-87：确认走专用窗（D-33 旧借画布模态已删）
             modal.request_confirm(
                 crate::state::ConfirmKind::ResetSubtitle,
-                false,
-                session
-                    .visible
-                    .get(&crate::state::WinId::Panel)
-                    .copied()
-                    .unwrap_or(true),
                 lt_i18n::t("reset_confirm_title"),
                 lt_i18n::t("subwin_reset_confirm"),
+            );
+            session.enqueue_action(
+                crate::state::WinId::Confirm,
+                crate::state::WinAction::ShowConfirm,
             );
         });
     }

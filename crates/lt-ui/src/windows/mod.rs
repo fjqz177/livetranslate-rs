@@ -47,8 +47,8 @@ pub(crate) fn log_jump_button(ui: &mut Ui, unread: usize) -> bool {
 ///
 /// W5/R8：**解构分发**——各窗口模块只拿本域 `&mut` + 共享 `&`，借用检查器
 /// 强制窗口边界（越界不再靠命名纪律）；跨域写（打开面板某页/设置防抖意图）
-/// 经 WinAction / SessionView 意图由宿主根消费。确认模态（跨全域应用逻辑）
-/// 在窗口帧之后由根渲染（confirm::render_confirm_if_host）。
+/// 经 WinAction / SessionView 意图由宿主根消费。确认窗（D-87：六确认唯一
+/// 载体，跨全域应用逻辑）独占根级 `&mut AppUi` 渲染臂。
 pub fn dispatch(win: WinId, ui: &mut Ui, app: &mut AppUi) {
     match win {
         WinId::Overlay => {
@@ -61,7 +61,8 @@ pub fn dispatch(win: WinId, ui: &mut Ui, app: &mut AppUi) {
                 ..
             } = app;
             overlay::overlay_ui(ui, overlay, session, settings, modal, ctx);
-            confirm::render_confirm_if_host(ui, app, WinId::Overlay);
+            // D-87 属主遮罩：确认打开期间吞掉悬浮窗点击（真模态）
+            confirm::owner_shield_if_open(ui, app);
         }
         WinId::Subtitle => {
             let AppUi {
@@ -85,7 +86,8 @@ pub fn dispatch(win: WinId, ui: &mut Ui, app: &mut AppUi) {
                 ..
             } = app;
             panel::panel_ui(ui, panel, session, settings, modal, log, bench, ctx);
-            confirm::render_confirm_if_host(ui, app, WinId::Panel);
+            // D-87 属主遮罩：确认打开期间吞掉面板点击（真模态，防确认期间列表变动）
+            confirm::owner_shield_if_open(ui, app);
         }
         WinId::Log => {
             let AppUi { log, .. } = app;
@@ -110,6 +112,10 @@ pub fn dispatch(win: WinId, ui: &mut Ui, app: &mut AppUi) {
                 ..
             } = app;
             bench::bench_ui(ui, bench, session, settings);
+        }
+        // 确认窗（D-87：六确认唯一载体；根级 &mut——效果跨 overlay/panel/settings 域）
+        WinId::Confirm => {
+            confirm::confirm_ui(ui, app);
         }
     }
 }

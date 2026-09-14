@@ -187,6 +187,7 @@ whisper_slow_hint: "large-v3 体积大、纯 CPU 推理较慢；追求实时建�
 btn_open_folder: "打开模型文件夹"
 btn_delete_selected: "删除所选模型"
 btn_refresh: "刷新"
+confirm_delete: "删除"
 delete_selected_confirm_title: "删除模型"
 delete_selected_confirm_msg: "确定要删除模型「{name}」吗？将释放 {size} 空间。"
 cache_select_hint: "点击模型可选中，点击空白处取消；选中后可删除单个模型。"

@@ -237,7 +237,7 @@ fn row1(
         }
 
         // 清空（紧凑模式隐藏；转写自动落盘时免确认，否则确认一次防误触）。
-        // D-33/H-5：确认改 egui 模态（原位 rfd 同步框会与置顶悬浮窗叠置不可见+阻塞）
+        // D-87：确认走专用窗（悬浮窗只发请求，不再自任宿主）
         if !compact
             && ui
                 .add(small_btn(
@@ -254,11 +254,10 @@ fn row1(
             } else {
                 modal.request_confirm(
                     ConfirmKind::Clear,
-                    true,
-                    session.visible.get(&WinId::Panel).copied().unwrap_or(true),
                     lt_i18n::t("clear_confirm_title"),
                     lt_i18n::t("clear_confirm_msg"),
                 );
+                session.enqueue_action(WinId::Confirm, WinAction::ShowConfirm);
             }
         }
 
@@ -290,8 +289,8 @@ fn row1(
             session.enqueue_action(WinId::Overlay, WinAction::ShowPanel);
         }
 
-        // 退出（红底；与托盘同一确认语义——P1-1，不再秒退）。
-        // D-33/H-3：确认改 egui 模态；紧凑/低矮时模态装不下 → 改由面板宿主。
+        // 退出（红底；确认走专用窗——D-87 替换语义，托盘/悬浮窗退出必达；
+        // compact/低矮不再借面板画布）
         if ui
             .add(small_btn(
                 lt_i18n::t("quit"),
@@ -302,17 +301,12 @@ fn row1(
             ))
             .clicked()
         {
-            let overlay_ok = !compact && ui.ctx().content_rect().height() >= 280.0;
-            let opened = modal.request_confirm(
+            modal.request_confirm_replacing(
                 ConfirmKind::Quit,
-                overlay_ok,
-                session.visible.get(&WinId::Panel).copied().unwrap_or(true),
                 lt_i18n::t("quit_confirm_title"),
                 lt_i18n::t("quit_confirm_msg"),
             );
-            if opened && !overlay_ok {
-                session.enqueue_action(WinId::Panel, WinAction::ShowPanel);
-            }
+            session.enqueue_action(WinId::Confirm, WinAction::ShowConfirm);
         }
     });
 }

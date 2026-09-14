@@ -11,7 +11,7 @@
 
 use crate::state::{
     initial_visibility, push_log_line, AppUi, ConfirmKind, DownloadUiState, OverlayMessage,
-    OverlayMode, PanelPage, StartupFlow, SubtitleFeed, TickKind, WinAction, WinId,
+    PanelPage, StartupFlow, SubtitleFeed, TickKind, WinAction, WinId,
 };
 use crate::tray::{self, Tray};
 use crate::windows;
@@ -152,6 +152,9 @@ impl MultiWindowApp {
         self.create_window(event_loop, WinId::Setup, (560, 420))?;
         // 性能基准独立工具窗（原版 BenchmarkDialog resize(680, 480)；默认隐藏）
         self.create_window(event_loop, WinId::Benchmark, (680, 480))?;
+        // 确认窗（D-87：六确认唯一载体；常驻隐藏，确认请求时定位显示。
+        // 高 160 = 标题行+两行正文+按钮行紧凑排布 + 三行文案余量——永别旧 420 空心）
+        self.create_window(event_loop, WinId::Confirm, (380, 160))?;
         // Setup 标题随启动流阶段动态化（向导/缺模型下载；加载框在 ModelLoadStart 再设）
         let setup_title = match &self.app_state.startup.flow {
             StartupFlow::Wizard(_) => lt_i18n::t("window_setup"),
@@ -213,6 +216,19 @@ impl MultiWindowApp {
         if id == WinId::Overlay {
             attrs = attrs.with_min_inner_size(winit::dpi::LogicalSize::new(480.0, 200.0));
         }
+        if id == WinId::Confirm {
+            // D-87 确认窗：无边框自绘 + 置顶 + 跳任务栏；需键盘焦点（不做
+            // with_active(false)）。半透明走 LAYERED+LWA_ALPHA（同悬浮窗路径，
+            // 不用 with_transparent——wgpu HWND 仅 Opaque，见 Overlay 分支注）
+            attrs = attrs
+                .with_decorations(false)
+                .with_resizable(false)
+                .with_window_level(WindowLevel::AlwaysOnTop);
+            #[cfg(windows)]
+            {
+                attrs = attrs.with_skip_taskbar(true);
+            }
+        }
         if id == WinId::Panel {
             // 原版 setMinimumSize(480, 420)
             attrs = attrs.with_min_inner_size(winit::dpi::LogicalSize::new(480.0, 420.0));
@@ -231,6 +247,7 @@ impl MultiWindowApp {
         let layer_alpha = match id {
             WinId::Overlay => Some(overlay_layered_alpha(&self.app_state.settings)),
             WinId::Subtitle => Some(subtitle_layered_alpha(&self.app_state.settings)),
+            WinId::Confirm => Some(CONFIRM_LAYER_ALPHA),
             _ => None,
         };
         #[cfg(not(windows))]
@@ -388,6 +405,7 @@ impl MultiWindowApp {
         let target_alpha = match id {
             WinId::Overlay => Some(overlay_layered_alpha(&self.app_state.settings)),
             WinId::Subtitle => Some(subtitle_layered_alpha(&self.app_state.settings)),
+            WinId::Confirm => Some(CONFIRM_LAYER_ALPHA),
             _ => None,
         };
         #[cfg(not(windows))]
@@ -400,14 +418,17 @@ impl MultiWindowApp {
             }
         }
         // 圆角窗口区域：窗口尺寸/DPI 缩放/圆角设置变化后重设（缓存比对，常态零开销）；
-        // 悬浮窗圆角=样式页 border_radius，字幕窗=字幕页 border_radius（原版各自独立）
+        // 悬浮窗圆角=样式页 border_radius，字幕窗=字幕页 border_radius（原版各自独立）；
+        // 确认窗=固定 12 逻辑 px（D-87，与 confirm.rs 画角同源）
         #[cfg(windows)]
-        if matches!(id, WinId::Overlay | WinId::Subtitle) {
+        if matches!(id, WinId::Overlay | WinId::Subtitle | WinId::Confirm) {
             let size = window.inner_size();
             let (w, h) = (size.width, size.height);
             let radius = match id {
                 WinId::Overlay => self.app_state.settings.style.border_radius,
-                _ => self.app_state.settings.subtitle_mode.border_radius,
+                WinId::Subtitle => self.app_state.settings.subtitle_mode.border_radius,
+                WinId::Confirm => CONFIRM_CORNER_RADIUS,
+                _ => unreachable!("matches! 已收敛窗型"),
             };
             let radius_px = (radius as f32 * window.scale_factor() as f32).round() as u32;
             let key = (w, h, radius_px);
@@ -429,24 +450,88 @@ impl MultiWindowApp {
         }
     }
 
-    /// 悬浮窗可作确认模态宿主：可见 + 非紧凑模式 + 高度 ≥ 280 逻辑 px
-    /// （紧凑 200px 装不下居中确认框；D-33/H-3 审查修正）
-    fn overlay_can_host_confirm(&self) -> bool {
-        // W5b：可见性真值表（winit is_visible 不再作为事实源，R20 收敛）
-        if !self.is_visible(WinId::Overlay) {
-            return false;
-        }
-        let Some(hw) = self.find(WinId::Overlay) else {
-            return false;
+    /// 确认窗定位后显示（D-87）：锚定矩形 = 面板可见 → 面板外框；否则悬浮窗
+    /// 可见 → 悬浮窗外框；全隐藏（托盘退出）→ 光标所在屏工作区居中——在哪点
+    /// 退出就在哪弹。一律钳制在锚定矩形内不出生效区。
+    fn position_and_show_confirm(&mut self) {
+        let Some(hw) = self.find(WinId::Confirm) else {
+            return;
         };
-        if self.app_state.overlay.state.mode == OverlayMode::Compact {
-            return false;
+        let window = hw.window.clone();
+        let size = window.inner_size();
+        let (sw, sh) = (size.width as i32, size.height as i32);
+        let target = match self.confirm_anchor_rect() {
+            Some((ax, ay, aw, ah)) => (ax + ((aw - sw) / 2).max(0), ay + ((ah - sh) / 2).max(0)),
+            None => {
+                let area = Self::cursor_monitor_work_area().or_else(|| {
+                    // 非 Windows / 光标屏获取失败：任一窗口当前屏兜底
+                    self.find(WinId::Panel)
+                        .and_then(|w| w.window.current_monitor())
+                        .map(|m| {
+                            let (p, s) = (m.position(), m.size());
+                            (p.x, p.y, s.width as i32, s.height as i32)
+                        })
+                });
+                let Some((wx, wy, ww, wh)) = area else {
+                    return;
+                };
+                (wx + ((ww - sw) / 2).max(0), wy + ((wh - sh) / 2).max(0))
+            }
+        };
+        window.set_outer_position(winit::dpi::PhysicalPosition::new(target.0, target.1));
+        self.set_visible(WinId::Confirm, true);
+    }
+
+    /// 确认窗锚定矩形（物理 px）：面板可见优先（确认多由面板触发），
+    /// 其次悬浮窗；全隐藏 → None（走光标屏）
+    fn confirm_anchor_rect(&self) -> Option<(i32, i32, i32, i32)> {
+        fn rect_of(hw: &HostedWindow) -> Option<(i32, i32, i32, i32)> {
+            let p = hw.window.outer_position().ok()?;
+            let s = hw.window.inner_size();
+            Some((p.x, p.y, s.width as i32, s.height as i32))
         }
-        hw.window
-            .inner_size()
-            .to_logical::<f32>(hw.window.scale_factor())
-            .height
-            >= 280.0
+        for id in [WinId::Panel, WinId::Overlay] {
+            if self.is_visible(id) {
+                if let Some(r) = self.find(id).and_then(rect_of) {
+                    return Some(r);
+                }
+            }
+        }
+        None
+    }
+
+    /// 光标所在显示器工作区（物理 px；托盘触发的确认窗定位源）
+    #[cfg(windows)]
+    fn cursor_monitor_work_area() -> Option<(i32, i32, i32, i32)> {
+        use ::windows::Win32::Foundation::POINT;
+        use ::windows::Win32::Graphics::Gdi::{
+            GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+        };
+        use ::windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+        unsafe {
+            let mut pt = POINT::default();
+            if GetCursorPos(&mut pt).is_err() {
+                return None;
+            }
+            let hmon = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
+            if hmon.is_invalid() {
+                return None;
+            }
+            let mut info = MONITORINFO {
+                cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+                ..Default::default()
+            };
+            if !GetMonitorInfoW(hmon, &mut info).as_bool() {
+                return None;
+            }
+            let wa = info.rcWork;
+            Some((wa.left, wa.top, wa.right - wa.left, wa.bottom - wa.top))
+        }
+    }
+
+    #[cfg(not(windows))]
+    fn cursor_monitor_work_area() -> Option<(i32, i32, i32, i32)> {
+        None
     }
 
     /// 把 AppState 的勾选状态同步到托盘菜单（三向同步的一环）
@@ -493,26 +578,15 @@ impl MultiWindowApp {
                 self.set_visible(WinId::Panel, vis);
             }
             lt_proto::AppCommand::Quit => {
-                // D-33/H-3：退出确认改 egui 内嵌模态（原位 rfd 同步框会被其他
-                // 模态串行/不可达）。悬浮窗可作宿主（可见/非紧凑/高度足）则就地弹，
-                // 否则显示面板承载——任意状态（含全 UI 隐藏）下确认框必有宿主。
-                let overlay_ok = self.overlay_can_host_confirm();
-                let opened = self.app_state.modal.request_confirm(
+                // D-87：退出确认走专用窗（旧借画布方案在全隐藏时凭空拉面板，
+                // docs/quit-flow-redesign.md §一.1）。替换语义——其他确认开着
+                // 时退出请求仍必达（未收敛确认无副作用，替换安全）
+                self.app_state.modal.request_confirm_replacing(
                     ConfirmKind::Quit,
-                    overlay_ok,
-                    self.is_visible(WinId::Panel),
                     lt_i18n::t("quit_confirm_title"),
                     lt_i18n::t("quit_confirm_msg"),
                 );
-                if opened {
-                    if overlay_ok {
-                        self.redraw(WinId::Overlay);
-                    } else {
-                        self.set_visible(WinId::Panel, true);
-                    }
-                } else {
-                    tracing::debug!("确认模态已打开，忽略重复退出请求");
-                }
+                self.position_and_show_confirm();
             }
         }
         self.apply_overlay_flags();
@@ -1597,9 +1671,13 @@ impl MultiWindowApp {
                     self.app_state.panel.state.page = page;
                     self.set_visible(WinId::Panel, true);
                 }
-                WinAction::HidePanel => {
-                    // D-33/H-3：确认模态取消后恢复临时显示的面板
-                    self.set_visible(WinId::Panel, false);
+                WinAction::ShowConfirm => {
+                    // D-87：确认窗定位（属主可见→属主居中；全隐藏→光标屏）后显示
+                    self.position_and_show_confirm();
+                }
+                WinAction::HideConfirm => {
+                    // D-87：确认收敛（确定/取消/X/ESC）后隐藏
+                    self.set_visible(WinId::Confirm, false);
                 }
                 WinAction::ShowBenchmark => {
                     // 原版 BenchmarkDialog.exec()：显示独立工具窗
@@ -2034,20 +2112,8 @@ impl MultiWindowApp {
             Self::set_window_transparent(&window, false);
             return;
         }
-        // D-33/H-4：确认模态（宿主=悬浮窗）打开期间强制非穿透——否则模态按钮
-        // 落在正文区，点击被 WS_EX_TRANSPARENT 击穿，确认框将不可操作。模态关闭
-        // 后下一拍（50ms）自动恢复光标判定（节拍在 ov_click_through 期间持续续拍）。
-        let modal_on_overlay = self
-            .app_state
-            .modal
-            .confirm
-            .as_ref()
-            .map(|c| c.host == WinId::Overlay)
-            .unwrap_or(false);
-        if modal_on_overlay {
-            Self::set_window_transparent(&window, false);
-            return;
-        }
+        // D-33/H-4 的「确认模态打开期间强制非穿透」已随 D-87 删除：确认改
+        // 专用独立窗，悬浮窗穿透不再影响其可操作性。
         // W5/D-71：拖动进行中恒非穿透（光标随时出窗——光标判定会把
         // TRANSPARENT 重新挂上，打断 SetCapture 供给的输入链；豁免直到
         // OverlayDragEnd 收尾；与字幕窗 D-37 同规则）
@@ -2391,6 +2457,10 @@ impl ApplicationHandler<UiMsg> for MultiWindowApp {
                     // 脏标记，enabled=false 才会落盘（否则重启后字幕窗复活）
                     crate::windows::panel::mark_settings_dirty(&mut self.app_state.session);
                 }
+                // D-87：确认窗 Alt+F4/系统关闭 = 取消确认（清状态，可再请求）
+                if id == WinId::Confirm {
+                    self.app_state.modal.take_confirm();
+                }
                 self.set_visible(id, false);
                 self.sync_tray_checks();
             }
@@ -2610,16 +2680,23 @@ fn format_size(size_bytes: u64) -> String {
 }
 
 /// 窗口清屏色。
-/// 悬浮窗/字幕窗：不透明黑——圆角外像素已被 SetWindowRgn 从窗口形状切除
-/// （见 apply_window_region），残余清除像素只在圆角 1px 抗锯齿带内与背景色
+/// 悬浮窗/字幕窗/确认窗：不透明黑——圆角外像素已被 SetWindowRgn 从窗口形状
+/// 切除（见 apply_window_region），残余清除像素只在圆角 1px 抗锯齿带内与背景色
 /// 混合（同为深色，无可察差异）。整窗半透明由 LWA_ALPHA 承担。
 /// 其余普通窗：深灰不透明。
 fn clear_color_for(id: WinId) -> [f32; 4] {
     match id {
-        WinId::Overlay | WinId::Subtitle => [0.0, 0.0, 0.0, 1.0],
+        WinId::Overlay | WinId::Subtitle | WinId::Confirm => [0.0, 0.0, 0.0, 1.0],
         _ => [0.08, 0.08, 0.10, 1.0],
     }
 }
+
+/// 确认窗整窗不透明度（LWA_ALPHA，242/255 ≈ 95%——比悬浮窗略实：对话框要读要判）
+#[cfg(windows)]
+const CONFIRM_LAYER_ALPHA: u8 = 242;
+/// 确认窗圆角（逻辑 px，u32 对齐 style.border_radius；egui 侧画角与
+/// SetWindowRgn 裁区同源此值——confirm.rs RADIUS = 12.0）
+const CONFIRM_CORNER_RADIUS: u32 = 12;
 
 /// 悬浮窗整窗不透明度（0-255）。原版是两级叠加：QSS rgba(bg_opacity/255) ×
 /// setWindowOpacity(window_opacity%)；LWA_ALPHA 只有一层，取乘积为单值——
