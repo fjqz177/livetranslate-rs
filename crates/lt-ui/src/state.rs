@@ -380,7 +380,9 @@ pub struct LogWindowState {
     /// "追加期过滤、勾选不回溯"语义）
     pub show_debug: bool,
     pub auto_scroll: bool,
-    /// 上次贴底渲染时的行数（[`Self::new_since_bottom`] 推导基准；None = 尚未贴底）
+    /// 上次贴底渲染时的行数（「已读基准」= 未读计数的分界下标；None = 尚未贴底，
+    /// 现有行全部视作未读）。两视图共享：任一视图贴底即视为已读（两窗显示同一
+    /// 缓冲）。环形溢出掉头时随行下标同步位移（见 [`Self::push`]）
     bottom_marker: Option<usize>,
     /// 显示行缓存（text + level）：push 增量追加，环形溢出后整体重建，
     /// 避免每帧对 2000 行重复 `format!`
@@ -417,6 +419,11 @@ impl LogWindowState {
         self.lines.push_back(entry);
         if self.lines.len() > Self::MAX_LINES {
             self.lines.pop_front();
+            // 掉头挤掉的是最老一行，其后所有行下标前移一位——已读基准同步
+            // 位移，否则未读计数随溢出静默漂移
+            if let Some(m) = self.bottom_marker.as_mut() {
+                *m = m.saturating_sub(1);
+            }
             self.formatted.clear();
             self.fmt_dirty = true;
         } else if !self.fmt_dirty {
@@ -455,11 +462,18 @@ impl LogWindowState {
         self.bottom_marker = Some(self.lines.len());
     }
 
-    /// 距上次贴底的新行数（贴底=0；用户上翻浏览时 >0，驱动「回到最新」浮钮）
-    pub fn new_since_bottom(&self) -> usize {
+    /// 未读行数 = 已读基准之后、**按当前 show_debug 过滤后可见**的行数
+    /// （贴底=0；用户上翻浏览时 >0，驱动「回到最新（+N）」浮钮）。
+    /// 只数可见行：wasapi 设备轮询等 DEBUG 行在 show_debug 关闭时不可见，
+    /// 不得计入——否则浮钮 +N 随不可见行空涨（2026-09-14 实证修复）。
+    /// 切换 show_debug 即按新过滤器即时重计（隐藏的新行勾选后现身计入）。
+    pub fn visible_unread(&self) -> usize {
+        let start = self.bottom_marker.unwrap_or(0).min(self.lines.len());
         self.lines
-            .len()
-            .saturating_sub(self.bottom_marker.unwrap_or(0))
+            .iter()
+            .skip(start)
+            .filter(|e| Self::level_visible(e.level, self.show_debug))
+            .count()
     }
 
     /// 当前可见行数（渲染期过滤；「已复制 N 行」反馈用）
@@ -514,7 +528,7 @@ impl LogWindowState {
         if near {
             self.mark_at_bottom();
         }
-        pinned && self.new_since_bottom() > 0
+        pinned && self.visible_unread() > 0
     }
 
     /// 「回到最新」浮钮点击（D-31）：只记跳底请求，下一帧由对应视图滚动区内容
@@ -3017,36 +3031,60 @@ mod tests {
         assert_eq!(lw.formatted().len(), 0);
     }
 
+    /// 测试行构造（level 10=DEBUG / 20=INFO，对齐 level_visible）
+    fn entry(level: u8, msg: &str) -> LogLineEntry {
+        LogLineEntry {
+            time: "x".into(),
+            level,
+            target: "t".into(),
+            msg: msg.into(),
+        }
+    }
+
     #[test]
-    fn logwin_new_since_bottom_tracks_unread() {
+    fn visible_unread_tracks_unread() {
         let mut lw = LogWindowState::default();
-        assert_eq!(lw.new_since_bottom(), 0);
-        lw.push(LogLineEntry {
-            time: "x".into(),
-            level: 20,
-            target: "t".into(),
-            msg: "a".into(),
-        });
-        assert_eq!(lw.new_since_bottom(), 1, "无贴底基准：现有行全部视作未读");
+        assert_eq!(lw.visible_unread(), 0);
+        lw.push(entry(20, "a"));
+        assert_eq!(lw.visible_unread(), 1, "无贴底基准：现有行全部视作未读");
         lw.mark_at_bottom();
-        assert_eq!(lw.new_since_bottom(), 0);
-        lw.push(LogLineEntry {
-            time: "x".into(),
-            level: 20,
-            target: "t".into(),
-            msg: "b".into(),
-        });
-        lw.push(LogLineEntry {
-            time: "x".into(),
-            level: 20,
-            target: "t".into(),
-            msg: "c".into(),
-        });
-        assert_eq!(lw.new_since_bottom(), 2, "上翻期间新增 2 行计入未读");
+        assert_eq!(lw.visible_unread(), 0);
+        lw.push(entry(20, "b"));
+        lw.push(entry(20, "c"));
+        assert_eq!(lw.visible_unread(), 2, "上翻期间新增 2 行计入未读");
         lw.mark_at_bottom();
-        assert_eq!(lw.new_since_bottom(), 0, "回底后清零");
+        assert_eq!(lw.visible_unread(), 0, "回底后清零");
+        // 未读只数当前过滤器可见行：DEBUG 行 show_debug 关闭时不可见不计入
+        //（否则 wasapi 2s 设备轮询等隐形 DEBUG 行会令浮钮 +N 空涨）
+        lw.push(entry(10, "hidden-d"));
+        lw.push(entry(10, "hidden-e"));
+        assert_eq!(lw.visible_unread(), 0, "隐藏 DEBUG 行不计入未读");
+        lw.show_debug = true;
+        assert_eq!(lw.visible_unread(), 2, "勾选 DEBUG 后按新过滤器即时重计");
+        lw.show_debug = false;
+        lw.push(entry(10, "hidden-f"));
+        lw.push(entry(20, "info-g"));
+        assert_eq!(lw.visible_unread(), 1, "混合到达只数可见行");
         lw.clear();
-        assert_eq!(lw.new_since_bottom(), 0, "清空后归零");
+        assert_eq!(lw.visible_unread(), 0, "清空后归零");
+    }
+
+    /// 环形溢出掉头：已读基准随行下标前移，未读计数不漂移
+    #[test]
+    fn ring_overflow_shifts_bottom_marker() {
+        let mut lw = LogWindowState::default();
+        for i in 0..5 {
+            lw.push(entry(20, &format!("old{i}")));
+        }
+        lw.mark_at_bottom(); // 已读基准 = 5
+        for i in 0..1998 {
+            lw.push(entry(20, &format!("new{i}")));
+        }
+        // 溢出挤掉 3 行最老行（old0~old2，均已读）→ 基准位移到 2
+        assert_eq!(lw.lines.len(), 2000);
+        assert_eq!(lw.visible_unread(), 1998, "溢出后未读恰为新增行数");
+        lw.mark_at_bottom();
+        assert_eq!(lw.visible_unread(), 0);
     }
 
     /// 防回归（G-24）：跳底请求 per-view 记取、一次性消费、消费即重置未读基准
@@ -3067,17 +3105,13 @@ mod tests {
             target: "t".into(),
             msg: "b".into(),
         });
-        assert_eq!(lw.new_since_bottom(), 1);
+        assert_eq!(lw.visible_unread(), 1);
         lw.request_jump(LogView::Panel);
         assert!(
             lw.take_jump_request(LogView::Panel),
             "点击后下一帧应取到请求"
         );
-        assert_eq!(
-            lw.new_since_bottom(),
-            0,
-            "消费即重置未读基准（浮钮当帧消失）"
-        );
+        assert_eq!(lw.visible_unread(), 0, "消费即重置未读基准（浮钮当帧消失）");
         assert!(!lw.take_jump_request(LogView::Panel), "请求一次性消费");
         // 两视图请求互不串扰
         lw.request_jump(LogView::LogWin);
@@ -3122,7 +3156,7 @@ mod tests {
         assert!(lw.advance_follow(600.0, 100.0, 1000.0, LogView::Panel));
         // 帧 4：回贴底 → 解锁 + 基准重置
         assert!(!lw.advance_follow(900.0, 100.0, 1000.0, LogView::Panel));
-        assert_eq!(lw.new_since_bottom(), 0);
+        assert_eq!(lw.visible_unread(), 0);
     }
 
     #[test]
@@ -3169,7 +3203,7 @@ mod tests {
         assert!(lw.advance_follow(400.0, 100.0, 1000.0, LogView::Panel));
         // 回到贴底 → 解锁 + 基准重置 → 无未读
         assert!(!lw.advance_follow(900.0, 100.0, 1000.0, LogView::Panel));
-        assert_eq!(lw.new_since_bottom(), 0);
+        assert_eq!(lw.visible_unread(), 0);
     }
 
     #[test]

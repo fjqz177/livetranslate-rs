@@ -128,7 +128,7 @@ fn log_region(ui: &mut Ui, log: &mut LogUi, pal: &Palette) {
             out.inner_rect.height(),
             out.content_size.y,
             LogView::Panel,
-        ) && log_jump_button(ui, log.logwin.new_since_bottom())
+        ) && log_jump_button(ui, log.logwin.visible_unread())
         {
             log.logwin.request_jump(LogView::Panel);
         }
@@ -308,6 +308,6 @@ mod tests {
             "点击「回到最新」后视口应滚到内容底部（实际 offset={offset}，≈0 即回归 G-24）"
         );
         assert!(!st.log.logwin.panel_pinned, "到底后浮钮应自行隐藏");
-        assert_eq!(st.log.logwin.new_since_bottom(), 0);
+        assert_eq!(st.log.logwin.visible_unread(), 0);
     }
 }

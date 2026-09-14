@@ -78,7 +78,7 @@ pub fn log_ui(ui: &mut Ui, log: &mut LogUi) {
             out.inner_rect.height(),
             out.content_size.y,
             LogView::LogWin,
-        ) && log_jump_button(ui, log.logwin.new_since_bottom())
+        ) && log_jump_button(ui, log.logwin.visible_unread())
         {
             log.logwin.request_jump(LogView::LogWin);
         }
