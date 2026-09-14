@@ -65,8 +65,14 @@ pub fn log_ui(ui: &mut Ui, log: &mut LogUi) {
                     let color = highlight(text, line_color(*level));
                     ui.label(RichText::new(text).monospace().color(color).size(12.0));
                 }
+                // 「回到最新」跳底消费（D-31）：请求由浮钮点击在上一帧记下，
+                // 必须在内容 Ui 上执行才作用于本滚动区（G-24）
+                if log.logwin.take_jump_request(LogView::LogWin) {
+                    ui.scroll_to_cursor(Some(egui::Align::BOTTOM));
+                }
             });
         // 用户主动翻离底部且出现未读行：右下角「回到最新（+N）」浮钮
+        // （点击不就地滚动：浮钮在 ScrollArea 外，跳底经内容闭包下帧消费）
         if log.logwin.advance_follow(
             out.state.offset.y,
             out.inner_rect.height(),
@@ -74,8 +80,7 @@ pub fn log_ui(ui: &mut Ui, log: &mut LogUi) {
             LogView::LogWin,
         ) && log_jump_button(ui, log.logwin.new_since_bottom())
         {
-            ui.scroll_to_cursor(Some(egui::Align::BOTTOM));
-            log.logwin.mark_at_bottom();
+            log.logwin.request_jump(LogView::LogWin);
         }
     });
 

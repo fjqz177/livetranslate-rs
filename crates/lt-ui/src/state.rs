@@ -396,6 +396,13 @@ pub struct LogWindowState {
     /// 内容增长导致的 offset 落后不算）
     pub panel_prev_offset: Option<f32>,
     pub logwin_prev_offset: Option<f32>,
+    /// 「回到最新」跳底请求（pending 一帧）：浮钮画在 ScrollArea 外，而 egui 的
+    /// `scroll_to_cursor` 只对调用点 Ui 所在滚动区生效（外层调用写的是全局
+    /// 滚动目标，会被下一帧收尾的滚动区按外层视口坐标消费、偏移增量≈0），
+    /// 故点击只记请求，由下一帧内容闭包 [`Self::take_jump_request`] 在内容
+    /// 坐标系内消费执行（gotchas G-24）
+    pub panel_jump_req: bool,
+    pub logwin_jump_req: bool,
 }
 
 impl LogWindowState {
@@ -508,6 +515,36 @@ impl LogWindowState {
             self.mark_at_bottom();
         }
         pinned && self.new_since_bottom() > 0
+    }
+
+    /// 「回到最新」浮钮点击（D-31）：只记跳底请求，下一帧由对应视图滚动区内容
+    /// 闭包经 [`Self::take_jump_request`] 消费——不能在点击处（滚动区外的外层
+    /// Ui）就地 `scroll_to_cursor`，见 [`LogWindowState::panel_jump_req`] 字段注。
+    pub fn request_jump(&mut self, view: LogView) {
+        match view {
+            LogView::Panel => self.panel_jump_req = true,
+            LogView::LogWin => self.logwin_jump_req = true,
+        }
+    }
+
+    /// 消费跳底请求（滚动区**内容闭包末尾**调用，此时 Ui 在内容坐标系内）：
+    /// 返回 true 时调用方执行 `ui.scroll_to_cursor(Some(Align::BOTTOM))`。
+    /// 跳底即重置未读基准（浮钮当帧消失）；pinned 不在此处清——偏移要下一帧
+    /// 才生效，交由 [`Self::advance_follow`] 的近底判定自然解锁，滚动动画
+    /// 期间因未读已清零浮钮不会闪现。
+    pub fn take_jump_request(&mut self, view: LogView) -> bool {
+        let req = match view {
+            LogView::Panel => self.panel_jump_req,
+            LogView::LogWin => self.logwin_jump_req,
+        };
+        if req {
+            match view {
+                LogView::Panel => self.panel_jump_req = false,
+                LogView::LogWin => self.logwin_jump_req = false,
+            }
+            self.mark_at_bottom();
+        }
+        req
     }
 }
 
@@ -3010,6 +3047,42 @@ mod tests {
         assert_eq!(lw.new_since_bottom(), 0, "回底后清零");
         lw.clear();
         assert_eq!(lw.new_since_bottom(), 0, "清空后归零");
+    }
+
+    /// 防回归（G-24）：跳底请求 per-view 记取、一次性消费、消费即重置未读基准
+    #[test]
+    fn jump_request_roundtrip_per_view() {
+        let mut lw = LogWindowState::default();
+        assert!(!lw.take_jump_request(LogView::Panel), "无请求不误触发");
+        lw.push(LogLineEntry {
+            time: "x".into(),
+            level: 20,
+            target: "t".into(),
+            msg: "a".into(),
+        });
+        lw.mark_at_bottom();
+        lw.push(LogLineEntry {
+            time: "x".into(),
+            level: 20,
+            target: "t".into(),
+            msg: "b".into(),
+        });
+        assert_eq!(lw.new_since_bottom(), 1);
+        lw.request_jump(LogView::Panel);
+        assert!(
+            lw.take_jump_request(LogView::Panel),
+            "点击后下一帧应取到请求"
+        );
+        assert_eq!(
+            lw.new_since_bottom(),
+            0,
+            "消费即重置未读基准（浮钮当帧消失）"
+        );
+        assert!(!lw.take_jump_request(LogView::Panel), "请求一次性消费");
+        // 两视图请求互不串扰
+        lw.request_jump(LogView::LogWin);
+        assert!(!lw.take_jump_request(LogView::Panel));
+        assert!(lw.take_jump_request(LogView::LogWin));
     }
 
     #[test]

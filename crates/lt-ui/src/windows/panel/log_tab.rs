@@ -115,8 +115,14 @@ fn log_region(ui: &mut Ui, log: &mut LogUi, pal: &Palette) {
                             .color(pal.weak),
                     );
                 }
+                // 「回到最新」跳底消费（D-31）：请求由浮钮点击在上一帧记下，
+                // 必须在内容 Ui 上执行才作用于本滚动区（G-24）
+                if log.logwin.take_jump_request(LogView::Panel) {
+                    ui.scroll_to_cursor(Some(egui::Align::BOTTOM));
+                }
             });
         // 用户主动翻离底部且出现未读行：右下角「回到最新（+N）」浮钮
+        // （点击不就地滚动：浮钮在 ScrollArea 外，跳底经内容闭包下帧消费）
         if log.logwin.advance_follow(
             out.state.offset.y,
             out.inner_rect.height(),
@@ -124,8 +130,7 @@ fn log_region(ui: &mut Ui, log: &mut LogUi, pal: &Palette) {
             LogView::Panel,
         ) && log_jump_button(ui, log.logwin.new_since_bottom())
         {
-            ui.scroll_to_cursor(Some(egui::Align::BOTTOM));
-            log.logwin.mark_at_bottom();
+            log.logwin.request_jump(LogView::Panel);
         }
     });
 }
@@ -251,5 +256,58 @@ mod tests {
             page(ui, &mut st.log, &Palette::NATIVE);
         });
         out.textures_delta.clear();
+    }
+
+    /// 防回归（G-24「回到最新」点不动）：浮钮画在 ScrollArea 外，修复前在外层
+    /// Ui 就地 `scroll_to_cursor`——目标被下一帧滚动区按外层视口坐标消费，
+    /// 偏移增量≈0。修复后跳底经 request_jump 记一帧、内容闭包消费，必须真滚到底。
+    #[test]
+    fn jump_to_latest_actually_scrolls_to_bottom() {
+        let ctx = egui::Context::default();
+        let mut st = crate::state::AppUi::new(lt_proto::Settings::default());
+        for i in 0..100 {
+            st.log.logwin.push(LogLineEntry {
+                time: "10:00:00".into(),
+                level: 20,
+                target: "t".into(),
+                msg: format!("line {i}"),
+            });
+        }
+        st.log.logwin.mark_at_bottom();
+        st.log.logwin.push(LogLineEntry {
+            time: "10:00:01".into(),
+            level: 20,
+            target: "t".into(),
+            msg: "tail".into(),
+        });
+        // 模拟用户上翻挂起（浮钮显示条件）；auto_scroll 默认关，无 stick 干扰
+        st.log.logwin.panel_pinned = true;
+        let render = |st: &mut crate::state::AppUi, t: f64| {
+            let input = egui::RawInput {
+                time: Some(t),
+                ..egui::RawInput::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| {
+                ui.set_max_size(egui::vec2(500.0, 600.0));
+                page(ui, &mut st.log, &Palette::NATIVE);
+            });
+            out.textures_delta.clear();
+        };
+        render(&mut st, 0.0); // 帧1：建立 prev_offset 基准（视口在顶）
+        st.log.logwin.request_jump(LogView::Panel); // 模拟点击（与浮钮点击处理同路径）
+        for f in 1..=40 {
+            render(&mut st, f as f64 / 60.0); // 请求消费 + 滚动动画播完
+        }
+        let offset = st
+            .log
+            .logwin
+            .panel_prev_offset
+            .expect("渲染多帧后应有偏移基准");
+        assert!(
+            offset > 1000.0,
+            "点击「回到最新」后视口应滚到内容底部（实际 offset={offset}，≈0 即回归 G-24）"
+        );
+        assert!(!st.log.logwin.panel_pinned, "到底后浮钮应自行隐藏");
+        assert_eq!(st.log.logwin.new_since_bottom(), 0);
     }
 }

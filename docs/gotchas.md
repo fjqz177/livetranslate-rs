@@ -201,6 +201,15 @@
 - **证据**：check_agents_health.ps1 草稿 2026-09-13 干跑实锤（加 BOM 前解析失败、加 BOM 后同脚本五断言输出全对）。
 - **注（2026-09-13 Q9/ADR-16）**：本仓调用面已统一切 pwsh-only——pwsh 对无 BOM 脚本默认按 UTF-8 解析，本坑仅在误用 powershell.exe 回落时存在；既有脚本 BOM 保留（pwsh 双读兼容，零 churn 不剥）。
 
+## G-24 `scroll_to_cursor` 在 ScrollArea 外调用不生效（日志「回到最新」浮钮点不动）
+
+- **触发**：在 `ScrollArea::show()` 返回之后的外层 Ui 上调 `ui.scroll_to_cursor(...)`（典型：点击画在滚动区外的浮动按钮想就地滚动视口）。
+- **症状**：调用不报错，但视口只挪动约一个 item_spacing（几像素），等同没反应。
+- **根因**：`scroll_to_cursor` 只往 `pass_state.scroll_target` 写**全局**滚动目标（值 = 调用点 Ui 的光标位置，即外层坐标），由下一帧收尾（`end()`）的 ScrollArea 消费且不校验目标归属哪个滚动区；外层光标 ≈ 视口底边，代入内容坐标公式算出的偏移增量 ≈ 0。egui 没有「指定某个滚动区滚动」的 API。
+- **对策**：滚动指令必须在滚动区**内容闭包内**的 Ui 上执行——点击帧先记请求状态，下一帧在内容闭包末尾消费。「回到最新」浮钮即此实现：`LogWindowState::request_jump` / `take_jump_request`（lt-ui state.rs，D-31 跳底挂一帧）。
+- **证据**：egui 0.36.1 `containers/scroll_area.rs` `end()`（scroll_target 消费无 id 校验、按内容坐标求 delta）+ `ui.rs` `scroll_to_cursor`（仅写 pass_state 全局目标）；2026-09-14 修复，headless 防回归 `jump_to_latest_actually_scrolls_to_bottom`（修复前 offset≈0、修复后滚到内容底 >1000px）。
+- **版本**：egui 0.36。
+
 ---
 
 ## 候选清单（尚未收编——能五段式实证表述才收编，不臆造）

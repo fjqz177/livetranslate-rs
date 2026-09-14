@@ -129,6 +129,7 @@ git config core.hooksPath .githooks            # 每 clone 一次启用提交钩
 21. G-21 sherpa binding `Default` 不可裸用：qwen3 默认 max_new_tokens=128（官方 512）、nano Default 是 max_new_tokens=0/temperature=1.0/top_p=1.0——一律用 OFFICIAL_* 常量（engines/qwen3.rs、nano.rs 头注）。
 22. G-22 测试临时目录必须唯一化：共享同名目录在 Windows 报 code 183 竞态飘测（8f964c5 根治）。
 23. G-23 无 BOM 的 .ps1 被 Windows PowerShell 按 ANSI 解析（中文全乱码、解析失败）——入库 .ps1 一律带 UTF-8 BOM（本仓已 pwsh-only〔ADR-16〕，pwsh 默认 UTF-8 无此坑，BOM 保留双读兼容）。
+24. G-24 `scroll_to_cursor` 在 ScrollArea 外调用不生效：全局滚动目标被下一帧收尾的滚动区按外层坐标消费、偏移增量≈0——跳底须在内容闭包内执行（「回到最新」浮钮经 request_jump 记一帧）。
 
 ## 8. 看板（机制：drafts 看板 = 本区，一行一包、清零即删；细节只活在文档里）
 
