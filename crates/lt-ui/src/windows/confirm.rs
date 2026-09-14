@@ -1,4 +1,4 @@
-//! 专用确认窗（D-87，docs/quit-flow-redesign.md）。
+//! 专用确认窗（D-87，docs/archive/quit-flow-redesign.md）。
 //!
 //! 六种确认（退出/清空/恢复字幕默认/恢复翻译默认/删模型/删全部）的唯一载体：
 //! 独立原生小窗（WinId::Confirm，无边框自绘），替代旧「借画布」宿主模态——

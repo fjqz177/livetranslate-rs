@@ -612,7 +612,7 @@ impl MultiWindowApp {
             }
             lt_proto::AppCommand::Quit => {
                 // D-87：退出确认走专用窗（旧借画布方案在全隐藏时凭空拉面板，
-                // docs/quit-flow-redesign.md §一.1）。替换语义——其他确认开着
+                // docs/archive/quit-flow-redesign.md §一.1）。替换语义——其他确认开着
                 // 时退出请求仍必达（未收敛确认无副作用，替换安全）
                 self.app_state.modal.request_confirm_replacing(
                     ConfirmKind::Quit,

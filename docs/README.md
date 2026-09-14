@@ -31,6 +31,7 @@
 
 | 文档 | 一句话（D-xx） | 完工日期 |
 |---|---|---|
+| `quit-flow-redesign.md` | 退出与确认系统重做：专用确认窗包办六确认（D-87） | 2026-09-14 |
 | `agents-md-overhaul.md` | 指令体系四层化：AGENTS 总纲+坑册+七卡+守护第七项+pwsh-only（ADR-15/16） | 2026-09-14 |
 | `funasr-mlt-removal.md` | Fun-ASR-MLT-Nano 幽灵值全量移除（D-86，PROTO_VERSION=7） | 2026-09-12 |
 | `translator-probe-hotswap.md` | 翻译供应商测试/热切换/配置体验改造（D-85） | 2026-09-10 |

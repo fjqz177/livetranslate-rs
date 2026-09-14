@@ -74,7 +74,7 @@
 | D-84 | 2026-09-10 | 翻译页新增当前活跃模型「上下文数」直达行（新增入口） | docs/archive/context-turns-ui.md |
 | D-85 | 2026-09-10 | 供应商连接测试 10s 封顶、热切换、会话账本、厂商预设（默认 DeepSeek） | docs/archive/translator-probe-hotswap.md |
 | D-86 | 2026-09-12 | Fun-ASR-MLT-Nano 幽灵值全量移除，灰显机制废止（取代 D-14） | docs/archive/funasr-mlt-removal.md |
-| D-87 | 2026-09-14 | 退出与确认系统重做：专用 WinId::Confirm 确认窗包办六确认（暗色半透明圆角自绘、替换语义、身份键载荷、属主遮罩），借画布杂技链删除 | docs/quit-flow-redesign.md |
+| D-87 | 2026-09-14 | 退出与确认系统重做：专用 WinId::Confirm 确认窗包办六确认（暗色半透明圆角自绘、替换语义、身份键载荷、属主遮罩），借画布杂技链删除 | docs/archive/quit-flow-redesign.md |
 
 ## ADR-x（架构决策）
 
