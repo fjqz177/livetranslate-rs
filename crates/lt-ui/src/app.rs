@@ -450,6 +450,39 @@ impl MultiWindowApp {
         }
     }
 
+    /// 确认窗恒在顶（D-87）：topmost 带内点击激活会把其他置顶窗翻到确认窗
+    /// 之上；SWP_NOACTIVATE 抬回，不抢用户刚点给悬浮窗的焦点（原生模态
+    /// 「属主可点、模态恒顶」语义）
+    #[cfg(windows)]
+    fn ensure_confirm_on_top(&mut self) {
+        if self.app_state.modal.confirm.is_none() || !self.is_visible(WinId::Confirm) {
+            return;
+        }
+        let Some(hw) = self.find(WinId::Confirm) else {
+            return;
+        };
+        let Some(hwnd) = Self::hwnd_of(&hw.window) else {
+            return;
+        };
+        use ::windows::Win32::UI::WindowsAndMessaging::{
+            SetWindowPos, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+        };
+        unsafe {
+            let _ = SetWindowPos(
+                hwnd,
+                Some(HWND_TOPMOST),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            );
+        }
+    }
+
+    #[cfg(not(windows))]
+    fn ensure_confirm_on_top(&mut self) {}
+
     /// 确认窗定位后显示（D-87）：锚定矩形 = 面板可见 → 面板外框；否则悬浮窗
     /// 可见 → 悬浮窗外框；全隐藏（托盘退出）→ 光标所在屏工作区居中——在哪点
     /// 退出就在哪弹。一律钳制在锚定矩形内不出生效区。
@@ -748,6 +781,8 @@ impl MultiWindowApp {
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER,
             )
         };
+        // D-87：悬浮窗重申 Z 序后，确认窗开着则抬回（模态恒顶）
+        self.ensure_confirm_on_top();
     }
 
     /// 当前窗所在显示器的工作区矩形（rcWork；物理 px → 逻辑 px）。
@@ -2471,6 +2506,13 @@ impl ApplicationHandler<UiMsg> for MultiWindowApp {
                     }
                     self.window(id).request_redraw();
                 }
+            }
+            // D-87 确认窗恒顶：topmost 带内点击激活语义会把被点的置顶窗
+            // （悬浮窗/字幕窗）翻到确认窗之上，模态被盖住不可点——这里在
+            // 不抢焦点的前提下把确认窗抬回带内最顶（原生「属主可点、模态恒顶」
+            // 语义；重复点击已激活窗不再触发 Focused，Z 序不动，无抖动战）
+            WindowEvent::Focused(true) if matches!(id, WinId::Overlay | WinId::Subtitle) => {
+                self.ensure_confirm_on_top();
             }
             WindowEvent::Moved(_) => {
                 match id {
