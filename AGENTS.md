@@ -146,7 +146,7 @@ git config core.hooksPath .githooks            # 每 clone 一次启用提交钩
 
 ### 施工中
 
-- （无）
+- quit-flow-redesign（D-87）：专用确认窗包办六确认施工中——S1 窗体+状态机 / S2 退出冲刷 / S3 视觉测试 / S4 实机走查；方案 docs/quit-flow-redesign.md
 
 ### 遗留（完工包的实机走查与未了项，一行一包，清零即删）
 
