@@ -2691,9 +2691,10 @@ fn clear_color_for(id: WinId) -> [f32; 4] {
     }
 }
 
-/// 确认窗整窗不透明度（LWA_ALPHA，242/255 ≈ 95%——比悬浮窗略实：对话框要读要判）
+/// 确认窗整窗不透明度（LWA_ALPHA，250/255 ≈ 98%——走查反馈壁纸透出过强，
+/// 收到近实：玻璃感由顶缘高光与描边承担，不给文字添噪）
 #[cfg(windows)]
-const CONFIRM_LAYER_ALPHA: u8 = 242;
+const CONFIRM_LAYER_ALPHA: u8 = 250;
 /// 确认窗圆角（逻辑 px，u32 对齐 style.border_radius；egui 侧画角与
 /// SetWindowRgn 裁区同源此值——confirm.rs RADIUS = 12.0）
 const CONFIRM_CORNER_RADIUS: u32 = 12;

@@ -14,19 +14,26 @@ use egui::{Color32, CornerRadius, RichText, Stroke, Ui};
 pub(crate) const RADIUS: f32 = 12.0;
 
 // 材质配色（应用暗色语义：深底 + 灰字；危险操作红系，全部复用既有调色语义）
-const BODY_FILL: Color32 = Color32::from_rgb(0x14, 0x16, 0x1A);
-const BODY_STROKE: Color32 = Color32::from_rgb(0x3A, 0x3D, 0x44);
-const TEXT_MAIN: Color32 = Color32::from_rgb(0xDD, 0xDD, 0xDD);
-const TEXT_BRIGHT: Color32 = Color32::from_rgb(0xF0, 0xF0, 0xF0);
-const TEXT_DIM: Color32 = Color32::from_rgb(0xAA, 0xAA, 0xAA);
+const BODY_FILL: Color32 = Color32::from_rgb(0x1A, 0x1D, 0x24);
+const BODY_STROKE: Color32 = Color32::from_rgb(0x41, 0x46, 0x52);
+/// 顶缘 1px 高光（玻璃质感；随圆角内缩避免压角）
+const TOP_HIGHLIGHT: Color32 = Color32::from_rgb(0x4A, 0x50, 0x5E);
+/// 标题行下分隔线
+const SEPARATOR: Color32 = Color32::from_rgb(0x2E, 0x32, 0x3C);
+const TEXT_TITLE: Color32 = Color32::from_rgb(0xF2, 0xF2, 0xF2);
+const TEXT_MSG: Color32 = Color32::from_rgb(0xC9, 0xCE, 0xD8);
+const TEXT_DIM: Color32 = Color32::from_rgb(0x9E, 0xA4, 0xB0);
+const TEXT_BRIGHT: Color32 = Color32::from_rgb(0xF5, 0xF5, 0xF5);
 /// 危险语义（退出/删除系主钮；与悬浮窗红底退出钮同色系）
-const DANGER_FILL: Color32 = Color32::from_rgb(0x8C, 0x2F, 0x2F);
-const DANGER_HOVER: Color32 = Color32::from_rgb(0xA8, 0x3C, 0x3C);
-const DANGER_DOT: Color32 = Color32::from_rgb(0xC8, 0x50, 0x50);
+const DANGER_FILL: Color32 = Color32::from_rgb(0x9A, 0x33, 0x33);
+const DANGER_STROKE: Color32 = Color32::from_rgb(0xC0, 0x5A, 0x5A);
+const DANGER_HOVER: Color32 = Color32::from_rgb(0xAF, 0x3E, 0x3E);
+const DANGER_DOT: Color32 = Color32::from_rgb(0xE0, 0x56, 0x56);
 /// 中性主钮（恢复默认/清空）
-const PRIMARY_FILL: Color32 = Color32::from_rgb(0x3C, 0x40, 0x49);
-const PRIMARY_HOVER: Color32 = Color32::from_rgb(0x4C, 0x51, 0x5C);
-const GHOST_HOVER: Color32 = Color32::from_rgb(0x2C, 0x2F, 0x36);
+const PRIMARY_FILL: Color32 = Color32::from_rgb(0x40, 0x45, 0x50);
+const PRIMARY_STROKE: Color32 = Color32::from_rgb(0x5A, 0x60, 0x6D);
+const PRIMARY_HOVER: Color32 = Color32::from_rgb(0x4E, 0x54, 0x60);
+const GHOST_HOVER: Color32 = Color32::from_rgb(0x30, 0x34, 0x3D);
 
 /// 确认窗内容（仅 WinId::Confirm 帧内调用；收敛副作用：确定 → [`ConfirmKind`]
 /// 效果 + HideConfirm；取消/X/ESC → HideConfirm；未收敛 → 状态放回等下一帧）
@@ -52,6 +59,7 @@ pub fn confirm_ui(ui: &mut Ui, app: &mut AppUi) {
         ConfirmKind::Quit | ConfirmKind::DeleteAll | ConfirmKind::DeleteModel { .. }
     );
 
+    // ── 材质：深底 + 描边 + 顶缘高光（玻璃感）——显式矩形排版，杜绝流式缩进漂移 ──
     let full = ui.max_rect();
     let painter = ui.painter().clone();
     let radius = CornerRadius::same(RADIUS as u8);
@@ -62,35 +70,61 @@ pub fn confirm_ui(ui: &mut Ui, app: &mut AppUi) {
         Stroke::new(1.0, BODY_STROKE),
         egui::StrokeKind::Inside,
     );
+    painter.rect_filled(
+        egui::Rect::from_min_max(
+            egui::pos2(full.left() + 10.0, full.top() + 1.5),
+            egui::pos2(full.right() - 10.0, full.top() + 2.5),
+        ),
+        CornerRadius::same(1),
+        TOP_HIGHLIGHT,
+    );
+
+    // 行几何（逻辑 px；左右统一 20px 内容边距）
+    let left = full.left() + 20.0;
+    let right = full.right() - 20.0;
+    let btn_h = 32.0;
+    let title_rect = egui::Rect::from_min_max(
+        egui::pos2(left, full.top() + 14.0),
+        egui::pos2(right, full.top() + 40.0),
+    );
+    let sep_y = title_rect.bottom() + 8.0;
+    let msg_rect = egui::Rect::from_min_max(
+        egui::pos2(left, sep_y + 10.0),
+        egui::pos2(right, full.bottom() - 14.0 - btn_h),
+    );
+    let btn_rect = egui::Rect::from_min_max(
+        egui::pos2(left, full.bottom() - 14.0 - btn_h),
+        egui::pos2(right, full.bottom() - 14.0),
+    );
 
     // ── 标题行：语义色圆点 + 标题 + 关闭钮 ──
-    ui.add_space(10.0);
-    ui.horizontal(|ui| {
-        ui.add_space(16.0);
-        let dot_c = if danger { DANGER_DOT } else { TEXT_DIM };
-        let (dot_rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 16.0), egui::Sense::hover());
-        painter.circle_filled(dot_rect.left_center() + egui::vec2(2.0, 0.0), 4.0, dot_c);
+    let dot_c = if danger { DANGER_DOT } else { TEXT_DIM };
+    let mut title_ui = ui.new_child(egui::UiBuilder::new().max_rect(title_rect));
+    title_ui.horizontal(|ui| {
+        let (dot_rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 24.0), egui::Sense::hover());
+        ui.painter()
+            .circle_filled(dot_rect.left_center() + egui::vec2(3.0, 0.0), 4.0, dot_c);
         ui.label(
             RichText::new(&conf.title)
                 .strong()
-                .size(15.0)
-                .color(TEXT_MAIN),
+                .size(15.5)
+                .color(TEXT_TITLE),
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.add_space(12.0);
-            if ghost_button(ui, "✕", 24.0) {
+            if icon_button(ui, "✕") {
                 set_closed(app);
             }
         });
     });
-    ui.add_space(12.0);
+    painter.rect_filled(
+        egui::Rect::from_min_max(egui::pos2(left, sep_y), egui::pos2(right, sep_y + 1.0)),
+        CornerRadius::same(1),
+        SEPARATOR,
+    );
 
-    // ── 正文（垂直布局自动换行）──
-    ui.horizontal(|ui| {
-        ui.add_space(16.0);
-        ui.set_max_width(ui.available_width() - 16.0);
-        ui.label(RichText::new(&conf.msg).size(13.0).color(TEXT_MAIN));
-    });
+    // ── 正文（独立纵向 child：宽度即行宽，换行与左对齐恒定）──
+    let mut msg_ui = ui.new_child(egui::UiBuilder::new().max_rect(msg_rect));
+    msg_ui.label(RichText::new(&conf.msg).size(13.5).color(TEXT_MSG));
 
     // ── 按钮行（右下：[取消][主钮=后果动词]）──
     let mut accepted = false;
@@ -108,20 +142,17 @@ pub fn confirm_ui(ui: &mut Ui, app: &mut AppUi) {
     if esc {
         cancelled = true;
     }
-    ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
-        ui.add_space(16.0);
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.add_space(16.0);
-            let primary = primary_button(ui, &primary_label_of(&conf.kind), danger);
-            ui.add_space(10.0);
-            let cancel = ghost_button(ui, &lt_i18n::t("subwin_cancel"), 72.0);
-            if primary {
-                accepted = true;
-            }
-            if cancel {
-                cancelled = true;
-            }
-        });
+    let mut btn_ui = ui.new_child(egui::UiBuilder::new().max_rect(btn_rect));
+    btn_ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        let primary = primary_button(ui, &primary_label_of(&conf.kind), danger);
+        ui.add_space(10.0);
+        let cancel = ghost_button(ui, &lt_i18n::t("subwin_cancel"), 76.0);
+        if primary {
+            accepted = true;
+        }
+        if cancel {
+            cancelled = true;
+        }
     });
 
     let Some(conf) = app.modal.take_confirm() else {
@@ -168,19 +199,19 @@ fn primary_label_of(kind: &ConfirmKind) -> String {
 }
 
 fn primary_button(ui: &mut Ui, label: &str, danger: bool) -> bool {
-    let (fill, hover) = if danger {
-        (DANGER_FILL, DANGER_HOVER)
+    let (fill, hover, stroke) = if danger {
+        (DANGER_FILL, DANGER_HOVER, DANGER_STROKE)
     } else {
-        (PRIMARY_FILL, PRIMARY_HOVER)
+        (PRIMARY_FILL, PRIMARY_HOVER, PRIMARY_STROKE)
     };
     ui.visuals_mut().widgets.hovered.bg_fill = hover;
     ui.visuals_mut().widgets.active.bg_fill = hover;
     ui.add(
-        egui::Button::new(RichText::new(label).size(13.0).color(TEXT_BRIGHT))
+        egui::Button::new(RichText::new(label).size(14.0).color(TEXT_BRIGHT))
             .fill(fill)
-            .stroke(Stroke::NONE)
+            .stroke(Stroke::new(1.0, stroke))
             .corner_radius(CornerRadius::same(6))
-            .min_size(egui::vec2(88.0, 30.0)),
+            .min_size(egui::vec2(96.0, 32.0)),
     )
     .clicked()
 }
@@ -189,11 +220,26 @@ fn ghost_button(ui: &mut Ui, label: &str, w: f32) -> bool {
     ui.visuals_mut().widgets.hovered.bg_fill = GHOST_HOVER;
     ui.visuals_mut().widgets.active.bg_fill = GHOST_HOVER;
     ui.add(
-        egui::Button::new(RichText::new(label).size(13.0).color(TEXT_DIM))
+        egui::Button::new(RichText::new(label).size(14.0).color(TEXT_DIM))
             .fill(Color32::TRANSPARENT)
             .stroke(Stroke::new(1.0, BODY_STROKE))
             .corner_radius(CornerRadius::same(6))
-            .min_size(egui::vec2(w, 30.0)),
+            .min_size(egui::vec2(w, 32.0)),
+    )
+    .clicked()
+}
+
+/// 标题行关闭钮（无描边幽灵款；hover 浮出底色）
+fn icon_button(ui: &mut Ui, glyph: &str) -> bool {
+    ui.visuals_mut().widgets.hovered.bg_fill = GHOST_HOVER;
+    ui.visuals_mut().widgets.active.bg_fill = GHOST_HOVER;
+    ui.visuals_mut().widgets.hovered.fg_stroke = Stroke::new(1.0, TEXT_BRIGHT);
+    ui.add(
+        egui::Button::new(RichText::new(glyph).size(14.0).color(TEXT_DIM))
+            .fill(Color32::TRANSPARENT)
+            .stroke(Stroke::NONE)
+            .corner_radius(CornerRadius::same(5))
+            .min_size(egui::vec2(26.0, 26.0)),
     )
     .clicked()
 }
