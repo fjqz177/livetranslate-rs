@@ -12,12 +12,17 @@ use egui::{Color32, CornerRadius, RichText, Stroke, Ui};
 
 /// 窗口圆角（逻辑 px；宿主 SetWindowRgn 裁区同源此值——app.rs CONFIRM_CORNER_RADIUS）
 pub(crate) const RADIUS: f32 = 12.0;
+/// 体填充圆角：**必须小于** RADIUS（角更方）——Win10 的 SetWindowRgn 是
+/// 1-bit 硬裁剪无抗锯齿，裁刀若与 egui 画角同半径会切过 AA 渐变带产生
+/// 马赛克毛边；填充分画小后裁刀切在纯色内部（几何余量 ≈ 0.414×(12-6) ≈
+/// 2.5px），毛边彻底消失，可见圆角仍为 12
+const FILL_RADIUS: f32 = 6.0;
+/// 边缘 rim：沿裁区曲线内侧描 2px，盖住硬裁剪的阶梯锯齿
+const RIM_STROKE: f32 = 2.0;
 
 // 材质配色（应用暗色语义：深底 + 灰字；危险操作红系，全部复用既有调色语义）
 const BODY_FILL: Color32 = Color32::from_rgb(0x1A, 0x1D, 0x24);
 const BODY_STROKE: Color32 = Color32::from_rgb(0x41, 0x46, 0x52);
-/// 顶缘 1px 高光（玻璃质感；随圆角内缩避免压角）
-const TOP_HIGHLIGHT: Color32 = Color32::from_rgb(0x4A, 0x50, 0x5E);
 /// 标题行下分隔线
 const SEPARATOR: Color32 = Color32::from_rgb(0x2E, 0x32, 0x3C);
 const TEXT_TITLE: Color32 = Color32::from_rgb(0xF2, 0xF2, 0xF2);
@@ -59,24 +64,17 @@ pub fn confirm_ui(ui: &mut Ui, app: &mut AppUi) {
         ConfirmKind::Quit | ConfirmKind::DeleteAll | ConfirmKind::DeleteModel { .. }
     );
 
-    // ── 材质：深底 + 描边 + 顶缘高光（玻璃感）——显式矩形排版，杜绝流式缩进漂移 ──
+    // ── 材质：深底 + 边缘 rim——显式矩形排版，杜绝流式缩进漂移 ──
+    // （顶缘高光线经走查反馈删除；圆角抗锯齿方案见 FILL_RADIUS 注）
     let full = ui.max_rect();
     let painter = ui.painter().clone();
-    let radius = CornerRadius::same(RADIUS as u8);
-    painter.rect_filled(full, radius, BODY_FILL);
+    painter.rect_filled(full, CornerRadius::same(FILL_RADIUS as u8), BODY_FILL);
+    // rim 沿可见圆角（=裁区曲线）内侧描边，硬裁剪的阶梯被 rim 盖住
     painter.rect_stroke(
         full,
-        radius,
-        Stroke::new(1.0, BODY_STROKE),
+        CornerRadius::same(RADIUS as u8),
+        Stroke::new(RIM_STROKE, BODY_STROKE),
         egui::StrokeKind::Inside,
-    );
-    painter.rect_filled(
-        egui::Rect::from_min_max(
-            egui::pos2(full.left() + 10.0, full.top() + 1.5),
-            egui::pos2(full.right() - 10.0, full.top() + 2.5),
-        ),
-        CornerRadius::same(1),
-        TOP_HIGHLIGHT,
     );
 
     // 行几何（逻辑 px；左右统一 20px 内容边距）
