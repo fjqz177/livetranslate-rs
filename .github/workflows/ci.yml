@@ -1,17 +1,17 @@
-# LiveTranslate-rs CI——主干质量门禁（D-88 重构；细节真源 = 本文 + scripts/precommit.ps1 头注）
+# LiveTranslate-rs CI——主干质量门禁（D-88 重构 + D-89 触发面回摆；细节真源 = 本文 + scripts/precommit.ps1 头注）
 #
-# 本文件只做一件事：主干质量门禁 + 全量测试 + 分发演练。
+# 本文件只做一件事：质量门禁 + 全量测试 + 分发演练。
 # 发布另有 release.yml（tag→Draft Release），依赖安全另有 security.yml（cargo-deny）。
 #
-# 与旧版（gate/build 双 job + 手抄六步）的三点结构变化：
-#   1. 门禁不再手抄（A1）：第一步原样执行 scripts/precommit.ps1（fmt+五守护+clippy 七项）。
-#      「本地过关 ⇔ CI 过关」由同一脚本保证，删除「门禁项增删双边同步」这个必然漏的人工约定
-#      （旧版实证：头注「前六项」漂移）。CI 侧不门禁复述，清单真源 = precommit.ps1 头注。
-#   2. 触发器只留 push + 手动（J1）：pull_request 在主干直推下是死配置，且与 push 双跑、
-#      两组并发互不取消。公开引入 PR 流时恢复，并发组换 PR 号变体（见下）。
-#   3. 工具链单一真源 = 仓库根 rust-toolchain.toml（B）：runner 的 rustup 按文件自动装钉版，
-#      本地与 CI 同链，治「clippy 新 stable 无因红」。代价：与 runner 预装不一致时每跑
-#      +30~60s 工具链下载（minimal profile 已尽量压）。
+# 门禁不手抄（A1）：第一步原样执行 scripts/precommit.ps1（fmt+五守护+clippy 七项）——
+# 「本地过关 ⇔ CI 过关」由同一脚本保证，清单真源 = precommit.ps1 头注（CI 侧不复述）。
+#
+# 触发面（J1 回摆，D-89）：push 全分支 + pull_request + 手动三路。
+#   回摆原因：仓库 2026-09-09 起是公开仓（fork/issue 均开），J1「私有 + 单人主干直推，
+#   PR 触发是死配置」的前提已失效；缺 PR 触发 = 外部 PR 零检查。
+#   双跑治理（旧版 P2-1）：两路归一到「源仓 + 源分支」并发组——本仓 PR 与其分支 push 落
+#   同组互斥（后到取消先到），fork PR 带 fork 前缀，不会误伤本仓同名分支（如 fork 的 main）。
+#   另注：只写 branches 时 tag push 不触发本文件——打 tag 前的质量兜底 = 人工确认该 commit 已绿。
 #
 # 可复现性：依赖解析一律 --locked（C，Cargo.lock/uv.lock 是入库真源）；
 # rust-cache cache-on-failure: true（D，修红期间不清缓存）；
@@ -24,16 +24,16 @@ name: ci
 on:
   push:
     branches: ['**']
+  pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  # J1：暂无 PR 触发，ref 分组即可互斥。若恢复 PR（J 回摆），改为：
-  #   group: ci-${{ github.event.pull_request.number || github.ref }}
-  # （PR 号保证 PR 与其分支 push 同组互斥；回退到 ref 保证分支级新鲜度——sha 会堆积 150 分钟级 job）
-  group: ci-${{ github.ref }}
+  # 同一「源仓 + 源分支」互斥：pull_request 取 head repo + head_ref；push 事件前两段为空，
+  # 退到本仓 + ref_name（分支名）——本仓 PR 与其分支 push 因此同组，不双跑（旧版 P2-1）。
+  group: ci-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 
 jobs:
@@ -42,11 +42,13 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 150
     steps:
-      - uses: actions/checkout@v7
+      - name: Checkout
+        uses: actions/checkout@v7
 
       # 以下工具链/缓存四步与 release.yml 镜像——改动须两文件同步（三次法则：第三处出现再抽 composite action）
       # K：第三方 action 全 SHA 钉版 + 版本注释（dependabot 接管升版）
-      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0（该仓无浮动大标签）
+      - name: Setup uv（仓库内 libclang/cmake 分发器）
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0（该仓无浮动大标签）
 
       - name: Sync pinned toolchain (libclang + cmake via uv)
         run: uv sync --locked
@@ -61,7 +63,8 @@ jobs:
       - name: Fetch sherpa-onnx libs
         run: pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/fetch_sherpa_libs.ps1
 
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Cache Rust build (rust-cache)
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           cache-on-failure: true
           # shared-key（D-88 复审）：默认键含 job id，跨 job/workflow 永不共享——置稳定键后

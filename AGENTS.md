@@ -37,7 +37,7 @@ git config core.hooksPath .githooks            # 每 clone 一次启用提交钩
 ```
 
 - 冒烟：设临时 `LIVETRANSLATE_CONFIG_DIR`，其 settings.json 必须显式 `models_dir` 指真实模型缓存（如 `~/.config/livetranslate/models`），否则引擎探测全部失败；`LIVETRANSLATE_SHOW_PANEL=1` 启动直开控制面板（走查/排障旗标，默认关闭）；`livetranslate.exe --version` 无 GUI 打印版本即退（产物能起的最小证明）。
-- CI = `.github/workflows/` 三 workflow（结构细节真源 = 各文件头注）：**ci**（单 job，门禁 = precommit.ps1 整脚本入 CI〔D-88 A1〕+ 测试 + 分发演练；触发 = push 全分支 + 手动）/ **release**（tag `v*` → Draft Release + sha256，转正人工）/ **security**（cargo-deny 四表，ubuntu）；工具链真源 = 仓库根 `rust-toolchain.toml`；无 PR 门禁，靠提交前自查；CI 绿 ≠ 干净机能跑（runner 自带 VC++）。
+- CI = `.github/workflows/` 三 workflow（结构细节真源 = 各文件头注）：**ci**（单 job，门禁 = precommit.ps1 整脚本入 CI〔D-88 A1〕+ 测试 + 分发演练；触发 = push 全分支 + PR + 手动〔D-89 回摆〕）/ **release**（tag `v*` → Draft Release + sha256，转正人工）/ **security**（cargo-deny 四表，ubuntu）；工具链真源 = 仓库根 `rust-toolchain.toml`；无分支保护——PR 上会跑 CI，但红叉不拦合并，仍靠提交前自查；CI 绿 ≠ 干净机能跑（runner 自带 VC++）。
 - 改码前摸底优先 MCP `codegraph_explore`（`.codegraph/` 本机索引，不入库）。
 
 ## 3. 十 crate 拓扑与分层硬规则
@@ -151,7 +151,7 @@ git config core.hooksPath .githooks            # 每 clone 一次启用提交钩
 
 - agents-md-overhaul（ADR-15/16）：gotchas 候选回读（visual-parity/overlay-realign 怪癖收编为新条目）/ prompts 技能化验证（ZCode 工作区级 .zcode/skills）/ 两档预算两周后按实测回调 / i18n 键集 parity 守护候选（docs/archive/agents-md-overhaul.md §五）
 - quit-flow-redesign（D-87）：§五走查矩阵剩余行为项随用随验（docs/archive/quit-flow-redesign.md §九）
-- ci-workflow-suite（D-88）：deny.toml 首跑校准 + release 全链实机演练（测试 tag→draft→转正→清场）+ CI 首跑墙钟观察 + nextest/typos 候选 + 公开前三件套（attest/immutable/PR 触发回摆）（docs/archive/ci-workflow-suite.md §六）
+- ci-workflow-suite（D-88/D-89）：deny.toml 首跑校准 + release 全链实机演练（测试 tag→draft→转正→清场）+ CI 首跑墙钟观察 + nextest/typos 候选 + 公开仓三件套（attest/immutable/tag protection；本仓 09-09 起即 public，attest 可用）+ 仓库设置 Dependabot alerts/security updates 未开（docs/archive/ci-workflow-suite.md §六）
 - 架构 v2/2.1：实机走查 11 项 + WP-9 性能预算（后续单独方案）（docs/archive/architecture-v2.md §6.4）；W5 走查 6 项——悬浮窗拖动/字幕窗拖动穿透回归/导出保存框/背景图选择框/设备下拉/Monitor 条（同文档 W5 节）
 - translator（D-85）：实机走查 13 项（docs/archive/translator-probe-hotswap.md §6.2）
 - model-trust（D-83）：实机走查——改坏一个模型文件应自动隔离+重下+装载（docs/archive/model-trust-repair.md）
