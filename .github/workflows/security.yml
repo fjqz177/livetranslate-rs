@@ -23,7 +23,8 @@
 # 通知通道的缺口不在本文件：仓库设置里 Dependabot alerts / security updates 需打开
 # （公开仓免费、会自动开 PR）——只靠本 job 的黄标＝没人知道。
 #
-# 伴随配置：仓库根 deny.toml——首跑必红是预期，逐条校准（豁免须注明理由与撤销时机）。
+# 伴随配置：仓库根 deny.toml——2026-09-15 首跑校准完成（许可证白名单 + path 通配例外 +
+# [graph] 目标限 Windows）；此后红 = 真新增项，逐条按「为什么 + 何时清」处理豁免。
 name: security
 
 on:

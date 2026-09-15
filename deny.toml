@@ -1,8 +1,15 @@
 # cargo-deny 策略四表（D-88 决策 F；由 .github/workflows/security.yml 消费）
 #
 # 模板基线 = polars deny.toml 裁剪（多平台/发布库专属条目已删）。
-# 首跑 `cargo deny check` 必红是预期——按输出逐条补 allow/ignore；豁免是带
-# 「为什么 + 何时清」的欠条（polars 纪律同款），不是黑洞，禁无脑放行。
+# 2026-09-15 首跑校准（首跑红单 = ① 10 个自家 crate「is unlicensed」② 9 条外部许可证不在白名单
+# ③ 8 crate / 40 处 path 通配 —— 逐条核对实际声明后按下述四处落定）。
+# 豁免是带「为什么 + 何时清」的欠条（polars 纪律同款），不是黑洞，禁无脑放行。
+
+[graph]
+# 只扫真正会进产物的目标：Linux runner 默认会带出 Windows 树里没有的依赖——两条 unmaintained
+# 公告（proc-macro-error ← tray-icon→libappindicator→glib；ttf-parser ← winit→sctk-adwaita）
+# 全是 Linux-only 路径，本仓单一实装目标为 Windows。跨平台落地时把对应 target 加回这里。
+targets = ["x86_64-pc-windows-msvc"]
 
 [advisories]
 version = 2
@@ -19,13 +26,21 @@ allow = [
     "ISC",
     "Unicode-3.0",
     "Zlib",
+    # ── 2026-09-15 首跑校准追加（逐 crate 核对实际声明后落）──
+    "BSL-1.0",                 # 宽松：clipboard-win（arboard←egui-winit）、error-code
+    "CDLA-Permissive-2.0",     # 宽松数据许可：webpki-root-certs / webpki-roots（0.26 与 1.0 两档）
+    "Unlicense",               # 公共领域：whisper-rs / whisper-rs-sys
+    "MPL-2.0",                 # 弱 copyleft（文件级，未修改不传染）：option-ext（dirs→dirs-sys，读配置目录）——已人工裁决放行
+    "OFL-1.1",                 # 字体许可：epaint_default_fonts（egui 内嵌字体；与本仓再分发内嵌 OFL 字体的既有实践一致）
+    "Ubuntu-font-1.0",         # 字体许可：同上
 ]
-# 首跑红了的处理：逐 crate 核对实际许可证再追加；
-# 出现 copyleft（GPL/AGPL/SSPL）必须停下人工裁决，不许静默进 allow
+# 追加纪律：逐 crate 核对实际许可证再进 allow；出现强 copyleft（GPL/AGPL/SSPL）仍必须停下人工裁决
 
 [bans]
 multiple-versions = "warn"   # 十 crate workspace + egui/ort 系大概率有重复版本，先 warn 观察基线
 wildcards = "deny"           # 禁 "*" 通配版本需求——依赖边界必须写清楚
+allow-wildcard-paths = true  # 例外：path 属性通配（内部 workspace 依赖的唯一形式，无 version 是常态）
+                             # 放行；非 path 通配（外部 "*"）仍按 Deny（cargo-deny 源码语义）
 highlight = "all"
 
 [sources]
