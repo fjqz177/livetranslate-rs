@@ -1,94 +1,84 @@
-# LiveTranslate-rs CI（架构 2.0 W1/R16；2026-09-11 按开发流程重构为两 job）
+# LiveTranslate-rs CI——主干质量门禁（D-88 重构；细节真源 = 本文 + scripts/precommit.ps1 头注）
 #
-# 与 AGENTS.md 的两道门禁同源，本地过关 ⇔ CI 过关：
-#   gate  = 提交前门禁的静态面 = scripts/precommit.ps1 前六项（fmt + 五守护，含总纲健康）：
-#           纯文本扫描，不联网、不编译 → 秒级出结论（格式/分层/禁令类问题先红灯）；
-#   build = 提交前门禁的 clippy + 收工门禁（cargo test --workspace）+ 分发演练
-#           （release 单 exe → scripts/package_release.ps1 → zip 传 Artifact）。
-# 门禁项增删须与 scripts/precommit.ps1 双边同步（本地七项 = gate 六项 + clippy）。
+# 本文件只做一件事：主干质量门禁 + 全量测试 + 分发演练。
+# 发布另有 release.yml（tag→Draft Release），依赖安全另有 security.yml（cargo-deny）。
 #
-# 触发面 = 全分支 push + PR + 手动 dispatch：不限定分支——feature 分支与主线一视同仁，
-# 避免「只监听 main」时漏检。ignored 探针（真模型/真网络）在 CI 保持跳过 = 离线纪律。
-# windows-latest = Server 2025：工作目录在 D:（target/ 随 checkout 落 D:）；
-# uv 钉版 libclang/cmake（.venv 相对路径由 .cargo/config.toml [env] 解析）。
+# 与旧版（gate/build 双 job + 手抄六步）的三点结构变化：
+#   1. 门禁不再手抄（A1）：第一步原样执行 scripts/precommit.ps1（fmt+五守护+clippy 七项）。
+#      「本地过关 ⇔ CI 过关」由同一脚本保证，删除「门禁项增删双边同步」这个必然漏的人工约定
+#      （旧版实证：头注「前六项」漂移）。CI 侧不门禁复述，清单真源 = precommit.ps1 头注。
+#   2. 触发器只留 push + 手动（J1）：pull_request 在主干直推下是死配置，且与 push 双跑、
+#      两组并发互不取消。公开引入 PR 流时恢复，并发组换 PR 号变体（见下）。
+#   3. 工具链单一真源 = 仓库根 rust-toolchain.toml（B）：runner 的 rustup 按文件自动装钉版，
+#      本地与 CI 同链，治「clippy 新 stable 无因红」。代价：与 runner 预装不一致时每跑
+#      +30~60s 工具链下载（minimal profile 已尽量压）。
+#
+# 可复现性：依赖解析一律 --locked（C，Cargo.lock/uv.lock 是入库真源）；
+# rust-cache cache-on-failure: true（D，修红期间不清缓存）；
+# sherpa 缓存键只随 Cargo.lock——脚本内部按版本化文件名自判重下，脚本改动不再分裂缓存。
+#
+# ignored 探针（真模型/真网络）在 CI 保持跳过 = 离线纪律。
+# windows-latest 仍浮动：OS 层漂移靠实机批次兜底，CI 绿 ≠ 干净机能跑（runner 自带 VC++）。
 name: ci
 
 on:
   push:
     branches: ['**']
-  pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
+  # J1：暂无 PR 触发，ref 分组即可互斥。若恢复 PR（J 回摆），改为：
+  #   group: ci-${{ github.event.pull_request.number || github.sha }}
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  gate:
-    name: 静态门禁（fmt + 五守护）
-    runs-on: windows-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Rustfmt check
-        run: cargo fmt --all -- --check
-
-      - name: Path hygiene gate (PH-5)
-        run: pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/check_personal_paths.ps1
-
-      - name: Dependency direction guard (W7)
-        run: pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/check_deps.ps1
-
-      - name: Source ban guards (W7)
-        run: pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/check_guards.ps1
-
-      - name: Dead contract guard (E6)
-        run: pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/check_dead_contract.ps1
-
-      - name: Agents health guard (ADR-15)
-        run: pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/check_agents_health.ps1
-
-  build:
-    name: 编译与全量测试（+ 分发打包）
+  gate-and-build:
+    name: 门禁（precommit 七项整脚本）+ 测试 + 分发演练
     runs-on: windows-latest
     timeout-minutes: 150
     steps:
       - uses: actions/checkout@v7
 
-      - uses: astral-sh/setup-uv@v10.1.0   # 该仓库不发浮动大标签 v10，只能钉精确版
+      # K：第三方 action 全 SHA 钉版 + 版本注释（dependabot 接管升版）
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0（该仓无浮动大标签）
 
       - name: Sync pinned toolchain (libclang + cmake via uv)
-        run: uv sync
+        run: uv sync --locked
 
       - name: Cache sherpa-onnx prebuilt libs
         uses: actions/cache@v6
         with:
           path: .cache/sherpa-onnx
-          # 键含 Cargo.lock：锁文件变更（sherpa 版本升）自动换缓存；restore-keys 兜底
-          # 复用旧缓存（脚本按版本化文件名判断是否需重下，版本未变即不联网）
-          key: sherpa-${{ hashFiles('scripts/fetch_sherpa_libs.ps1', 'Cargo.lock') }}
+          key: sherpa-${{ hashFiles('Cargo.lock') }}
           restore-keys: sherpa-
 
       - name: Fetch sherpa-onnx libs
         run: pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/fetch_sherpa_libs.ps1
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          cache-on-failure: true
+          # 候选：save-if 只在 main 存缓存（ruff 式）——PR 流量大时再开
 
-      - name: Clippy (deny warnings)
-        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Precommit gate（七项整脚本 = 唯一门禁真源，与本地同源）
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/precommit.ps1
 
       - name: Test workspace
-        run: cargo test --workspace
+        run: cargo test --workspace --locked
+        # 候选 H（nextest）待验收后替换为两行：
+        #   cargo nextest run --workspace --locked   （taiki-e/install-action 装 nextest）
+        #   cargo test --doc  --workspace --locked   （nextest 不跑 doctest，须补跑）
+        # 首跑盯进程隔离差异：nextest 每测一进程，共享状态类测试可能翻出新问题。
 
       - name: Build release single exe
-        run: cargo build --release -p lt-app
+        run: cargo build --release -p lt-app --locked
 
       - name: Smoke release exe (--version)
-        # WD-2 旗标零初始化短路（不动 GUI/音频）——证明产物真能启动、打印版本退出 0
+        # WD-2 旗标零初始化短路——证明产物真能启动
         run: .\target\release\livetranslate.exe --version
 
       - name: Package distribution zip (WD-1)

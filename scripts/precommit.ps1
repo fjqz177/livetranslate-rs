@@ -1,13 +1,16 @@
 ﻿# ============================================================
 # 提交前门禁（2026-09-11 起；2026-09-14 增第七项）：单一入口，七项顺序执行、任一失败即停
 #
-#   1. cargo fmt --all -- --check                    ← 格式
-#   2. cargo clippy --workspace --all-targets -- -D warnings
-#   3. scripts/check_personal_paths.ps1              ← 个人路径卫生（PH-5）
-#   4. scripts/check_deps.ps1                        ← §3.1 依赖白名单（W7）
-#   5. scripts/check_guards.ps1                      ← §6.2 源码禁令（W7）
-#   6. scripts/check_dead_contract.ps1               ← 死契约（E6）
-#   7. scripts/check_agents_health.ps1               ← 总纲健康（ADR-15：两档预算/路径/G-编号/看板）
+#   1. cargo fmt --all -- --check                    ← 格式（秒级）
+#   2. scripts/check_personal_paths.ps1              ← 个人路径卫生（PH-5）
+#   3. scripts/check_deps.ps1                        ← §3.1 依赖白名单（W7）
+#   4. scripts/check_guards.ps1                      ← §6.2 源码禁令（W7）
+#   5. scripts/check_dead_contract.ps1               ← 死契约（E6）
+#   6. scripts/check_agents_health.ps1               ← 总纲健康（ADR-15：两档预算/路径/G-编号/看板）
+#   7. cargo clippy --workspace --all-targets -- -D warnings   ← 编译级检查（分钟级，垫底）
+#
+# 顺序 = 便宜先死（D-88）：秒级文本扫描全过才付 clippy 的编译等待；
+# 任一失败即停，语义与旧序（clippy 居第 2）完全等价，纯延迟优化。
 #
 # 与 .github/workflows/ci.yml 同源（CI 跑同样七项）——本地过关 ⇔ CI 过关。
 # .githooks/pre-commit 调用本脚本（启用：git config core.hooksPath .githooks）。
@@ -40,14 +43,14 @@ function Invoke-Gate {
 }
 
 Invoke-Gate 'cargo fmt --all -- --check' { cargo fmt --all -- --check }
-Invoke-Gate 'cargo clippy --workspace --all-targets -- -D warnings' {
-    cargo clippy --workspace --all-targets -- -D warnings
-}
 Invoke-Gate 'check_personal_paths.ps1' { & (Join-Path $PSScriptRoot 'check_personal_paths.ps1') }
 Invoke-Gate 'check_deps.ps1' { & (Join-Path $PSScriptRoot 'check_deps.ps1') }
 Invoke-Gate 'check_guards.ps1' { & (Join-Path $PSScriptRoot 'check_guards.ps1') }
 Invoke-Gate 'check_dead_contract.ps1' { & (Join-Path $PSScriptRoot 'check_dead_contract.ps1') }
 Invoke-Gate 'check_agents_health.ps1' { & (Join-Path $PSScriptRoot 'check_agents_health.ps1') }
+Invoke-Gate 'cargo clippy --workspace --all-targets -- -D warnings' {
+    cargo clippy --workspace --all-targets -- -D warnings
+}
 
 Write-Host ""
 Write-Host "全部通过：fmt / clippy / 五守护（可以提交）" -ForegroundColor Green

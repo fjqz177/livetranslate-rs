@@ -1,0 +1,16 @@
+# 工具链单一真源（D-88 决策 B）
+#
+# rustup 在任何 cargo/rustc/rustfmt/clippy 调用时按本文件自动安装并使用钉版——
+# 本地与 CI 同链（CI 侧 runner 预装 rustup，零额外 action），治「新 stable 发新 lint
+# 导致 clippy -D warnings 无因红」。升级流程 = 只改 channel 一个号：
+#   1. 本机 rustup update stable → rustc -V 取新版本号；
+#   2. 改号提交，precommit 七项与新链全跑一遍；
+#   3. dependabot（github-actions 生态之外）不接管本文件——须手动走上面两步。
+#
+# profile = minimal：不装 docs/rust-src 等重件，压 CI 工具链下载时间；
+# minimal 不含 rustfmt/clippy，故必须显式列出——precommit 七项要它们俩。
+
+[toolchain]
+channel = "1.98.1"
+profile = "minimal"
+components = ["rustfmt", "clippy"]
