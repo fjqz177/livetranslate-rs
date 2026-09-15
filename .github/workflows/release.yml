@@ -1,21 +1,27 @@
-# LiveTranslate-rs 发布——tag → Draft GitHub Release（D-88 决策 E2；2026-09-15 复审加固）
+# LiveTranslate-rs 发布——tag → Draft GitHub Release（D-88 决策 E2；2026-09-15 加固：发布前四道闸）
 #
 # 本文件只做一件事：把一个已打好的 tag 变成 GitHub Release 草稿（exe zip + sha256 边车）。
 # 转正（draft → published）是人工动作，具体三步由本 workflow 末尾的「运行摘要」贴出。
 #
-# 与 ci.yml 的边界：这里不重跑质量门禁——release 信任已绿的 commit；且 ci.yml 只写 branches
-# 触发，tag push 根本不进 ci，故打 tag 前必须人工确认该 commit 的 ci 全绿。
-# 演练注意：tag 与根 Cargo.toml 的 version 必须逐字一致（当前 0.1.0 → 只能 v0.1.0，没有
-# v0.1.0-rc1 这类空间）；演练跑完要清场：gh release delete <tag> --yes + 删远端 tag。
+# 与 ci.yml 的边界：这里不重跑质量门禁——release 信任已绿的 commit，且 ci.yml 只写 branches
+# 触发、tag push 根本不进 ci。所以本文件自带四道闸，把「靠人记着」换成机器校验：
+#   闸 1 tag↔根 Cargo.toml version 逐字一致（ripgrep 门禁同款）；
+#   闸 2 tag 指向的提交在 main 历史里（git merge-base --is-ancestor）——不发布分支上的野 tag；
+#   闸 3 该提交存在成功的 ci 运行（gh run list -c）——不发布没被门禁验过的提交；
+#   闸 4 上传前断言 release 仍是 draft——拒绝 --clobber 覆盖**已发布**资产。
+# 闸 4 的理由：zip 不是可复现字节（压缩含时间戳），exe 也未必逐字节可复现——已发布资产一旦
+# 被覆盖，其 sha256 立刻失效、下载过的用户拿到不同字节；发布后字节即冻结，要重发请 bump 版本。
+# 闸 1~3 在构建前跑（坏 tag 约 1 分钟内红，不白等十几分钟构建），闸 4 在上传前跑。
+#
+# 演练注意：tag 与 version 必须逐字一致（当前 0.1.0 → 只能 v0.1.0）；版本号含 `-`（如
+# 0.1.0-rc.1）自动标 prerelease。演练跑完清场：gh release delete <tag> --yes + 删远端 tag。
 #
 # 产物单一真源：打包一律走 scripts/package_release.ps1（与本地 zip 逐字节同源）。
 # 选型记录（E1 taiki-e upload-rust-binary-action 被否）：其自带「构建+打包」只出裸二进制，
-# 会绕开 package_release.ps1 造成两套打包真相（exe+README+LICENSE+NOTICES+OFL vs 裸 exe）；
-# gh CLI 手写 ~10 行、零第三方依赖，转正前只进 draft，风险面更小。
+# 会绕开 package_release.ps1 造成两套打包真相；gh CLI 手写、零第三方依赖，转正前只进 draft。
 #
-# 完整性：sha256 边车（ripgrep 同款「<hash>␣␣<文件名>」格式，LF 行尾）与 zip 一同上传——
-# 闭环 1.0.0 前置清单的「打包 sha256」。签名不做：Windows 不签名是社区常态；attestation
-# （构建来源证明）在公开仓可用（本仓自 2026-09-09 起为 public），真发布前再议（决策 L）。
+# 完整性：sha256 边车（ripgrep 同款「<hash>␣␣<文件名>」格式，LF 行尾）与 zip 一同上传。
+# 签名不做（Windows 不签名是社区常态）；attestation（构建来源证明）公开仓可用，真发布前再议。
 name: release
 
 on:
@@ -38,10 +44,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
         with:
+          fetch-depth: 0               # 闸 2 要 main 的历史（默认浅拉取没有）
           persist-credentials: false   # fd 式加固：后续全走 GH_TOKEN，不留 git 凭据
 
-      - name: 校验 tag 与 Cargo.toml 版本一致（ripgrep 门禁同款）
-        # 漂移面记录：正则与 scripts/package_release.ps1 双写，仅当根 Cargo.toml 结构大改时需双边动
+      - name: 闸 1/2——版本一致 + tag 在 main 上
+        # 漂移面记录：版本正则与 scripts/package_release.ps1 双写，仅当根 Cargo.toml 结构大改时双边动
         # 各 run 块显式置 Stop（与 scripts/*.ps1 同风格）：本地直接跑抽出的脚本也得到与 CI 相同的失败语义
         run: |
           $ErrorActionPreference = 'Stop'
@@ -57,7 +64,26 @@ jobs:
             Write-Error "tag $tag 与 Cargo.toml version $cargoVer 不一致——先对齐再打 tag"
             exit 1
           }
-          Write-Host "tag 与 Cargo.toml 一致：$cargoVer"
+          git merge-base --is-ancestor $env:GITHUB_SHA origin/main
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "tag $tag 指向的提交不在 main 历史里——release 只从主线发"
+            exit 1
+          }
+          Write-Host "闸 1/2 通过：$tag = Cargo.toml $cargoVer，且提交在 main 上"
+
+      - name: 闸 3——该提交有成功的 ci 运行
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # 找不到成功记录 = 这个提交没被门禁验过（从没推过分支 / ci 红 / 只有别的 workflow 跑过）
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $runs = @(gh run list -w ci.yml -c $env:GITHUB_SHA -L 10 --json headSha,conclusion | ConvertFrom-Json)
+          $ok = @($runs | Where-Object { $_.headSha -eq $env:GITHUB_SHA -and $_.conclusion -eq 'success' })
+          if ($ok.Count -eq 0) {
+            Write-Error "提交 $($env:GITHUB_SHA.Substring(0, 7)) 没有成功的 ci 运行——先让 ci 绿再打 tag"
+            exit 1
+          }
+          Write-Host "闸 3 通过：该提交有 $($ok.Count) 次成功的 ci 运行"
 
       # 工具链/缓存四步与 ci.yml 镜像——改动须两文件同步（三次法则：第三处出现再抽 composite action）；
       # 工具链真源 = rust-toolchain.toml（决策 B）
@@ -106,27 +132,39 @@ jobs:
           [IO.File]::WriteAllText("$($zip.FullName).sha256", "$hash  $($zip.Name)`n")
           Get-Content "$($zip.FullName).sha256"
 
-      - name: Create draft release（幂等——create 成功但 upload 失败后重跑不撞 already_exists）
+      - name: Create draft release（幂等；版本号含 - 自动标 prerelease）
         env:
           GH_TOKEN: ${{ github.token }}
         # 探测必须走 release list（含 draft）；release view / api tags/<tag> 端点不含 draft 必误报
-        # --verify-tag：tag 必须已在远端；不自动写 notes（更新日志真源 = assets/CHANGELOG，人工贴）
+        # --verify-tag：tag 必须已在远端；不自动写 notes（更新日志真源 = assets/i18n/CHANGELOG_*.md，人工贴）
         run: |
-          $tags = gh release list --limit 1000 --json tagName | ConvertFrom-Json
-          if ($tags | Where-Object { $_.tagName -eq $env:GITHUB_REF_NAME }) {
+          $ErrorActionPreference = 'Stop'
+          $tag = $env:GITHUB_REF_NAME
+          $existing = @(gh release list --limit 1000 --json tagName | ConvertFrom-Json) |
+                      Where-Object { $_.tagName -eq $tag }
+          if ($existing) {
             Write-Host "Release 已存在（上次运行残留），跳过 create"
           } else {
-            gh release create "$env:GITHUB_REF_NAME" --draft --verify-tag --title "$env:GITHUB_REF_NAME"
+            $ghArgs = @('release', 'create', $tag, '--draft', '--verify-tag', '--title', $tag)
+            if ($tag -match '-') { $ghArgs += '--prerelease' }
+            gh @ghArgs
           }
 
-      - name: Upload zip + sha256
+      - name: 闸 4 + Upload zip + sha256（拒绝覆盖已发布资产）
         env:
           GH_TOKEN: ${{ github.token }}
-        # --clobber：重跑覆盖同名资产（配合上面的幂等 create 形成完整重跑闭环）
+        # --clobber 只允许作用于 draft（重跑闭环所需）；已发布 = 字节冻结，重发须 bump 版本或显式删除
         # 通配由 gh 自身展开（PowerShell 不为原生命令展开通配；gh 会——已实测 "no matches found" 行为）
-        run: gh release upload --clobber "$env:GITHUB_REF_NAME" dist/LiveTranslate-*.zip dist/LiveTranslate-*.zip.sha256
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = $env:GITHUB_REF_NAME
+          if ((gh release view $tag --json isDraft --jq .isDraft) -ne 'true') {
+            Write-Error "Release $tag 已发布——拒绝覆盖已发布资产（要重发请 bump 版本，或 gh release delete $tag 后重来）"
+            exit 1
+          }
+          gh release upload --clobber $tag dist/LiveTranslate-*.zip dist/LiveTranslate-*.zip.sha256
 
-      - name: 运行摘要（转正三步，写给下一次打 tag 的人）
+      - name: 运行摘要（转正三步 + 构建指纹，写给下一次打 tag 的人）
         # 摘要写的是人工转正的依据，故缺 zip / 缺边车必须硬失败——不许写出带空 sha256 的假摘要
         run: |
           $ErrorActionPreference = 'Stop'
@@ -135,19 +173,28 @@ jobs:
           if (-not (Test-Path -LiteralPath $sidecar)) { Write-Error "缺 sha256 边车：$sidecar"; exit 1 }
           $hash = (Get-Content -LiteralPath $sidecar -Raw).Trim().Split(' ')[0]
           $mb = [math]::Round($zip.Length / 1MB, 1)
+          $exe = Get-Item 'target\release\livetranslate.exe'
+          $exeHash = (Get-FileHash -Algorithm SHA256 $exe.FullName).Hash.ToLower()
+          $exeMb = [math]::Round($exe.Length / 1MB, 1)
+          $rustc = (& rustc -V) -join ' '
+          $image = "$env:ImageOS $env:ImageVersion"
           @'
           ## 发布草稿已就绪：{0}
 
           | 资产 | 值 |
           |---|---|
           | zip | `{1}`（{2} MB） |
-          | sha256 | `{3}` |
-          | commit | `{4}` |
+          | zip sha256 | `{3}` |
+          | exe | `livetranslate.exe`（{4} MB）sha256 `{5}` |
+          | commit | `{6}` |
+          | 构建指纹 | `{7}` / `{8}` |
 
           ### 转正三步（人工）
           1. 取回资产校验：`sha256sum -c {1}.sha256`（Windows 可用 `Get-FileHash` 比对），再双击 exe 冒烟
-          2. 贴更新日志（真源 `assets/CHANGELOG`）：`gh release edit {0} --notes-file <文件>`
+          2. 贴更新日志（应用内同源，zh/en 两份）：`assets/i18n/CHANGELOG_zh.md` / `_en.md` → `gh release edit {0} --notes-file <文件>`
           3. 转正：`gh release edit {0} --draft=false`
 
           > 演练清场：`gh release delete {0} --yes` + `git push origin :refs/tags/{0}`
-          '@ -f $env:GITHUB_REF_NAME, $zip.Name, $mb, $hash, $env:GITHUB_SHA | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8
+          > 发布前四道闸（版本一致 / tag 在 main / ci 绿 / 仅 draft 可覆盖）已由本 workflow 校验通过。
+          '@ -f $env:GITHUB_REF_NAME, $zip.Name, $mb, $hash, $exeMb, $exeHash, $env:GITHUB_SHA, $rustc, $image |
+            Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8
