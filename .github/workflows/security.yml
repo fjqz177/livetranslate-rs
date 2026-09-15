@@ -10,8 +10,8 @@
 #
 # 触发三路：lockfile/清单变更的 push（即时反馈）+ 每周一 cron（公告库新鲜度兜底，
 # schedule 只在默认分支生效）+ 手动。
-# advisories 单独 continue-on-error：新漏洞公告不炸主干（社区通行写法），失败会在
-# Annotations 亮出来——修复依赖或 deny.toml 豁免（豁免须注明理由）后转绿；
+# advisories 单独 continue-on-error：新漏洞公告不炸主干（社区通行写法），失败只黄标不红灯，
+# 修复依赖或 deny.toml 豁免（豁免须注明理由）后转绿；注解呈现形态以首跑实测为准；
 # 其余三表（bans/licenses/sources）硬门禁。
 #
 # 伴随配置：仓库根 deny.toml——首跑必红是预期，逐条校准。
@@ -25,6 +25,10 @@ on:
       - 'Cargo.toml'
       - '**/Cargo.toml'
       - 'deny.toml'
+      # 复审补：依赖解析/来源面输入（镜像 replace-with 会改 sources 结论；cargo-deny 容器
+      # 经 entrypoint 在 manifest 目录跑 rustup，会按本仓工具链文件装链）
+      - '.cargo/config.toml'
+      - 'rust-toolchain.toml'
   schedule:
     - cron: '23 3 * * 1'   # 周一 03:23 UTC，错开整点高峰
   workflow_dispatch:
@@ -40,6 +44,7 @@ jobs:
   cargo-deny:
     name: cargo-deny（${{ matrix.checks }}）
     runs-on: ubuntu-latest
+    timeout-minutes: 20   # 默认 360——advisory-db 拉取挂死可白占 runner 半天（复审补）
     strategy:
       fail-fast: false
       matrix:
@@ -53,3 +58,6 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2
         with:
           command: check ${{ matrix.checks }}
+          # --locked（复审补）：action 默认 arguments 只含 --all-features，无 --locked 时
+          # cargo metadata 对失同步的锁就地重解析——会扫一个没人提交过的依赖图
+          arguments: "--all-features --locked"

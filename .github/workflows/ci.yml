@@ -31,7 +31,8 @@ permissions:
 
 concurrency:
   # J1：暂无 PR 触发，ref 分组即可互斥。若恢复 PR（J 回摆），改为：
-  #   group: ci-${{ github.event.pull_request.number || github.sha }}
+  #   group: ci-${{ github.event.pull_request.number || github.ref }}
+  # （PR 号保证 PR 与其分支 push 同组互斥；回退到 ref 保证分支级新鲜度——sha 会堆积 150 分钟级 job）
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
@@ -43,6 +44,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # 以下工具链/缓存四步与 release.yml 镜像——改动须两文件同步（三次法则：第三处出现再抽 composite action）
       # K：第三方 action 全 SHA 钉版 + 版本注释（dependabot 接管升版）
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0（该仓无浮动大标签）
 
@@ -62,6 +64,10 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           cache-on-failure: true
+          # shared-key（D-88 复审）：默认键含 job id，跨 job/workflow 永不共享——置稳定键后
+          # release.yml 同名共享主干缓存（源码实证：shared-key 存在即完全替代 job-based key，
+          # 无需动 add-job-id-key）；键仍含 Cargo.toml/lock + 工具链 hash，锁/链变更自动 miss
+          shared-key: lt
           # 候选：save-if 只在 main 存缓存（ruff 式）——PR 流量大时再开
 
       - name: Precommit gate（七项整脚本 = 唯一门禁真源，与本地同源）
@@ -90,4 +96,5 @@ jobs:
           name: LiveTranslate-windows-x64
           path: dist/LiveTranslate-*.zip
           if-no-files-found: error
-          retention-days: 30
+          # 配额保护（D-88 复审）：76MB × 30 天，非主干 3 天——分支演练产物短期可取，main 留档
+          retention-days: ${{ github.ref == 'refs/heads/main' && 30 || 3 }}

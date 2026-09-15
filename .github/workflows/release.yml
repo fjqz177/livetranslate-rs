@@ -38,6 +38,7 @@ jobs:
           persist-credentials: false   # fd 式加固：后续全走 GH_TOKEN，不留 git 凭据
 
       - name: 校验 tag 与 Cargo.toml 版本一致（ripgrep 门禁同款）
+        # 漂移面记录：正则与 scripts/package_release.ps1 双写，仅当根 Cargo.toml 结构大改时需双边动
         run: |
           $tag = $env:GITHUB_REF_NAME                      # 形如 v0.1.0
           $ver = $tag -replace '^v', ''
@@ -48,7 +49,8 @@ jobs:
             exit 1
           }
 
-      # 工具链/缓存四步与 ci.yml 同构；工具链真源 = rust-toolchain.toml（决策 B）
+      # 工具链/缓存四步与 ci.yml 镜像——改动须两文件同步（三次法则：第三处出现再抽 composite action）；
+      # 工具链真源 = rust-toolchain.toml（决策 B）
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
 
       - name: Sync pinned toolchain (libclang + cmake via uv)
@@ -67,6 +69,8 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           cache-on-failure: true
+          # 与 ci.yml 同稳定键：吃主干缓存，防每个 tag 全冷构建（复审实测近冷 run 506s，共享后更低）
+          shared-key: lt
 
       - name: Build release single exe
         run: cargo build --release -p lt-app --locked
@@ -78,20 +82,30 @@ jobs:
         run: pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/package_release.ps1
 
       - name: Generate sha256 sidecar
+        # LF 行尾（D-88 复审 P2）：Out-File 写 CRLF 会让 sha256sum -c 报 No such file；
+        # WriteAllText 显式 `n（pwsh 7 .NET UTF-8 无 BOM）
         run: |
           $zip = Get-ChildItem dist/LiveTranslate-*.zip | Select-Object -First 1
           if (-not $zip) { Write-Error 'dist/ 下未找到 zip'; exit 1 }
           $hash = (Get-FileHash -Algorithm SHA256 $zip.FullName).Hash.ToLower()
-          "$hash  $($zip.Name)" | Out-File -Encoding ascii "$($zip.FullName).sha256"
+          [IO.File]::WriteAllText("$($zip.FullName).sha256", "$hash  $($zip.Name)`n")
           Get-Content "$($zip.FullName).sha256"
 
-      - name: Create draft release
+      - name: Create draft release（幂等——create 成功但 upload 失败后重跑不撞 already_exists）
         env:
           GH_TOKEN: ${{ github.token }}
+        # 探测必须走 release list（含 draft）；release view / api tags/<tag> 端点不含 draft 必误报
         # --verify-tag：tag 必须已在远端；不自动写 notes（更新日志真源 = assets/CHANGELOG，人工贴）
-        run: gh release create "$env:GITHUB_REF_NAME" --draft --verify-tag --title "$env:GITHUB_REF_NAME"
+        run: |
+          $tags = gh release list --limit 1000 --json tagName | ConvertFrom-Json
+          if ($tags | Where-Object { $_.tagName -eq $env:GITHUB_REF_NAME }) {
+            Write-Host "Release 已存在（上次运行残留），跳过 create"
+          } else {
+            gh release create "$env:GITHUB_REF_NAME" --draft --verify-tag --title "$env:GITHUB_REF_NAME"
+          }
 
       - name: Upload zip + sha256
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "$env:GITHUB_REF_NAME" dist/LiveTranslate-*.zip dist/LiveTranslate-*.zip.sha256
+        # --clobber：重跑覆盖同名资产（配合上面的幂等 create 形成完整重跑闭环）
+        run: gh release upload --clobber "$env:GITHUB_REF_NAME" dist/LiveTranslate-*.zip dist/LiveTranslate-*.zip.sha256

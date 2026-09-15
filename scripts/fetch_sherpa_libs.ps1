@@ -40,5 +40,9 @@ New-Item -ItemType Directory -Force $destDir | Out-Null
 Write-Host "下载 sherpa-onnx 预编译静态库 v$ver（约 120MB）到 $destDir ..."
 curl.exe -L -C - --fail --retry 3 --connect-timeout 30 -o "$dest.tmp" "$url"
 if ($LASTEXITCODE -ne 0) { throw "下载失败：$url（可试 -Mirror <镜像前缀>，或设置 HTTP_PROXY/HTTPS_PROXY 走代理）" }
+# 完整性闸门（D-88 复审）：全量列举校验 tar/bz2 结构——拦下载中断与镜像假档（HTTP 200 非 bzip2），
+# 防坏档进 actions/cache 被缓存键固化放大。代价 ~2 分钟全量解压，只在冷路径（刚下载完）付出。
+tar -tf "$dest.tmp" > $null
+if ($LASTEXITCODE -ne 0) { Remove-Item -Force "$dest.tmp"; throw "下载档完整性校验失败（tar 无法列举，疑似截断或假档）：$dest.tmp" }
 Move-Item -Force "$dest.tmp" $dest
 Write-Host "完成：$dest"

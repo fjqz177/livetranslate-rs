@@ -7,7 +7,7 @@
 #   4. scripts/check_guards.ps1                      ← §6.2 源码禁令（W7）
 #   5. scripts/check_dead_contract.ps1               ← 死契约（E6）
 #   6. scripts/check_agents_health.ps1               ← 总纲健康（ADR-15：两档预算/路径/G-编号/看板）
-#   7. cargo clippy --workspace --all-targets -- -D warnings   ← 编译级检查（分钟级，垫底）
+#   7. cargo clippy --workspace --all-targets --locked -- -D warnings   ← 编译级检查（分钟级，垫底）
 #
 # 顺序 = 便宜先死（D-88）：秒级文本扫描全过才付 clippy 的编译等待；
 # 任一失败即停，语义与旧序（clippy 居第 2）完全等价，纯延迟优化。
@@ -48,8 +48,10 @@ Invoke-Gate 'check_deps.ps1' { & (Join-Path $PSScriptRoot 'check_deps.ps1') }
 Invoke-Gate 'check_guards.ps1' { & (Join-Path $PSScriptRoot 'check_guards.ps1') }
 Invoke-Gate 'check_dead_contract.ps1' { & (Join-Path $PSScriptRoot 'check_dead_contract.ps1') }
 Invoke-Gate 'check_agents_health.ps1' { & (Join-Path $PSScriptRoot 'check_agents_health.ps1') }
-Invoke-Gate 'cargo clippy --workspace --all-targets -- -D warnings' {
-    cargo clippy --workspace --all-targets -- -D warnings
+Invoke-Gate 'cargo clippy --workspace --all-targets --locked -- -D warnings' {
+    # --locked（D-88 复审 P2）：clippy 是 CI 中第一个做依赖解析的 cargo 命令，无 --locked
+    # 会静默重写失同步的 Cargo.lock，架空其后 test/build 的 --locked 与「锁是入库真源」不变式
+    cargo clippy --workspace --all-targets --locked -- -D warnings
 }
 
 Write-Host ""
