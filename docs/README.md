@@ -16,7 +16,7 @@
 
 | 文档 | 状态 | 内容一句话 |
 |---|---|---|
-| `ci-workflow-suite.md` | 施工中 | CI 工作流全家桶：17 高星仓调研 + A~L 拍板 + 六文件落地（D-88） |
+| （无） | | |
 
 ## 长期文档（有完结条件，满足即归档）
 
@@ -31,6 +31,7 @@
 
 | 文档 | 一句话（D-xx） | 完工日期 |
 |---|---|---|
+| `ci-workflow-suite.md` | CI 工作流全家桶：单 job 整脚本入 CI + 工具链钉版 + cargo-deny + tag→Draft 发布链（D-88） | 2026-09-15 |
 | `quit-flow-redesign.md` | 退出与确认系统重做：专用确认窗包办六确认（D-87） | 2026-09-14 |
 | `agents-md-overhaul.md` | 指令体系四层化：AGENTS 总纲+坑册+七卡+守护第七项+pwsh-only（ADR-15/16） | 2026-09-14 |
 | `funasr-mlt-removal.md` | Fun-ASR-MLT-Nano 幽灵值全量移除（D-86，PROTO_VERSION=7） | 2026-09-12 |
