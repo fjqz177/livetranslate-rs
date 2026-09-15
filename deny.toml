@@ -1,0 +1,34 @@
+# cargo-deny 策略四表（D-88 决策 F；由 .github/workflows/security.yml 消费）
+#
+# 模板基线 = polars deny.toml 裁剪（多平台/发布库专属条目已删）。
+# 首跑 `cargo deny check` 必红是预期——按输出逐条补 allow/ignore；豁免是带
+# 「为什么 + 何时清」的欠条（polars 纪律同款），不是黑洞，禁无脑放行。
+
+[advisories]
+version = 2
+yanked = "warn"        # deny 过脆：上游一 yank 全仓红，先 warn 亮出来人工判
+
+[licenses]
+version = 2
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+]
+# 首跑红了的处理：逐 crate 核对实际许可证再追加；
+# 出现 copyleft（GPL/AGPL/SSPL）必须停下人工裁决，不许静默进 allow
+
+[bans]
+multiple-versions = "warn"   # 十 crate workspace + egui/ort 系大概率有重复版本，先 warn 观察基线
+wildcards = "deny"           # 禁 "*" 通配版本需求——依赖边界必须写清楚
+highlight = "all"
+
+[sources]
+unknown-registry = "warn"
+unknown-git = "warn"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

@@ -1,0 +1,55 @@
+# LiveTranslate-rs 依赖供应链扫描——cargo-deny 四表（D-88 决策 F）
+#
+# 本文件只做一件事：盯 Cargo.lock 的依赖面——安全公告（advisories）、许可证（licenses）、
+# 重复与禁用依赖（bans）、依赖来源（sources）。与 ci.yml 的边界：ci 管代码质量，这里管供应链。
+#
+# 选型：cargo-deny 已取代 cargo-audit 成社区主流（audit 维护者 2025-03 退居二线；
+# deny 的 advisories 与 RustSec 同源，另附 license/bans/sources 三张策略表）。
+# 官方 action 是 Docker 化——只能跑 Linux runner（本检查不编译不运行本项目代码，
+# 纯 lockfile 元数据与目标平台无关；Linux 还便宜一半）。
+#
+# 触发三路：lockfile/清单变更的 push（即时反馈）+ 每周一 cron（公告库新鲜度兜底，
+# schedule 只在默认分支生效）+ 手动。
+# advisories 单独 continue-on-error：新漏洞公告不炸主干（社区通行写法），失败会在
+# Annotations 亮出来——修复依赖或 deny.toml 豁免（豁免须注明理由）后转绿；
+# 其余三表（bans/licenses/sources）硬门禁。
+#
+# 伴随配置：仓库根 deny.toml——首跑必红是预期，逐条校准。
+name: security
+
+on:
+  push:
+    branches: ['**']
+    paths:
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+      - '**/Cargo.toml'
+      - 'deny.toml'
+  schedule:
+    - cron: '23 3 * * 1'   # 周一 03:23 UTC，错开整点高峰
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cargo-deny:
+    name: cargo-deny（${{ matrix.checks }}）
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        checks:
+          - advisories
+          - bans licenses sources
+    continue-on-error: ${{ matrix.checks == 'advisories' }}
+    steps:
+      - uses: actions/checkout@v7
+      # K：SHA 钉版（dependabot github-actions 生态接管升版）
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2
+        with:
+          command: check ${{ matrix.checks }}

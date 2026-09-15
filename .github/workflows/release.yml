@@ -1,0 +1,97 @@
+# LiveTranslate-rs 发布——tag → Draft GitHub Release（D-88 决策 E2）
+#
+# 本文件只做一件事：把一个已打好的 tag 变成 GitHub Release 草稿（exe zip + sha256 边车）。
+# 转正（draft → published）是人工动作：gh release edit <tag> --draft=false。
+#
+# 与 ci.yml 的边界：这里不重跑质量门禁——release 信任已绿的 commit；打 tag 前自查该
+# commit 的 ci 全绿。公开后如需硬联动（workflow_run / needs），WD-7 细化时再加。
+#
+# 产物单一真源：打包一律走 scripts/package_release.ps1（与本地 zip 逐字节同源）。
+# 选型记录（E1 taiki-e upload-rust-binary-action 被否）：其自带「构建+打包」只出裸二进制，
+# 会绕开 package_release.ps1 造成两套打包真相（exe+README+LICENSE+NOTICES+OFL vs 裸 exe）；
+# gh CLI 手写 ~10 行、零第三方依赖，转正前只进 draft，风险面更小。
+#
+# 完整性：sha256 边车（ripgrep 同款「<hash>␣␣<文件名>」格式）与 zip 一同上传——
+# 闭环 1.0.0 前置清单的「打包 sha256」。签名/attestation 不做：Windows 不签名是社区常态，
+# attestation 私有仓不可用（需 GHE Cloud），公开后再议（决策 L）。
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false        # 发布链不许半路自杀
+
+jobs:
+  release:
+    name: 构建 → 打包 → sha256 → Draft Release
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false   # fd 式加固：后续全走 GH_TOKEN，不留 git 凭据
+
+      - name: 校验 tag 与 Cargo.toml 版本一致（ripgrep 门禁同款）
+        run: |
+          $tag = $env:GITHUB_REF_NAME                      # 形如 v0.1.0
+          $ver = $tag -replace '^v', ''
+          $line = Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"(.*)"'
+          $cargoVer = $line.Matches[0].Groups[1].Value
+          if ($ver -ne $cargoVer) {
+            Write-Error "tag $tag 与 Cargo.toml version $cargoVer 不一致——先对齐再打 tag"
+            exit 1
+          }
+
+      # 工具链/缓存四步与 ci.yml 同构；工具链真源 = rust-toolchain.toml（决策 B）
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+
+      - name: Sync pinned toolchain (libclang + cmake via uv)
+        run: uv sync --locked
+
+      - name: Cache sherpa-onnx prebuilt libs
+        uses: actions/cache@v6
+        with:
+          path: .cache/sherpa-onnx
+          key: sherpa-${{ hashFiles('Cargo.lock') }}
+          restore-keys: sherpa-
+
+      - name: Fetch sherpa-onnx libs
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/fetch_sherpa_libs.ps1
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          cache-on-failure: true
+
+      - name: Build release single exe
+        run: cargo build --release -p lt-app --locked
+
+      - name: Smoke release exe (--version)
+        run: .\target\release\livetranslate.exe --version
+
+      - name: Package distribution zip（单一真源 = scripts/package_release.ps1）
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/package_release.ps1
+
+      - name: Generate sha256 sidecar
+        run: |
+          $zip = Get-ChildItem dist/LiveTranslate-*.zip | Select-Object -First 1
+          if (-not $zip) { Write-Error 'dist/ 下未找到 zip'; exit 1 }
+          $hash = (Get-FileHash -Algorithm SHA256 $zip.FullName).Hash.ToLower()
+          "$hash  $($zip.Name)" | Out-File -Encoding ascii "$($zip.FullName).sha256"
+          Get-Content "$($zip.FullName).sha256"
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # --verify-tag：tag 必须已在远端；不自动写 notes（更新日志真源 = assets/CHANGELOG，人工贴）
+        run: gh release create "$env:GITHUB_REF_NAME" --draft --verify-tag --title "$env:GITHUB_REF_NAME"
+
+      - name: Upload zip + sha256
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$env:GITHUB_REF_NAME" dist/LiveTranslate-*.zip dist/LiveTranslate-*.zip.sha256

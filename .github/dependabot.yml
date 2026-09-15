@@ -1,0 +1,24 @@
+# GitHub Actions 版本自动更新（D-88 决策 G-b，necessity review 收窄后的定稿）
+#
+# 只做一件事：让 .github/workflows/ 里的 action 版本（含 SHA 钉版，dependabot 支持更新
+# SHA+版本注释）以 PR 形式送到眼前。
+#
+# 收窄记录：原推荐 cargo + github-actions 双生态 weekly，necessity review 判其为全家桶
+# 最弱一环（删之无硬能力损失 + 与主干直推摩擦 + 17 高星仓近半没有 dependabot），
+# 收敛为 tokio 式只盯 actions 生态。cargo 依赖升级走手动 `cargo update`（security.yml
+# 盯 CVE 兜底）；rust-toolchain.toml 升级手动改号（见该文件头注流程）。
+#
+# 主干直推下的知情项：dependabot 以 PR 交付——PR 在 ci.yml 无 pull_request 触发器（决策 J1）
+# 时不会跑 CI，合并进 main 的 push 才跑；单人仓可接受（红主干一键 revert），不可接受则
+# 恢复 ci 的 PR 触发（决策 J 回摆）。
+#
+# cooldown 7 天：新版发布冷却一周再开 PR（meili/fd 式），压缩上游投毒窗口。
+
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: monthly
+    cooldown:
+      default-days: 7
