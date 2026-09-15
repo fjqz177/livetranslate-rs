@@ -21,7 +21,7 @@
 | 项 | 裁决 | 说明 |
 |---|---|---|
 | A | **A1 整脚本入 CI 单 job** | CI 第一步原样跑 precommit.ps1（七项=唯一门禁真源），消灭手抄清单漂移；旧双 job 退役 |
-| B | **rust-toolchain.toml 钉 exact** | 本地=CI 同链，治 P1-2；钉 1.98.1（2026-09-15 本机实取）；dependabot 可代更 |
+| B | **rust-toolchain.toml 钉 exact** | 本地=CI 同链，治 P1-2；钉 1.98.1（2026-09-15 本机实取）；~~dependabot 可代更~~ → 被 G-b 收窄取代：rust-toolchain 是独立 ecosystem 且未配置，手动改号（见该文件头注流程） |
 | C | **--locked 全加** | cargo 三处 + `uv sync --locked`（两把锁入库真源，CI 不现场重解） |
 | D | **cache-on-failure: true** | 修红期间不清缓存 |
 | E | **E2 gh CLI 手写发布**（修正原推荐 E1） | taiki-e 自带打包会绕开 package_release.ps1 造成两套打包真相；修正留痕 |
@@ -52,6 +52,8 @@ SHA 钉版登记（2026-09-15 实取）：setup-uv v10.1.0 = `bec219d`、rust-ca
 YAML/TOML 机械校验（PyYAML/tomllib）通过；`uv lock --check` 与 `cargo metadata --locked` 预检通过（CI 首跑不会死于 --locked）；precommit 七项过；`cargo test --workspace` 基线绿（610+9 起滚动）。
 
 ## 六、遗留走查（完工后随用随验）
+
+0. **四路子代理复审（2026-09-15 同日）**：零 P0/P1。P2×2 已修（precommit clippy 补 `--locked` 堵「静默重写锁架空不变式」；release 幂等 create + `--clobber` + 边车改 LF 行尾）；P3 批已修（并发组回摆变体、artifact 分支 retention 3 天、rust-cache `shared-key: lt` 跨 job 共享〔源码实证 shared-key 即替代 job 键〕、sherpa 下载 tar 完整性闸门〔实测 2m8s 仅冷路径〕、security paths 补 .cargo/rust-toolchain + `arguments --locked` + timeout 20、AGENTS 基线滚 610+9、双边同步残留清除）。留实机项：cooldown 对 actions 生态实效、dependabot 升 SHA 的来源首核、cargo-deny 首跑红单清单。
 
 1. **deny.toml 首跑校准**：security 首次实跑必红，按输出逐条补 allow/ignore（禁无脑放行）。
 2. **release 全链实机演练**：打测试 tag → draft release → 下载试跑 → 转正 → `gh release delete` + 删 tag 清场。

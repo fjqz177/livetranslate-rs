@@ -24,13 +24,13 @@ uv sync                                        # 首次/换机：钉版 libclang
                                                # cargo [env] 相对指向——clone 后零本机路径配置，勿改绝对路径
 pwsh -File scripts/fetch_sherpa_libs.ps1       # 首次：预取 sherpa 预编译库到 .cache/sherpa-onnx（缺失构建硬报错；
                                                # GitHub 慢用 -Mirror <前缀>/SHERPA_ONNX_MIRROR 走 Release 镜像）
-cargo test --workspace                         # 收工门禁（不在 precommit 内）：全量测试，滚动基线 604+9 绿；
+cargo test --workspace                         # 收工门禁（不在 precommit 内）：全量测试，滚动基线 610+9 绿；
                                                # 9 ignored = 真模型/真网络探针离线纪律，CI 保持跳过
 cargo build --release -p lt-app                # 单 exe：target/release/livetranslate.exe ~76MB（滚动值）
 cargo run -p lt-app                            # GUI 冒烟
 pwsh -File scripts/package_release.ps1         # 打包 dist/LiveTranslate-*.zip（CI 同源；发布路线 = docs/distribution.md）
-pwsh -File scripts/precommit.ps1               # 提交前门禁：七项清单真源 = 该脚本头注；与 ci.yml、.githooks 同源，
-                                               # 门禁增删须双边同步
+pwsh -File scripts/precommit.ps1               # 提交前门禁：七项清单真源 = 该脚本头注；ci.yml 与 .githooks
+                                               # 同源调用本脚本，门禁增删只改这一处（D-88 废除手抄双边同步）
 git config core.hooksPath .githooks            # 每 clone 一次启用提交钩子；暂存区无 .rs / Cargo.toml / .cargo /
                                                # AGENTS.md / docs/gotchas.md / docs/prompts/* 改动时放行（其余纯
                                                # docs/资产提交不跑门禁）
