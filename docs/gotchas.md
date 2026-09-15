@@ -210,6 +210,23 @@
 - **证据**：egui 0.36.1 `containers/scroll_area.rs` `end()`（scroll_target 消费无 id 校验、按内容坐标求 delta）+ `ui.rs` `scroll_to_cursor`（仅写 pass_state 全局目标）；2026-09-14 修复，headless 防回归 `jump_to_latest_actually_scrolls_to_bottom`（修复前 offset≈0、修复后滚到内容底 >1000px）。
 - **版本**：egui 0.36。
 
+## G-25 rust-cache 会清掉 target/ 下所有非 cargo 结构文件（-sys crate 的预编译库由此"消失"）
+
+- **触发**：CI 用 `Swatinem/rust-cache` 缓存 `target/`，且某个 `-sys` crate 的 build.rs 把预编译静态库解到 `target/` 里（本仓 = sherpa-onnx-sys 解到 `<target>/sherpa-onnx-prebuilt/`，1.1GB）。
+- **症状**：冷缓存那次（首次用新缓存键）全绿；**缓存命中的下一次**在链接期红：`error: could not find native static library 'sherpa-onnx-c-api'`，而且出错那步只花十几秒——说明 build.rs 根本没重新解包。
+- **根因**：rust-cache 的 `src/cleanup.ts` 递归清理 target 目录时，凡不是 cargo profile 结构的目录只继续下钻，**目录里的文件一律 `rm`**（只留目录骨架与 `CACHEDIR.TAG`）。于是恢复出来的 `<target>/sherpa-onnx-prebuilt/<stem>/lib/` 是**空目录**，而 sherpa build.rs 的守卫是 `if lib_dir.is_dir() { 返回"已解包" }`——空目录照样放行，链接器自然找不到 `.lib`。
+- **对策**：把预编译产物移出 `target/`：`scripts/fetch_sherpa_libs.ps1` 预解包到 `.cache/sherpa-onnx/extracted/`，`.cargo/config.toml` 设 `SHERPA_ONNX_LIB_DIR` 指向它（build.rs 已声明 `rerun-if-env-changed=SHERPA_ONNX_LIB_DIR`，链/设置变更会自动重跑）；`.cache/` 由 actions/cache 原样缓存（不做清理）。顺带 `cargo clean` 不再逼出一次 ~3 分钟重解包。
+- **证据**：run 34965711794（2026-09-15 第二次跑、缓存命中 → Test workspace 19 秒后红）+ rust-cache v2.9.2 `src/cleanup.ts` 源码实证。
+- **版本**：Swatinem/rust-cache 2.9.2。
+
+## G-26 pwsh 里调 Git 自带 GNU tar 的两个 Windows 路径坑（反斜杠 / 盘符冒号）
+
+- **触发**：pwsh 脚本里 `& tar ...`，参数是 Windows 绝对路径（含盘符 + 反斜杠）。
+- **症状**：`tar: ...: Cannot open: No such file or directory`（反斜杠被吃成转义，路径成了字面反斜杠串，bzip2 子进程一起崩）；或 `tar: Cannot connect to <盘符>: resolve failed`（盘符冒号被当成远程主机名）。
+- **根因**：Git for Windows 的 `usr\bin\tar.exe` 是 MSYS 版 GNU tar——反斜杠是它的转义符，而 `<盘符>:/…` 形状命中 GNU tar 的 remote-archive（`host:path`）语法。
+- **对策**：喂给 tar 的路径一律转正斜杠 + 加 `--force-local`；tar 选型也要挑 GNU tar（Windows 自带 bsdtar 对 `.tar.bz2` 要外挂 bzip2，实测直接失败 `Child process exited with status 143`）。
+- **证据**：2026-09-15 `scripts/fetch_sherpa_libs.ps1` 预解包改造实测（两种报错各复现一次后修复）。
+
 ---
 
 ## 候选清单（尚未收编——能五段式实证表述才收编，不臆造）

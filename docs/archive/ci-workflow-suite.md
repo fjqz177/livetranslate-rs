@@ -62,6 +62,7 @@ YAML/TOML 机械校验（PyYAML/tomllib）通过；`uv lock --check` 与 `cargo 
 5. **公开仓三件套**：attest-build-provenance、immutable releases、tag protection（2026-09-15 勘正：本仓自 2026-09-09 起即为 public，原「attest 私有仓不可用」的排除理由不成立——公开仓可用）；~~PR 触发器回摆~~ 已于同日落地 = D-89。
 6. hook 触发面缺口候选：scripts/*.ps1 与 .github/** 改动不触发本地门禁（本次全批绕过钩子即实证），可评估纳入。
 7. **第二轮复审修复（2026-09-15，维护注记；均为已归档实现的加固，非新决策）**：ci 恢复 PR 触发 + 并发按源仓/源分支去重（D-89）；release 三步 PowerShell 显式 `$ErrorActionPreference='Stop'` + 单 zip/边车硬校验 + 运行页「转正三步」摘要；security paths 补本文件自身 + advisories 失败补 `::warning::` 注解（容忍语义仍在 job 级）；dependabot 头注勘正「PR 不挂 checks」。
+8. **首推后实锤的两处 CI 真缺陷（2026-09-15 同日修复）**：① **缓存命中的 ci 必红**——rust-cache 的 cleanup 会清掉 target/ 下非 cargo 结构文件，sherpa 解到 `target/sherpa-onnx-prebuilt` 的 1.1GB 静态库被清成空目录而 build.rs 的 `is_dir()` 守卫仍放行（详见 G-25）；对策 = `fetch_sherpa_libs.ps1` 预解包到 `.cache/sherpa-onnx/extracted` + `.cargo/config.toml` 设 `SHERPA_ONNX_LIB_DIR`，链接不再依赖 target/ 缓存状态。② 旧完整性闸门 `tar -tf` 在 Windows 上必失败（G-26：MSYS GNU tar 吃反斜杠、盘符被当远程主机），已由「真解包 + 产物探针」取代；顺带 tar 选型改为显式挑 GNU tar（系统 bsdtar 读不了 bz2）。
 
 ## 七、证据
 

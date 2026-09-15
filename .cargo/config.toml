@@ -10,12 +10,14 @@ LIBCLANG_PATH = { value = ".venv/Lib/site-packages/clang/native", relative = tru
 # cmake crate 的 cmake_executable() 优先读 CMAKE 环境变量（cmake-0.1.58 lib.rs:900-903），
 # 设此变量即可免装系统 CMake。实测该路径走 VS 2022 生成器（不依赖 ninja）。
 CMAKE = { value = ".venv/Scripts/cmake.exe", relative = true, force = true }
-# sherpa-onnx-sys 构建期默认从 GitHub Releases 下载 120MB 预编译静态库（缓存落在 target/，
-# cargo clean 即丢）。改为预取到仓库内 .cache/sherpa-onnx（gitignore；relative 相对本文件）：
-# 先跑 scripts/fetch_sherpa_libs.ps1（GitHub 慢可用 -Mirror <前缀> 或 SHERPA_ONNX_MIRROR 走
-# Release 镜像），构建即从本地复制、全程零联网、cargo clean 不丢。注意 build.rs 对
-# ARCHIVE_DIR 缺失不回落联网（硬报错），首次构建前必须运行该脚本
-SHERPA_ONNX_ARCHIVE_DIR = { value = ".cache/sherpa-onnx", relative = true, force = true }
+# sherpa-onnx-sys 构建期默认自己解包预编译静态库到 <target>/sherpa-onnx-prebuilt/（1.1GB），
+# 两个问题：① 产物在 target/ 里 → 被 rust-cache 的清理规则删掉（非 cargo 结构文件一律 rm），
+# 缓存恢复后只剩空目录而 build.rs 的 is_dir() 守卫照样放行 → 链接期 could not find native
+# static library（2026-09-15 CI 实锤）；② cargo clean 即丢，重建要重解包 ~3 分钟。
+# 改为预解包到仓库内 .cache/sherpa-onnx/extracted（gitignore；先跑 scripts/fetch_sherpa_libs.ps1，
+# GitHub 慢可用 -Mirror <前缀>）并让 build.rs 命中即返回：全程零联网、不依赖 target/ 缓存。
+# build.rs 已声明 rerun-if-env-changed=SHERPA_ONNX_LIB_DIR，链/设置变更会自动重跑。
+SHERPA_ONNX_LIB_DIR = { value = ".cache/sherpa-onnx/extracted/lib", relative = true, force = true }
 # whisper.cpp CRT 对齐（M5.1 双栈链接）：sherpa-onnx-sys 为预编译静态库（静态 CRT /MT
 # 内嵌），whisper.cpp 走 cmake 默认 /MD 会在最终链接拉入 msvcprt.lib 与 sherpa 内嵌
 # CRT 定义冲突（LNK2005/LNK1169）。统一为静态 CRT（whisper-rs-sys build.rs 透传
