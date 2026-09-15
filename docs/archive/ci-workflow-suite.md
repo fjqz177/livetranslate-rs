@@ -29,7 +29,7 @@
 | G | **G-b 收窄**（修正原推荐 weekly 双生态） | necessity review 判其为六件最弱一环（删之无硬能力损失 + 与主干直推摩擦 + 近半头部仓没有）；收敛为只盯 github-actions 生态、monthly、cooldown 7 天；cargo 依赖手动升 + security 兜底 |
 | H | **nextest 暂不启用**（候选） | 每测一进程隔离需 611 测全量重验，留 ci.yml 注释待命 |
 | I | **typos 暂不上**（候选） | 纪律：CI 不跑本地没有的门禁——须先进 precommit.ps1（白名单初始化有量），另包施工 |
-| J | **J1 删 pull_request 触发** | 主干直推下是死配置且双跑源头；公开时随 distribution 前置清单回摆 |
+| J | **J1 删 pull_request 触发** | 主干直推下是死配置且双跑源头；公开时随 distribution 前置清单回摆 —— **2026-09-15 已回摆 = D-89**（复审实测仓库 09-09 起即 public，前提失效；并发组同时改为按源仓/源分支去重） |
 | K | **第三方 action SHA 钉版** | 官方 checkout/cache/artifact 留大标签；后续 dependabot 接管升版 |
 | L | **明确不做** | cargo-dist / release-plz / MSRV job / attest+签名 / 多 OS 矩阵 / cargo-audit |
 
@@ -59,8 +59,9 @@ YAML/TOML 机械校验（PyYAML/tomllib）通过；`uv lock --check` 与 `cargo 
 2. **release 全链实机演练**：打测试 tag → draft release → 下载试跑 → 转正 → `gh release delete` + 删 tag 清场。
 3. **CI 首跑观察**：单 job 墙钟变化；rust-toolchain 钉版与 runner 预装不一致时的工具链下载时长。
 4. 候选：nextest 引入（H）、typos 入 precommit（I）、rust-cache `save-if` 主干门控。
-5. 公开前三件套：attest-build-provenance（私有仓不可用）、immutable releases、tag protection + PR 触发器回摆（J 回摆）。
+5. **公开仓三件套**：attest-build-provenance、immutable releases、tag protection（2026-09-15 勘正：本仓自 2026-09-09 起即为 public，原「attest 私有仓不可用」的排除理由不成立——公开仓可用）；~~PR 触发器回摆~~ 已于同日落地 = D-89。
 6. hook 触发面缺口候选：scripts/*.ps1 与 .github/** 改动不触发本地门禁（本次全批绕过钩子即实证），可评估纳入。
+7. **第二轮复审修复（2026-09-15，维护注记；均为已归档实现的加固，非新决策）**：ci 恢复 PR 触发 + 并发按源仓/源分支去重（D-89）；release 三步 PowerShell 显式 `$ErrorActionPreference='Stop'` + 单 zip/边车硬校验 + 运行页「转正三步」摘要；security paths 补本文件自身 + advisories 失败补 `::warning::` 注解（容忍语义仍在 job 级）；dependabot 头注勘正「PR 不挂 checks」。
 
 ## 七、证据
 

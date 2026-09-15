@@ -8,13 +8,12 @@
 # 收敛为 tokio 式只盯 actions 生态。cargo 依赖升级走手动 `cargo update`（security.yml
 # 盯 CVE 兜底）；rust-toolchain.toml 升级手动改号（见该文件头注流程）。
 #
-# 主干直推下的知情项（复审勘正）：dependabot 以 PR 交付——PR 本身不挂 checks（ci.yml 无
-# pull_request 触发器），但 dependabot 分支的 push 命中 ci.yml 全分支触发照跑全量 CI，
-# 合并进 main 后还有一次；单人仓可接受（红主干一键 revert），不可接受则恢复 ci 的 PR 触发
-# （决策 J 回摆）。
+# PR 与 checks（D-89 回摆后已闭环）：ci.yml 恢复 pull_request 触发后，dependabot PR 自身
+# 就挂上全量 CI checks（此前只有「分支 push 命中全分支触发」那一次）；合并进 main 仍再跑一次。
 #
-# cargo 依赖升级（G-b 收窄后的人工面）：无自动提醒——节奏建议随 actions 月更同周末
-# `cargo update` + 全量测试（见上）；rust-toolchain.toml 升级手动改号（见该文件头注流程）。
+# cargo 依赖的安全面（人工面）：本文件只管 actions 版本。cargo 依赖的自动提醒来自仓库设置里的
+# Dependabot alerts / security updates（本仓当前未开——复审实测 2026-09-15；公开仓免费、
+# 开了才有 CVE 自动 PR）；版本升级依旧手动 `cargo update` + 全量测试（节奏建议随 actions 月更同周末）。
 #
 # cooldown 7 天：新版发布冷却一周再开 PR（meili/fd 式），压缩上游投毒窗口；
 # 对 actions 生态的实际生效有上游未关 issue 报怨，首个 PR 到达时核实间隔。
