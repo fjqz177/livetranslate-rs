@@ -1,20 +1,29 @@
-# LiveTranslate-rs 依赖供应链扫描——cargo-deny 四表（D-88 决策 F）
+# LiveTranslate-rs 依赖供应链扫描——cargo-deny 四表（D-88 决策 F；2026-09-15 复审修订）
 #
 # 本文件只做一件事：盯 Cargo.lock 的依赖面——安全公告（advisories）、许可证（licenses）、
 # 重复与禁用依赖（bans）、依赖来源（sources）。与 ci.yml 的边界：ci 管代码质量，这里管供应链。
 #
-# 选型：cargo-deny 已取代 cargo-audit 成社区主流（audit 维护者 2025-03 退居二线；
-# deny 的 advisories 与 RustSec 同源，另附 license/bans/sources 三张策略表）。
-# 官方 action 是 Docker 化——只能跑 Linux runner（本检查不编译不运行本项目代码，
-# 纯 lockfile 元数据与目标平台无关；Linux 还便宜一半）。
+# 选型：cargo-deny 已取代 cargo-audit 成社区主流（audit 维护者 2025-03 退居二线；deny 的
+# advisories 与 RustSec 同源，另附 license/bans/sources 三张策略表）。官方 action 是 Docker
+# 化——只能跑 Linux runner（本检查不编译不运行本项目代码，纯 lockfile 元数据与目标平台无关；
+# Linux 还便宜一半）。镜像内 cargo-deny 0.20.2（复审实查其 Dockerfile deny_version）。
+#
+# 参数形态（复审源码实证）：--all-features 与 --locked 是 cargo-deny 的根级参数
+# （GraphContext::fill 挂在根命令上），必须写在 check 子命令之前——action 的拼装顺序正是如此；
+# check 的 WHICH 是 Append 多值，故 bans licenses sources 可一次传入。
 #
 # 触发三路：lockfile/清单变更的 push（即时反馈）+ 每周一 cron（公告库新鲜度兜底，
-# schedule 只在默认分支生效）+ 手动。
-# advisories 单独 continue-on-error：新漏洞公告不炸主干（社区通行写法），失败只黄标不红灯，
-# 修复依赖或 deny.toml 豁免（豁免须注明理由）后转绿；注解呈现形态以首跑实测为准；
-# 其余三表（bans/licenses/sources）硬门禁。
+# schedule 只在默认分支生效）+ 手动。paths 含本文件自身——改扫描策略要能立刻自验。
 #
-# 伴随配置：仓库根 deny.toml——首跑必红是预期，逐条校准。
+# advisories 失败容忍保持 job 级（D-88 F 原裁决不动；已核对 GitHub 语义：job 级只影响
+# 「运行整体结论」，job 自身仍标失败，不会把基础设施故障吞成看都看不见）。补的不是吞法而是
+# 可见性：失败时由下一步补一条 ::warning:: 注解，把「新增公告 vs deny.toml 策略不匹配」
+# 和真正的通知通道写进运行页，防黄标沉在列表里。
+# 其余三表（bans/licenses/sources）硬门禁。
+# 通知通道的缺口不在本文件：仓库设置里 Dependabot alerts / security updates 需打开
+# （公开仓免费、会自动开 PR）——只靠本 job 的黄标＝没人知道。
+#
+# 伴随配置：仓库根 deny.toml——首跑必红是预期，逐条校准（豁免须注明理由与撤销时机）。
 name: security
 
 on:
@@ -29,6 +38,8 @@ on:
       # 经 entrypoint 在 manifest 目录跑 rustup，会按本仓工具链文件装链）
       - '.cargo/config.toml'
       - 'rust-toolchain.toml'
+      # 复审补：本文件自身——改扫描策略（矩阵/参数/paths）后要能立刻自验
+      - '.github/workflows/security.yml'
   schedule:
     - cron: '23 3 * * 1'   # 周一 03:23 UTC，错开整点高峰
   workflow_dispatch:
@@ -53,11 +64,20 @@ jobs:
           - bans licenses sources
     continue-on-error: ${{ matrix.checks == 'advisories' }}
     steps:
-      - uses: actions/checkout@v7
+      - name: Checkout
+        uses: actions/checkout@v7
       # K：SHA 钉版（dependabot github-actions 生态接管升版）
-      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2
+      - name: cargo-deny ${{ matrix.checks }}
+        id: deny
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2
         with:
           command: check ${{ matrix.checks }}
           # --locked（复审补）：action 默认 arguments 只含 --all-features，无 --locked 时
           # cargo metadata 对失同步的锁就地重解析——会扫一个没人提交过的依赖图
           arguments: "--all-features --locked"
+
+      # 容忍失败但不许「没人看见」：显式 if（不带 success()）保证上一步失败后本步仍执行
+      - name: advisories 失败抬成注解
+        if: matrix.checks == 'advisories' && steps.deny.outcome == 'failure'
+        run: |
+          echo "::warning title=advisories 检查失败（已容忍·未炸运行）::先看本 job 日志分辨「新增安全公告」还是「deny.toml 策略不匹配（升级或补豁免并注明理由）」；真正的通知通道 = 仓库设置里打开 Dependabot alerts / security updates。"
