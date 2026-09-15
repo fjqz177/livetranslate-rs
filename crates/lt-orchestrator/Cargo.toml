@@ -2,6 +2,8 @@
 name = "lt-orchestrator"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+publish.workspace = true
 
 [dependencies]
 # 编排域（自 lt-app/pipeline.rs 迁入，W3）：白名单见 docs/archive/architecture-v2.md §3.1
