@@ -76,8 +76,10 @@ jobs:
           # cargo metadata 对失同步的锁就地重解析——会扫一个没人提交过的依赖图
           arguments: "--all-features --locked"
 
-      # 容忍失败但不许「没人看见」：显式 if（不带 success()）保证上一步失败后本步仍执行
+      # 容忍失败但不许「没人看见」：if 里必须带状态函数——GitHub 对不含状态函数的条件会
+      # 默认再 AND 一个 success()，缺 failure() 时本步在「上一步已失败」的局面下必被跳过
+      # （首跑实测即此坑，注解没出来）。failure() + 矩阵判定 = 只在 advisories 容忍失败时执行。
       - name: advisories 失败抬成注解
-        if: matrix.checks == 'advisories' && steps.deny.outcome == 'failure'
+        if: failure() && matrix.checks == 'advisories' && steps.deny.outcome == 'failure'
         run: |
           echo "::warning title=advisories 检查失败（已容忍·未炸运行）::先看本 job 日志分辨「新增安全公告」还是「deny.toml 策略不匹配（升级或补豁免并注明理由）」；真正的通知通道 = 仓库设置里打开 Dependabot alerts / security updates。"
