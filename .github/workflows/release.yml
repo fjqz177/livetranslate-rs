@@ -1,19 +1,21 @@
-# LiveTranslate-rs 发布——tag → Draft GitHub Release（D-88 决策 E2）
+# LiveTranslate-rs 发布——tag → Draft GitHub Release（D-88 决策 E2；2026-09-15 复审加固）
 #
 # 本文件只做一件事：把一个已打好的 tag 变成 GitHub Release 草稿（exe zip + sha256 边车）。
-# 转正（draft → published）是人工动作：gh release edit <tag> --draft=false。
+# 转正（draft → published）是人工动作，具体三步由本 workflow 末尾的「运行摘要」贴出。
 #
-# 与 ci.yml 的边界：这里不重跑质量门禁——release 信任已绿的 commit；打 tag 前自查该
-# commit 的 ci 全绿。公开后如需硬联动（workflow_run / needs），WD-7 细化时再加。
+# 与 ci.yml 的边界：这里不重跑质量门禁——release 信任已绿的 commit；且 ci.yml 只写 branches
+# 触发，tag push 根本不进 ci，故打 tag 前必须人工确认该 commit 的 ci 全绿。
+# 演练注意：tag 与根 Cargo.toml 的 version 必须逐字一致（当前 0.1.0 → 只能 v0.1.0，没有
+# v0.1.0-rc1 这类空间）；演练跑完要清场：gh release delete <tag> --yes + 删远端 tag。
 #
 # 产物单一真源：打包一律走 scripts/package_release.ps1（与本地 zip 逐字节同源）。
 # 选型记录（E1 taiki-e upload-rust-binary-action 被否）：其自带「构建+打包」只出裸二进制，
 # 会绕开 package_release.ps1 造成两套打包真相（exe+README+LICENSE+NOTICES+OFL vs 裸 exe）；
 # gh CLI 手写 ~10 行、零第三方依赖，转正前只进 draft，风险面更小。
 #
-# 完整性：sha256 边车（ripgrep 同款「<hash>␣␣<文件名>」格式）与 zip 一同上传——
-# 闭环 1.0.0 前置清单的「打包 sha256」。签名/attestation 不做：Windows 不签名是社区常态，
-# attestation 私有仓不可用（需 GHE Cloud），公开后再议（决策 L）。
+# 完整性：sha256 边车（ripgrep 同款「<hash>␣␣<文件名>」格式，LF 行尾）与 zip 一同上传——
+# 闭环 1.0.0 前置清单的「打包 sha256」。签名不做：Windows 不签名是社区常态；attestation
+# （构建来源证明）在公开仓可用（本仓自 2026-09-09 起为 public），真发布前再议（决策 L）。
 name: release
 
 on:
@@ -33,25 +35,34 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7
+      - name: Checkout
+        uses: actions/checkout@v7
         with:
           persist-credentials: false   # fd 式加固：后续全走 GH_TOKEN，不留 git 凭据
 
       - name: 校验 tag 与 Cargo.toml 版本一致（ripgrep 门禁同款）
         # 漂移面记录：正则与 scripts/package_release.ps1 双写，仅当根 Cargo.toml 结构大改时需双边动
+        # 各 run 块显式置 Stop（与 scripts/*.ps1 同风格）：本地直接跑抽出的脚本也得到与 CI 相同的失败语义
         run: |
+          $ErrorActionPreference = 'Stop'
           $tag = $env:GITHUB_REF_NAME                      # 形如 v0.1.0
           $ver = $tag -replace '^v', ''
-          $line = Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"(.*)"'
-          $cargoVer = $line.Matches[0].Groups[1].Value
+          $match = Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"(.*)"' | Select-Object -First 1
+          if (-not $match) {
+            Write-Error 'Cargo.toml 未匹配到 ^version = "…"——结构变了，先对齐本步骤正则'
+            exit 1
+          }
+          $cargoVer = $match.Matches[0].Groups[1].Value
           if ($ver -ne $cargoVer) {
             Write-Error "tag $tag 与 Cargo.toml version $cargoVer 不一致——先对齐再打 tag"
             exit 1
           }
+          Write-Host "tag 与 Cargo.toml 一致：$cargoVer"
 
       # 工具链/缓存四步与 ci.yml 镜像——改动须两文件同步（三次法则：第三处出现再抽 composite action）；
       # 工具链真源 = rust-toolchain.toml（决策 B）
-      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+      - name: Setup uv（仓库内 libclang/cmake 分发器）
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
 
       - name: Sync pinned toolchain (libclang + cmake via uv)
         run: uv sync --locked
@@ -66,7 +77,8 @@ jobs:
       - name: Fetch sherpa-onnx libs
         run: pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/fetch_sherpa_libs.ps1
 
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Cache Rust build (rust-cache)
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           cache-on-failure: true
           # 与 ci.yml 同稳定键：吃主干缓存，防每个 tag 全冷构建（复审实测近冷 run 506s，共享后更低）
@@ -83,10 +95,13 @@ jobs:
 
       - name: Generate sha256 sidecar
         # LF 行尾（D-88 复审 P2）：Out-File 写 CRLF 会让 sha256sum -c 报 No such file；
-        # WriteAllText 显式 `n（pwsh 7 .NET UTF-8 无 BOM）
+        # WriteAllText 显式 `n（pwsh 7 .NET UTF-8 无 BOM）。先断言 dist/ 下恰好一个 zip，
+        # 免得多余产物让边车指向错误对象。
         run: |
-          $zip = Get-ChildItem dist/LiveTranslate-*.zip | Select-Object -First 1
-          if (-not $zip) { Write-Error 'dist/ 下未找到 zip'; exit 1 }
+          $ErrorActionPreference = 'Stop'
+          $zips = @(Get-ChildItem dist/LiveTranslate-*.zip)
+          if ($zips.Count -ne 1) { Write-Error "dist/ 下应恰好 1 个 zip，实得 $($zips.Count) 个"; exit 1 }
+          $zip = $zips[0]
           $hash = (Get-FileHash -Algorithm SHA256 $zip.FullName).Hash.ToLower()
           [IO.File]::WriteAllText("$($zip.FullName).sha256", "$hash  $($zip.Name)`n")
           Get-Content "$($zip.FullName).sha256"
@@ -108,4 +123,31 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         # --clobber：重跑覆盖同名资产（配合上面的幂等 create 形成完整重跑闭环）
+        # 通配由 gh 自身展开（PowerShell 不为原生命令展开通配；gh 会——已实测 "no matches found" 行为）
         run: gh release upload --clobber "$env:GITHUB_REF_NAME" dist/LiveTranslate-*.zip dist/LiveTranslate-*.zip.sha256
+
+      - name: 运行摘要（转正三步，写给下一次打 tag 的人）
+        # 摘要写的是人工转正的依据，故缺 zip / 缺边车必须硬失败——不许写出带空 sha256 的假摘要
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $zip = @(Get-ChildItem dist/LiveTranslate-*.zip)[0]
+          $sidecar = "$($zip.FullName).sha256"
+          if (-not (Test-Path -LiteralPath $sidecar)) { Write-Error "缺 sha256 边车：$sidecar"; exit 1 }
+          $hash = (Get-Content -LiteralPath $sidecar -Raw).Trim().Split(' ')[0]
+          $mb = [math]::Round($zip.Length / 1MB, 1)
+          @'
+          ## 发布草稿已就绪：{0}
+
+          | 资产 | 值 |
+          |---|---|
+          | zip | `{1}`（{2} MB） |
+          | sha256 | `{3}` |
+          | commit | `{4}` |
+
+          ### 转正三步（人工）
+          1. 取回资产校验：`sha256sum -c {1}.sha256`（Windows 可用 `Get-FileHash` 比对），再双击 exe 冒烟
+          2. 贴更新日志（真源 `assets/CHANGELOG`）：`gh release edit {0} --notes-file <文件>`
+          3. 转正：`gh release edit {0} --draft=false`
+
+          > 演练清场：`gh release delete {0} --yes` + `git push origin :refs/tags/{0}`
+          '@ -f $env:GITHUB_REF_NAME, $zip.Name, $mb, $hash, $env:GITHUB_SHA | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8
