@@ -75,8 +75,9 @@
 | D-85 | 2026-09-10 | 供应商连接测试 10s 封顶、热切换、会话账本、厂商预设（默认 DeepSeek） | docs/archive/translator-probe-hotswap.md |
 | D-86 | 2026-09-12 | Fun-ASR-MLT-Nano 幽灵值全量移除，灰显机制废止（取代 D-14） | docs/archive/funasr-mlt-removal.md |
 | D-87 | 2026-09-14 | 退出与确认系统重做：专用 WinId::Confirm 确认窗包办六确认（暗色半透明圆角自绘、替换语义、身份键载荷、属主遮罩），借画布杂技链删除 | docs/archive/quit-flow-redesign.md |
-| D-88 | 2026-09-15 | CI 工作流全家桶：单 job 整脚本入 CI（A1）+ 工具链钉版 + --locked + cargo-deny 供应链 + tag→Draft 发布链（E2）+ dependabot 收窄 actions 月更（G-b）；其中 J1（删 pull_request 触发）→ 被 D-89 取代 | docs/archive/ci-workflow-suite.md |
+| D-88 | 2026-09-15 | CI 工作流全家桶：单 job 整脚本入 CI（A1）+ 工具链钉版 + --locked + cargo-deny 供应链 + tag→Draft 发布链（E2）+ dependabot 收窄 actions 月更（G-b）；其中 J1（删 pull_request 触发）→ 被 D-89 取代；其 release 链（E2 四道闸版）→ 被 D-90 取代 | docs/archive/ci-workflow-suite.md |
 | D-89 | 2026-09-15 | CI 触发面回摆：仓库 09-09 起即 public，J1「私有 + 单人主干直推」前提失效——ci 恢复 pull_request 触发 + 并发组按源仓/源分支去重（治双跑）；security 补自触发路径 + advisories 失败注解化 | docs/archive/ci-workflow-suite.md |
+| D-90 | 2026-09-16 | 发布链重做并转正：`scripts/release.ps1` 八动词引擎（check/build/pack/draft/verify/rehearse/release/promote）+ `release.yml` 薄编排，本地与 CI 同一份（取代 D-88 四道闸版）；不变量 = CI 永不可发布（promote 动词不进 workflow，转正人工且必须 -NotesFile）；只发正式版（预发布在 check ① 拒）；不做 attestation 与代码签名；演练通道 = workflow_dispatch（脚本自判）+ 本地 rehearse | docs/distribution.md |
 
 ## ADR-x（架构决策）
 

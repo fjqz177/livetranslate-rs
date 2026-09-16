@@ -29,6 +29,8 @@ cargo test --workspace                         # 收工门禁（不在 precommit
 cargo build --release -p lt-app                # 单 exe：target/release/livetranslate.exe ~76MB（滚动值）
 cargo run -p lt-app                            # GUI 冒烟
 pwsh -File scripts/package_release.ps1         # 打包 dist/LiveTranslate-*.zip（CI 同源；发布路线 = docs/distribution.md）
+pwsh -File scripts/release.ps1 <动词>          # 发布链八动词引擎（D-90；本地/CI 同一份）：rehearse 空跑全链不发布；
+                                               # 真发布 = release → promote -NotesFile（云端等价 = 推 v* tag，转正永远人工）
 pwsh -File scripts/precommit.ps1               # 提交前门禁：七项清单真源 = 该脚本头注；ci.yml 与 .githooks
                                                # 同源调用本脚本，门禁增删只改这一处（D-88 废除手抄双边同步）
 git config core.hooksPath .githooks            # 每 clone 一次启用提交钩子；暂存区无 .rs / Cargo.toml / .cargo /
@@ -37,7 +39,7 @@ git config core.hooksPath .githooks            # 每 clone 一次启用提交钩
 ```
 
 - 冒烟：设临时 `LIVETRANSLATE_CONFIG_DIR`，其 settings.json 必须显式 `models_dir` 指真实模型缓存（如 `~/.config/livetranslate/models`），否则引擎探测全部失败；`LIVETRANSLATE_SHOW_PANEL=1` 启动直开控制面板（走查/排障旗标，默认关闭）；`livetranslate.exe --version` 无 GUI 打印版本即退（产物能起的最小证明）。
-- CI = `.github/workflows/` 三 workflow（结构细节真源 = 各文件头注）：**ci**（单 job，门禁 = precommit.ps1 整脚本入 CI〔D-88 A1〕+ 测试 + 分发演练；触发 = push 全分支 + PR + 手动〔D-89 回摆〕）/ **release**（tag `v*` → Draft Release + sha256，转正人工）/ **security**（cargo-deny 四表，ubuntu）；工具链真源 = 仓库根 `rust-toolchain.toml`；无分支保护——PR 上会跑 CI，但红叉不拦合并，仍靠提交前自查；CI 绿 ≠ 干净机能跑（runner 自带 VC++）。
+- CI = `.github/workflows/` 三 workflow（结构细节真源 = 各文件头注）：**ci**（单 job，门禁 = precommit.ps1 整脚本入 CI〔D-88 A1〕+ 测试 + 分发演练；触发 = push 全分支 + PR + 手动〔D-89 回摆〕）/ **release**（tag `v*` 或手动演练 → 调 `scripts/release.ps1` 全链出草稿 + sha256，转正人工〔D-90〕）/ **security**（cargo-deny 四表，ubuntu）；工具链真源 = 仓库根 `rust-toolchain.toml`；无分支保护——PR 上会跑 CI，但红叉不拦合并，仍靠提交前自查；CI 绿 ≠ 干净机能跑（runner 自带 VC++）。
 - 改码前摸底优先 MCP `codegraph_explore`（`.codegraph/` 本机索引，不入库）。
 
 ## 3. 十 crate 拓扑与分层硬规则
@@ -80,7 +82,7 @@ git config core.hooksPath .githooks            # 每 clone 一次启用提交钩
 | 实机走查 / GUI 冒烟取证 | `docs/prompts/live-check.md` |
 | 会话收尾交接 | `docs/prompts/handoff.md` |
 | 写 / 改守护脚本 | 本文 G-20（grep 方言）+ G-23（.ps1 带 BOM）+ 各守护脚本头注（风格对齐） |
-| 分发 / 打包 / 发布 | `docs/distribution.md` + `scripts/package_release.ps1` 头注 |
+| 分发 / 打包 / 发布 | `docs/distribution.md` + `scripts/release.ps1`（发布链）/ `scripts/package_release.ps1`（打包）头注 |
 | 历史工作包依据（下载器 / ASR 加固 / 视觉…） | `docs/archive/` 一行一档索引见 docs/README.md 归档表（只读） |
 
 ## 5. 纪律速记（全文真源 = docs/README.md 顶部九条，此处只留最绑定的）
@@ -152,7 +154,8 @@ git config core.hooksPath .githooks            # 每 clone 一次启用提交钩
 
 - agents-md-overhaul（ADR-15/16）：gotchas 候选回读（visual-parity/overlay-realign 怪癖收编为新条目）/ prompts 技能化验证（ZCode 工作区级 .zcode/skills）/ 两档预算两周后按实测回调 / i18n 键集 parity 守护候选（docs/archive/agents-md-overhaul.md §五）
 - quit-flow-redesign（D-87）：§五走查矩阵剩余行为项随用随验（docs/archive/quit-flow-redesign.md §九）
-- ci-workflow-suite（D-88/D-89）：deny.toml 首跑校准 + release 全链实机演练（测试 tag→draft→转正→清场）+ CI 首跑墙钟观察 + nextest/typos 候选 + 公开仓三件套（attest/immutable/tag protection；本仓 09-09 起即 public，attest 可用）+ 仓库设置 Dependabot alerts/security updates 未开（docs/archive/ci-workflow-suite.md §六）
+- ci-workflow-suite（D-88/D-89）：deny.toml 首跑校准 + CI 首跑墙钟观察 + nextest/typos 候选 + 仓库设置候选（immutable releases / tag protection；attest 已由 D-90 否决）+ Dependabot alerts/security updates 未开（docs/archive/ci-workflow-suite.md §六）
+- release-engine（D-90）：首次真 tag 演练未跑（runner 的 gh 用法 / publish job 写入 / 摘要实貌待验）+ 首发须抬版本（旧 v0.1.0 tag 不删，见 docs/distribution.md §4）+ zip 五件套断言与 build-info 是否随 Release 永久留档待表态
 - 架构 v2/2.1：实机走查 11 项 + WP-9 性能预算（后续单独方案）（docs/archive/architecture-v2.md §6.4）；W5 走查 6 项——悬浮窗拖动/字幕窗拖动穿透回归/导出保存框/背景图选择框/设备下拉/Monitor 条（同文档 W5 节）
 - translator（D-85）：实机走查 13 项（docs/archive/translator-probe-hotswap.md §6.2）
 - model-trust（D-83）：实机走查——改坏一个模型文件应自动隔离+重下+装载（docs/archive/model-trust-repair.md）

@@ -53,6 +53,9 @@
 4. 干净机（或删 `~/.config/livetranslate`）冒烟一轮首启→下载→出字幕；
 5. 分发 zip + sha256。
 
+> D-90 起上面 1~5 已脚本化（本地与 CI 同一份引擎）：`pwsh -File scripts/release.ps1 release` 一条龙 →
+> `promote -NotesFile <日志.md>` 转正。本清单保留为人工对照真源。
+
 ### 3.3 阶段一工作包
 
 | 包 | 内容 | 估量 | 备注 |
@@ -68,7 +71,7 @@
 
 | 包 | 内容 | 估量 |
 |---|---|---|
-| WD-7 | CI `release.yml`（PLAN §147 蓝图：windows-latest 单作业 → build → zip+sha256 → tag 触发 attach Release；前置坑：LIBCLANG_PATH、sherpa-onnx sys 拉 GitHub 预编译库 → R-12 `actions/cache` + `SHERPA_ONNX_LIB_DIR`） | 0.5d |
+| WD-7 ✅ | **发布链已落地并转正（D-88 首版 → D-90 重做）**：tag `v*` 或手动触发（演练）→ `scripts/release.ps1` 全链（检查→构建→打包→建草稿→回读校验）→ Releases 出草稿 → **人工转正**（CI 永不可发布）；本地等价 = `release` → `promote -NotesFile <日志>`。**首发前置：旧 v0.1.0 tag 已被远古提交占用且不删 → 必须抬版本号**（只改根 `Cargo.toml` 一处） | 已落地 |
 | WD-8 | 检查更新按钮（D-20）：GET `releases/latest` 比对版本 → 提示 + 打开下载页；i18n zh/en 同步；失败静默 | 0.5d |
 | WD-9 | 公开 README 双语完善 + 原 Python 仓 README 导流横幅；渠道裁决（新独立仓 vs 沿用原仓双产物） | 0.5d |
 | WD-10（可选） | 「打开配置目录/日志目录」入口（现仅缓存页可开 models/transcripts 目录）；panic hook 崩溃尾部落盘，便于反馈 | 0.5d |
