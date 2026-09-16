@@ -47,7 +47,7 @@
 
 ### 3.2 发布手册（人工步骤，脚本化于 WD-1）
 
-1. 版本号进 `Cargo.toml` `[workspace.package]`（WD-2 后由 zip 名自动携带）；
+1. 版本号进 `Cargo.toml` `[workspace.package]`（WD-2 后由 zip 名自动携带）；**同提交**在 `CHANGELOG.md` / `CHANGELOG.en.md` 写同号版本段落（发版三件套之一，缺则 `release.ps1 check ②` 拒发）；
 2. `cargo build --release -p lt-app` + `cargo test --workspace` 全绿；
 3. `scripts/package_release.ps1`：拷 exe → 汇集 LICENSE/NOTICES/README → zip → 生成 sha256；
 4. 干净机（或删 `~/.config/livetranslate`）冒烟一轮首启→下载→出字幕；
@@ -67,11 +67,20 @@
 | **WD-5** | 二次启动反馈：第二实例当前仅 stderr 报错即退（双击场景用户看到"没反应"）；改为激活已有主窗口（FindWindow/SetForegroundWindow）或至少弹 MessageBox | 0.5d | Win32，主线程亲自做；单实例锁是 Rust 新增（原版无），配套体验需补齐 |
 | WD-6（可选，待点头） | 首启缺模型轻引导：控制面板顶部一条「识别模型未就绪 → 去识别页下载」高亮横幅（模型就绪即隐） | 0.5d | D-19 的配套；原版无此场景（有向导），登记为新增偏差 |
 
+### 3.4 更新日志与发布正文（D-91 起）
+
+- **正典**：仓根 `CHANGELOG.md`（中文）/ `CHANGELOG.en.md`（英文）——唯一编辑入口。应用内「更新日志」页（编译期内嵌）与 GitHub Release 正文（引擎抽取）都取自这两份，仓库里不存在第二处副本。
+- **格式**：标准 Markdown。机器只认三样——版本标题行 `## [x.y.z] - YYYY-MM-DD`、段落边界（下一个**围栏外**的版本标题行或文件尾）、段内至少一条列表项（`-` / `*` / `+` / `1.`）。细则与示例见 `docs/changelog-scheme.md` 附录 A。
+- **发版三件套**：`Cargo.toml` 版本号 = tag 名 = CHANGELOG 同号段落（`release.ps1 check ②` 硬闸；CI 每次 push 用只读动词 `notes` 早警告）。抬版本号、写段落、重生成 `Cargo.lock` 必须同一个提交。
+- **Release 正文**：`draft` 自动写入（中文段 + `<details>` 折叠英文段）；`promote` 默认取同一段落，`-NotesFile` 可显式覆盖。
+- **发版时怎么写**：`git log --no-merges --oneline <上个已发布版本 tag>..HEAD` 汇总 → 只挑用户可见变更（新功能 / 行为变化 / 修复 / 移除；重构、测试、CI 不进）→ 中文一段，英文同构一段（英文可短，但不能缺）。
+- **历史段落冻结**：已发布版本的正文不追改（改错别字只影响应用内显示），要更正规走新版本。
+
 ## 4. 阶段二：公开发布（预案，D-18 届时重开渠道议题）
 
 | 包 | 内容 | 估量 |
 |---|---|---|
-| WD-7 ✅ | **发布链已落地并转正（D-88 首版 → D-90 重做）**：tag `v*` 或手动触发（演练）→ `scripts/release.ps1` 全链（检查→构建→打包→建草稿→回读校验）→ Releases 出草稿 → **人工转正**（CI 永不可发布）；本地等价 = `release` → `promote -NotesFile <日志>`。**首发前置：旧 v0.1.0 tag 已被远古提交占用且不删 → 必须抬版本号**（只改根 `Cargo.toml` 一处） | 已落地 |
+| WD-7 ✅ | **发布链已落地并转正（D-88 首版 → D-90 重做）**：tag `v*` 或手动触发（演练）→ `scripts/release.ps1` 全链（检查→构建→打包→建草稿→回读校验）→ Releases 出草稿 → **人工转正**（CI 永不可发布）；本地等价 = `release` → `promote`（正文默认取 CHANGELOG 本版段落，`-NotesFile` 可覆盖）。**首发前置：旧 v0.1.0 tag 已被远古提交占用且不删 → 必须抬版本号**（只改根 `Cargo.toml` 一处） | 已落地 |
 | WD-8 | 检查更新按钮（D-20）：GET `releases/latest` 比对版本 → 提示 + 打开下载页；i18n zh/en 同步；失败静默 | 0.5d |
 | WD-9 | 公开 README 双语完善 + 原 Python 仓 README 导流横幅；渠道裁决（新独立仓 vs 沿用原仓双产物） | 0.5d |
 | WD-10（可选） | 「打开配置目录/日志目录」入口（现仅缓存页可开 models/transcripts 目录）；panic hook 崩溃尾部落盘，便于反馈 | 0.5d |
@@ -110,4 +119,5 @@
 - **D-19** 首启无向导直进主界面（既有 2026-09-01 决策转正；原版强制向导）
 - **D-20** 应用内检查更新（新增能力，阶段二）
 - **D-21** whisper 打破 always-HF 双源 + hub 缺失回落（新增偏差；原版 whisper 仅 HF）
+- **D-91** 更新日志机制：正典落仓根（`CHANGELOG.md` / `CHANGELOG.en.md`）+ 发版三件套闸（`check ②` / CI `notes` 早警告）+ 应用内编译期内嵌；promote 的 `-NotesFile` 降为可选覆盖；应用内渲染改造缓办（docs/archive/changelog-scheme.md）
 - 关联既有偏差：配置目录 `~/.config` 非 exe 旁 portable（RESEARCH 既有）；翻译 API 默认 key 留空不硬编码；单实例锁为 Rust 新增。

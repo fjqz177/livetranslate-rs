@@ -29,8 +29,8 @@ cargo test --workspace                         # 收工门禁（不在 precommit
 cargo build --release -p lt-app                # 单 exe：target/release/livetranslate.exe ~76MB（滚动值）
 cargo run -p lt-app                            # GUI 冒烟
 pwsh -File scripts/package_release.ps1         # 打包 dist/LiveTranslate-*.zip（CI 同源；发布路线 = docs/distribution.md）
-pwsh -File scripts/release.ps1 <动词>          # 发布链八动词引擎（D-90；本地/CI 同一份）：rehearse 空跑全链不发布；
-                                               # 真发布 = release → promote -NotesFile（云端等价 = 推 v* tag，转正永远人工）
+pwsh -File scripts/release.ps1 <动词>          # 发布链九动词引擎（D-90/D-91；本地/CI 同一份）：rehearse 空跑全链不发布；
+                                               # 真发布 = release → promote（正文自动取 CHANGELOG 本版段落；云端等价 = 推 v* tag，转正永远人工）
 pwsh -File scripts/precommit.ps1               # 提交前门禁：七项清单真源 = 该脚本头注；ci.yml 与 .githooks
                                                # 同源调用本脚本，门禁增删只改这一处（D-88 废除手抄双边同步）
 git config core.hooksPath .githooks            # 每 clone 一次启用提交钩子；暂存区无 .rs / Cargo.toml / .cargo /
@@ -104,7 +104,7 @@ git config core.hooksPath .githooks            # 每 clone 一次启用提交钩
 - **窗口透明**：悬浮窗 = LAYERED + LWA_ALPHA + SetWindowRgn 镂空（LWA_COLORKEY 因 ±1 抖动不可用）；字幕窗单窗逐像素透明不可达（wgpu HWND 仅 Opaque），整窗 alpha 可用（D-36）。
 - **字体（D-17）**：内嵌思源（中英韩）+ MonoCJK + NotoSansSymbols2 三字体自洽，系统字体缺失不报错回退内嵌（仅锦上添花，禁依赖）；行级字体键空串 = 级联跟随 `subtitle_font_family`，显式族名 = 独立指定；改字体键 → 立即 `fonts::apply_fonts` + 防抖落盘；渲染侧禁 `FontFamily::Name` 臆造，一律经 `font_family_for`（G-12）。细节 = `docs/archive/font-system.md`（史）。
 - **参照截图**：真值 = `assets/reference/`（2026-09-09 拍自工作区副本；旧 2026-09-06 套误拍外部爆改版已作废）。重拍脚本 `scripts/grab_reference_ui.py`，解释器 = 外部带 PyQt6 的 venv（本机路径不入库，见项目记忆）；Qt 6.11 `grab()` 不渲染 QTextEdit 样式表背景，脚本已补 viewport 同色（G-18）。
-- **资产**：`assets/` = i18n yaml + CHANGELOG、`fonts/`（brotli 压缩 ~12.7MB + OFL 许可）、图标、reference、`silero_vad.onnx`、SOURCES.md（来源/sha256）。
+- **资产**：`assets/` = i18n yaml、`fonts/`（brotli 压缩 ~12.7MB + OFL 许可）、图标、reference、`silero_vad.onnx`、SOURCES.md（来源/sha256）。
 
 ## 7. 大坑速查（一行精选；全本 = docs/gotchas.md，禁死引用——本节可精选不全列，但引用的每个 G-编号必须实存）
 
@@ -164,4 +164,4 @@ git config core.hooksPath .githooks            # 每 clone 一次启用提交钩
 - download-overhaul：S1/S6 全程真实网络走查（docs/archive/download-overhaul.md）
 - 交互细节走查：hide-quit（D-33）通知视觉 / hide-transparency（D-34）隐藏→托盘重显半透明 / tray（D-35）菜单打开期间主界面出帧 / button-press（D-32）长按 ≥1s 零位移 / 字幕窗 D-37 与悬浮窗 D-71 拖动（各自归档文档）
 - 复刻期：WP-9 M6 调优（启动<2s / 空闲 CPU<1% / 8h 长跑 / 内存回收 / 端到端）；WP-5 托盘气泡、WP-8 热键届时按产品价值裁决（docs/archive/parity-closure.md）
-- distribution：WD-6 首启横幅待点头；WD-7 tag→Release、WD-8 检查更新随公开发布推进（docs/distribution.md）；1.0.0 前置：应用内更新日志内容置换（现为原版 Python 文案，含已裁剪远程 ASR）、打包 sha256（就绪评估 2026-09-11）
+- distribution：WD-6 首启横幅待点头；WD-7 tag→Release、WD-8 检查更新随公开发布推进（docs/distribution.md）；1.0.0 前置：应用内更新日志真实内容待 Phase B 置换（changelog-scheme）、干净机端到端未跑（就绪评估 2026-09-11）
