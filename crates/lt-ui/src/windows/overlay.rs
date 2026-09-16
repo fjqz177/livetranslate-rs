@@ -17,10 +17,9 @@ use crate::state::{
     failure_text, ConfirmKind, ModalUi, OverlayMessage, OverlayMode, OverlayUi, SessionView,
     Settings, TranslationView, UiContext, WinAction, WinId,
 };
-use crate::style::{self, parse_color};
+use crate::style::{self, parse_color, BtnSkin};
 use egui::{
-    Align2, Button, Color32, ComboBox, CornerRadius, FontId, RichText, ScrollArea, Sense, Stroke,
-    Ui, Vec2,
+    Align2, Color32, ComboBox, CornerRadius, FontId, RichText, ScrollArea, Sense, Stroke, Ui, Vec2,
 };
 
 /// pt → 逻辑 px（Qt 1pt ≈ 96/72 px）
@@ -37,6 +36,8 @@ fn opa(c: Color32, _opacity_pct: u32) -> Color32 {
 
 /// 原版字面色
 const BTN_TEXT: Color32 = Color32::from_rgb(0xaa, 0xaa, 0xaa);
+/// hover 字色（原版 _BTN_CSS hover：`color: #ddd`）
+const BTN_TEXT_HOVER: Color32 = Color32::from_rgb(0xdd, 0xdd, 0xdd);
 const BTN_FILL: Color32 = Color32::from_rgba_premultiplied(20, 20, 20, 20);
 const BTN_STROKE: Color32 = Color32::from_rgba_premultiplied(40, 40, 40, 40);
 /// 按钮/下拉 hover 底（原版 _BTN_CSS hover：rgba(255,255,255,40)）
@@ -45,10 +46,64 @@ const BTN_HOVER_FILL: Color32 = Color32::from_rgba_premultiplied(40, 40, 40, 40)
 const BTN_PRESSED_FILL: Color32 = Color32::from_rgba_premultiplied(50, 55, 60, 60);
 const QUIT_FILL: Color32 = Color32::from_rgba_premultiplied(31, 9, 9, 40);
 const QUIT_STROKE: Color32 = Color32::from_rgba_premultiplied(63, 19, 19, 80);
+/// 退出钮 hover/按压底（原版 quit 变体 QSS：hover = rgba(200,60,60,80)；
+/// 按压再深一档 = rgba(200,60,60,110)——首次落地，实机目测校准）
+const QUIT_HOVER_FILL: Color32 = Color32::from_rgba_premultiplied(63, 19, 19, 80);
+const QUIT_PRESSED_FILL: Color32 = Color32::from_rgba_premultiplied(86, 26, 26, 110);
 const PAUSED_FILL: Color32 = Color32::from_rgba_premultiplied(43, 35, 12, 50);
 const PAUSED_TEXT: Color32 = Color32::from_rgb(0xdd, 0xdd, 0xbb);
+/// 暂停钮 hover/按压底（同底色 +15/+30 alpha；首次落地，实机目测校准）
+const PAUSED_HOVER_FILL: Color32 = Color32::from_rgba_premultiplied(56, 46, 16, 65);
+const PAUSED_PRESSED_FILL: Color32 = Color32::from_rgba_premultiplied(69, 56, 19, 80);
 const SUBTITLE_ON_FILL: Color32 = Color32::from_rgba_premultiplied(13, 28, 13, 40);
 const SUBTITLE_ON_STROKE: Color32 = Color32::from_rgba_premultiplied(25, 56, 25, 80);
+/// 字幕开钮 hover/按压底（同底色 +15/+30 alpha；首次落地，实机目测校准）
+const SUBTITLE_ON_HOVER_FILL: Color32 = Color32::from_rgba_premultiplied(18, 39, 18, 55);
+const SUBTITLE_ON_PRESSED_FILL: Color32 = Color32::from_rgba_premultiplied(23, 49, 23, 70);
+
+/// 行1 按钮色族（三态几何全等，只变底色/字色——D-32 红线）
+const STROKE_1: Stroke = Stroke {
+    width: 1.0,
+    color: BTN_STROKE,
+};
+const SKIN_BTN: BtnSkin = BtnSkin::new(
+    BTN_FILL,
+    BTN_HOVER_FILL,
+    BTN_PRESSED_FILL,
+    STROKE_1,
+    BTN_TEXT,
+    BTN_TEXT_HOVER,
+);
+const SKIN_QUIT: BtnSkin = BtnSkin::new(
+    QUIT_FILL,
+    QUIT_HOVER_FILL,
+    QUIT_PRESSED_FILL,
+    Stroke {
+        width: 1.0,
+        color: QUIT_STROKE,
+    },
+    BTN_TEXT,
+    BTN_TEXT_HOVER,
+);
+const SKIN_PAUSED: BtnSkin = BtnSkin::new(
+    PAUSED_FILL,
+    PAUSED_HOVER_FILL,
+    PAUSED_PRESSED_FILL,
+    STROKE_1,
+    PAUSED_TEXT,
+    PAUSED_TEXT,
+);
+const SKIN_SUBTITLE_ON: BtnSkin = BtnSkin::new(
+    SUBTITLE_ON_FILL,
+    SUBTITLE_ON_HOVER_FILL,
+    SUBTITLE_ON_PRESSED_FILL,
+    Stroke {
+        width: 1.0,
+        color: SUBTITLE_ON_STROKE,
+    },
+    BTN_TEXT,
+    BTN_TEXT_HOVER,
+);
 /// 统计行分隔线（原版 #555/#666）
 const SEP: Color32 = Color32::from_rgb(0x55, 0x55, 0x55);
 /// 统计行数值底色（原版 stats_label 基色 #888，数值继承；仅标签着彩色）
@@ -112,7 +167,7 @@ pub fn overlay_ui(
             vis.widgets.active.bg_stroke = Stroke::new(1.0, BTN_STROKE);
             vis.widgets.active.corner_radius = vis.widgets.inactive.corner_radius;
 
-            drag_handle(ui, overlay, session, settings, modal, compact, opa_pct);
+            drag_handle(ui, overlay, session, settings, modal, compact);
             if !compact {
                 monitor_bar(ui, overlay, settings, opa_pct);
             }
@@ -130,7 +185,6 @@ fn drag_handle(
     settings: &mut Settings,
     modal: &mut ModalUi,
     compact: bool,
-    opa_pct: u32,
 ) {
     // 原版 DragHandle 是 QWidget 子类且未设 WA_StyledBackground/paintEvent，
     // 其 QSS 背景（含 apply_style 的 header_color）从未被渲染——头部区域即
@@ -139,7 +193,7 @@ fn drag_handle(
     egui::Frame::NONE
         .inner_margin(egui::Margin::symmetric(8, 2))
         .show(ui, |ui| {
-            row1(ui, overlay, session, settings, modal, compact, opa_pct);
+            row1(ui, overlay, session, settings, modal, compact);
             if !compact {
                 row2_checks(ui, overlay, session);
                 row2_combos(ui, session, settings);
@@ -156,7 +210,6 @@ fn row1(
     settings: &mut Settings,
     modal: &mut ModalUi,
     compact: bool,
-    opa_pct: u32,
 ) {
     ui.horizontal(|ui| {
         ui.set_min_height(22.0);
@@ -184,16 +237,7 @@ fn row1(
         }
 
         // 隐藏（原版 hide_btn：隐藏悬浮窗，托盘"显示悬浮窗"可恢复 + 首次气泡提示）
-        if ui
-            .add(small_btn(
-                lt_i18n::t("hide"),
-                BTN_FILL,
-                BTN_STROKE,
-                BTN_TEXT,
-                opa_pct,
-            ))
-            .clicked()
-        {
+        if small_btn(ui, lt_i18n::t("hide"), &SKIN_BTN).clicked() {
             session.enqueue_action(WinId::Overlay, WinAction::Hide);
         }
 
@@ -201,14 +245,8 @@ fn row1(
         if !compact {
             let on = settings.subtitle_mode.enabled;
             // WP-1：手势提示悬停文案（首次开启另有 toast，见 app.rs ToggleSubtitle）
-            let sub = ui
-                .add(small_btn(
-                    lt_i18n::t("subtitle"),
-                    if on { SUBTITLE_ON_FILL } else { BTN_FILL },
-                    if on { SUBTITLE_ON_STROKE } else { BTN_STROKE },
-                    BTN_TEXT,
-                    opa_pct,
-                ))
+            let skin = if on { &SKIN_SUBTITLE_ON } else { &SKIN_BTN };
+            let sub = small_btn(ui, lt_i18n::t("subtitle"), skin)
                 .on_hover_text(lt_i18n::t("subwin_btn_hint"));
             if sub.clicked() {
                 // 原版 subtitle_toggled → 切换字幕窗可见性
@@ -220,12 +258,12 @@ fn row1(
 
         // 启停按钮（运行=普通样式 t("running")；暂停=琥珀色 t("paused")）
         let running = session.running;
-        let (label, fill, stroke, text) = if running {
-            (lt_i18n::t("running"), BTN_FILL, BTN_STROKE, BTN_TEXT)
+        let (label, skin) = if running {
+            (lt_i18n::t("running"), &SKIN_BTN)
         } else {
-            (lt_i18n::t("paused"), PAUSED_FILL, BTN_STROKE, PAUSED_TEXT)
+            (lt_i18n::t("paused"), &SKIN_PAUSED)
         };
-        let start_stop = ui.add(small_btn(label, fill, stroke, text, opa_pct));
+        let start_stop = small_btn(ui, label, skin);
         if start_stop.clicked() {
             let cmd = if running {
                 lt_proto::Cmd::Pause
@@ -238,17 +276,7 @@ fn row1(
 
         // 清空（紧凑模式隐藏；转写自动落盘时免确认，否则确认一次防误触）。
         // D-87：确认走专用窗（悬浮窗只发请求，不再自任宿主）
-        if !compact
-            && ui
-                .add(small_btn(
-                    lt_i18n::t("clear"),
-                    BTN_FILL,
-                    BTN_STROKE,
-                    BTN_TEXT,
-                    opa_pct,
-                ))
-                .clicked()
-        {
+        if !compact && small_btn(ui, lt_i18n::t("clear"), &SKIN_BTN).clicked() {
             if settings.auto_save_transcript {
                 overlay.messages.clear();
             } else {
@@ -267,42 +295,19 @@ fn row1(
         } else {
             lt_i18n::t("mode_full")
         };
-        if ui
-            .add(small_btn(
-                mode_label, BTN_FILL, BTN_STROKE, BTN_TEXT, opa_pct,
-            ))
-            .clicked()
-        {
+        if small_btn(ui, mode_label, &SKIN_BTN).clicked() {
             // 传「目标」= 当前的反面（原版 _toggle_mode：new = compact if full else full）。
             // 曾误传 compact（当前）→ 模式被设成它自己 = 死键，精简形态从未可达。
             toggle_mode(overlay, session, !compact);
         }
 
-        if ui
-            .add(small_btn(
-                lt_i18n::t("settings"),
-                BTN_FILL,
-                BTN_STROKE,
-                BTN_TEXT,
-                opa_pct,
-            ))
-            .clicked()
-        {
+        if small_btn(ui, lt_i18n::t("settings"), &SKIN_BTN).clicked() {
             session.enqueue_action(WinId::Overlay, WinAction::ShowPanel);
         }
 
         // 退出（红底；确认走专用窗——D-87 替换语义，托盘/悬浮窗退出必达；
         // compact/低矮不再借面板画布）
-        if ui
-            .add(small_btn(
-                lt_i18n::t("quit"),
-                QUIT_FILL,
-                QUIT_STROKE,
-                BTN_TEXT,
-                opa_pct,
-            ))
-            .clicked()
-        {
+        if small_btn(ui, lt_i18n::t("quit"), &SKIN_QUIT).clicked() {
             modal.request_confirm_replacing(
                 ConfirmKind::Quit,
                 lt_i18n::t("quit_confirm_title"),
@@ -936,22 +941,11 @@ fn message_block(
 
 /// 按钮统一外观（原版 _BTN_CSS：11px 字号、20px 高、圆角 3、padding 0-6；
 /// 整窗不透明度由宿主 LWA_ALPHA 统一乘，控件不再自乘——opa 恒等）
-fn small_btn(
-    label: String,
-    fill: Color32,
-    stroke_col: Color32,
-    text_col: Color32,
-    opa_pct: u32,
-) -> Button<'static> {
-    Button::new(
-        RichText::new(label)
-            .size(11.0)
-            .color(opa(text_col, opa_pct)),
-    )
-    .fill(opa(fill, opa_pct))
-    .stroke(Stroke::new(1.0, opa(stroke_col, opa_pct)))
-    .corner_radius(CornerRadius::same(3))
-    .min_size(Vec2::new(0.0, 20.0))
+/// 行1 小按钮（11px / 圆角 3 / 高 20）。三态色由 [`crate::style::skin_button`]
+/// 在作用域内择色——**不能用 `Button::fill`**（显式 fill 会吃掉 hover/按压，
+/// 且按钮底色实际取 `weak_bg_fill`；两层叠加曾让反馈整体失效，见 style.rs 注）。
+fn small_btn(ui: &mut Ui, label: String, skin: &BtnSkin) -> egui::Response {
+    style::skin_button(ui, label, skin, 11.0, 3.0, Vec2::new(0.0, 20.0))
 }
 
 /// 行1 按钮组预留宽度（拖动区让位；完整=7 按钮含隐藏、紧凑=5 按钮

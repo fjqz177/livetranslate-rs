@@ -31,8 +31,8 @@ use crate::state::{
     EaseAnim, Easing, SessionView, Settings, SubtitleLineKey, SubtitleLineRender, SubtitleUi,
     SubtitleUiState, UiContext, WinAction, WinId,
 };
-use crate::style::{parse_color, FAILURE_OUTLINE, SKIP_TEXT, WARN_TEXT};
-use egui::{Align2, Color32, FontId, RichText, Sense, Stroke, Ui};
+use crate::style::{self, parse_color, BtnSkin, FAILURE_OUTLINE, SKIP_TEXT, WARN_TEXT};
+use egui::{Align2, Color32, FontId, Sense, Stroke, Ui};
 use lt_proto::SubtitleLine;
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
@@ -718,14 +718,8 @@ pub fn subtitle_ui(
                     egui::vec2(w, 14.0),
                 );
                 bx -= w + 4.0;
-                let (fill, stroke, fg) = strip_button_colors(on);
-                let resp = ui.put(
-                    rect,
-                    egui::Button::new(RichText::new(label).size(9.5).color(fg))
-                        .fill(fill)
-                        .stroke(Stroke::new(1.0, stroke))
-                        .corner_radius(3.0),
-                );
+                let skin = if on { &SKIN_STRIP_ON } else { &SKIN_STRIP_OFF };
+                let resp = style::skin_button_at(ui, rect, label, skin, 9.5, 3.0);
                 if resp.clicked() {
                     match i {
                         0 => hide = true,
@@ -814,21 +808,30 @@ pub fn subtitle_ui(
 }
 
 /// 顶条按钮三态色（开=绿系（对齐悬浮窗字幕钮 SUBTITLE_ON_* 语义），关=中性）
-fn strip_button_colors(on: bool) -> (Color32, Color32, Color32) {
-    if on {
-        (
-            Color32::from_rgba_premultiplied(13, 40, 20, 160),
-            Color32::from_rgba_premultiplied(40, 100, 50, 200),
-            Color32::from_rgb(0x9f, 0xd8, 0x9f),
-        )
-    } else {
-        (
-            Color32::from_rgba_premultiplied(34, 34, 40, 120),
-            Color32::from_rgba_premultiplied(70, 70, 80, 140),
-            Color32::from_rgb(0xaa, 0xaa, 0xaa),
-        )
-    }
-}
+/// 顶条按钮色族：关（中性灰）/ 开（绿——锁定、穿透生效中）。
+/// 三态几何全等，只变底色/字色（D-32 红线）；hover 字色对齐原版 `#aaa→#ddd`。
+const SKIN_STRIP_OFF: BtnSkin = BtnSkin::new(
+    Color32::from_rgba_premultiplied(34, 34, 40, 120),
+    Color32::from_rgba_premultiplied(47, 47, 55, 165),
+    Color32::from_rgba_premultiplied(55, 55, 65, 195),
+    Stroke {
+        width: 1.0,
+        color: Color32::from_rgba_premultiplied(70, 70, 80, 140),
+    },
+    Color32::from_rgb(0xaa, 0xaa, 0xaa),
+    Color32::from_rgb(0xdd, 0xdd, 0xdd),
+);
+const SKIN_STRIP_ON: BtnSkin = BtnSkin::new(
+    Color32::from_rgba_premultiplied(13, 40, 20, 160),
+    Color32::from_rgba_premultiplied(17, 50, 25, 200),
+    Color32::from_rgba_premultiplied(19, 58, 29, 230),
+    Stroke {
+        width: 1.0,
+        color: Color32::from_rgba_premultiplied(40, 100, 50, 200),
+    },
+    Color32::from_rgb(0x9f, 0xd8, 0x9f),
+    Color32::from_rgb(0xd8, 0xf0, 0xd8),
+);
 
 #[cfg(test)]
 mod tests {

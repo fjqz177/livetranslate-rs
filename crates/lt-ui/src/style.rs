@@ -180,6 +180,106 @@ pub fn stabilize_widget_strokes(v: &mut egui::Visuals) {
     v.widgets.active.corner_radius = radius;
 }
 
+// ── 按钮三态色（D-32 红线 + 2026-09-17 走查 A1 修复） ──
+
+/// 按钮三态色族。几何（描边宽/圆角/内边距）三态全等是硬约束（D-32：文字
+/// 位置 = 内边距 − bg_stroke.width），反馈只能由颜色承担。
+#[derive(Clone, Copy)]
+pub struct BtnSkin {
+    pub idle: Color32,
+    pub hover: Color32,
+    pub pressed: Color32,
+    /// 描边（三态同一条；宽度三态相等即可，0 宽描边也合法）
+    pub stroke: egui::Stroke,
+    pub text: Color32,
+    pub text_hover: Color32,
+}
+
+impl BtnSkin {
+    pub const fn new(
+        idle: Color32,
+        hover: Color32,
+        pressed: Color32,
+        stroke: egui::Stroke,
+        text: Color32,
+        text_hover: Color32,
+    ) -> Self {
+        Self {
+            idle,
+            hover,
+            pressed,
+            stroke,
+            text,
+            text_hover,
+        }
+    }
+}
+
+/// 把色族写进三态 visuals。**必须三态成对设置**：只设部分状态会让该状态
+/// 沿用宿主默认（描边宽度不同 → 文字位移，D-32 的原始病根）。
+fn apply_skin(v: &mut egui::Visuals, skin: &BtnSkin) {
+    for (w, fill, text) in [
+        (&mut v.widgets.inactive, skin.idle, skin.text),
+        (&mut v.widgets.hovered, skin.hover, skin.text_hover),
+        (&mut v.widgets.active, skin.pressed, skin.text_hover),
+    ] {
+        w.weak_bg_fill = fill;
+        w.bg_stroke = skin.stroke;
+        w.fg_stroke = egui::Stroke::new(1.0, text);
+    }
+    v.widgets.active.corner_radius = v.widgets.inactive.corner_radius;
+    v.widgets.hovered.corner_radius = v.widgets.inactive.corner_radius;
+}
+
+/// 三态色按钮（分配式）。返回 [`egui::Response`]。
+///
+/// **不走 `Button::fill`**：egui 0.36 的显式 fill 会覆盖全部状态底色
+/// （`Button::fill` 文档原话 "will override any on-hover effects"），
+/// 按钮底色实际取 `weak_bg_fill`（`Style::button_style`）——两者叠加曾使
+/// 悬浮窗/确认窗/字幕窗顶条的 hover、按压反馈全部失效（A1，2026-09-17 走查）。
+/// 这里改为在作用域内设置三态色，由 egui 按上一帧响应自动择色
+/// （1 帧滞后，与本应用其它 egui 按钮一致）。文本**不得**再设显式色
+/// （显式色会压过 `fg_stroke` 的三态切换）。
+pub fn skin_button(
+    ui: &mut egui::Ui,
+    label: impl Into<String>,
+    skin: &BtnSkin,
+    size: f32,
+    corner_radius: f32,
+    min_size: egui::Vec2,
+) -> egui::Response {
+    let label = label.into();
+    ui.scope(|ui| {
+        apply_skin(&mut ui.style_mut().visuals, skin);
+        ui.add(
+            egui::Button::new(egui::RichText::new(label).size(size))
+                .corner_radius(corner_radius)
+                .min_size(min_size),
+        )
+    })
+    .inner
+}
+
+/// 三态色按钮（指定矩形放置；字幕窗顶条按几何排布，与 [`skin_button`] 同源）。
+pub fn skin_button_at(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    label: impl Into<String>,
+    skin: &BtnSkin,
+    size: f32,
+    corner_radius: f32,
+) -> egui::Response {
+    let label = label.into();
+    ui.scope(|ui| {
+        apply_skin(&mut ui.style_mut().visuals, skin);
+        ui.put(
+            rect,
+            egui::Button::new(egui::RichText::new(label).size(size)).corner_radius(corner_radius),
+        )
+    })
+    .inner
+}
+
 // ── 滚动条样式（WP-C） ──
 //
 // egui 0.36 默认 floating 细条（2px 静止 + hover 展开 + fade 动画）抓取困难；

@@ -8,6 +8,7 @@
 //! （半径 = [`RADIUS`]，与 app.rs 同源）。G-14 合规：帧内绘制、零同步阻塞。
 
 use crate::state::{AppUi, ConfirmKind, WinAction, WinId};
+use crate::style::{self, BtnSkin};
 use egui::{Color32, CornerRadius, RichText, Stroke, Ui};
 
 /// 窗口圆角（逻辑 px；宿主 SetWindowRgn 裁区同源此值——app.rs CONFIRM_CORNER_RADIUS）
@@ -33,12 +34,60 @@ const TEXT_BRIGHT: Color32 = Color32::from_rgb(0xF5, 0xF5, 0xF5);
 const DANGER_FILL: Color32 = Color32::from_rgb(0x9A, 0x33, 0x33);
 const DANGER_STROKE: Color32 = Color32::from_rgb(0xC0, 0x5A, 0x5A);
 const DANGER_HOVER: Color32 = Color32::from_rgb(0xAF, 0x3E, 0x3E);
+/// 按压态 = hover 再提一档（2026-09-17 A1 修复首次落地，实机目测校准）
+const DANGER_PRESSED: Color32 = Color32::from_rgb(0xC0, 0x47, 0x47);
 const DANGER_DOT: Color32 = Color32::from_rgb(0xE0, 0x56, 0x56);
-/// 中性主钮（恢复默认/清空）
+
 const PRIMARY_FILL: Color32 = Color32::from_rgb(0x40, 0x45, 0x50);
 const PRIMARY_STROKE: Color32 = Color32::from_rgb(0x5A, 0x60, 0x6D);
 const PRIMARY_HOVER: Color32 = Color32::from_rgb(0x4E, 0x54, 0x60);
+const PRIMARY_PRESSED: Color32 = Color32::from_rgb(0x5A, 0x61, 0x72);
 const GHOST_HOVER: Color32 = Color32::from_rgb(0x30, 0x34, 0x3D);
+const GHOST_PRESSED: Color32 = Color32::from_rgb(0x3A, 0x3F, 0x4A);
+
+/// 确认窗按钮色族（三态几何全等，只变底色/字色——D-32 红线）
+const SKIN_PRIMARY: BtnSkin = BtnSkin::new(
+    PRIMARY_FILL,
+    PRIMARY_HOVER,
+    PRIMARY_PRESSED,
+    Stroke {
+        width: 1.0,
+        color: PRIMARY_STROKE,
+    },
+    TEXT_BRIGHT,
+    TEXT_BRIGHT,
+);
+const SKIN_DANGER: BtnSkin = BtnSkin::new(
+    DANGER_FILL,
+    DANGER_HOVER,
+    DANGER_PRESSED,
+    Stroke {
+        width: 1.0,
+        color: DANGER_STROKE,
+    },
+    TEXT_BRIGHT,
+    TEXT_BRIGHT,
+);
+const SKIN_GHOST: BtnSkin = BtnSkin::new(
+    Color32::TRANSPARENT,
+    GHOST_HOVER,
+    GHOST_PRESSED,
+    Stroke {
+        width: 1.0,
+        color: BODY_STROKE,
+    },
+    TEXT_DIM,
+    TEXT_DIM,
+);
+/// 标题行关闭钮（无描边幽灵款；hover 底色浮出 + 字色提亮）
+const SKIN_ICON: BtnSkin = BtnSkin::new(
+    Color32::TRANSPARENT,
+    GHOST_HOVER,
+    GHOST_PRESSED,
+    Stroke::NONE,
+    TEXT_DIM,
+    TEXT_BRIGHT,
+);
 
 /// 确认窗内容（仅 WinId::Confirm 帧内调用；收敛副作用：确定 → [`ConfirmKind`]
 /// 效果 + HideConfirm；取消/X/ESC → HideConfirm；未收敛 → 状态放回等下一帧）
@@ -196,50 +245,21 @@ fn primary_label_of(kind: &ConfirmKind) -> String {
     lt_i18n::t(key)
 }
 
+/// 主按钮（三态色经 `skin_button` 由 egui 择色——显式 fill 会吃掉 hover/按压，
+/// 见 style.rs::skin_button 注；旧实现把三态写在 `bg_fill` 上，按钮读的是
+/// `weak_bg_fill`，反馈实际从未生效）
 fn primary_button(ui: &mut Ui, label: &str, danger: bool) -> bool {
-    let (fill, hover, stroke) = if danger {
-        (DANGER_FILL, DANGER_HOVER, DANGER_STROKE)
-    } else {
-        (PRIMARY_FILL, PRIMARY_HOVER, PRIMARY_STROKE)
-    };
-    ui.visuals_mut().widgets.hovered.bg_fill = hover;
-    ui.visuals_mut().widgets.active.bg_fill = hover;
-    ui.add(
-        egui::Button::new(RichText::new(label).size(14.0).color(TEXT_BRIGHT))
-            .fill(fill)
-            .stroke(Stroke::new(1.0, stroke))
-            .corner_radius(CornerRadius::same(6))
-            .min_size(egui::vec2(96.0, 32.0)),
-    )
-    .clicked()
+    let skin = if danger { &SKIN_DANGER } else { &SKIN_PRIMARY };
+    style::skin_button(ui, label, skin, 14.0, 6.0, egui::vec2(96.0, 32.0)).clicked()
 }
 
 fn ghost_button(ui: &mut Ui, label: &str, w: f32) -> bool {
-    ui.visuals_mut().widgets.hovered.bg_fill = GHOST_HOVER;
-    ui.visuals_mut().widgets.active.bg_fill = GHOST_HOVER;
-    ui.add(
-        egui::Button::new(RichText::new(label).size(14.0).color(TEXT_DIM))
-            .fill(Color32::TRANSPARENT)
-            .stroke(Stroke::new(1.0, BODY_STROKE))
-            .corner_radius(CornerRadius::same(6))
-            .min_size(egui::vec2(w, 32.0)),
-    )
-    .clicked()
+    style::skin_button(ui, label, &SKIN_GHOST, 14.0, 6.0, egui::vec2(w, 32.0)).clicked()
 }
 
-/// 标题行关闭钮（无描边幽灵款；hover 浮出底色）
+/// 标题行关闭钮（无描边幽灵款；hover 浮出底色 + 字色提亮）
 fn icon_button(ui: &mut Ui, glyph: &str) -> bool {
-    ui.visuals_mut().widgets.hovered.bg_fill = GHOST_HOVER;
-    ui.visuals_mut().widgets.active.bg_fill = GHOST_HOVER;
-    ui.visuals_mut().widgets.hovered.fg_stroke = Stroke::new(1.0, TEXT_BRIGHT);
-    ui.add(
-        egui::Button::new(RichText::new(glyph).size(14.0).color(TEXT_DIM))
-            .fill(Color32::TRANSPARENT)
-            .stroke(Stroke::NONE)
-            .corner_radius(CornerRadius::same(5))
-            .min_size(egui::vec2(26.0, 26.0)),
-    )
-    .clicked()
+    style::skin_button(ui, glyph, &SKIN_ICON, 14.0, 5.0, egui::vec2(26.0, 26.0)).clicked()
 }
 
 /// 确认结果的执行（与既有页内直接改 settings 的模式一致；所有效果幂等、单发）。

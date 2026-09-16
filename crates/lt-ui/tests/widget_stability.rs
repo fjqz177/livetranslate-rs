@@ -8,9 +8,8 @@
 //! 按压瞬间文字右移 1 逻辑 px（无头探针实测 6.0→7.0）。按压态与基准下限
 //! 一并入钉：任何窗口、任何按钮的三态文字位置都必须完全相等。
 
-use egui::{
-    Color32, CornerRadius, Event, Modifiers, RawInput, Rect, RichText, Sense, Stroke, Vec2,
-};
+use egui::{Color32, Event, Modifiers, RawInput, Rect, RichText, Sense, Stroke, Vec2};
+use lt_ui::style::BtnSkin;
 
 /// 渲染一帧并返回全部文本 galley 的合并 rect（hover_pos 决定指针位置）
 fn text_bbox(
@@ -124,9 +123,25 @@ fn plain_dark_theme_is_stabilized() {
 
 // ── D-32：按压态三态几何全等 + stabilize 基准下限 ──
 
-/// overlay 注入链单帧（host stabilize + overlay_ui 三态原位覆盖）：
-/// 返回按钮响应 rect 与文本 galley 合并 rect；`events` 决定指针状态。
-fn overlay_frame(ctx: &egui::Context, events: Vec<Event>) -> (Rect, Rect) {
+/// overlay 行1按钮单帧（host stabilize + 生产 `skin_button` 三态择色）：
+/// 返回按钮响应 rect、文本 galley 合并 rect、按钮底框填充色；`events` 决定指针状态。
+///
+/// 2026-09-17（A1 修复）：改为**直接调用生产助手**——旧版手抄了 host +
+/// overlay 的 visuals 链与占位按钮（两份记账），"显式 fill 吃掉三态"这类
+/// 生产偏差抄不出来。色族只影响观感，几何断言不受其取色影响。
+fn overlay_frame(ctx: &egui::Context, events: Vec<Event>) -> (Rect, Rect, Color32) {
+    /// 与 overlay.rs `SKIN_BTN` 同值（几何由 skin_button 保证）
+    const SKIN: BtnSkin = BtnSkin::new(
+        Color32::from_rgba_premultiplied(20, 20, 20, 20),
+        Color32::from_rgba_premultiplied(40, 40, 40, 40),
+        Color32::from_rgba_premultiplied(50, 55, 60, 60),
+        Stroke {
+            width: 1.0,
+            color: Color32::from_rgba_premultiplied(40, 40, 40, 40),
+        },
+        Color32::from_rgb(0xaa, 0xaa, 0xaa),
+        Color32::from_rgb(0xdd, 0xdd, 0xdd),
+    );
     let ri = RawInput {
         events,
         ..Default::default()
@@ -141,53 +156,37 @@ fn overlay_frame(ctx: &egui::Context, events: Vec<Event>) -> (Rect, Rect) {
         let mut v = egui::Visuals::dark();
         lt_ui::style::stabilize_widget_strokes(&mut v);
         ui.style_mut().visuals = v;
-        // overlay_ui 原位覆盖（overlay.rs：三态必须每帧成对设置，D-32）
+        // overlay 控件规格（overlay.rs overlay_ui 原位覆盖）
         ui.style_mut().spacing.button_padding = Vec2::new(6.0, 0.0);
         ui.style_mut().spacing.item_spacing = Vec2::new(6.0, 2.0);
         ui.style_mut().spacing.interact_size = Vec2::new(8.0, 18.0);
-        let vis = &mut ui.style_mut().visuals;
-        vis.widgets.inactive.bg_fill = Color32::from_rgba_premultiplied(20, 20, 20, 20);
-        vis.widgets.inactive.bg_stroke =
-            Stroke::new(1.0, Color32::from_rgba_premultiplied(40, 40, 40, 40));
-        vis.widgets.hovered.bg_fill = Color32::from_rgba_premultiplied(40, 40, 40, 40);
-        vis.widgets.hovered.bg_stroke =
-            Stroke::new(1.0, Color32::from_rgba_premultiplied(40, 40, 40, 40));
-        vis.widgets.active.bg_fill = Color32::from_rgba_premultiplied(50, 55, 60, 60);
-        vis.widgets.active.bg_stroke =
-            Stroke::new(1.0, Color32::from_rgba_premultiplied(40, 40, 40, 40));
-        vis.widgets.active.corner_radius = vis.widgets.inactive.corner_radius;
-        // 占位（button 规格 = row1 small_btn：11px 文字 / 20px 高 / 圆角 3）
+        // 占位（按钮不在指针初始位置）
         ui.allocate_rect(
             Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(50.0, 40.0)),
             Sense::hover(),
         );
-        let r = ui.add(
-            egui::Button::new(
-                RichText::new("运行")
-                    .size(11.0)
-                    .color(Color32::from_rgb(0xaa, 0xaa, 0xaa)),
-            )
-            .fill(Color32::from_rgba_premultiplied(20, 20, 20, 20))
-            .stroke(Stroke::new(
-                1.0,
-                Color32::from_rgba_premultiplied(40, 40, 40, 40),
-            ))
-            .corner_radius(CornerRadius::same(3))
-            .min_size(Vec2::new(0.0, 20.0)),
-        );
-        btn = r.rect;
+        // 行1 规格 = 11px 文字 / 20px 高 / 圆角 3（同 overlay.rs::small_btn）
+        btn = lt_ui::style::skin_button(ui, "运行", &SKIN, 11.0, 3.0, Vec2::new(0.0, 20.0)).rect;
     });
     out.textures_delta.clear();
     let mut bb: Option<Rect> = None;
+    let mut fill = Color32::TRANSPARENT;
     for cl in &out.shapes {
-        if let egui::Shape::Text(t) = &cl.shape {
-            bb = Some(match bb {
-                Some(b) => b.union(t.galley.rect),
-                None => t.galley.rect,
-            });
+        match &cl.shape {
+            egui::Shape::Text(t) => {
+                bb = Some(match bb {
+                    Some(b) => b.union(t.galley.rect),
+                    None => t.galley.rect,
+                });
+            }
+            // 按钮底框：与响应矩形同心（描边画在框内，几何同源）
+            egui::Shape::Rect(r) if (r.rect.center() - btn.center()).length() < 1.0 => {
+                fill = r.fill;
+            }
+            _ => {}
         }
     }
-    (btn, bb.unwrap_or(Rect::NOTHING))
+    (btn, bb.unwrap_or(Rect::NOTHING), fill)
 }
 
 /// 悬浮窗行1按钮三态（idle / hover / 按压连跑 3 帧——read_response 有 1 帧
@@ -196,9 +195,9 @@ fn overlay_frame(ctx: &egui::Context, events: Vec<Event>) -> (Rect, Rect) {
 #[test]
 fn overlay_button_text_does_not_shift_when_pressed() {
     let ctx = egui::Context::default();
-    let (btn, t0) = overlay_frame(&ctx, vec![]);
+    let (btn, t0, _) = overlay_frame(&ctx, vec![]);
     let hit = btn.center();
-    let (_, t1) = overlay_frame(&ctx, vec![Event::PointerMoved(hit)]);
+    let (_, t1, _) = overlay_frame(&ctx, vec![Event::PointerMoved(hit)]);
     let press = vec![
         Event::PointerMoved(hit),
         Event::PointerButton {
@@ -208,9 +207,9 @@ fn overlay_button_text_does_not_shift_when_pressed() {
             modifiers: Modifiers::NONE,
         },
     ];
-    let (_, t2) = overlay_frame(&ctx, press.clone());
-    let (_, t3) = overlay_frame(&ctx, press.clone());
-    let (_, t4) = overlay_frame(&ctx, press);
+    let (_, t2, _) = overlay_frame(&ctx, press.clone());
+    let (_, t3, _) = overlay_frame(&ctx, press.clone());
+    let (_, t4, _) = overlay_frame(&ctx, press);
     for (i, t) in [&t1, &t2, &t3, &t4].iter().enumerate() {
         assert_eq!(
             t0,
@@ -220,6 +219,46 @@ fn overlay_button_text_does_not_shift_when_pressed() {
             t.top() - t0.top()
         );
     }
+}
+
+/// A1 回归：三态底色必须真的随状态变化。
+/// 旧病根（2026-09-17 走查）= 显式 `Button::fill` 覆盖状态底色 + 三态写在
+/// `bg_fill`（按钮读的是 `weak_bg_fill`）→ 悬停/按压与静止**完全同色**，
+/// 用户实机感受是"按钮没有任何反应"。择色取自上一帧响应，每态需连跑两帧收敛。
+#[test]
+fn overlay_button_fill_follows_state() {
+    let ctx = egui::Context::default();
+    let (btn, _, idle) = overlay_frame(&ctx, vec![]);
+    let hit = btn.center();
+    overlay_frame(&ctx, vec![Event::PointerMoved(hit)]);
+    let (_, _, hover) = overlay_frame(&ctx, vec![Event::PointerMoved(hit)]);
+    let press = vec![
+        Event::PointerMoved(hit),
+        Event::PointerButton {
+            pos: hit,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: Modifiers::NONE,
+        },
+    ];
+    overlay_frame(&ctx, press.clone());
+    let (_, _, down) = overlay_frame(&ctx, press);
+
+    assert_eq!(
+        idle,
+        Color32::from_rgba_premultiplied(20, 20, 20, 20),
+        "静止底 = 色族 idle"
+    );
+    assert_eq!(
+        hover,
+        Color32::from_rgba_premultiplied(40, 40, 40, 40),
+        "悬停底 = 色族 hover"
+    );
+    assert_eq!(
+        down,
+        Color32::from_rgba_premultiplied(50, 55, 60, 60),
+        "按压底 = 色族 pressed"
+    );
 }
 
 /// stabilize 基准下限：dark 默认 inactive bg_stroke 为 0 宽（Stroke::NONE），
