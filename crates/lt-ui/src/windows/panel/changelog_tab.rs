@@ -1,18 +1,20 @@
-//! 更新日志 Tab（对照原版 control_panel.py `_create_changelog_tab` +
-//! dialogs.py `_load_latest_changelog`）：
-//! 数据源 = 原版 `i18n/CHANGELOG_{lang}.md`（内嵌 assets/i18n/），语言回退
-//! 顺序与原版一致（当前语言无文件 → en）。渲染规则对齐 `_changelog_to_html`：
-//! `# 文件标题`跳过、`## 日期`大标题、`- 条目`列表（**粗体** / `code` 内联）、
-//! 其余段落正文。
+//! 更新日志 Tab：数据源 = 仓根 `CHANGELOG.md` / `CHANGELOG.en.md`（编译期 `include_str!` 内嵌；
+//! 与发布链同一份正典——发版三件套闸见 `scripts/release.ps1` 的「更新日志」段）。
+//! 语言回退：zh → 中文表，其余 → 英文表（沿用原版语义）。
 //!
-//! 已知偏差：egui 无富文本 HTML → 内联 **bold**/`code` 用 painter 逐段
-//! 分色绘制（简单词法扫描，不支持嵌套）；条目缩进/间距按原版视觉近似。
+//! 渲染规则：`# 文件标题`跳过、`## [x.y.z] - 日期`大标题、`- 条目`（**粗体** / `code` 内联）、
+//! 水平线 `---`/`***`/`___` → 分隔线、其余段落正文。
+//!
+//! 已知偏差（用户 2026-09-16 裁决：渲染改造缓办，移交清单见 docs/archive/changelog-scheme.md §5.6）：
+//! 版本标题的方括号照原样显示；`###` 无层级（按正文渲染）；`*`/`+`/`1.` 列表标记无圆点；
+//! 链接/表格/图片按字面文本。
 
 use super::{group_card, Palette};
 use egui::{Color32, RichText, Ui};
 
-const ZH_MD: &str = include_str!("../../../../../assets/i18n/CHANGELOG_zh.md");
-const EN_MD: &str = include_str!("../../../../../assets/i18n/CHANGELOG_en.md");
+// 正典在仓库根（与发布链、GitHub Release 正文同源；发版三件套闸见 scripts/release.ps1）
+const ZH_MD: &str = include_str!("../../../../../CHANGELOG.md");
+const EN_MD: &str = include_str!("../../../../../CHANGELOG.en.md");
 
 /// 按当前界面语言取 changelog 原文（原版 _load_latest_changelog 的回退顺序）
 pub fn changelog_text(lang: &str) -> &'static str {
@@ -51,6 +53,14 @@ fn render_markdown(ui: &mut Ui, text: &str) {
             continue; // 文件标题（原版 skip file title）
         }
         if trimmed.is_empty() {
+            ui.add_space(6.0);
+            continue;
+        }
+        // 水平线（`---` / `***` / `___`）：标准 Markdown 的分段标记 → 画成分隔线，
+        // 别按正文打印裸横线（用户 2026-09-16 要求保留分隔线；其余渲染改造已缓办）
+        if is_thematic_break(trimmed) {
+            ui.add_space(6.0);
+            ui.separator();
             ui.add_space(6.0);
             continue;
         }
@@ -129,6 +139,15 @@ fn inline_rich(ui: &mut Ui, text: &str, size: f32) {
     });
 }
 
+/// 标准 Markdown 的水平线：≥3 个同类字符（`-` / `*` / `_`，两侧空白容忍）
+fn is_thematic_break(line: &str) -> bool {
+    let t = line.trim();
+    t.len() >= 3
+        && (t.bytes().all(|b| b == b'-')
+            || t.bytes().all(|b| b == b'*')
+            || t.bytes().all(|b| b == b'_'))
+}
+
 /// 标记闭合后的跳过长度（** 2 字节 / ` 1 字节；错切多字节 UTF-8 会 panic）
 fn mark_len(is_bold: bool) -> usize {
     if is_bold {
@@ -167,16 +186,42 @@ mod tests {
         }
     }
 
-    /// 渲染规则：`# 文件标题`行不产出版本日期；`## `行是日期标题
+    /// 结构：至少一个版本段，且首段就是当前版本（抬版本号与写段落必须同提交）
     #[test]
-    fn changelog_shape_matches_original_rules() {
-        let text = changelog_text("zh");
-        let mut h2 = 0;
-        for line in text.lines() {
-            if line.starts_with("## ") {
-                h2 += 1;
-            }
+    fn changelog_top_section_is_current_version() {
+        let v = env!("CARGO_PKG_VERSION");
+        let first = changelog_text("zh")
+            .lines()
+            .find(|l| l.starts_with("## "))
+            .expect("CHANGELOG.md 应至少有一个版本段落（## [x.y.z] - YYYY-MM-DD）");
+        assert!(
+            first.contains(&format!("[{v}]")),
+            "首段应为当前版本 [{v}]，实际：{first}"
+        );
+    }
+
+    /// 双语守恒：zh / en 的版本标题列表逐字相等（含顺序）
+    #[test]
+    fn changelog_zh_en_versions_match() {
+        fn heads(t: &str) -> Vec<&str> {
+            t.lines().filter(|l| l.starts_with("## ")).collect()
         }
-        assert!(h2 >= 3, "CHANGELOG_zh.md 应含多个日期条目，实际 {h2}");
+        let (zh, en) = (heads(changelog_text("zh")), heads(changelog_text("en")));
+        assert!(!zh.is_empty(), "CHANGELOG.md 应至少有一个版本段落");
+        assert_eq!(
+            zh, en,
+            "CHANGELOG.en.md 的版本段必须与中文逐字一致（号 + 日期 + 顺序）"
+        );
+    }
+
+    /// 水平线识别（纯函数直测，不走 UI）
+    #[test]
+    fn thematic_break_detection() {
+        for s in ["---", "----", "***", "___", "  ---  "] {
+            assert!(is_thematic_break(s), "{s} 应视为分隔线");
+        }
+        for s in ["- 条目", "--", "**粗体**", "-*-", ""] {
+            assert!(!is_thematic_break(s), "{s} 不应视为分隔线");
+        }
     }
 }
