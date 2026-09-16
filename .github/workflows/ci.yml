@@ -87,8 +87,19 @@ jobs:
         run: cargo build --release -p lt-app --locked
 
       - name: Smoke release exe (--version)
-        # WD-2 旗标零初始化短路——证明产物真能启动
-        run: .\target\release\livetranslate.exe --version
+        # WD-2 旗标零初始化短路——证明产物真能启动。
+        # 必须 Start-Process 取真退出码：GUI 子系统 exe 裸调用时 pwsh 不等（实测 14ms 返回）也不设
+        # $LASTEXITCODE（沿用上一个命令的陈旧值）→ 原写法恒绿、只证明文件存在（G-27）
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = 'target\release\livetranslate.exe'
+          $out = Join-Path ([IO.Path]::GetTempPath()) "lt-version-$PID.txt"   # 唯一名（G-22）
+          $p = Start-Process -FilePath $exe -ArgumentList '--version' -NoNewWindow -Wait -PassThru -RedirectStandardOutput $out
+          $banner = if (Test-Path -LiteralPath $out) { (Get-Content -LiteralPath $out -Raw).Trim() }
+          Remove-Item -LiteralPath $out -Force -ErrorAction SilentlyContinue
+          if ($p.ExitCode -ne 0) { Write-Error "exe --version 退出码 $($p.ExitCode)（冒烟失败）"; exit 1 }
+          if (-not $banner) { Write-Error 'exe --version 无输出——旗标短路失效？'; exit 1 }
+          Write-Host "冒烟通过：$banner"
 
       - name: Package distribution zip (WD-1)
         run: pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/package_release.ps1

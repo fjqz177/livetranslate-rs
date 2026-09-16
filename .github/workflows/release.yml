@@ -114,7 +114,18 @@ jobs:
         run: cargo build --release -p lt-app --locked
 
       - name: Smoke release exe (--version)
-        run: .\target\release\livetranslate.exe --version
+        # 裸调用 `& exe` 对 GUI 子系统程序不等、也不设 $LASTEXITCODE——那样写恒绿（G-27）；
+        # 必须 Start-Process 取真退出码（与 ci.yml 同步，改动须两文件同改）
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = 'target\release\livetranslate.exe'
+          $out = Join-Path ([IO.Path]::GetTempPath()) "lt-version-$PID.txt"   # 唯一名（G-22）
+          $p = Start-Process -FilePath $exe -ArgumentList '--version' -NoNewWindow -Wait -PassThru -RedirectStandardOutput $out
+          $banner = if (Test-Path -LiteralPath $out) { (Get-Content -LiteralPath $out -Raw).Trim() }
+          Remove-Item -LiteralPath $out -Force -ErrorAction SilentlyContinue
+          if ($p.ExitCode -ne 0) { Write-Error "exe --version 退出码 $($p.ExitCode)（冒烟失败）"; exit 1 }
+          if (-not $banner) { Write-Error 'exe --version 无输出——旗标短路失效？'; exit 1 }
+          Write-Host "冒烟通过：$banner"
 
       - name: Package distribution zip（单一真源 = scripts/package_release.ps1）
         run: pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/package_release.ps1

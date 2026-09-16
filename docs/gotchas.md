@@ -227,6 +227,15 @@
 - **对策**：喂给 tar 的路径一律转正斜杠 + 加 `--force-local`；tar 选型也要挑 GNU tar（Windows 自带 bsdtar 对 `.tar.bz2` 要外挂 bzip2，实测直接失败 `Child process exited with status 143`）。
 - **证据**：2026-09-15 `scripts/fetch_sherpa_libs.ps1` 预解包改造实测（两种报错各复现一次后修复）。
 
+## G-27 pwsh 裸调用 GUI 子系统 exe：不等待、不设退出码（CI「冒烟」恒绿）
+
+- **触发**：在 PowerShell 里裸调用 GUI 子系统程序（本仓 `livetranslate.exe`，PE Subsystem=2）——典型是 CI 的 `--version` 冒烟步骤。
+- **症状**：命令十几毫秒就返回（进程才刚起来、输出根本没接住），`$LASTEXITCODE` 不更新（沿用上一个命令的陈旧值）；exe 一启动就崩也发现不了——冒烟步骤恒绿，实际只证明了"文件存在"。
+- **根因**：PowerShell 只对控制台子系统程序等待并采集退出码；GUI 子系统程序按其"不占控制台"语义被当作不等待处理。
+- **对策**：一律 `Start-Process -Wait -PassThru -RedirectStandardOutput` 取真退出码（`-PassThru` 给进程对象 → `.ExitCode`；重定向还能顺带断言 `--version` 有输出）。本仓两处冒烟（ci.yml / release.yml）已按此修复；发布引擎 `release.ps1` 的 build ② 同款。
+- **证据**：2026-09-16 实测（pwsh 7.6.6）：先 `cmd /c exit 7` 立基准 → 裸调用 exe 后 `$LASTEXITCODE` 仍是 7、耗时 14ms 且无输出；`Start-Process` 版得 ExitCode=0 + banner `livetranslate 0.1.0`。文件不存在时两种写法都会报错（裸调用 CommandNotFoundException / Start-Process InvalidOperationException）。
+- **版本**：pwsh 7.6.6（行为自 Windows PowerShell 5.1 起一致）。
+
 ---
 
 ## 候选清单（尚未收编——能五段式实证表述才收编，不臆造）
