@@ -16,7 +16,7 @@
 
 | 文档 | 状态 | 内容一句话 |
 |---|---|---|
-| `changelog-scheme.md` | 施工中 | 更新日志机制：仓根正典 + 发版三件套闸 + 应用内编译期内嵌（D-91） |
+| （无） | | |
 
 ## 长期文档（有完结条件，满足即归档）
 
@@ -31,6 +31,7 @@
 
 | 文档 | 一句话（D-xx） | 完工日期 |
 |---|---|---|
+| `changelog-scheme.md` | 更新日志机制：仓根正典（`CHANGELOG.md`/`.en.md`）+ 发版三件套闸（check ② / CI `notes` 早警告）+ 应用内编译期内嵌（D-91） | 2026-09-16 |
 | `ci-workflow-suite.md` | CI 工作流全家桶：单 job 整脚本入 CI + 工具链钉版 + cargo-deny + tag→Draft 发布链（D-88） | 2026-09-15 |
 | `quit-flow-redesign.md` | 退出与确认系统重做：专用确认窗包办六确认（D-87） | 2026-09-14 |
 | `agents-md-overhaul.md` | 指令体系四层化：AGENTS 总纲+坑册+七卡+守护第七项+pwsh-only（ADR-15/16） | 2026-09-14 |

@@ -1,8 +1,9 @@
 # 更新日志机制（changelog-scheme）
 
-> 状态：**施工中**（2026-09-16 定稿；决策登记 decisions.md **D-91**）| 日期：2026-09-16
+> 状态：**完工已归档**（2026-09-16；决策 decisions.md **D-91**）| 日期：2026-09-16 | 前缀：CG-（局部号，出本文必带路径）
+> 实现：`0e9acca` 定稿 → `3a665fc` 正典迁仓根 + 内嵌改向 → `42fc5a3` 引擎闸与 `notes` → `60bb174` CI 早警告 → 收口提交。
+> 完工标准满足：`cargo test --workspace` 全绿 + clippy 0 + 五守护 + `precommit.ps1` 全过；闸的**十条反例实测 10/10**（删段/缺括号/空段体/抬版本/重复段 → 红；CRLF/围栏内假标题/段尾 `---`/`*` 条目 → 绿且正文正确）。
 > 触发：1.0.0 发布就绪评估第①项——应用内更新日志仍是 Python 原版文案；同一份文件两个副本、位置不当、与发布链零连接
-> 前缀：CG-（局部号，出本文必带路径）
 
 ## 一、背景与裁决
 
@@ -101,15 +102,15 @@
 | Release 正文 = 该版本段落 | `draft`/`promote` 写入（同一份文件） | 结构上不可能不一致 |
 | **内容写得对不对、全不全** | **人**（发版前看草稿 / 应用内页） | **没有机器兜底——这是刻意的** |
 
-## 五、施工卡（M1~M5，本轮已完成者标 ✅）
+## 五、施工卡（M1~M5，全部完工）
 
-| # | 步 | 内容 |
-|---|---|---|
-| M1 | 定稿 + 登记 | 本文档 + `decisions.md` D-91（并对 D-90 行尾加注）+ `docs/README.md` 活跃表 + `AGENTS.md` 三处 + `docs/distribution.md` 三处（含新增 §3.4） |
-| M2 | 正典落位 + 引用改向 | 新建两份正典（§2.3）；`git rm` 4 个旧文件；`changelog_tab.rs`：`include_str!` 改向、头注改写、水平线分支、`is_thematic_break` 纯函数、测试改写（见 §5.6） |
-| M3 | 引擎改造 | `release.ps1`：新增「更新日志」函数段（六个函数，见 §5.3）+ `check ②` 插入（原 ②~⑤ 顺延 ③~⑥）+ `draft ④` + `promote` 改造（`-NotesFile` 降为可选覆盖）+ `notes` 动词 + 头注/用法/派发同步；`release.yml:47` 注释步骤号 |
-| M4 | CI 早警告 | `ci.yml` 在 Checkout 之后插一步 `release.ps1 notes`（只读、不碰 GitHub） |
-| M5 | 收口归档 | 本文档标完工 → `git mv` 进 `docs/archive/` → `docs/README.md` 表行移动 → 全仓旧路径 grep 复盘 → `AGENTS` §8 收束 → 门禁与全量测试 |
+| # | 步 | 内容 | 状态 |
+|---|---|---|---|
+| M1 | 定稿 + 登记 | 本文档 + `decisions.md` D-91（并对 D-90 行尾加注）+ `docs/README.md` 活跃表 + `AGENTS.md` 三处 + `docs/distribution.md` 三处（含新增 §3.4） | ✅ `0e9acca` |
+| M2 | 正典落位 + 引用改向 | 新建两份正典（§2.3）；`git rm` 4 个旧文件；`changelog_tab.rs`：`include_str!` 改向、头注改写、水平线分支、`is_thematic_break` 纯函数、测试改写（见 §5.6） | ✅ `3a665fc` |
+| M3 | 引擎改造 | `release.ps1`：新增「更新日志」函数段（六个函数，见 §5.3）+ `check ②` 插入（原 ②~⑤ 顺延 ③~⑥）+ `draft ④` + `promote` 改造（`-NotesFile` 降为可选覆盖）+ `notes` 动词 + 头注/用法/派发同步；`release.yml:47` 注释步骤号 | ✅ `42fc5a3` |
+| M4 | CI 早警告 | `ci.yml` 在 Checkout 之后插一步 `release.ps1 notes`（只读、不碰 GitHub） | ✅ `60bb174` |
+| M5 | 收口归档 | 本文档标完工 → `git mv` 进 `docs/archive/` → `docs/README.md` 表行移动 → 全仓旧路径 grep 复盘 → `AGENTS` §8 收束 → 门禁与全量测试 | ✅ 收口提交 |
 
 **改动面清单**（谁引用了 changelog——「不许可顺手多改」的边界）：
 

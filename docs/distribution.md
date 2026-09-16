@@ -70,7 +70,7 @@
 ### 3.4 更新日志与发布正文（D-91 起）
 
 - **正典**：仓根 `CHANGELOG.md`（中文）/ `CHANGELOG.en.md`（英文）——唯一编辑入口。应用内「更新日志」页（编译期内嵌）与 GitHub Release 正文（引擎抽取）都取自这两份，仓库里不存在第二处副本。
-- **格式**：标准 Markdown。机器只认三样——版本标题行 `## [x.y.z] - YYYY-MM-DD`、段落边界（下一个**围栏外**的版本标题行或文件尾）、段内至少一条列表项（`-` / `*` / `+` / `1.`）。细则与示例见 `docs/changelog-scheme.md` 附录 A。
+- **格式**：标准 Markdown。机器只认三样——版本标题行 `## [x.y.z] - YYYY-MM-DD`、段落边界（下一个**围栏外**的版本标题行或文件尾）、段内至少一条列表项（`-` / `*` / `+` / `1.`）。细则与示例见 `docs/archive/changelog-scheme.md` 附录 A。
 - **发版三件套**：`Cargo.toml` 版本号 = tag 名 = CHANGELOG 同号段落（`release.ps1 check ②` 硬闸；CI 每次 push 用只读动词 `notes` 早警告）。抬版本号、写段落、重生成 `Cargo.lock` 必须同一个提交。
 - **Release 正文**：`draft` 自动写入（中文段 + `<details>` 折叠英文段）；`promote` 默认取同一段落，`-NotesFile` 可显式覆盖。
 - **发版时怎么写**：`git log --no-merges --oneline <上个已发布版本 tag>..HEAD` 汇总 → 只挑用户可见变更（新功能 / 行为变化 / 修复 / 移除；重构、测试、CI 不进）→ 中文一段，英文同构一段（英文可短，但不能缺）。
