@@ -2,21 +2,23 @@
   LiveTranslate-rs 发布引擎 —— 本地与 CI 共用同一份（D-90；与 .github/workflows/release.yml 成对）
 
   用法：pwsh -File scripts/release.ps1 <动词>
-    check     发布前校验：版本一致 / 工作区干净 / 在 main / 该提交 ci 绿 / 构建前置就位
+    check     发布前校验：版本一致 / 更新日志 / 工作区干净 / 在 main / 该提交 ci 绿 / 构建前置就位
     build     编译单 exe → --version 冒烟（取真退出码）→ 核对 exe 内嵌版本
     pack      打包 zip + sha256 边车 + build-info.txt（全部落 dist/）
     draft     建/刷新 GitHub 草稿并上传（已发布则拒绝覆盖；上传前核对 tag 指向本提交）
+    notes     只读：更新日志闸 + 打印本版 Release 正文预览（CI 早警告也用这个动词）
     verify    回读校验：从 Release 下载 zip 与边车，比对 sha256
     rehearse  演练 = check+build+pack（不发布，不碰任何 Release）
     release   本地一条龙 = check+build+pack+draft+verify
-    promote   转正 draft → published（唯一不可逆；必须 -NotesFile <更新日志.md>）
+    promote   转正 draft → published（唯一不可逆；正文默认取 CHANGELOG 本版段落）
 
   版本口径：只发正式版本——版本号必须是不带后缀的 x.y.z（预发布在 check ① 直接拒，不白等构建）
 
   三条铁律：
     ① 发布物必须对应 tag 指向的那个提交（draft / promote 前核对远端 tag ↔ 本地 HEAD）
     ② 已发布的字节不可改（只有草稿允许覆盖）
-    ③ 转正是唯一不可逆动作，必须显式给出更新日志文件
+    ③ 转正是唯一不可逆动作：必须先有本版 CHANGELOG 段落（check ② 硬闸）；
+       正文默认由该段落生成，-NotesFile 可显式覆盖（真源 = 仓根 CHANGELOG.md / CHANGELOG.en.md）
 
   两个通道：
     正式 = 打 tag 推送 → CI 按序跑 check→build→pack→draft→verify（本机 release 是等价备胎）
@@ -27,9 +29,9 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('check', 'build', 'pack', 'draft', 'verify', 'rehearse', 'release', 'promote')]
+    [ValidateSet('check', 'build', 'pack', 'draft', 'notes', 'verify', 'rehearse', 'release', 'promote')]
     [string]$Verb,
-    [string]$NotesFile,          # 仅 promote 用：写好的更新日志 md 路径
+    [string]$NotesFile,          # 仅 promote 用（可选）：显式覆盖 Release 正文
     [switch]$Rehearsal           # 演练模式：禁写动词、跳过「主线 / ci 绿」两道闸
 )
 $ErrorActionPreference = 'Stop'
@@ -89,7 +91,92 @@ function Assert-TagPointsHere {
     Note "远端 tag 指向本提交 $($head.Substring(0, 7))"
 }
 
-# ─────────────────────────────────── check：五道发布前校验 ───────────────────────────────────
+# ──────────────────────── 更新日志（发版三件套之一；正典 = 仓根两份） ────────────────────────
+# 与应用内「更新日志」页同一份文件（crates/lt-ui/src/windows/panel/changelog_tab.rs 的 include_str!）。
+# 格式 = 标准 Markdown；机器只认三样：版本标题行、段落边界、段内有没有列表项（D-91 的机制文档
+# 在 docs/archive/changelog-scheme.md，格式标准 = 其附录 A）。
+$ChangeLog      = @{ Zh = 'CHANGELOG.md'; En = 'CHANGELOG.en.md' }
+# 版本标题行：方括号必带；## 后允许无空格、行尾允许空白
+$ChangeLogHead  = '^##\s*\[(\d+\.\d+\.\d+)\]\s*-\s*(\d{4}-\d{2}-\d{2})\s*$'
+# 段体非空的判据：标准 Markdown 四种列表标记都算条目
+$ChangeLogItem  = '^\s*([-*+]|\d+\.)\s+\S'
+# 水平线：段尾的分隔线不进 Release 正文（分隔线是排版，不是内容）
+$ChangeLogHr    = '^\s*(-{3,}|\*{3,}|_{3,})\s*$'
+# 代码围栏：标准 Markdown 代码块内部的 ## 不算段落边界
+$ChangeLogFence = '^\s*(```|~~~)'
+
+function Get-ChangelogSections([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path)) { Die "缺更新日志 $Path（正典 = 仓根 CHANGELOG.md / CHANGELOG.en.md）" }
+    # 行尾归一：LF / CRLF 都吃（core.autocrlf 因机器而异）
+    $lines = ([IO.File]::ReadAllText((Resolve-Path -LiteralPath $Path).Path) -replace "`r`n", "`n") -split "`n"
+    $out = @(); $cur = $null; $inFence = $false
+    foreach ($ln in $lines) {
+        if ($ln -match $ChangeLogFence) { $inFence = -not $inFence }      # 成对切换（``` 与 ~~~ 各自成对）
+        if (-not $inFence -and $ln -match $ChangeLogHead) {
+            if ($cur) { $out += $cur }
+            $cur = [pscustomobject]@{ Version = $Matches[1]; Date = $Matches[2]; Body = @() }
+            continue
+        }
+        if ($cur) { $cur.Body += $ln }
+    }
+    if ($cur) { $out += $cur }
+    # 不能写 `, $out`：整个数组会被当成「一个对象」输出，调用侧 @() 只包回 1 个元素（实测踩过）
+    $out
+}
+
+function Get-ChangelogSection([string]$Path, [string]$Version) {
+    # 整串相等，不是子串匹配
+    $hit = @(Get-ChangelogSections $Path | Where-Object { $_.Version -eq $Version })
+    if ($hit.Count -eq 0) { return $null }
+    if ($hit.Count -gt 1) { Die "$Path 里有 $($hit.Count) 段 $Version —— 同号段落只许一段，删掉多余的" }
+    # 段体裁剪：去尾部空行 → 去尾部水平线 → 去头部空行（用 List 逐个 RemoveAt；
+    # 别写 $b[0..($n-2)]——PowerShell 里 0..-1 会退化成 @(0,-1) 反过来取到首尾两个元素）
+    $b = [System.Collections.Generic.List[string]]::new()
+    $b.AddRange([string[]]$hit[0].Body)
+    while ($b.Count -gt 0 -and $b[$b.Count - 1].Trim() -eq '') { $b.RemoveAt($b.Count - 1) }
+    while ($b.Count -gt 0 -and $b[$b.Count - 1] -match $ChangeLogHr) { $b.RemoveAt($b.Count - 1) }
+    while ($b.Count -gt 0 -and $b[0].Trim() -eq '') { $b.RemoveAt(0) }
+    ($b -join "`n").Trim()
+}
+
+# 发版闸：zh / en 都要有本版段落，且段体至少一条列表条目
+function Assert-Changelog([string]$Version) {
+    foreach ($p in @($ChangeLog.Zh, $ChangeLog.En)) {
+        $body = Get-ChangelogSection $p $Version
+        if ($null -eq $body) { Die "$p 里没有 $Version 的段落——先写：## [$Version] - YYYY-MM-DD" }
+        if (@($body -split "`n" | Where-Object { $_ -match $ChangeLogItem }).Count -eq 0) {
+            Die "$p 的 $Version 段落是空的（至少一条列表条目，比如 - 一句话）"
+        }
+    }
+}
+
+# Release 正文 = 中文段 + 折叠英文段（GitHub 支持 <details>；标题行不带，tag 名已是页面标题）
+function Get-ReleaseNotes([string]$Version) {
+    $zh = Get-ChangelogSection $ChangeLog.Zh $Version
+    $en = Get-ChangelogSection $ChangeLog.En $Version
+    if ($en -and $en -ne $zh) { "$zh`n`n<details><summary>English</summary>`n`n$en`n`n</details>" } else { $zh }
+}
+
+# 临时正文文件：no-BOM UTF-8 + LF；文件名唯一化防并行互踩（G-22）
+function Write-ReleaseNotesFile([string]$Version) {
+    $text = (Get-ReleaseNotes $Version)
+    # WriteAllText 传 $null / 空值会静默把文件截成 0 字节（实测踩过）
+    if ([string]::IsNullOrWhiteSpace($text)) { Die '本版正文为空——CHANGELOG 段落没内容？' }
+    $p = Join-Path ([IO.Path]::GetTempPath()) "lt-notes-$Version-$PID.md"
+    [IO.File]::WriteAllText($p, ($text + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+    $p
+}
+
+# 只读动词：更新日志闸 + 打印本版正文（人肉预览；CI 早警告也用它——不碰 GitHub）
+function Do-Notes {
+    Step "notes 更新日志闸 + 本版正文预览（$Ver）" {
+        Assert-Changelog $Ver
+        Write-Host ''
+        Write-Host (Get-ReleaseNotes $Ver)
+    }
+}
+
+# ─────────────────────────────────── check：六道发布前校验 ───────────────────────────────────
 function Do-Check {
     Step "check ① 版本一致：Cargo.toml $Ver ↔ tag $Tag" {
         # 只发正式版本：带后缀的（如 0.2.0-rc.1）在这里就拒——build ② 的版本比对只认三段数字
@@ -99,7 +186,11 @@ function Do-Check {
         }
         Note "tag 由版本号派生：$Tag"
     }
-    Step 'check ② 工作区干净（发布物必须能对应到某个提交）' {
+    Step 'check ② 更新日志（CHANGELOG zh/en 均有本版段落）' {
+        Assert-Changelog $Ver        # 不因 -Rehearsal 跳过：演练正是要提前暴露它
+        Note "CHANGELOG.md / CHANGELOG.en.md 均有 $Ver 段落"
+    }
+    Step 'check ③ 工作区干净（发布物必须能对应到某个提交）' {
         if ($Rehearsal) { Note '演练模式：跳过（演练不发布）' }
         elseif ($InCi) { Note 'CI 检出即干净：跳过' }
         else {
@@ -107,7 +198,7 @@ function Do-Check {
             if ($dirty) { Die "工作区有 $($dirty.Count) 项未提交改动——先提交；只想演练可加 -Rehearsal 跳过本检查" }
         }
     }
-    Step 'check ③ 提交在主线 main 上' {
+    Step 'check ④ 提交在主线 main 上' {
         if ($Rehearsal) { Note '演练模式：跳过' }
         elseif (-not (Test-GhReady)) { Note '⚠ 没有可用的 gh：跳过——CI 发布路径上是硬闸' }
         else {
@@ -121,7 +212,7 @@ function Do-Check {
             Note '本提交已在 main 上'
         }
     }
-    Step 'check ④ 该提交有成功的 ci 运行' {
+    Step 'check ⑤ 该提交有成功的 ci 运行' {
         if ($Rehearsal) { Note '演练模式：跳过' }
         elseif (-not (Test-GhReady)) { Note '⚠ 本机没有可用的 gh（未装或未登录）：跳过——CI 发布路径上是硬闸' }
         else {
@@ -132,7 +223,7 @@ function Do-Check {
             Note "命中 $($ok.Count) 次成功的 ci 运行"
         }
     }
-    Step 'check ⑤ 构建前置就位（uv 工具链 / sherpa 预解包库）' {
+    Step 'check ⑥ 构建前置就位（uv 工具链 / sherpa 预解包库）' {
         if ($InCi) { Note 'CI：由后续 workflow 步骤保证，跳过' }
         else {
             if (-not (Test-Path '.venv')) { Die '缺 .venv（libclang + cmake）——先跑 uv sync' }
@@ -214,6 +305,13 @@ function Do-Draft {
         Invoke-Gh @('release', 'upload', '--clobber', $Tag, $Zip, $Sidecar) | Out-Null
         Note "已上传 $Artifact 与 $Artifact.sha256"
     }
+    Step 'draft ④ 正文 = CHANGELOG 本版段落（幂等刷新）' {
+        Assert-Changelog $Ver                      # draft 可能被单独调用（不经 check），本步自立
+        $f = Write-ReleaseNotesFile $Ver
+        Invoke-Gh @('release', 'edit', $Tag, '--notes-file', $f) | Out-Null
+        Remove-Item -LiteralPath $f -Force
+        Note "草稿正文已写入 $Ver 段落（中文 + 折叠英文）"
+    }
     $buildInfo = (Get-Content -LiteralPath $BuildInfoPath -Raw).Trim()
     Summary (@'
 ## 发布草稿已就绪：{0}
@@ -225,9 +323,10 @@ function Do-Draft {
 | 人工步骤 | 命令 |
 |---|---|
 | 回读校验 | `pwsh -File scripts/release.ps1 verify` |
-| 转正 | `pwsh -File scripts/release.ps1 promote -NotesFile <日志.md>` |
+| 转正 | `pwsh -File scripts/release.ps1 promote`（-NotesFile 可选覆盖）|
 
-更新日志真源（与应用内「更新日志」页同源）：`assets/i18n/CHANGELOG_zh.md` / `_en.md`
+草稿正文 = `CHANGELOG.md` / `CHANGELOG.en.md` 的 {0} 段落（中文 + 折叠英文），与应用内
+「更新日志」页同源；要改正文就改仓根那两份文件（已发布的正文不追改）。
 '@ -f $Tag, $buildInfo)
 }
 
@@ -261,29 +360,40 @@ function Do-Verify([switch]$Strict) {      # Strict：release 一条龙用——
 # ─────────────────────────────────── promote：转正（唯一不可逆） ────────────────────────────
 function Do-Promote {
     Assert-GhReady
-    if (-not $NotesFile) { Die 'promote 必须给 -NotesFile <写好的更新日志.md>（真源 assets/i18n/CHANGELOG_*.md）' }
-    if (-not (Test-Path -LiteralPath $NotesFile)) { Die "找不到日志文件：$NotesFile" }
-    Step 'promote ① 前置核对（是草稿 / 资产齐 / tag 指向本提交）' {
+    # 正文：默认 = CHANGELOG 本版段落；-NotesFile = 显式覆盖（逃生口）
+    if ($NotesFile -and -not (Test-Path -LiteralPath $NotesFile)) { Die "找不到日志文件：$NotesFile" }
+    $notesPath = $NotesFile
+    $autoNotes = $false
+    if (-not $notesPath) {
+        # 作用域纪律：Step 的 body 是子作用域（& $Body）——变量赋值必须在 Step 外面，
+        # 块内只读（子作用域读父作用域变量合法，写不出去）
+        Step "promote ① 正文就位（默认 = CHANGELOG 的 $Ver 段落）" { Assert-Changelog $Ver }
+        $notesPath = Write-ReleaseNotesFile $Ver
+        $autoNotes = $true
+        Note "正文取自 CHANGELOG $Ver 段落（中文 + 折叠英文）"
+    } else { Note "正文使用显式覆盖：$notesPath" }
+    Step 'promote ② 前置核对（是草稿 / 资产齐 / tag 指向本提交）' {
         if ((Invoke-Gh @('release', 'view', $Tag, '--json', 'isDraft', '--jq', '.isDraft')) -ne 'true') { Die "$Tag 不是草稿（已转正或不存在）" }
         $count = [int](Invoke-Gh @('release', 'view', $Tag, '--json', 'assets', '--jq', '.assets | length'))
         if ($count -lt 2) { Die "草稿资产只有 $count 个（应有 zip + sha256）——先补跑 draft，别把残缺草稿发出去" }
         Assert-TagPointsHere
     }
-    Step "promote ② 转正 $Tag（draft → published）" {
-        Invoke-Gh @('release', 'edit', $Tag, '--notes-file', $NotesFile, '--draft=false') | Out-Null
+    Step "promote ③ 转正 $Tag（draft → published）" {
+        Invoke-Gh @('release', 'edit', $Tag, '--notes-file', $notesPath, '--draft=false') | Out-Null
         Note '已转正：GitHub Releases 上现在可见'
     }
+    if ($autoNotes) { Remove-Item -LiteralPath $notesPath -Force -ErrorAction SilentlyContinue }
 }
 
 # ─────────────────────────────────────────── 派发 ───────────────────────────────────────────
 if (-not $Verb) {
     Write-Host '用法：pwsh -File scripts/release.ps1 <动词>'
-    Write-Host '  check | build | pack | draft | verify | rehearse | release | promote（-NotesFile 仅 promote 用）'
+    Write-Host '  check | build | pack | draft | notes | verify | rehearse | release | promote（-NotesFile 可选，仅 promote 用）'
     Write-Host '  演练用 rehearse，或给任意只读动词加 -Rehearsal'
     exit 2
 }
 if ($Rehearsal -and $Verb -in @('draft', 'promote', 'release')) {
-    Die "演练模式禁止 $Verb（它会写 GitHub）——演练只允许 check / build / pack / verify"
+    Die "演练模式禁止 $Verb（它会写 GitHub）——演练只允许 check / build / pack / verify / notes"
 }
 
 switch ($Verb) {
@@ -291,6 +401,7 @@ switch ($Verb) {
     'build'    { Do-Build }
     'pack'     { Do-Pack }
     'draft'    { Do-Draft }
+    'notes'    { Do-Notes }
     'verify'   { Do-Verify }
     'rehearse' { $Rehearsal = $true; Do-Check; Do-Build; Do-Pack; Note '演练到此为止：未创建 / 修改任何 Release' }
     'release'  { Do-Check; Do-Build; Do-Pack; Do-Draft; Do-Verify -Strict }

@@ -44,7 +44,7 @@ jobs:
     timeout-minutes: 60
     permissions:
       contents: read
-      actions: read             # 引擎 check ④ 要读 ci 运行记录
+      actions: read             # 引擎 check ⑤ 要读 ci 运行记录
     steps:
       - name: Checkout
         uses: actions/checkout@v7
