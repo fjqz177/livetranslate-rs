@@ -45,6 +45,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      # 更新日志闸（D-91）：只读动词，不碰 GitHub；断言与正式发布路径同源（release.ps1 check ②）。
+      # 放在最前面：约 1 秒失败，不白等十几分钟环境准备与构建。
+      # 为什么不用 check -Rehearsal：check ① 会在分支 push 上按 tag 名比对而必红。
+      - name: Changelog gate（发版三件套：版本 ↔ CHANGELOG 段落）
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/release.ps1 notes
+
       # 以下工具链/缓存四步与 release.yml 镜像——改动须两文件同步（三次法则：第三处出现再抽 composite action）
       # K：第三方 action 全 SHA 钉版 + 版本注释（dependabot 接管升版）
       - name: Setup uv（仓库内 libclang/cmake 分发器）
