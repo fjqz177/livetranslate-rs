@@ -79,7 +79,7 @@
 | D-89 | 2026-09-15 | CI 触发面回摆：仓库 09-09 起即 public，J1「私有 + 单人主干直推」前提失效——ci 恢复 pull_request 触发 + 并发组按源仓/源分支去重（治双跑）；security 补自触发路径 + advisories 失败注解化 | docs/archive/ci-workflow-suite.md |
 | D-90 | 2026-09-16 | 发布链重做并转正：`scripts/release.ps1` 八动词引擎（check/build/pack/draft/verify/rehearse/release/promote）+ `release.yml` 薄编排，本地与 CI 同一份（取代 D-88 四道闸版）；不变量 = CI 永不可发布（promote 动词不进 workflow，转正人工且必须 -NotesFile）；只发正式版（预发布在 check ① 拒）；不做 attestation 与代码签名；演练通道 = workflow_dispatch（脚本自判）+ 本地 rehearse；其中 promote 必须 -NotesFile 由 D-91 放宽（八动词 → 九动词） | docs/distribution.md |
 | D-91 | 2026-09-16 | 更新日志机制：仓根 `CHANGELOG.md` / `CHANGELOG.en.md` 为唯一正典（标准 Markdown + 允许分隔线 `---`；应用内编译期内嵌、Release 正文由引擎自动抽取）；发版三件套闸（版本号 = tag = 同号非空段落，`release.ps1 check ②` + CI 每次 push 早警告的只读动词 `notes`）；promote 的 -NotesFile 降为可选覆盖；应用内渲染改造整体缓办（真粗体/切 tab 滚动/多版本折叠同批，移交清单在档） | docs/archive/changelog-scheme.md |
-| D-92 | 2026-09-17 | 面板「删除全部」不退出应用（原版 `_delete_all_and_exit` 退出）：行为差异登记 + 按钮/对话框文案与行为对齐（去"并退出"） | docs/live-check-fixes.md |
+| D-92 | 2026-09-17 | 面板「删除全部」不退出应用（原版 `_delete_all_and_exit` 退出）：行为差异登记 + 按钮/对话框文案与行为对齐（去"并退出"） | docs/archive/live-check-fixes.md |
 
 ## ADR-x（架构决策）
 

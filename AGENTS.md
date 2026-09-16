@@ -162,6 +162,6 @@ git config core.hooksPath .githooks            # 每 clone 一次启用提交钩
 - context-turns（D-84）：实机走查 4 项（docs/archive/context-turns-ui.md）
 - asr-hardening：GUI 冒烟 A/B/C + T1 qwen3 长样例校准（whisper 六档 sha256 已全量登记）（docs/archive/asr-hardening.md）
 - download-overhaul：S1/S6 全程真实网络走查（docs/archive/download-overhaul.md）
-- 交互细节走查：hide-quit（D-33）通知视觉 / hide-transparency（D-34）隐藏→托盘重显半透明 / tray（D-35）菜单打开期间主界面出帧 / button-press（D-32）长按 ≥1s 零位移 / 字幕窗 D-37 与悬浮窗 D-71 拖动（各自归档文档）
+- live-check-fixes（D-92）：修后复验 3 项（A2 精简切换可达 + 高度护栏 / A1 三态底色反馈 / B2 禁用态可见与文案）+ 三条按正确条件补验（B1 清除确认须先关自动保存 / B3 恢复默认仅字幕、翻译页弹确认 / B4 无主题开关已作废）（docs/archive/live-check-fixes.md §五）
 - 复刻期：WP-9 M6 调优（启动<2s / 空闲 CPU<1% / 8h 长跑 / 内存回收 / 端到端）；WP-5 托盘气泡、WP-8 热键届时按产品价值裁决（docs/archive/parity-closure.md）
 - distribution：WD-6 首启横幅待点头；WD-7 tag→Release、WD-8 检查更新随公开发布推进（docs/distribution.md）；1.0.0 前置：应用内更新日志真实内容待 Phase B 置换（changelog-scheme）、干净机端到端未跑（就绪评估 2026-09-11）；更新日志机制已建（D-91，2026-09-16）——应用内渲染改造（真粗体/切 tab 滚动/多版本折叠）待立包
