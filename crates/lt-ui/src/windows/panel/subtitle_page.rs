@@ -377,13 +377,7 @@ pub fn page(
                 panel.state.line_editor = Some(LineEditState::new_add(idx));
             }
             let target = edit_row.or(panel.state.line_selected);
-            if ui
-                .add_enabled(
-                    target.is_some(),
-                    egui::Button::new(RichText::new(lt_i18n::t("btn_edit")).size(12.5))
-                        .corner_radius(6.0),
-                )
-                .clicked()
+            if super::panel_btn(ui, &lt_i18n::t("btn_edit"), target.is_some(), 12.5, 6.0).clicked()
             {
                 if let Some(i) = target {
                     if i < settings.subtitle_mode.lines.len() {
@@ -393,14 +387,7 @@ pub fn page(
                 }
             }
             let can_remove = count > 1 && panel.state.line_selected.is_some();
-            if ui
-                .add_enabled(
-                    can_remove,
-                    egui::Button::new(RichText::new(lt_i18n::t("btn_remove")).size(12.5))
-                        .corner_radius(6.0),
-                )
-                .clicked()
-            {
+            if super::panel_btn(ui, &lt_i18n::t("btn_remove"), can_remove, 12.5, 6.0).clicked() {
                 if let Some(i) = panel.state.line_selected {
                     if i < count && count > 1 {
                         settings.subtitle_mode.lines.remove(i);
@@ -410,14 +397,8 @@ pub fn page(
                 }
             }
             // 上移/下移（原版 subwin_move_up/down；边界在 move_line_* 内判定）
-            if ui
-                .add_enabled(
-                    panel.state.line_selected.is_some_and(|i| i > 0),
-                    egui::Button::new(RichText::new(lt_i18n::t("subwin_move_up")).size(12.5))
-                        .corner_radius(6.0),
-                )
-                .clicked()
-            {
+            let up = panel.state.line_selected.is_some_and(|i| i > 0);
+            if super::panel_btn(ui, &lt_i18n::t("subwin_move_up"), up, 12.5, 6.0).clicked() {
                 if let Some(i) = panel.state.line_selected {
                     if move_line_up(&mut settings.subtitle_mode.lines, i) {
                         panel.state.line_selected = Some(i - 1);
@@ -425,14 +406,8 @@ pub fn page(
                     }
                 }
             }
-            if ui
-                .add_enabled(
-                    panel.state.line_selected.is_some_and(|i| i + 1 < count),
-                    egui::Button::new(RichText::new(lt_i18n::t("subwin_move_down")).size(12.5))
-                        .corner_radius(6.0),
-                )
-                .clicked()
-            {
+            let down = panel.state.line_selected.is_some_and(|i| i + 1 < count);
+            if super::panel_btn(ui, &lt_i18n::t("subwin_move_down"), down, 12.5, 6.0).clicked() {
                 if let Some(i) = panel.state.line_selected {
                     if move_line_down(&mut settings.subtitle_mode.lines, i) {
                         panel.state.line_selected = Some(i + 1);

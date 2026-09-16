@@ -353,6 +353,30 @@ pub fn reset_toolbar(
     ui.add_space(4.0);
 }
 
+/// 面板按钮统一入口：`enabled=false` 时呈现"看得见但不可点"的禁用观感。
+/// 浅灰底来自 [`panel_visuals`] 的 noninteractive（禁用控件与标签同态）；字色在
+/// **局部作用域**弱化——全局改 `noninteractive.fg_stroke` 会波及面板里一切未
+/// 显式着色的标签（2026-09-17 审计：40+ 处）。
+pub fn panel_btn(
+    ui: &mut Ui,
+    label: &str,
+    enabled: bool,
+    size: f32,
+    radius: f32,
+) -> egui::Response {
+    ui.scope(|ui| {
+        if !enabled {
+            ui.style_mut().visuals.widgets.noninteractive.fg_stroke =
+                Stroke::new(1.0, Palette::NATIVE.weak);
+        }
+        ui.add_enabled(
+            enabled,
+            egui::Button::new(RichText::new(label).size(size)).corner_radius(radius),
+        )
+    })
+    .inner
+}
+
 /// 颜色字段行（原版 QColor 色块 + "#rrggbb" 文本输入；rfd 无颜色
 /// 对话框 → 文本编辑承载）。非法值：色块灰底红框提示，字符串原样保留
 /// （契约自由格式，overlay 侧 parse_color 有回退）。返回是否发生变更。
@@ -432,8 +456,12 @@ pub fn panel_visuals() -> egui::Visuals {
     v.widgets.active.bg_stroke = Stroke::new(1.0, Color32::from_rgb(0x00, 0x54, 0x99));
     v.widgets.active.corner_radius = egui::CornerRadius::same(2);
 
-    // 非交互（标签/文本）
-    v.widgets.noninteractive.weak_bg_fill = Color32::TRANSPARENT;
+    // 非交互：egui 只有这一个"非交互"态——禁用控件（add_enabled(false)）与标签同态。
+    // 底给浅灰实底：禁用按钮要有"按钮形状"（原为全透明 → 用户把灰掉的「删除全部」
+    // 读成"没有这个按钮"，2026-09-17 走查 B2a）；标签底 bg_fill 保持透明不受影响。
+    // 字色**不能在此全局改灰**（未显式着色的标签会一起变），禁用态的字色由
+    // [`panel_btn`] 在局部作用域收窄。
+    v.widgets.noninteractive.weak_bg_fill = Color32::from_rgb(0xEC, 0xEC, 0xEC);
     v.widgets.noninteractive.bg_fill = Color32::TRANSPARENT;
     v.widgets.noninteractive.fg_stroke = Stroke::new(1.0, Palette::NATIVE.text);
     v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, Palette::NATIVE.card_stroke);

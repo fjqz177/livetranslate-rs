@@ -445,13 +445,14 @@ pub fn page(
                     {
                         cancel_click = true;
                     }
-                } else if ui
-                    .add_enabled(
-                        panel.probe.running.is_none(),
-                        egui::Button::new(RichText::new(lt_i18n::t("probe_btn")).size(12.0))
-                            .corner_radius(6.0),
-                    )
-                    .clicked()
+                } else if super::panel_btn(
+                    ui,
+                    &lt_i18n::t("probe_btn"),
+                    panel.probe.running.is_none(),
+                    12.0,
+                    6.0,
+                )
+                .clicked()
                 {
                     probe_click = Some(i);
                 }

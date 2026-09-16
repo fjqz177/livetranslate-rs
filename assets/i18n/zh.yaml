@@ -191,20 +191,19 @@ confirm_delete: "删除"
 delete_selected_confirm_title: "删除模型"
 delete_selected_confirm_msg: "确定要删除模型「{name}」吗？将释放 {size} 空间。"
 cache_select_hint: "点击模型可选中，点击空白处取消；选中后可删除单个模型。"
-btn_delete_all_exit: "删除全部并退出"
+# 键名保留 `_exit`（改键名要动代码）；本版删除全部后**不退出**应用，文案已对齐行为（D-92）
+btn_delete_all_exit: "删除全部"
 scanning: "扫描中..."
 no_cached_models: "未找到缓存模型"
 cache_scan_scope_hint: "清理仅覆盖上述注册表内模型；游离文件（如 jfk.wav 样例）不在扫描与删除范围，如有需要请手动清理。"
 cache_total: "总计: {size}  ({count} 项)"
-dialog_delete_title: "删除全部模型并退出"
+dialog_delete_title: "删除全部模型"
 dialog_delete_msg: >-
-  将删除全部 {count} 个缓存模型 ({size})
-  并退出应用程序。
+  将删除全部 {count} 个缓存模型 ({size})。
 
-  设置将被保留，所需模型将在下次启动时重新下载。
+  设置将被保留，应用继续运行；所需模型将在下次启动时按需重新下载。
 
   是否继续？
-# Rust 版：删除全部后不退出应用，改为提示重启生效
 delete_all_done_msg: "已删除全部 {count} 个缓存模型。设置已保留，应用继续运行；重启应用后模型将按需重新下载。"
 
 # 对话框

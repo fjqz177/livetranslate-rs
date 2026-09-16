@@ -99,6 +99,30 @@ fn panel_visuals_after_stabilize_have_uniform_strokes() {
     assert_eq!(v.widgets.active.fg_stroke.width, fg);
 }
 
+/// B2a 回归：禁用控件（`Noninteractive`，与标签同态）必须有可辨识的底，
+/// 且非交互字色**不得**全局改灰——面板有 40+ 处未显式着色的标签会一起变。
+/// 2026-09-17 走查：`weak_bg_fill` 曾为全透明 → 灰掉的「删除全部」被读成
+/// "没有这个按钮"；字色弱化改由 `panel::panel_btn` 在局部作用域收窄。
+#[test]
+fn panel_disabled_controls_have_button_shape_without_greying_labels() {
+    let v = lt_ui::windows::panel::panel_visuals();
+    assert_ne!(
+        v.widgets.noninteractive.weak_bg_fill,
+        Color32::TRANSPARENT,
+        "禁用按钮底不得全透明（否则按钮失去形状）"
+    );
+    assert_eq!(
+        v.widgets.noninteractive.bg_fill,
+        Color32::TRANSPARENT,
+        "标签底必须保持透明（否则所有标签带底色块）"
+    );
+    assert_eq!(
+        v.widgets.noninteractive.fg_stroke.color,
+        lt_ui::windows::panel::Palette::NATIVE.text,
+        "非交互字色保持正常文本色（全局改灰会波及一切未着色标签）"
+    );
+}
+
 #[test]
 fn plain_dark_theme_is_stabilized() {
     // 未 stabilize 的 dark 默认应当三态不一致（此断言防 egui 升级后误判前提）

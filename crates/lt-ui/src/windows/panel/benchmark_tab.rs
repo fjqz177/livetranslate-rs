@@ -36,13 +36,7 @@ pub fn page(
                 } else {
                     lt_i18n::t("btn_test_all")
                 };
-                if ui
-                    .add_enabled(
-                        !bench.running,
-                        egui::Button::new(RichText::new(btn_text).size(12.5)),
-                    )
-                    .clicked()
-                {
+                if super::panel_btn(ui, &btn_text, !bench.running, 12.5, 6.0).clicked() {
                     bench::start_benchmark_public(bench, session, settings);
                 }
             });

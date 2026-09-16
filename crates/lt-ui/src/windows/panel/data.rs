@@ -163,13 +163,14 @@ pub fn page(
             {
                 open_models_dir(settings);
             }
-            let delete_all = ui
-                .add_enabled(
-                    !entries.is_empty(),
-                    egui::Button::new(RichText::new(lt_i18n::t("btn_delete_all_exit")).size(12.0))
-                        .corner_radius(6.0),
-                )
-                .clicked();
+            let delete_all = super::panel_btn(
+                ui,
+                &lt_i18n::t("btn_delete_all_exit"),
+                !entries.is_empty(),
+                12.0,
+                6.0,
+            )
+            .clicked();
             if delete_all {
                 delete_all_models(modal, session, &entries);
             }
@@ -210,13 +211,14 @@ pub fn page(
         ui.add_space(4.0);
         // 管理行：删除所选 + 刷新 + 提示
         ui.horizontal(|ui| {
-            let del = ui
-                .add_enabled(
-                    panel.state.cache_selected.is_some(),
-                    egui::Button::new(RichText::new(lt_i18n::t("btn_delete_selected")).size(12.0))
-                        .corner_radius(6.0),
-                )
-                .clicked();
+            let del = super::panel_btn(
+                ui,
+                &lt_i18n::t("btn_delete_selected"),
+                panel.state.cache_selected.is_some(),
+                12.0,
+                6.0,
+            )
+            .clicked();
             if del {
                 delete_selected(panel, modal, session);
             }

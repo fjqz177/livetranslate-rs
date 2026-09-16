@@ -191,18 +191,18 @@ confirm_delete: "Delete"
 delete_selected_confirm_title: "Delete Model"
 delete_selected_confirm_msg: "Delete model \"{name}\"? This frees {size} of space."
 cache_select_hint: "Click a model to select it; click empty space to deselect. Selected models can be deleted."
-btn_delete_all_exit: "Delete All && Exit"
+# 键名保留 `_exit`（改键名要动代码）；本版删除全部后**不退出**应用，文案已对齐行为（D-92）
+btn_delete_all_exit: "Delete All"
 scanning: "Scanning..."
 no_cached_models: "No cached models found"
 cache_scan_scope_hint: "Cleanup covers registry-known models only; stray files (e.g. the jfk.wav sample) are not scanned or deleted — remove them manually if needed."
 cache_total: "Total: {size}  ({count} items)"
-dialog_delete_title: "Delete All Models & Exit"
+dialog_delete_title: "Delete All Models"
 dialog_delete_msg: >-
-  This will delete all {count} cached models ({size})
-  and exit the application.
+  This will delete all {count} cached models ({size}).
 
-  Settings will be preserved. Required models will be
-  re-downloaded on next launch.
+  Settings will be preserved and the app keeps running;
+  required models will be re-downloaded on demand after a restart.
 
   Continue?
 delete_all_done_msg: "Deleted all {count} cached models. Settings are preserved; the app keeps running — models will be re-downloaded on demand after a restart."
