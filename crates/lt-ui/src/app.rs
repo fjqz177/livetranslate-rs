@@ -2085,7 +2085,19 @@ impl MultiWindowApp {
         let x = (pos.x as f32 / scale) as i32;
         let y = (pos.y as f32 / scale) as i32;
         let w = logical.width as u32;
-        let h = logical.height as u32;
+        // 精简形态下窗口高度是收起值（200），不该落盘——否则重启按「完整形态 +
+        // 矮高度」开场，控件挤压。落盘高度一律取完整态高度（收起前记录值；
+        // 兜底 500 = 宿主展开分支同款缺省）。
+        let h = if self.app_state.overlay.state.mode == crate::state::OverlayMode::Compact {
+            self.app_state
+                .overlay
+                .state
+                .height_before_compact
+                .map(|v| v as u32)
+                .unwrap_or(500)
+        } else {
+            logical.height as u32
+        };
         let geo = (x, y, w, h);
         self.app_state.overlay.state.pos_dirty_since = None;
         if self.app_state.overlay.state.last_saved_geo == Some(geo) {

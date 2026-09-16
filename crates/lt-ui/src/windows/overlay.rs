@@ -273,7 +273,9 @@ fn row1(
             ))
             .clicked()
         {
-            toggle_mode(overlay, session, compact);
+            // 传「目标」= 当前的反面（原版 _toggle_mode：new = compact if full else full）。
+            // 曾误传 compact（当前）→ 模式被设成它自己 = 死键，精简形态从未可达。
+            toggle_mode(overlay, session, !compact);
         }
 
         if ui
@@ -1106,6 +1108,126 @@ mod tests {
         assert!(
             has(crate::state::WinAction::OverlayDragEnd),
             "释放应入队 OverlayDragEnd"
+        );
+    }
+
+    /// A2 回归：模式切换按钮必须**翻转**模式并入队 ToggleMode。
+    /// 历史 bug（2026-09-17 走查）：调用点把「当前模式」当「目标模式」传给
+    /// `toggle_mode` → 模式被设成它自己 = 死键；该按钮是精简形态的**唯一入口**，
+    /// 等于整个功能从未可达。必须走真实点击路径——直接调 `toggle_mode` 测不出
+    /// 调用点传参错误。
+    #[test]
+    fn overlay_mode_button_toggles_and_enqueues() {
+        let ctx = egui::Context::default();
+        let mut st = crate::state::AppUi::new(lt_proto::Settings::default());
+        let mut acts: Vec<(crate::state::WinId, crate::state::WinAction)> = Vec::new();
+
+        // 跑一帧并取回 (文本, 矩形) 列表（定位按钮用）
+        let run_frame = |ctx: &egui::Context,
+                         st: &mut crate::state::AppUi,
+                         evs: Vec<egui::Event>|
+         -> Vec<(String, egui::Rect)> {
+            let mut ri = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(620.0, 500.0),
+                )),
+                ..Default::default()
+            };
+            ri.events = evs;
+            let mut out = ctx.run_ui(ri, |ui| {
+                crate::windows::overlay::overlay_ui(
+                    ui,
+                    &mut st.overlay,
+                    &mut st.session,
+                    &mut st.settings,
+                    &mut st.modal,
+                    &mut st.ctx,
+                )
+            });
+            out.textures_delta.clear();
+            out.shapes
+                .iter()
+                .filter_map(|cl| match &cl.shape {
+                    // galley.rect 是 galley 自身坐标系，须加 TextShape.pos 才是屏幕矩形
+                    egui::Shape::Text(t) => Some((
+                        t.galley.text().to_string(),
+                        t.galley.rect.translate(t.pos.to_vec2()),
+                    )),
+                    _ => None,
+                })
+                .collect()
+        };
+        let button_center = |texts: &[(String, egui::Rect)], label: &str| -> egui::Pos2 {
+            texts
+                .iter()
+                .find(|(t, _)| t == label)
+                .map(|(_, r)| r.center())
+                .unwrap_or_else(|| {
+                    panic!(
+                        "未找到模式按钮「{label}」（本帧文本：{:?}）",
+                        texts.iter().map(|(t, _)| t.as_str()).collect::<Vec<_>>()
+                    )
+                })
+        };
+        // 光标到位 → 按住 → 释放 = 点击
+        let click = |ctx: &egui::Context,
+                     st: &mut crate::state::AppUi,
+                     acts: &mut Vec<(crate::state::WinId, crate::state::WinAction)>,
+                     pos: egui::Pos2| {
+            for evs in [
+                vec![egui::Event::PointerMoved(pos)],
+                vec![egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::default(),
+                }],
+                vec![egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::default(),
+                }],
+            ] {
+                run_frame(ctx, st, evs);
+                acts.extend(st.session.drain_actions());
+            }
+        };
+
+        // ① 完整 → 精简：按钮文案即当前模式，点它切到另一态（原版语义）
+        let texts = run_frame(&ctx, &mut st, vec![]);
+        click(
+            &ctx,
+            &mut st,
+            &mut acts,
+            button_center(&texts, &lt_i18n::t("mode_full")),
+        );
+        assert_eq!(
+            st.overlay.state.mode,
+            crate::state::OverlayMode::Compact,
+            "点击「完整」应切到精简形态"
+        );
+        assert!(
+            acts.iter().any(|(w, a)| {
+                *w == crate::state::WinId::Overlay && *a == crate::state::WinAction::ToggleMode
+            }),
+            "切换应入队 ToggleMode（宿主据此走高度动画）"
+        );
+
+        // ② 精简 → 完整（按钮文案随形态翻转）
+        acts.clear();
+        let texts = run_frame(&ctx, &mut st, vec![]);
+        click(
+            &ctx,
+            &mut st,
+            &mut acts,
+            button_center(&texts, &lt_i18n::t("mode_compact")),
+        );
+        assert_eq!(
+            st.overlay.state.mode,
+            crate::state::OverlayMode::Full,
+            "再点击应切回完整形态"
         );
     }
 
