@@ -129,7 +129,7 @@ manager.shutdown();
 - **增量激活时**尾巴走 `commit_interim_final`（含 pending 合并）；该函数"空结果时语言归属"的缺陷属 incremental 草稿包 G，不在本批。
 - **与包 4 的依赖**：`tl == None`（翻译未配置）时，尾巴能否落进转录取决于包 4 是否已落地——故 §2 顺序建议把包 4 排在包 1 之前，否则退出冲刷出的尾巴在"翻译没配好"的场景下仍会静默无记录。
 - **ASR 线程缺席时的降级（评审新增，须留痕）**：若 ASR 线程在停机前已 panic 且处于"待重生"（`handle=None`，begin_shutdown 后 monitor 不再补生），`join_role(AsrMain)` 会立刻返回——**没人等 `capture_done`、没人收尾**，尾巴与在队段静默丢失。修法见 1b：`join_role` 返回实际 join 数，`stop()` 对该场景打 `warn!`（行为退化为现状，但有日志、不静默）。
-- **退出新增等待（真实上界，评审修订）**：ASR 收尾 ≤`EXIT_GRACE`（15s，见实施注意 1）→ 在队翻译收敛 ≤`EXIT_GRACE`（1b）→ **在跑任务不受预算约束**（阶梯自身封顶，见 1b）→ `manager.shutdown()` ≤5s（ASR worker 子进程收尾，client.rs:140 `shutdown_timeout`）→ 各线程 join（worker 循环 ≤500ms 节拍）。**缓冲为空/无积压的常态**：capture 退出 ≤1s + 尾巴识别亚秒级 + 翻译亚秒级，实测应 ≪1s 量级。
+- **退出新增等待（真实上界；完工后评审二次订正——初版"ASR 收尾 ≤EXIT_GRACE"被审计证伪）**：capture 退出 ≤1s（`pop_timeout` 节拍）→ **ASR 主循环在途识别不受本批预算约束**（引擎档案：SenseVoice/Nano/whisper = 5s + 2×段长秒；qwen3 = 10s + 4×段长秒；段长 `max_speech` 默认 8s、qwen3 钳 15s）→ **识别超时后的"超时重生"等待同样不受约束**（`client.rs` `ready_timeout` 默认 180s：退出瞬间恰逢识别超时，会在退出路径里原地重生 worker 并等就绪）→ 退出收尾 ≤`EXIT_GRACE`（每段前复查）→ 在队翻译收敛 ≤`EXIT_GRACE` → **在跑翻译不受约束**（阶梯自身封顶，见 1b）→ `manager.shutdown()` ≤5s → 各线程 join（≤500ms 节拍）。**常态**（缓冲为空、供应商正常）：秒级以内。**病态上界可达数分钟**（qwen3 长段 + 超时重生）——这是**既有行为**（旧序 `join_all` 同样在这些点上等），本批只把其中两段纳入预算；"停机中断在途识别/抑制退出期重生"属引擎层改造，未做（见 §10 第 3 条）。
 
 **与 Python 的结构差异（有意，须留档）**：Python 在停机路径上**直接**处理尾巴——main.py:1202 先 `self._asr_queue.put(None)` 收掉 ASR 线程，1208-1216 再 `force_flush()` 并在停机线程里同步调 `_process_interim_final`/`_process_segment`。Rust 侧不能照抄：`AsrManager`（worker 子进程句柄）归 ASR 线程所有、在其退出时 `manager.shutdown()`（pipeline.rs:2502），停机线程够不着它。故本设计把处理放进 ASR 线程的退出排空（语义等价：同样是"采集停 → 处理残余尾巴"；结构不同）。若将来要做"停机线程直接处理"，需要先把 manager 共享化——不在本批。
 
@@ -398,3 +398,29 @@ fn run(mut self) {
 7. **实施过程一次落错位置（已当场纠正）**：ACR-1a 首次插入把退出冲刷写进了 `maybe_trigger_interim`，同提交内发现并纠正（最终态无影响）；留痕以提醒后人"`force_flush` 只属于退出路径，不得出现在增量触发路径"。
 
 **实机走查：未跑**——8 项清单在 §5，随下次 GUI 冒烟按单执行（AGENTS §8 遗留区留一行指针）。
+
+## 10. 完工后严肃评审（2026-09-17，同日）
+
+两路独立对抗审计（退出完整性包 / UI+编排五包）逐条复核。**修四处真问题**（提交 93ae4d1）：
+
+| # | 级别 | 问题 | 处置 |
+|---|---|---|---|
+| 1 | P1（本批引入） | `exit_drain_segments` 搁浅竞态：读者"取空 → 看标志"的顺序会让 capture 在其间入队的尾巴搁浅队列（病灶换姿势复发） | 看到 `capture_done` 后再无条件取一次（置位后不再 push，再取即终态） |
+| 2 | P1（本批遗漏） | 清空列表第二条入口（overlay.rs `auto_save` 免确认直清 = 默认路径）绕过 ACR-2/3 同清 | 抽 `OverlayUi::clear_messages()` 单一落点，两入口共用 |
+| 3 | P2（本批引入） | `finalize_dropped` 重构残留：`finalize_no_translation` 调两次（幂等无害但掩盖 ACR-1c 意图） | 删重复行 |
+| 4 | P1（既有面被本批放大） | `learned`/`degraded_notified` 为 std Mutex：锁内 panic 中毒后**后续每条任务**都失败（被 ACR-5 逐条兜住 → 翻译域静默全瘫、监督器无感知） | 四处 `lock()` 改 `unwrap_or_else(into_inner)`（启发式缓存，中毒取值本身不坏） |
+| 5 | P3 | 主循环 VadFlush 臂 `bus.load()` 成死存储 + "每段一次 load"注释失真 | load 移进 Interim 臂 |
+| 6 | P3 | `exit_drain` 预算只在整段排空后查，积压可越预算 | 改每段前复查 + 新测试（300ms handle 打穿 150ms 预算断言拦截） |
+
+**如实上报的未修项（留档待裁）**：
+
+1. **清空是否该管字幕窗句子**（P2，产品语义待拍板）：清空列表后 `SubtitleUiState.sentences/pending` 仍显示旧句；未擅自改。
+2. **`feed_subtitle` / 清空接线无测试守护**（覆盖缺口）：账本测试只直测 `ledger_*` API——若未来有人把 `feed_subtitle` 改回查消息链，测试不会红；清空接线同理（已由单一落点 `clear_messages` 大幅缩小，但 app 级接线仍无 headless 夹具）。
+3. **ASR 退出收尾接线零覆盖**：把 `run_asr_thread` 的退出收尾整段删掉，全套测试仍绿（驱动该路径需真引擎）——已在 §5 覆盖说明登记。
+4. **capture 循环体裸 `vad.lock().unwrap()`**（P3）：中毒即 capture 死亡、`capture_done` 永假 → 退出白等一个预算；退出路径已防、循环体未防（既有风格）。
+5. **`ThreadRole::Bench` 夹具与生产基准混用**（P3）：当前无 `join_role(Bench)` 调用点（唯一调用 = AsrMain）；未来误用会 join 到正在跑的基准线程。
+6. **`finish_ok` 先回执后落盘**（P3）：panic 落在两者之间会出现"UI 有译文、all 记为无译文"的矛盾；对齐 `fail()` 的"先落盘后回执"序可根除。
+7. **`write_translation` 在 disabled 时不清 pending**（既有，P3）：会话 `close()` 兜底。
+8. **中文 detail 硬编码**（P3，i18n 债务）：`"panic（载荷非字符串）"` 会出现在英文界面 tooltip——与既有中文 detail 一并归档到 i18n 迁移清单。
+
+**判对项（抽查确认，未发现问题）**：`handle_vad_flush` 抽函数保真（逐行对比无有害漂移）；`commit_text` 全部出口成对（无新增悬挂路径）；`catch_unwind` 内存安全、`panic_detail` 自身无 panic 源；账本命中严格 ⊇ 原消息链查询（无反向差异、无串味）；`flush_streams` 守卫无漏放行态（五态两放行三封锁）；零 lt-proto 变更；`join_role` 锁纪律与 `join_all` 一致。
