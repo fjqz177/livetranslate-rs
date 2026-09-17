@@ -187,5 +187,5 @@ if ($violations.Count -gt 0) {
 }
 
 Write-Host ""
-Write-Host "ok：主体 $mainLines 行/$mainBytes B + 全文件 $totalLines 行/$totalBytes B（两档预算内）；引用 / G-编号 / 看板 / 引用网扩面 / 归档机械面全过（提醒 $($warn.Count) 条）" -ForegroundColor Green
+Write-Host "ok：主体 $mainLines 行/$mainBytes B + 全文件 $totalLines 行/$totalBytes B（不设额度，ADR-18）；引用 / G-编号 / 看板 / 引用网扩面 / 归档机械面全过（提醒 $($warn.Count) 条）" -ForegroundColor Green
 exit 0
