@@ -201,8 +201,8 @@ fn drag_handle(
         });
 }
 
-/// 行1：拖动标题 + 操作按钮（高度 24；按钮顺序=原版 row1：
-/// 隐藏/字幕/启停/清除/完整/设置/退出）
+/// 行1：操作按钮（右对齐）+ 拖动标题（高度 24）。视觉从左到右 =
+/// 原版 row1 顺序：隐藏/字幕/启停/清除/完整/设置/退出。
 fn row1(
     ui: &mut Ui,
     overlay: &mut OverlayUi,
@@ -211,48 +211,54 @@ fn row1(
     modal: &mut ModalUi,
     compact: bool,
 ) {
-    ui.horizontal(|ui| {
+    // 按钮组真右对齐：right_to_left 从最右（退出）往左排，拖动区吃剩余宽度。
+    // 旧实现 = 拖动区按 button_reserved 固定预留 + 按钮顺序排——中文按钮实际
+    // 总宽比预留少约 100px，整组右侧留白、没贴住右上角（原版为贴右排列）。
+    // cross_align 必须取 Min（顶对齐）：Center 会把整行竖直居中到剩余空间里。
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
         ui.set_min_height(22.0);
-        // 拖动区：标题文本 + 空白拉伸
-        let (drag_rect, _) = ui.allocate_exact_size(
-            Vec2::new(ui.available_width() - button_reserved(compact), 20.0),
-            Sense::click_and_drag(),
-        );
-        ui.painter().text(
-            drag_rect.left_center() + Vec2::new(2.0, 0.0),
-            Align2::LEFT_CENTER,
-            "\u{2630} LiveTranslate",
-            FontId::monospace(pt(9)),
-            BTN_TEXT,
-        );
-        // W5/D-71：弃 winit drag_window（标题栏模态循环在 LAYERED+TRANSPARENT
-        // 轮询窗上 0 位移/挂死）——egui 报起止，宿主 SetCapture 绝对跟踪
-        //（任意按键可用；D-37 字幕窗同法）
-        let drag_resp = ui.interact(drag_rect, ui.id().with("ov_drag"), Sense::click_and_drag());
-        if drag_resp.drag_started() {
-            session.enqueue_action(WinId::Overlay, WinAction::OverlayDragStart);
-        }
-        if drag_resp.drag_stopped() && overlay.state.dragging {
-            session.enqueue_action(WinId::Overlay, WinAction::OverlayDragEnd);
+
+        // 退出（红底；确认走专用窗——D-87 替换语义，托盘/悬浮窗退出必达；
+        // compact/低矮不再借面板画布）
+        if small_btn(ui, lt_i18n::t("quit"), &SKIN_QUIT).clicked() {
+            modal.request_confirm_replacing(
+                ConfirmKind::Quit,
+                lt_i18n::t("quit_confirm_title"),
+                lt_i18n::t("quit_confirm_msg"),
+            );
+            session.enqueue_action(WinId::Confirm, WinAction::ShowConfirm);
         }
 
-        // 隐藏（原版 hide_btn：隐藏悬浮窗，托盘"显示悬浮窗"可恢复 + 首次气泡提示）
-        if small_btn(ui, lt_i18n::t("hide"), &SKIN_BTN).clicked() {
-            session.enqueue_action(WinId::Overlay, WinAction::Hide);
+        if small_btn(ui, lt_i18n::t("settings"), &SKIN_BTN).clicked() {
+            session.enqueue_action(WinId::Overlay, WinAction::ShowPanel);
         }
 
-        // 字幕按钮（紧凑模式隐藏；开启时绿底，原版 set_subtitle_checked）
-        if !compact {
-            let on = settings.subtitle_mode.enabled;
-            // WP-1：手势提示悬停文案（首次开启另有 toast，见 app.rs ToggleSubtitle）
-            let skin = if on { &SKIN_SUBTITLE_ON } else { &SKIN_BTN };
-            let sub = small_btn(ui, lt_i18n::t("subtitle"), skin)
-                .on_hover_text(lt_i18n::t("subwin_btn_hint"));
-            if sub.clicked() {
-                // 原版 subtitle_toggled → 切换字幕窗可见性
-                let vis = !settings.subtitle_mode.enabled;
-                settings.subtitle_mode.enabled = vis;
-                session.enqueue_action(WinId::Overlay, WinAction::ToggleSubtitle);
+        // 模式切换（full↔compact，200ms 高度动画）
+        let mode_label = if compact {
+            lt_i18n::t("mode_compact")
+        } else {
+            lt_i18n::t("mode_full")
+        };
+        if small_btn(ui, mode_label, &SKIN_BTN).clicked() {
+            // 传「目标」= 当前的反面（原版 _toggle_mode：new = compact if full else full）。
+            // 曾误传 compact（当前）→ 模式被设成它自己 = 死键，精简形态从未可达。
+            toggle_mode(overlay, session, !compact);
+        }
+
+        // 清空（紧凑模式隐藏；转写自动落盘时免确认，否则确认一次防误触）。
+        // D-87：确认走专用窗（悬浮窗只发请求，不再自任宿主）
+        if !compact && small_btn(ui, lt_i18n::t("clear"), &SKIN_BTN).clicked() {
+            if settings.auto_save_transcript {
+                // ACR-2/3：走单一落点（消息链 + 草稿箱 + 原文账本同清）——
+                // auto_save 默认 true，本路径才是清空的默认入口
+                overlay.clear_messages();
+            } else {
+                modal.request_confirm(
+                    ConfirmKind::Clear,
+                    lt_i18n::t("clear_confirm_title"),
+                    lt_i18n::t("clear_confirm_msg"),
+                );
+                session.enqueue_action(WinId::Confirm, WinAction::ShowConfirm);
             }
         }
 
@@ -274,48 +280,47 @@ fn row1(
             session.running = !running;
         }
 
-        // 清空（紧凑模式隐藏；转写自动落盘时免确认，否则确认一次防误触）。
-        // D-87：确认走专用窗（悬浮窗只发请求，不再自任宿主）
-        if !compact && small_btn(ui, lt_i18n::t("clear"), &SKIN_BTN).clicked() {
-            if settings.auto_save_transcript {
-                // ACR-2/3：走单一落点（消息链 + 草稿箱 + 原文账本同清）——
-                // auto_save 默认 true，本路径才是清空的默认入口
-                overlay.clear_messages();
-            } else {
-                modal.request_confirm(
-                    ConfirmKind::Clear,
-                    lt_i18n::t("clear_confirm_title"),
-                    lt_i18n::t("clear_confirm_msg"),
-                );
-                session.enqueue_action(WinId::Confirm, WinAction::ShowConfirm);
+        // 字幕按钮（紧凑模式隐藏；开启时绿底，原版 set_subtitle_checked）
+        if !compact {
+            let on = settings.subtitle_mode.enabled;
+            // WP-1：手势提示悬停文案（首次开启另有 toast，见 app.rs ToggleSubtitle）
+            let skin = if on { &SKIN_SUBTITLE_ON } else { &SKIN_BTN };
+            let sub = small_btn(ui, lt_i18n::t("subtitle"), skin)
+                .on_hover_text(lt_i18n::t("subwin_btn_hint"));
+            if sub.clicked() {
+                // 原版 subtitle_toggled → 切换字幕窗可见性
+                let vis = !settings.subtitle_mode.enabled;
+                settings.subtitle_mode.enabled = vis;
+                session.enqueue_action(WinId::Overlay, WinAction::ToggleSubtitle);
             }
         }
 
-        // 模式切换（full↔compact，200ms 高度动画）
-        let mode_label = if compact {
-            lt_i18n::t("mode_compact")
-        } else {
-            lt_i18n::t("mode_full")
-        };
-        if small_btn(ui, mode_label, &SKIN_BTN).clicked() {
-            // 传「目标」= 当前的反面（原版 _toggle_mode：new = compact if full else full）。
-            // 曾误传 compact（当前）→ 模式被设成它自己 = 死键，精简形态从未可达。
-            toggle_mode(overlay, session, !compact);
+        // 隐藏（原版 hide_btn：隐藏悬浮窗，托盘"显示悬浮窗"可恢复 + 首次气泡提示）
+        if small_btn(ui, lt_i18n::t("hide"), &SKIN_BTN).clicked() {
+            session.enqueue_action(WinId::Overlay, WinAction::Hide);
         }
 
-        if small_btn(ui, lt_i18n::t("settings"), &SKIN_BTN).clicked() {
-            session.enqueue_action(WinId::Overlay, WinAction::ShowPanel);
+        // 拖动区：标题文本 + 空白拉伸（按钮占完后剩余的全部宽度）
+        let (drag_rect, _) = ui.allocate_exact_size(
+            Vec2::new(ui.available_width(), 20.0),
+            Sense::click_and_drag(),
+        );
+        ui.painter().text(
+            drag_rect.left_center() + Vec2::new(2.0, 0.0),
+            Align2::LEFT_CENTER,
+            "\u{2630} LiveTranslate",
+            FontId::monospace(pt(9)),
+            BTN_TEXT,
+        );
+        // W5/D-71：弃 winit drag_window（标题栏模态循环在 LAYERED+TRANSPARENT
+        // 轮询窗上 0 位移/挂死）——egui 报起止，宿主 SetCapture 绝对跟踪
+        //（任意按键可用；D-37 字幕窗同法）
+        let drag_resp = ui.interact(drag_rect, ui.id().with("ov_drag"), Sense::click_and_drag());
+        if drag_resp.drag_started() {
+            session.enqueue_action(WinId::Overlay, WinAction::OverlayDragStart);
         }
-
-        // 退出（红底；确认走专用窗——D-87 替换语义，托盘/悬浮窗退出必达；
-        // compact/低矮不再借面板画布）
-        if small_btn(ui, lt_i18n::t("quit"), &SKIN_QUIT).clicked() {
-            modal.request_confirm_replacing(
-                ConfirmKind::Quit,
-                lt_i18n::t("quit_confirm_title"),
-                lt_i18n::t("quit_confirm_msg"),
-            );
-            session.enqueue_action(WinId::Confirm, WinAction::ShowConfirm);
+        if drag_resp.drag_stopped() && overlay.state.dragging {
+            session.enqueue_action(WinId::Overlay, WinAction::OverlayDragEnd);
         }
     });
 }
@@ -950,16 +955,6 @@ fn small_btn(ui: &mut Ui, label: String, skin: &BtnSkin) -> egui::Response {
     style::skin_button(ui, label, skin, 11.0, 3.0, Vec2::new(0.0, 20.0))
 }
 
-/// 行1 按钮组预留宽度（拖动区让位；完整=7 按钮含隐藏、紧凑=5 按钮
-/// （隐藏/启停/完整/设置/退出；字幕与清空隐藏），每按钮≈46 逻辑 px + 余量）
-fn button_reserved(compact: bool) -> f32 {
-    if compact {
-        240.0
-    } else {
-        380.0
-    }
-}
-
 /// 右下角尺寸手柄（原版 QSizeGrip 16×16 的小点串斜纹；拖动生效）
 fn resize_grip(ui: &mut Ui, session: &mut SessionView) {
     let rect = egui::Rect::from_min_size(
@@ -1105,6 +1100,83 @@ mod tests {
             has(crate::state::WinAction::OverlayDragEnd),
             "释放应入队 OverlayDragEnd"
         );
+    }
+
+    /// 行1 按钮组必须贴住右上角（原版贴右排列）。回归背景：旧实现按
+    /// button_reserved 固定预留 + 顺序排，中文按钮实际总宽比预留少约 100px，
+    /// 整组右侧留白、看似没贴住右上角。断言：行1（顶部文本带）最右文本的
+    /// 右缘距窗右缘只剩 边距4+内边距8+按钮padding6 ≈ 18px（阈值放宽到 30），
+    /// 标题文本贴左缘；完整/紧凑两形态都验。
+    #[test]
+    fn overlay_row1_buttons_hug_right_edge() {
+        let ctx = egui::Context::default();
+        let mut st = crate::state::AppUi::new(lt_proto::Settings::default());
+        let (w, h) = (620.0, 500.0);
+        let row1_rects = |st: &mut crate::state::AppUi| -> Vec<(String, egui::Rect)> {
+            let mut out = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(w, h),
+                    )),
+                    ..Default::default()
+                },
+                |ui| {
+                    crate::windows::overlay::overlay_ui(
+                        ui,
+                        &mut st.overlay,
+                        &mut st.session,
+                        &mut st.settings,
+                        &mut st.modal,
+                        &mut st.ctx,
+                    )
+                },
+            );
+            out.textures_delta.clear();
+            out.shapes
+                .iter()
+                .filter_map(|cl| match &cl.shape {
+                    // galley.rect 是 galley 自身坐标系，须加 TextShape.pos 才是屏幕矩形
+                    egui::Shape::Text(t) => Some((
+                        t.galley.text().to_string(),
+                        t.galley.rect.translate(t.pos.to_vec2()),
+                    )),
+                    _ => None,
+                })
+                .filter(|(_, r)| r.center().y < 24.0)
+                .collect()
+        };
+
+        for mode in [
+            crate::state::OverlayMode::Full,
+            crate::state::OverlayMode::Compact,
+        ] {
+            st.overlay.state.mode = mode;
+            let row1 = row1_rects(&mut st);
+            assert!(
+                row1.len() >= 5,
+                "{mode:?} 行1应有至少5条文本，实得 {row1:?}"
+            );
+            let (right_label, right_rect) = row1
+                .iter()
+                .max_by(|a, b| a.1.right().partial_cmp(&b.1.right()).unwrap())
+                .expect("行1非空");
+            assert!(
+                right_rect.right() >= w - 30.0,
+                "{mode:?} 行1最右文本「{right_label}」右缘 {} 应贴住窗右缘（≥ {}）",
+                right_rect.right(),
+                w - 30.0
+            );
+            let (left_label, left_rect) = row1
+                .iter()
+                .min_by(|a, b| a.1.left().partial_cmp(&b.1.left()).unwrap())
+                .expect("行1非空");
+            assert!(
+                left_rect.left() <= 30.0,
+                "{mode:?} 标题「{left_label}」左缘 {} 应贴住窗左缘（≤ 30）",
+                left_rect.left()
+            );
+        }
     }
 
     /// A2 回归：模式切换按钮必须**翻转**模式并入队 ToggleMode。
