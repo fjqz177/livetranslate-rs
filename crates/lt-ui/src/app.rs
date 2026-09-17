@@ -446,6 +446,9 @@ impl MultiWindowApp {
             if self.app_state.overlay.clear_request {
                 self.app_state.overlay.clear_request = false;
                 self.app_state.overlay.messages.clear();
+                // 草稿箱随列表同清（ACR-2）：残留草稿在下次 flush 时找不到消息，
+                // 本会静默丢弃；同点清理让"清空"语义完整（消息与缓冲一起作废）
+                self.app_state.overlay.state.pending_streams.clear();
             }
         }
     }

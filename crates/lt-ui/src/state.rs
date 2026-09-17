@@ -2362,14 +2362,30 @@ impl OverlayUi {
         let pending = std::mem::take(&mut self.state.pending_streams);
         for (id, text) in pending {
             if let Some(m) = self.find_message_mut(id) {
-                m.translation = TranslationView::Streaming(text);
+                // 不变式（ACR-2）：终态不可被流式覆盖——`settle_stream` 的行清理
+                // 治根因（终态到达即作废草稿），这道守卫挡"终态之后又来 partial"
+                // 一类未来回归（如重新翻译功能的二次派发）。
+                if matches!(
+                    m.translation,
+                    TranslationView::Pending | TranslationView::Streaming(_)
+                ) {
+                    m.translation = TranslationView::Streaming(text);
+                }
             }
         }
         self.state.scroll_pending = true;
     }
 
+    /// 终态落定：作废该 id 在草稿箱里的流式缓冲（ACR-2）。
+    /// 三个终态入口共用——终态与流式 partial 出自同一翻译 worker（FIFO 保序），
+    /// 但 UI 侧的 50ms 节拍可能把过期半截话排在终态之后落屏。
+    fn settle_stream(&mut self, id: u64) {
+        self.state.pending_streams.remove(&id);
+    }
+
     /// 译文完成（原版 update_translation；**W2 起只用于成功路径**）
     pub fn update_translation(&mut self, id: u64, text: String, tl_ms: f64) {
+        self.settle_stream(id);
         if let Some(m) = self.find_message_mut(id) {
             m.translation = TranslationView::Ready(text);
             m.tl_ms = tl_ms;
@@ -2379,6 +2395,7 @@ impl OverlayUi {
 
     /// 跳过翻译（W2/`UiEvent::TranslationSkipped`；同语言免翻译的唯一出口）
     pub fn skip_translation(&mut self, id: u64, reason: lt_proto::SkipReason) {
+        self.settle_stream(id);
         if let Some(m) = self.find_message_mut(id) {
             m.translation = TranslationView::Skipped(reason);
         }
@@ -2393,6 +2410,7 @@ impl OverlayUi {
         detail: String,
         tl_ms: f64,
     ) {
+        self.settle_stream(id);
         if let Some(m) = self.find_message_mut(id) {
             m.translation = TranslationView::Failed { kind, detail };
             m.tl_ms = tl_ms;
@@ -2930,6 +2948,71 @@ mod tests {
         assert_eq!(failed.tl_ms, 3200.0);
         // 失败文案按 kind 本地化（穷尽 match 的消费点）
         assert!(!failure_text(lt_proto::FailureKind::Empty).is_empty());
+    }
+
+    /// ACR-2：终态不可被过期的流式节拍覆盖。
+    /// 病灶序 = partial 入草稿箱并排 50ms 节拍 → 终态先落 → 节拍后到（快供应商常态）。
+    #[test]
+    fn terminal_state_survives_stale_stream_flush() {
+        let mut st = AppUi::new(Settings::default());
+
+        // ① 病灶序：成功终态不被半截话盖回，耗时徽标保留、草稿随终态作废
+        st.overlay.push_message(msg(1));
+        st.overlay
+            .update_streaming(&mut st.session, 1, "半截".into());
+        st.overlay.update_translation(1, "完整译文".into(), 250.0);
+        st.overlay.flush_streams();
+        let m = &st.overlay.messages[0];
+        assert_eq!(
+            m.translation,
+            TranslationView::Ready("完整译文".into()),
+            "终态不被过期半截话盖回"
+        );
+        assert_eq!(m.tl_ms, 250.0, "耗时徽标保留");
+        assert!(
+            st.overlay.state.pending_streams.is_empty(),
+            "草稿随终态作废（settle_stream）"
+        );
+
+        // ② 失败/跳过终态同样作废草稿（三终态齐）
+        st.overlay.push_message(msg(2));
+        st.overlay.push_message(msg(3));
+        st.overlay
+            .update_streaming(&mut st.session, 2, "半截".into());
+        st.overlay
+            .update_streaming(&mut st.session, 3, "半截".into());
+        st.overlay
+            .fail_translation(2, lt_proto::FailureKind::Dropped, "队列积压".into(), 0.0);
+        st.overlay
+            .skip_translation(3, lt_proto::SkipReason::SameLanguage);
+        st.overlay.flush_streams();
+        assert!(matches!(
+            st.overlay.messages[1].translation,
+            TranslationView::Failed { .. }
+        ));
+        assert!(matches!(
+            st.overlay.messages[2].translation,
+            TranslationView::Skipped(_)
+        ));
+
+        // ③ 守卫面（挡未来回归，如重新翻译的二次派发）：终态之后再插 partial，
+        //    flush 也不得把视图回退
+        st.overlay.push_message(msg(4));
+        st.overlay.update_translation(4, "终稿".into(), 10.0);
+        st.overlay
+            .update_streaming(&mut st.session, 4, "迟到的半截".into());
+        st.overlay.flush_streams();
+        assert_eq!(
+            st.overlay.messages[3].translation,
+            TranslationView::Ready("终稿".into()),
+            "终态永不回退（flush_streams 守卫）"
+        );
+
+        // ④ 清空列表路径（app.rs 同点清草稿）：残留节拍 flush 无副作用
+        st.overlay.messages.clear();
+        st.overlay.state.pending_streams.clear();
+        st.overlay.flush_streams();
+        assert!(st.overlay.messages.is_empty());
     }
 
     #[test]
