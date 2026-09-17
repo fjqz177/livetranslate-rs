@@ -147,7 +147,7 @@ git config core.hooksPath .githooks            # 每 clone 一次启用提交钩
 
 ### 施工中
 
-- （无）
+- doc-network-hardening（D-93/ADR-17）：文档网络加固施工中（docs/doc-network-hardening.md）
 
 ### 遗留（完工包的实机走查与未了项，一行一包，清零即删）
 

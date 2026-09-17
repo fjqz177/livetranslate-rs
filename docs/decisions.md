@@ -80,6 +80,7 @@
 | D-90 | 2026-09-16 | 发布链重做并转正：`scripts/release.ps1` 八动词引擎（check/build/pack/draft/verify/rehearse/release/promote）+ `release.yml` 薄编排，本地与 CI 同一份（取代 D-88 四道闸版）；不变量 = CI 永不可发布（promote 动词不进 workflow，转正人工且必须 -NotesFile）；只发正式版（预发布在 check ① 拒）；不做 attestation 与代码签名；演练通道 = workflow_dispatch（脚本自判）+ 本地 rehearse；其中 promote 必须 -NotesFile 由 D-91 放宽（八动词 → 九动词） | docs/distribution.md |
 | D-91 | 2026-09-16 | 更新日志机制：仓根 `CHANGELOG.md` / `CHANGELOG.en.md` 为唯一正典（标准 Markdown + 允许分隔线 `---`；应用内编译期内嵌、Release 正文由引擎自动抽取）；发版三件套闸（版本号 = tag = 同号非空段落，`release.ps1 check ②` + CI 每次 push 早警告的只读动词 `notes`）；promote 的 -NotesFile 降为可选覆盖；应用内渲染改造整体缓办（真粗体/切 tab 滚动/多版本折叠同批，移交清单在档） | docs/archive/changelog-scheme.md |
 | D-92 | 2026-09-17 | 面板「删除全部」不退出应用（原版 `_delete_all_and_exit` 退出）：行为差异登记 + 按钮/对话框文案与行为对齐（去"并退出"） | docs/archive/live-check-fixes.md |
+| D-93 | 2026-09-17 | 文档网络加固：全仓清淤（README/distribution/归档注记/流程卡链）+ 守护断言 5~8（路径扩面/G 编号全仓/归档对账/水位线）+ 钩子触发面「守护读谁、谁触发」+ 宪法回吐（~0.7KB 复述迁回流程卡） | docs/doc-network-hardening.md |
 
 ## ADR-x（架构决策）
 
@@ -101,3 +102,4 @@
 | ADR-14 | 2026-09-09 | process 纪律三条：验收漂移登记/方案偏离留痕/收口两问 | docs/archive/architecture-v2-improvements.md |
 | ADR-15 | 2026-09-14 | 工程指令体系四层化：AGENTS 重写为宪法+路由表（两档预算入守护）+ 大坑迁 docs/gotchas.md + 流程七卡 docs/prompts/ + 健康守护第七项与钩子触发面扩展；docs 纪律①增常青参考类 | docs/archive/agents-md-overhaul.md |
 | ADR-16 | 2026-09-14 | 守护/脚本调用面统一切 PowerShell 7（pwsh-only）：5.1 feature-frozen 随 OS 生命周期，脚本 5.1∩7 公共子集零改动；钩子加 pwsh 探测兜底 | docs/archive/agents-md-overhaul.md |
+| ADR-17 | 2026-09-17 | AGENTS 额度重校准（主体 ≤190 行/19KB、全文件 ≤230 行/24KB）+ 额度真源指针化（数字只活在 check_agents_health.ps1，宪法头注只留指针）+ 85% 水位线 WARN 不失败 | docs/doc-network-hardening.md |
