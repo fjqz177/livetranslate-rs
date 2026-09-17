@@ -424,3 +424,49 @@ fn run(mut self) {
 8. **中文 detail 硬编码**（P3，i18n 债务）：`"panic（载荷非字符串）"` 会出现在英文界面 tooltip——与既有中文 detail 一并归档到 i18n 迁移清单。
 
 **判对项（抽查确认，未发现问题）**：`handle_vad_flush` 抽函数保真（逐行对比无有害漂移）；`commit_text` 全部出口成对（无新增悬挂路径）；`catch_unwind` 内存安全、`panic_detail` 自身无 panic 源；账本命中严格 ⊇ 原消息链查询（无反向差异、无串味）；`flush_streams` 守卫无漏放行态（五态两放行三封锁）；零 lt-proto 变更；`join_role` 锁纪律与 `join_all` 一致。
+
+### 10.1 已知坑点总表（按"用户会看到什么"组织；活清单，随实机走查更新）
+
+| # | 用户会看到什么 | 触发条件 | 概率 | 现状 / 处置 |
+|---|---|---|---|---|
+| K1 | 点退出后进程在任务管理器里**逗留很久**（几十秒~几分钟，"退不掉"） | 退出瞬间恰有识别在跑，**且该次识别超时**：在途识别受引擎档案（qwen3 长段最坏 ~70s）；超时后 manager 会**原地重生识别器并等就绪**（`ready_timeout` 默认 180s）；再叠加退出收尾与翻译收敛各 ≤15s | 低（要"退出 + 识别 + 超时"三者同时） | **既有行为**——旧序 `join_all` 同样在这些点上等，本批未加重未减轻；本批预算对"在途识别/超时重生"这两段无效（§3.1a 已订正）。治它要动引擎层（停机中断在途识别 / 退出期抑制 recover），须单独立项。对应走查第 7 项。 |
+| K2 | 清空列表后，**字幕窗上还挂着旧句** | 点"清空"（`SubtitleUiState.sentences/pending` 不在清空范围） | 必然（只要字幕窗有句） | **待用户拍板**：清空是否该管字幕窗属产品语义，未擅自改（§10 未修项 1）。 |
+| K3 | 退出白等十几秒（一次） | 采集线程在锁"中毒"（历史持锁方 panic）后死亡，`capture_done` 永不置位 → 退出收尾干等满预算 | 极低（需先有一次持锁 panic） | 退出路径已防中毒（`into_inner`），**循环体六处裸 `lock().unwrap()` 未防**（§10 未修项 4）。 |
+| K4 | 屏幕上显示翻译成功、转录汇总文件里却记成"无译文" | `finish_ok` 先推回执后落盘，panic 恰落在两者之间 | 极低 | 既有顺序（§10 未修项 6）；对齐 `fail()` 的"先落盘后回执"即可根除，未做。 |
+| K5 | 英文界面 tooltip 里混出一句中文（`panic（载荷非字符串）`） | 翻译任务因非字符串载荷 panic | 极低 | i18n 债务（§10 未修项 8），与既有中文 detail 一并迁移。 |
+| K6 | （未来）拿 `ThreadRole::Bench` 关线程会误伤正在跑的基准测试 | 未来有人写 `join_role(ThreadRole::Bench)` | — | 当前唯一调用 = `join_role(AsrMain)`，无误伤；角色混用留档（§10 未修项 5）。 |
+| K7 | 会话结束前转录 `all` 文件缺块 | `write_translation` 在转录 disabled 时不清 pending | 低（且关闭转录时用户看不到文件） | 既有；会话 `close()` 兜底（§10 未修项 7）。 |
+| K8 | （跨进程遗留）翻译域"静默全瘫"：每条都报失败、监督器无告警 | std Mutex 中毒后每个任务在 `lock().unwrap()` 失败 | — | **已修**（评审第 4 条，`unwrap_or_else(into_inner)`）。 |
+
+**注**：K1 是唯一"用户一定能感知、且本批治不了"的一条；其余都在极低概率或产品待裁区间。
+
+### 10.2 测试守护面（"把修复拆掉，测试会不会变红"）
+
+**改错会变红的（有守护）**：
+
+| 修复 | 守护测试 | 拆掉后 |
+|---|---|---|
+| capture 退出冲刷残余（force_flush + 入队） | `exit_flushes_vad_tail_then_reports_done` | 红 |
+| capture 退出置 `capture_done`（含空缓冲成对性） | 同上 + `exit_with_empty_buffer_still_reports_done` | 红 |
+| 退出收尾函数本体（预算、每段复查、interim 丢弃、按序消费） | `exit_drain_waits_for_capture_then_consumes_tail` / `exit_drain_gives_up_within_budget` / `exit_drain_checks_budget_before_each_segment` | 红 |
+| `wait_idle` / `discard_pending` / `join_role` 三个 API 本体 | `job_pool_wait_idle_tracks_in_flight_and_budget` / `job_pool_discard_pending_drops_queued_jobs`（含停机收口断言）/ `supervisor_join_role_joins_matching_threads` | 红 |
+| 终态清草稿箱（`settle_stream`） | `terminal_state_survives_stale_stream_flush` 段①④ | 红 |
+| 流式不覆盖终态（守卫） | 同测试段③ | 红 |
+| 账本存活于 50 条挤出 + 容量 + 命中即移除 | `subtitle_ledger_outlives_overlay_eviction` / `subtitle_ledger_caps_at_256_drop_oldest` | 红 |
+| 未就绪仍记账落盘（重排 + 成对收口 + 快照） | `not_ready_still_records_transcript_and_stats` | 红 |
+| panic 补回执 + 转录收口 + worker 继续服务 | `panicking_job_emits_receipt_and_keeps_worker_serving` | 红 |
+| 停机丢弃仍收口（ACR-1c） | `job_pool_discard_pending_drops_queued_jobs`（all 文件断言） | 红 |
+| 清空单一落点清三个缓冲 | `terminal_state_survives_stale_stream_flush` 段④ | 红 |
+
+**改错不会变红的（无守护，需人工/走查兜）**：
+
+| 面 | 为什么测不到 | 兜底手段 |
+|---|---|---|
+| **`feed_subtitle` 的接线**（若被改回查消息链） | 账本测试只直测 `ledger_*` API；`feed_subtitle` 属宿主 `App`，无 headless 夹具 | 代码走查 + 本表留档（§10 未修项 2） |
+| **清空的两条入口接线**（overlay 免确认直清 / app 确认后清） | 同上；已由"单一落点 `clear_messages`"把两处收成一行调用，风险大幅缩小 | 代码走查 |
+| **ASR 退出收尾的调用点**（`run_asr_thread` 主循环之后那段） | 驱动该路径需真 ASR 引擎（离线纪律禁止） | 实机走查第 1/2/7 项；本表留档（§10 未修项 3） |
+| **`Pipeline::stop` 的八步新序** | `Pipeline::start` 依赖真实 wasapi，测试不可伪造 | 实机走查全部项 + 实施时的 stop 序 checklist |
+| 采集循环体六处锁防中毒（K3） | 需构造锁中毒 + 线程死亡的组合 | 本表留档 |
+| `finish_ok` 先回执后落盘（K4） | 需在两次调用之间精确注入 panic | 本表留档 |
+
+**唯一验证手段**：除上表外，本批其余行为（尤其退出路径与真供应商交互）**没有任何自动化验证**——8 项实机走查（§5）就是全部验收面，未跑 = 未验收。
