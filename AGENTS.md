@@ -24,8 +24,8 @@ uv sync                                        # 首次/换机：钉版 libclang
                                                # cargo [env] 相对指向——clone 后零本机路径配置，勿改绝对路径
 pwsh -File scripts/fetch_sherpa_libs.ps1       # 首次：预取 sherpa 预编译库到 .cache/sherpa-onnx（缺失构建硬报错；
                                                # GitHub 慢用 -Mirror <前缀>/SHERPA_ONNX_MIRROR 走 Release 镜像）
-cargo test --workspace                         # 收工门禁（不在 precommit 内）：全量测试，滚动基线 624+8 绿；
-                                               # 8 ignored = 真模型/真网络探针离线纪律，CI 保持跳过
+cargo test --workspace                         # 收工门禁（不在 precommit 内）：全量测试，滚动基线 627+9 绿；
+                                               # 9 ignored = 真模型/真网络探针离线纪律，CI 保持跳过
 cargo build --release -p lt-app                # 单 exe：target/release/livetranslate.exe ~76MB（滚动值）
 cargo run -p lt-app                            # GUI 冒烟
 pwsh -File scripts/package_release.ps1         # 打包 dist/LiveTranslate-*.zip（CI 同源；发布路线 = docs/distribution.md）
@@ -146,10 +146,11 @@ git config core.hooksPath .githooks            # 每 clone 一次启用提交钩
 
 ### 施工中
 
-- asr-chain-robustness（D-94）：识别→翻译→显示链路健壮性修复施工中（退出完整性 + 流式终态 + 字幕窗账本 + 未就绪记账 + panic 回执）（docs/asr-chain-robustness.md）
+- （无）
 
 ### 遗留（完工包的实机走查与未了项，一行一包，清零即删）
 
+- asr-chain-robustness（D-94）：实机走查 8 项——退出尾巴入转录 / 退出延迟 / 流式终态不被半截话盖回 / 字幕窗缺句 / 未就绪记账 / 整段模式回归 / 在跑任务逗留实测 / 重启一致性（docs/archive/asr-chain-robustness.md §5）
 - doc-network-hardening（D-93）：断言 5 豁免表随误报维护；可选杠杆未取——§7 精选 25→10~12 条（docs/archive/doc-network-hardening.md §五）
 - agents-md-overhaul（ADR-15/16）：gotchas 候选回读（visual-parity/overlay-realign 怪癖收编为新条目）/ prompts 技能化验证（ZCode 工作区级 .zcode/skills）/ 两档预算两周后按实测回调 / i18n 键集 parity 守护候选（docs/archive/agents-md-overhaul.md §五）
 - quit-flow-redesign（D-87）：§五走查矩阵剩余行为项随用随验（docs/archive/quit-flow-redesign.md §九）

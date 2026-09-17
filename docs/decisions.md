@@ -81,7 +81,7 @@
 | D-91 | 2026-09-16 | 更新日志机制：仓根 `CHANGELOG.md` / `CHANGELOG.en.md` 为唯一正典（标准 Markdown + 允许分隔线 `---`；应用内编译期内嵌、Release 正文由引擎自动抽取）；发版三件套闸（版本号 = tag = 同号非空段落，`release.ps1 check ②` + CI 每次 push 早警告的只读动词 `notes`）；promote 的 -NotesFile 降为可选覆盖；应用内渲染改造整体缓办（真粗体/切 tab 滚动/多版本折叠同批，移交清单在档） | docs/archive/changelog-scheme.md |
 | D-92 | 2026-09-17 | 面板「删除全部」不退出应用（原版 `_delete_all_and_exit` 退出）：行为差异登记 + 按钮/对话框文案与行为对齐（去"并退出"） | docs/archive/live-check-fixes.md |
 | D-93 | 2026-09-17 | 文档网络加固：全仓清淤（README/distribution/归档注记/流程卡链）+ 守护断言 5~8（路径扩面/G 编号全仓/归档对账/水位线）+ 钩子触发面「守护读谁、谁触发」+ 宪法回吐（~0.7KB 复述迁回流程卡） | docs/archive/doc-network-hardening.md |
-| D-94 | 2026-09-17 | 退出收尾冲刷用 force_flush 不设 min_speech 门槛（与 Python 非增量路径的带门槛 flush() 有意不同）：capture 侧不知增量是否激活、退出时刚说的话优先保真、下游 reject_segment 三层过滤仍兜底（识别→翻译→显示链路健壮性修复批随行登记） | docs/asr-chain-robustness.md |
+| D-94 | 2026-09-17 | 退出收尾冲刷用 force_flush 不设 min_speech 门槛（与 Python 非增量路径的带门槛 flush() 有意不同）：capture 侧不知增量是否激活、退出时刚说的话优先保真、下游 reject_segment 三层过滤仍兜底（识别→翻译→显示链路健壮性修复批随行登记） | docs/archive/asr-chain-robustness.md |
 
 ## ADR-x（架构决策）
 

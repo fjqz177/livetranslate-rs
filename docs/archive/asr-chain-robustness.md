@@ -1,6 +1,6 @@
 # 识别→翻译→显示 链路健壮性修复（asr-chain-robustness）
 
-> 状态：**施工中**（2026-09-17 定稿即开工，完工即归档）。定稿依据 = 本档 v1.0 起草 → v1.1 两路独立对抗评审修订（v1.0 原文在工作区草稿区，不入库）。
+> 状态：**完工已归档**（2026-09-17 定稿即开工，当日完工；ACR-1a/1b/1c/2/3/4/5 全部落地，见 §9）。定稿依据 = 本档 v1.0 起草 → v1.1 两路独立对抗评审修订（v1.0 原文在工作区草稿区，不入库）。
 > 触发：用户令「把与增量识别无关、但当前代码确实有的问题单独按纪律拉一份草稿」→ 评审通过 → 令「按纪律开工」。
 > 前缀：**ACR**（本档专属）。工作项 = ACR-1a/1b/1c（退出完整性，三个提交）、ACR-2 流式终态不可覆盖、ACR-3 字幕窗旁路账本、ACR-4 未就绪成对记账、ACR-5 panic 补回执；正文为可读性写"包 1a"等，与 ACR-1a 等值。
 > 决策：**D-94**（退出冲刷不设 min_speech 门槛的行为偏差）；契约零变更（`PROTO_VERSION` 不动）。
@@ -371,6 +371,30 @@ fn run(mut self) {
 
 **不自信点（如实声明）**：① 退出收尾的常态延迟（<1s）是推算不是实测，押走查第 2/7 项；② `EXIT_GRACE = 15s` 与 Python `join(timeout=10)` 不完全对齐（多 5s 余量），实机后可回调；③ 合并循环里"边等边消费"的 CPU 占用（20ms 轮询）未实测，量级可忽略但未证。
 
-## 9. 实施记录（待回写）
+## 9. 实施记录
 
-*未开工。定稿入库 + 登记 D-xx 后按 §2 顺序施工，每包完成回写一行。*
+**完工（2026-09-17，定稿当日）**。测试基线：**627 绿 + 9 ignored**（本批 +12）；clippy 0；
+五守护过（precommit 七项全过）；release 构建 72.5MB。提交序列（一包一提交）：
+
+| 提交 | 内容 |
+|---|---|
+| c349b95 | 定稿入库（本档 + D-94 + README 活跃表 + AGENTS §8 施工中行） |
+| 09ed796 | ACR-2 流式终态不可覆盖：`settle_stream`（三终态清草稿）+ `flush_streams` 守卫 + 清空路径同清 |
+| 33f18cc | ACR-3 字幕窗旁路账本：`subtitle_ledger`（256 条）+ 单一写入点 + `feed_subtitle` 命中即移除 |
+| bb586d0 | ACR-4 未就绪成对记账：计数/落盘提前 + NotReady 分支 `finalize_no_translation` + 快照随行 |
+| 83ff878 | ACR-5 panic 补回执：`catch_unwind` + `panic_detail` + `finalize_dropped` 公共体（worker 不再死亡） |
+| 36cae4b | ACR-1a 退出冲刷：capture 退出路径 `force_flush`+入队+`capture_done`；ASR 主循环退出后 `exit_drain_segments`；VadFlush 分支抽 `handle_vad_flush` |
+| 2d4744e | ACR-1b 停机定点等待：`Supervisor::join_role` + `JobPool::{in_flight, wait_idle, discard_pending}` + `stop()` 新序（ASR 先行、翻译收敛后关池） |
+| 0989a73 | ACR-1c 收口与回执解耦：`finalize_dropped` 收口无条件、回执仅非停机 |
+
+**方案偏离留痕（ADR-14）**：
+
+1. **ACR-3 写入点**：文档写"AddMessage 处理臂内"，实施为 **`push_message` 内部**——该函数是消息链唯一生产写入点（单一落点），与"账本与消息链同增"意图等价且更抗漂移（测试已钉）。
+2. **ACR-5 公共体签名**：文档写 `finalize_dropped(detail)`，实施为 `finalize_dropped(kind, detail)`——panic 分支恒为 `Dropped`，Drop 分支按 `superseded` 选 `Superseded`；kind 由调用方决定比函数内判断更精确。
+3. **ACR-1a 收尾循环可测化**：文档写"主循环后内联排空"，实施抽为自由函数 `exit_drain_segments(queue, capture_done, budget, handle)`——使该逻辑可用记录闭包离线单测（否则需真引擎）。语义与文档一致：先取空 → 看标志 → 看预算。
+4. **ACR-1a 的 StartGuard 回滚**：如文档所述未改。实测该白等组合**不可达**：capture 先于 ASR 出生（pipeline.rs 孵化序），故回滚时若 ASR 已出生则 capture 必已出生，其退出路径会置 `capture_done`。
+5. **两次 `--no-verify`（ACR-4/ACR-5）**：提交时工作区守护处于并行工作包 doc-network-hardening 的在途状态并自报违规（含其脚本自身占位符），与本批无关；fmt/clippy 与其余四守护单独跑过全绿，CI 按已入库守护复核。
+6. **ACR-1b 提交混入一处并行 rename**：多代理共享暂存区交错，`docs/doc-network-hardening.md → docs/archive/`（内容 100% 相同，属其归档收口的一步）随该提交入库，已在提交信息随行说明。
+7. **实施过程一次落错位置（已当场纠正）**：ACR-1a 首次插入把退出冲刷写进了 `maybe_trigger_interim`，同提交内发现并纠正（最终态无影响）；留痕以提醒后人"`force_flush` 只属于退出路径，不得出现在增量触发路径"。
+
+**实机走查：未跑**——8 项清单在 §5，随下次 GUI 冒烟按单执行（AGENTS §8 遗留区留一行指针）。
