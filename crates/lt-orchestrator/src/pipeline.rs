@@ -163,6 +163,8 @@ struct JobPool {
     /// 存活 worker 计数（RAII 增减）：泄漏回归测试的观测面
     #[allow(dead_code)]
     alive_workers: Arc<AtomicUsize>,
+    /// ACR-1b：在跑任务计数（wait_idle 的观测面；pop 成功即 +1、RAII 减）
+    in_flight: Arc<AtomicUsize>,
     /// R15② 水位事件出口（W2：慢 LLM 积压从"仅日志 warn"升级为类型化事件）
     sink: EventSink,
     /// 已上报丢弃计数（与队列丢弃告警同节奏，≥200 条报一次，防洪泛）
@@ -180,10 +182,12 @@ impl JobPool {
         let stopped = Arc::new(AtomicBool::new(false));
         let superseded = Arc::new(AtomicBool::new(false));
         let alive_workers = Arc::new(AtomicUsize::new(0));
+        let in_flight = Arc::new(AtomicUsize::new(0));
         for i in 0..workers {
             let queue = queue.clone();
             let stopped = stopped.clone();
             let alive_workers = alive_workers.clone();
+            let in_flight = in_flight.clone();
             // spawn_retirable：池被替换/停机时 worker 是**正常退出**，交给监督器
             // 的"预期退役"信号静默收割——否则每次换模型都刷 8 条假错误日志
             sup.spawn_retirable(
@@ -195,6 +199,7 @@ impl JobPool {
                     let queue = queue.clone();
                     let stopped = stopped.clone();
                     let alive_workers = alive_workers.clone();
+                    let in_flight = in_flight.clone();
                     Box::new(move || {
                         alive_workers.fetch_add(1, Ordering::Relaxed);
                         // RAII 减计数：panic 路径同样归零（线程死亡即不存活）
@@ -203,7 +208,13 @@ impl JobPool {
                         // panic 由监督器重生（干净循环状态，INV5）
                         while !stopped.load(Ordering::Relaxed) {
                             match queue.pop_timeout(Duration::from_millis(500)) {
-                                Some(job) => job.run(),
+                                Some(job) => {
+                                    // ACR-1b：pop 成功即刻计入在跑（RAII 减，panic 安全）
+                                    // ——wait_idle 的"队列空且无在跑"判定据此
+                                    in_flight.fetch_add(1, Ordering::Relaxed);
+                                    let _in_flight = InFlightGuard(in_flight.clone());
+                                    job.run();
+                                }
                                 None => continue,
                             }
                         }
@@ -217,6 +228,7 @@ impl JobPool {
             transcript,
             superseded,
             alive_workers,
+            in_flight,
             sink,
             reported: AtomicU64::new(0),
         }
@@ -253,6 +265,32 @@ impl JobPool {
         self.stopped.store(true, Ordering::Relaxed);
     }
 
+    /// ACR-1b：预算内等到"队列空且无在跑任务"（50ms 轮询）。定位是**尽力而为的
+    /// 礼貌等待**，不是硬屏障——pop 返回与 in_flight 自增之间存在窄窗口可能误判
+    /// 空闲（后果良性：该任务仍会被那个 worker 跑完；硬屏障是停机序末尾的 join）。
+    /// 返回 true = 预算内收敛。
+    fn wait_idle(&self, budget: Duration) -> bool {
+        let deadline = Instant::now() + budget;
+        loop {
+            if self.queue.is_empty() && self.in_flight.load(Ordering::Relaxed) == 0 {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// ACR-1b：显式丢弃在队未跑任务（触发 [`TlJob::drop`] 的收口/回执语义）。
+    /// 停机序在 `shutdown()` 之后调用——**确定性收口**，不依赖进程退出时析构
+    /// 恰好跑到（`std::process::exit` 会跳过析构）。
+    fn discard_pending(&self) {
+        while let Some(job) = self.queue.try_pop() {
+            drop(job);
+        }
+    }
+
     /// **装置被替换**前的收尾：把在队任务全部取出并**补发"已放弃"回执**
     /// （在 `stopped` 置位前丢弃，[`TlJob::drop`] 才会回执）。停机路径不走这里
     /// ——停机时事件无处可去，也不该刷一堆失败。
@@ -282,6 +320,15 @@ impl Drop for JobPool {
 }
 
 /// worker 退出计数句柄（RAII）：闭包入口 +1，任何出口（含 panic）−1
+/// ACR-1b：在跑任务计数守卫——RAII 减（panic 展开路径同样归零）
+struct InFlightGuard(Arc<AtomicUsize>);
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
 struct WorkerAliveGuard(Arc<AtomicUsize>);
 impl Drop for WorkerAliveGuard {
     fn drop(&mut self) {
@@ -1142,6 +1189,16 @@ impl TlRig {
     fn shutdown(&self) {
         self.pool.shutdown();
     }
+
+    /// ACR-1b：等在队/在跑翻译收敛（见 [`JobPool::wait_idle`]）
+    fn wait_idle(&self, budget: Duration) -> bool {
+        self.pool.wait_idle(budget)
+    }
+
+    /// ACR-1b：显式丢弃在队任务（触发收口；见 [`JobPool::discard_pending`]）
+    fn discard_pending(&self) {
+        self.pool.discard_pending();
+    }
 }
 
 /// `Pipeline::start` 半初始化守卫（R12/D-62）：armed 期间 Drop = 回滚——
@@ -1641,15 +1698,32 @@ impl Pipeline {
     }
 
     pub fn stop(&mut self) {
-        // INV4 停机序：监督器 stopping 先置位——必须在一切线程停止信号之前，
-        // 否则 monitor 500ms 节拍可能把正被关闭的线程重新拉起（竞态洞封堵）；
-        // 随后 stop 标志 → 音频后端 → 翻译池停止 → join 全部受监督线程
-        // （capture/ASR/翻译 worker/音频状态转发/monitor）
+        // INV4 停机序第一步：监督器 stopping 先置位——必须在一切线程停止信号
+        // 之前，否则 monitor 500ms 节拍可能把正被关闭的线程重新拉起（竞态洞封堵）
         self.sup.begin_shutdown();
-        self.stop.store(true, Ordering::Relaxed);
+        // 停 wasapi 源线程（capture 线程靠 stop 标志自退；其退出路径会把 VAD
+        // 残余作为收尾段入队并置 capture_done——ACR-1a）
         self.backend.stop();
+        self.stop.store(true, Ordering::Relaxed);
+        // ACR-1b：定点等 ASR 线程收尾（退循环 → 等 capture_done → 消费残段 →
+        // 处理尾巴识别并提交其翻译 → manager.shutdown()）。**必须先于翻译收敛**：
+        // join_all 按孵化序 join（capture→翻译 worker→音频桥→ASR→monitor），
+        // 靠它会让翻译 worker 在 ASR 提交尾巴之前退出，尾巴的翻译必被丢弃。
+        if self.sup.join_role(ThreadRole::AsrMain) == 0 {
+            tracing::warn!("ASR 线程缺席（已死亡待重生/未注册）：退出收尾不可用，尾巴按现状丢弃");
+        }
+        // ACR-1b：让在队/在跑翻译收敛（预算 EXIT_GRACE；超预算 warn，余下在队
+        // 任务由 discard_pending 显式收口——不产生悬挂转录，只是该段记"无译文"）。
+        // 在跑任务不受此预算约束（阶梯自身受 timeout×尝试数封顶）。
         if let Some(tl) = &self.tl {
+            if !tl.wait_idle(EXIT_GRACE) {
+                tracing::warn!(
+                    "退出等待翻译收敛超预算（{}s），余下任务按未翻译收口",
+                    EXIT_GRACE.as_secs()
+                );
+            }
             tl.shutdown();
+            tl.discard_pending();
         }
         self.sup.join_all();
         tracing::info!("管道已停止");
@@ -3902,6 +3976,98 @@ mod tests {
             elapsed >= Duration::from_millis(200) && elapsed < Duration::from_secs(3),
             "预算附近退出，实际 {elapsed:?}"
         );
+    }
+
+    /// ACR-1b：wait_idle——空池立即收敛；在跑任务必须等它结束；预算耗尽返回 false。
+    #[test]
+    fn job_pool_wait_idle_tracks_in_flight_and_budget() {
+        use std::sync::atomic::AtomicU64;
+        let sup = test_sup();
+        let pool = JobPool::new(1, &sup, EventArtery::new(), test_transcript());
+
+        assert!(pool.wait_idle(Duration::from_millis(10)), "空池应立即空闲");
+
+        // 在跑任务：预算内等到它跑完（不是只看队列空）
+        let ran = Arc::new(AtomicU64::new(0));
+        let r = ran.clone();
+        pool.submit(1, move || {
+            std::thread::sleep(Duration::from_millis(200));
+            r.fetch_add(1, Ordering::Relaxed);
+        });
+        let t0 = Instant::now();
+        assert!(pool.wait_idle(Duration::from_secs(3)), "预算内应等到收敛");
+        assert!(
+            t0.elapsed() >= Duration::from_millis(150),
+            "必须等到在跑任务结束，实际 {:?}",
+            t0.elapsed()
+        );
+        assert_eq!(ran.load(Ordering::Relaxed), 1);
+
+        // 超预算：在跑任务未结束时返回 false（余下在队任务由 discard_pending 收口）
+        let r2 = Arc::new(AtomicU64::new(0));
+        let r3 = r2.clone();
+        pool.submit(2, move || {
+            std::thread::sleep(Duration::from_millis(400));
+            r3.fetch_add(1, Ordering::Relaxed);
+        });
+        assert!(
+            !pool.wait_idle(Duration::from_millis(80)),
+            "预算耗尽应返回 false"
+        );
+        assert!(pool.wait_idle(Duration::from_secs(3)), "复等至收敛");
+        assert_eq!(r2.load(Ordering::Relaxed), 1);
+        pool.shutdown();
+        sup.join_all();
+    }
+
+    /// ACR-1b：discard_pending 显式丢弃在队任务（不依赖进程析构恰好跑到）。
+    /// 停机态丢弃当前不发回执；转录收口语义由 ACR-1c 改为无条件（届时本条断言更新）。
+    #[test]
+    fn job_pool_discard_pending_drops_queued_jobs() {
+        let sup = test_sup();
+        let sink = EventArtery::new();
+        let dir = tmp_models_dir("acr1b-discard");
+        let transcript = Arc::new(lt_audio::transcript::TranscriptWriter::new(&dir));
+        let pool = JobPool::new(0, &sup, sink.clone(), transcript.clone());
+        transcript.write_original(3, "00:00:03", "在队段");
+        pool.submit(3, || panic!("不应被执行"));
+        pool.shutdown();
+        pool.discard_pending();
+        assert!(pool.queue.is_empty(), "在队任务已显式丢弃");
+        let mut events = Vec::new();
+        let mut batch = Vec::new();
+        while sink.drain_batch(&mut batch, Duration::from_millis(20)) {
+            events.append(&mut batch);
+        }
+        assert!(events.is_empty(), "停机态丢弃不发回执（当前语义）");
+        let _ = std::fs::remove_dir_all(&dir);
+        sup.join_all();
+    }
+
+    /// ACR-1b：join_role 定点 join——返回实际 join 条数、返回时线程已真正结束、
+    /// 幂等（句柄取走后再调计 0）。
+    #[test]
+    fn supervisor_join_role_joins_matching_threads() {
+        let sup = test_sup();
+        assert_eq!(sup.join_role(ThreadRole::AsrMain), 0, "未注册 role 计 0");
+        let done = Arc::new(AtomicBool::new(false));
+        let d2 = done.clone();
+        sup.spawn(
+            ThreadRole::Bench,
+            "join-role-fixture",
+            Policy::Never,
+            move || {
+                let d = d2.clone();
+                Box::new(move || {
+                    std::thread::sleep(Duration::from_millis(80));
+                    d.store(true, Ordering::Relaxed);
+                })
+            },
+        );
+        assert_eq!(sup.join_role(ThreadRole::Bench), 1, "join 到册线程");
+        assert!(done.load(Ordering::Relaxed), "join 返回时线程已真正结束");
+        assert_eq!(sup.join_role(ThreadRole::Bench), 0, "幂等：句柄已取走计 0");
+        sup.join_all();
     }
 
     /// W1 泄漏回归（ReplaceRig 路径）：旧 rig 被替换 Drop 后，旧池 8 个 worker

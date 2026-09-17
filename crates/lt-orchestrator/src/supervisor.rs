@@ -221,6 +221,30 @@ impl Supervisor {
         }
     }
 
+    /// ACR-1b：**定点** join 某 role 的全部线程，返回实际 join 的条数
+    /// （未注册 / 已死亡待重生 / 已取走都计 0）。幂等、可重复调用。
+    ///
+    /// 与 [`Self::join_all`] 同纪律：**锁内 collect、锁外 join**（持 entries 锁
+    /// join 会与 monitor 的死亡收割互卡）。用途 = 停机序需要按角色分先后等待：
+    /// `join_all` 按孵化序 join（capture → 翻译 worker → 音频桥 → ASR → monitor），
+    /// 直接靠它会让翻译 worker 在 ASR 处理收尾段（提交其翻译）之前退出，
+    /// 尾巴的翻译必被丢弃。
+    pub fn join_role(&self, role: ThreadRole) -> usize {
+        let handles: Vec<JoinHandle<()>> = {
+            let mut entries = self.entries.lock().unwrap();
+            entries
+                .iter_mut()
+                .filter(|e| e.role == role)
+                .filter_map(|e| e.handle.take())
+                .collect()
+        };
+        let n = handles.len();
+        for h in handles {
+            let _ = h.join();
+        }
+        n
+    }
+
     fn monitor_loop(self: Arc<Self>) {
         loop {
             if self.stopping.load(Ordering::SeqCst) {
