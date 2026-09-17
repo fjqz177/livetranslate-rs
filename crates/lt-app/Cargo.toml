@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
+rust-version.workspace = true
 
 [[bin]]
 name = "livetranslate"
@@ -11,6 +12,9 @@ path = "src/main.rs"
 
 [build-dependencies]
 winresource = "0.1"
+
+[lints]
+workspace = true
 
 [dependencies]
 lt-proto = { workspace = true }

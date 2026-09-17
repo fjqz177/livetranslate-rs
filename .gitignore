@@ -12,3 +12,9 @@ docs/architecture/
 /dist/
 # 文档纪律草稿区（未拍板的调研稿/方案稿，永不入库；定稿即 mv 进 docs/ 并 git add）
 docs/drafts/
+# 开发杂项补漏（dev-config-audit C8）：编辑器/系统垃圾文件
+*.pdb
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

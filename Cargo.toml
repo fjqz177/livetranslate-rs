@@ -18,6 +18,12 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT"
 publish = false            # 内部 workspace：禁误发布；同时让 cargo-deny 的 private 语义成立
+rust-version = "1.98.1"    # 声明式 MSRV（dev-config-audit C2）：与 rust-toolchain.toml channel 同源
+
+[workspace.lints.rust]
+# 「自身代码零警告」从 precommit/CI 命令行钉进清单（dev-config-audit C3）：
+# 普通 cargo build/test 不带 -D flags 同样拦截；依赖编译不受 [lints] 影响
+warnings = "deny"
 
 [workspace.dependencies]
 lt-proto = { path = "crates/lt-proto" }

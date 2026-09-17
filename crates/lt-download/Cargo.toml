@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
 
 [dependencies]
 # 下载器（架构 2.0 W6 自 lt-models 分家，方案 §3.1：lt-download 独立——

@@ -3,7 +3,7 @@
 用 onnxruntime 逐窗口复算 Rust example（vad_check）导出的同一段输入，
 state 逐 chunk 回喂（与 Rust/裸 ONNX 语义一致），输出逐点误差。
 
-用法：先跑 `cargo run -p lt-pipeline --example vad_check`，再运行本脚本。
+用法：先跑 `cargo run -p lt-audio --example vad_check`，再运行本脚本。
 """
 
 import json
