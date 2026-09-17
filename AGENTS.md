@@ -3,7 +3,7 @@
 > **本文是什么**：常驻约束 + 路由表（指令体系 L0）。细节活在 docs/，按 §4 路由按需读，不通读不背。
 > **生效**：2026-09-14 起取代复刻期总纲（ADR-15/16，登记见 docs/decisions.md；旧版与迁移对照见 git 历史）。
 > **冷启动三步**：① 通读本文件 → ② 对照 §8 看板：命中「待拍板」的工作未点头禁动工 → ③ 开工先过 `docs/prompts/kickoff.md`。
-> **改文纪律**：改本文须在 commit message 说明信息去向（删了什么 → 迁去哪）；预算两档——§0~§7 主体 ≤170 行、≤17KB，全文件（含 §8 看板活状态）≤210 行、≤22KB；§7 速查只引用 `docs/gotchas.md` 实存的 G-编号（禁死引用）；§8 三小节标题不得缺——`scripts/check_agents_health.ps1` 机械守护。
+> **改文纪律**：改本文须在 commit message 说明信息去向（删了什么 → 迁去哪）；预算两档现值唯一真源 = `scripts/check_agents_health.ps1` 断言 1（加字优先以回吐支付）；§7 速查只引用 `docs/gotchas.md` 实存的 G-编号（禁死引用）；§8 三小节标题不得缺——`scripts/check_agents_health.ps1` 机械守护。
 
 ## 1. 项目与硬约束
 
@@ -24,7 +24,7 @@ uv sync                                        # 首次/换机：钉版 libclang
                                                # cargo [env] 相对指向——clone 后零本机路径配置，勿改绝对路径
 pwsh -File scripts/fetch_sherpa_libs.ps1       # 首次：预取 sherpa 预编译库到 .cache/sherpa-onnx（缺失构建硬报错；
                                                # GitHub 慢用 -Mirror <前缀>/SHERPA_ONNX_MIRROR 走 Release 镜像）
-cargo test --workspace                         # 收工门禁（不在 precommit 内）：全量测试，滚动基线 610+9 绿；
+cargo test --workspace                         # 收工门禁（不在 precommit 内）：全量测试，滚动基线 615+9 绿；
                                                # 9 ignored = 真模型/真网络探针离线纪律，CI 保持跳过
 cargo build --release -p lt-app                # 单 exe：target/release/livetranslate.exe ~76MB（滚动值）
 cargo run -p lt-app                            # GUI 冒烟
@@ -33,12 +33,12 @@ pwsh -File scripts/release.ps1 <动词>          # 发布链九动词引擎（D-
                                                # 真发布 = release → promote（正文自动取 CHANGELOG 本版段落；云端等价 = 推 v* tag，转正永远人工）
 pwsh -File scripts/precommit.ps1               # 提交前门禁：七项清单真源 = 该脚本头注；ci.yml 与 .githooks
                                                # 同源调用本脚本，门禁增删只改这一处（D-88 废除手抄双边同步）
-git config core.hooksPath .githooks            # 每 clone 一次启用提交钩子；暂存区无 .rs / Cargo.toml / .cargo /
-                                               # AGENTS.md / docs/gotchas.md / docs/prompts/* 改动时放行（其余纯
-                                               # docs/资产提交不跑门禁）
+git config core.hooksPath .githooks            # 每 clone 一次启用提交钩子；触发面 = 守护读谁、谁触发（D-93）：
+                                               # 暂存区命中 .rs / Cargo.toml / .cargo / AGENTS.md / docs /
+                                               # scripts / .github / rust-toolchain* 任一即跑全套（仅 assets/ 放行）
 ```
 
-- 冒烟：设临时 `LIVETRANSLATE_CONFIG_DIR`，其 settings.json 必须显式 `models_dir` 指真实模型缓存（如 `~/.config/livetranslate/models`），否则引擎探测全部失败；`LIVETRANSLATE_SHOW_PANEL=1` 启动直开控制面板（走查/排障旗标，默认关闭）；`livetranslate.exe --version` 无 GUI 打印版本即退（产物能起的最小证明）。
+- 冒烟（临时配置目录 / models_dir / --version 旗标）= docs/prompts/live-check.md。
 - CI = `.github/workflows/` 三 workflow（结构细节真源 = 各文件头注）：**ci**（单 job，门禁 = precommit.ps1 整脚本入 CI〔D-88 A1〕+ 测试 + 分发演练；触发 = push 全分支 + PR + 手动〔D-89 回摆〕）/ **release**（tag `v*` 或手动演练 → 调 `scripts/release.ps1` 全链出草稿 + sha256，转正人工〔D-90〕）/ **security**（cargo-deny 四表，ubuntu）；工具链真源 = 仓库根 `rust-toolchain.toml`；无分支保护——PR 上会跑 CI，但红叉不拦合并，仍靠提交前自查；CI 绿 ≠ 干净机能跑（runner 自带 VC++）。
 - 改码前摸底优先 MCP `codegraph_explore`（`.codegraph/` 本机索引，不入库）。
 
@@ -87,14 +87,12 @@ git config core.hooksPath .githooks            # 每 clone 一次启用提交钩
 
 ## 5. 纪律速记（全文真源 = docs/README.md 顶部九条，此处只留最绑定的）
 
-- 主干直推：提交直接落 main，无 PR 流程（CI 全分支 push 兜底）；里程碑 + 测试全绿即自主中文 commit，`feat(scope): 中文主题`；多代理并行提交前 `git status` / `git diff` 逐项复核（G-19）。
+- 主干直推：提交直接落 main，无 PR 流程（CI 全分支 push 兜底）。
 - 汇报文风：结论先行、判对项与待拍板项分列、最直白零废话（评审全文风 = `docs/prompts/review.md`）。
-- 测试离线纪律：新测试禁真模型 / 真网络 / 真音频设备；探针类标 `#[ignore]`；临时目录必须唯一化（G-22）。
 - 定稿 `docs(scope)` 提交必须先于第一行实现代码；草稿只进 `docs/drafts/`（不入库）；决策号（D/ADR）随定稿同一提交登记 decisions.md。
 - 收口一气呵成 + 收口三问，全文 = docs/README.md 纪律⑤ + `docs/prompts/closeout.md`。
 - 收尾不用 `git add -A` / `git add .`，逐项显式 pathspec；生成副产物不入库。
 - i18n：zh/en 两份 yaml 必须同步修改（键集一致）。
-- 子代理分工：检索/执行交 flash 级 general-purpose/Explore；承重墙（Win32、链接 CRT、下载器、算法移植）由主线程亲自做。
 
 ## 6. 域速记
 
@@ -133,6 +131,7 @@ git config core.hooksPath .githooks            # 每 clone 一次启用提交钩
 23. G-23 无 BOM 的 .ps1 被 Windows PowerShell 按 ANSI 解析（中文全乱码、解析失败）——入库 .ps1 一律带 UTF-8 BOM（本仓已 pwsh-only〔ADR-16〕，pwsh 默认 UTF-8 无此坑，BOM 保留双读兼容）。
 24. G-24 `scroll_to_cursor` 在 ScrollArea 外调用不生效：全局滚动目标被下一帧收尾的滚动区按外层坐标消费、偏移增量≈0——跳底须在内容闭包内执行（「回到最新」浮钮经 request_jump 记一帧）。
 25. G-25 rust-cache 清 target/ 下非 cargo 结构文件（只留目录骨架）——`-sys` crate 解到 target/ 的预编译库缓存恢复后成空目录、build.rs 的 `is_dir()` 守卫照样放行 → 链接期找不到 `.lib`；对策 = 预解包到 `.cache` 并设其 `*_LIB_DIR` 环境变量（sherpa 已改，见 G-25）。
+26. G-27 pwsh 裸调用 GUI 子系统 exe 不等待、不设退出码——CI `--version` 冒烟恒绿只证明文件存在；一律 `Start-Process -Wait -PassThru` 取真退出码（ci.yml / release.ps1 已按此修复）。
 
 ## 8. 看板（机制：drafts 看板 = 本区，一行一包、清零即删；细节只活在文档里）
 
