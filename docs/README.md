@@ -31,6 +31,7 @@
 
 | 文档 | 一句话（D-xx） | 完工日期 |
 |---|---|---|
+| `dev-config-audit.md` | 开发配置审计收口：主体经 D-88~D-91 取代性落地 + 逐项对账（A2/B1/B2 反向选择留证）；小项补做 C2/C3/C6/C8/E1 | 2026-09-17 |
 | `live-check-fixes.md` | 实机走查三修：精简模式切换可达（A2）/ 按钮三态色反馈（A1，三窗共用）/ 面板禁用态外观 + 删除全部文案（B2、D-92） | 2026-09-17 |
 | `changelog-scheme.md` | 更新日志机制：仓根正典（`CHANGELOG.md`/`.en.md`）+ 发版三件套闸（check ② / CI `notes` 早警告）+ 应用内编译期内嵌（D-91） | 2026-09-16 |
 | `ci-workflow-suite.md` | CI 工作流全家桶：单 job 整脚本入 CI + 工具链钉版 + cargo-deny + tag→Draft 发布链（D-88） | 2026-09-15 |

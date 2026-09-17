@@ -139,7 +139,6 @@ git config core.hooksPath .githooks            # 每 clone 一次启用提交钩
 ### 待拍板（等用户裁决；草稿在 docs/drafts/ 不入库）
 
 - 待拍板：**ASR 模型选型**——近一年开源模型调研（FireRed2-CTC / Cohere-14lang / Dolphin / 标点闸门候选，A~H 清单）（docs/drafts/asr-model-survey-2026.md）
-- 待拍板：**开发配置审计**（docs/drafts/dev-config-audit.md）
 - 待拍板：**增量 ASR 改造**（docs/drafts/incremental-asr-overhaul.md）
 - 待拍板：**跨平台分期 ①~⑤**——2026-09-11 可行性评估（无草稿，结论在会话记忆；P0 = 宿主 trait 化）
 - 待拍板：**llm 遗留⑪**——规则 4/5 偏离可见（docs/archive/llm-api-round2.md）
@@ -155,6 +154,7 @@ git config core.hooksPath .githooks            # 每 clone 一次启用提交钩
 - agents-md-overhaul（ADR-15/16）：gotchas 候选回读（visual-parity/overlay-realign 怪癖收编为新条目）/ prompts 技能化验证（ZCode 工作区级 .zcode/skills）/ 两档预算两周后按实测回调 / i18n 键集 parity 守护候选（docs/archive/agents-md-overhaul.md §五）
 - quit-flow-redesign（D-87）：§五走查矩阵剩余行为项随用随验（docs/archive/quit-flow-redesign.md §九）
 - ci-workflow-suite（D-88/D-89）：deny.toml 首跑校准 + CI 首跑墙钟观察 + nextest/typos 候选 + 仓库设置候选（immutable releases / tag protection；attest 已由 D-90 否决）+ Dependabot alerts/security updates 未开（docs/archive/ci-workflow-suite.md §六）
+- dev-config-audit（收口 2026-09-17）：A3 冒烟配置免手抄——settings.smoke.json 模板或 --smoke 参数，随下次冒烟改造裁决（docs/archive/dev-config-audit.md §4）
 - release-engine（D-90）：首次真 tag 演练未跑（runner 的 gh 用法 / publish job 写入 / 摘要实貌待验）+ 首发须抬版本（旧 v0.1.0 tag 不删，见 docs/distribution.md §4）+ zip 五件套断言与 build-info 是否随 Release 永久留档待表态
 - 架构 v2/2.1：实机走查 11 项 + WP-9 性能预算（后续单独方案）（docs/archive/architecture-v2.md §6.4）；W5 走查 6 项——悬浮窗拖动/字幕窗拖动穿透回归/导出保存框/背景图选择框/设备下拉/Monitor 条（同文档 W5 节）
 - translator（D-85）：实机走查 13 项（docs/archive/translator-probe-hotswap.md §6.2）
