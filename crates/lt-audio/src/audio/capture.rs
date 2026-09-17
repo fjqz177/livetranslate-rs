@@ -108,6 +108,11 @@ pub struct CaptureLoop<F> {
     /// 当前生效 VAD 模式（架构 2.0 W1/R2：检测模式变化以替换置信度源；
     /// 初值 = 启动装配所用模式，避免首帧把 Silero 重复加载一遍）
     pub current_mode: String,
+    /// ACR-1a：本线程收尾完成标志（退出路径最后一步置位）。语义 = "VAD 已无写者
+    /// 且残余尾巴已入队"——ASR 线程的退出收尾循环据此判定段队列内容已终。
+    /// 可见性由段队列自身的内部互斥量提供（push 与 try_pop 同一把锁），
+    /// 标志本身无需 Acquire/Release；**若队列换无锁实现，此处必须升序**。
+    pub capture_done: Arc<AtomicBool>,
 }
 
 /// VAD 生效设置发布格读数（`(版本, 设置)` 快照；版本单调递增）。
@@ -182,6 +187,23 @@ impl<F: Fn(f32, f64, Option<f32>) + Send> CaptureLoop<F> {
                 }
             }
         }
+
+        // ── 退出收尾（ACR-1a）──
+        // 把 VAD 残余作为收尾段入队：退出瞬间耳朵里攒着的话（最多 max_speech）
+        // 不再直接消失（等价 Python main.py:1208-1216 的 force_flush + 处理）。
+        // 有意不设 min_speech 门槛（D-94）：退出时用户刚说的话优先保真，下游
+        // reject_segment 三层过滤 / 噪声过滤仍兜底。
+        // 中毒防御：历史持锁方 panic 过的话 into_inner 取回数据，不让退出路径
+        // 再 panic（否则 capture_done 永不置位，尾巴静默丢失）。
+        let tail = vad
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .force_flush();
+        if let Some(seg) = tail {
+            self.segment_tx.push((SegmentSource::VadFlush, seg));
+        }
+        // 最后一步：此后本线程不再触碰 VAD——ASR 线程据此判定队列已终
+        self.capture_done.store(true, Ordering::Relaxed);
     }
 
     /// 增量触发判定：读 VAD 状态 → 纯函数判定 → 塞空音频 interim 标记。
@@ -297,6 +319,7 @@ mod tests {
             vad_tick: Arc::new(|| (0, crate::vad::VadSettings::default())),
             interim,
             current_mode: String::new(),
+            capture_done: Arc::new(AtomicBool::new(false)),
         };
         let vad = Arc::new(Mutex::new(vad));
         let r = running.clone();
@@ -392,6 +415,7 @@ mod tests {
             vad_tick: Arc::new(|| (0, crate::vad::VadSettings::default())),
             interim: Default::default(),
             current_mode: String::new(),
+            capture_done: Arc::new(AtomicBool::new(false)),
         };
         let vad = Arc::new(Mutex::new(vad));
         let r = running.clone();
@@ -434,6 +458,7 @@ mod tests {
             vad_tick: reader,
             interim: Default::default(),
             current_mode: "silero".into(),
+            capture_done: Arc::new(AtomicBool::new(false)),
         };
         let vad = Arc::new(Mutex::new(vad));
         let vad_obs = vad.clone();
@@ -631,5 +656,72 @@ mod tests {
             2.0,
             "间隔保持"
         );
+    }
+
+    /// ACR-1a：退出路径把 VAD 残余作为收尾段入队，之后才置 capture_done。
+    /// 病灶面：旧实现循环退出即返回，残余（说话中途退出最多 max_speech 秒）直接消失。
+    /// 本测以 `running=true` 直调 `run()`——循环体不执行，只走退出收尾，全程同步无竞态。
+    #[test]
+    fn exit_flushes_vad_tail_then_reports_done() {
+        let (_q, seg_tx, _monitors, _running) = setup();
+        let mut vad = VadProcessor::new(boxed(Burst(40.into())), 16000, 0.5, 1.0, 15.0, 0.032);
+        let chunk = vec![0.1f32; 512];
+        for _ in 0..40 {
+            vad.process_chunk(&chunk);
+        }
+        assert!(vad.is_speaking(), "前置：VAD 处于说话态且有缓冲");
+        let vad = Arc::new(Mutex::new(vad));
+        let done = Arc::new(AtomicBool::new(false));
+        let mut lp = CaptureLoop {
+            chunk_rx: Arc::new(BoundedDropQueue::new(100, "test-chunk")),
+            segment_tx: seg_tx.clone(),
+            monitor: |_, _, _| {},
+            paused: Arc::new(AtomicBool::new(false)),
+            vad_tick: Arc::new(|| (0, crate::vad::VadSettings::default())),
+            interim: Default::default(),
+            current_mode: String::new(),
+            capture_done: done.clone(),
+        };
+        lp.run(&vad, &AtomicBool::new(true));
+        let (source, seg) = seg_tx.try_pop().expect("退出残余必须作为收尾段入队");
+        assert_eq!(source, SegmentSource::VadFlush);
+        assert!(!seg.is_empty(), "收尾段应携带残余音频");
+        assert!(seg_tx.try_pop().is_none(), "只推一条尾巴（不重复）");
+        assert!(
+            done.load(Ordering::Relaxed),
+            "capture_done 必须置位（语义 = VAD 无写者且尾巴已入队）"
+        );
+        // 缓冲已随 force_flush 清空：二次退出不重复冲刷
+        lp.run(&vad, &AtomicBool::new(true));
+        assert!(seg_tx.try_pop().is_none(), "缓冲已空不得重复推尾巴");
+    }
+
+    /// ACR-1a：缓冲为空时退出路径不推段，但 capture_done 照常置位
+    /// （ASR 侧据此判定队列已终，不能因为无尾巴就悬着）。
+    #[test]
+    fn exit_with_empty_buffer_still_reports_done() {
+        let (_q, seg_tx, _monitors, _running) = setup();
+        let vad = Arc::new(Mutex::new(VadProcessor::new(
+            boxed(Zero),
+            16000,
+            0.5,
+            1.0,
+            15.0,
+            0.032,
+        )));
+        let done = Arc::new(AtomicBool::new(false));
+        let mut lp = CaptureLoop {
+            chunk_rx: Arc::new(BoundedDropQueue::new(100, "test-chunk")),
+            segment_tx: seg_tx.clone(),
+            monitor: |_, _, _| {},
+            paused: Arc::new(AtomicBool::new(false)),
+            vad_tick: Arc::new(|| (0, crate::vad::VadSettings::default())),
+            interim: Default::default(),
+            current_mode: String::new(),
+            capture_done: done.clone(),
+        };
+        lp.run(&vad, &AtomicBool::new(true));
+        assert!(seg_tx.try_pop().is_none(), "无残余不推段");
+        assert!(done.load(Ordering::Relaxed), "空缓冲同样置位（成对不变式）");
     }
 }

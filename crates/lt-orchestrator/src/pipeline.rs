@@ -48,6 +48,12 @@ use std::time::{Duration, Instant};
 
 /// 段队列容量（对齐原版 _asr_queue maxsize=16，满丢最旧）
 const SEGMENT_QUEUE_CAP: usize = 16;
+/// 退出收尾总预算（ACR-1a/1b 共用；ASR 收尾循环与翻译收敛各自适用）。
+/// 15s = 覆盖一次默认请求超时（`Settings.timeout` 默认 10s）加余量。单段识别
+/// 本身受引擎档案约束（profile.rs：SenseVoice/Nano/whisper = 5s + 2×段长秒；
+/// qwen3 = 10s + 4×段长秒），但**总预算必须先封顶**——段队列容量 16，
+/// 积压 + 慢引擎的病态累加可达分钟级，用户点退出不该等那么久。
+const EXIT_GRACE: Duration = Duration::from_secs(15);
 
 /// 翻译线程池 worker 数（对齐原版 ThreadPoolExecutor(max_workers=8)）
 const TL_POOL_WORKERS: usize = 8;
@@ -1261,6 +1267,8 @@ impl Pipeline {
 
         let stop = Arc::new(AtomicBool::new(false));
         let paused = Arc::new(AtomicBool::new(false));
+        // ACR-1a：capture 线程收尾完成标志（"VAD 已无写者且残余尾巴已入队"）
+        let capture_done = Arc::new(AtomicBool::new(false));
 
         // R12/D-62：半初始化守卫——任一 ? 提前返回时回滚已 spawn 线程与音频
         // 后端（现状缺陷：音频线程泄漏独占设备直到进程退出）
@@ -1325,6 +1333,7 @@ impl Pipeline {
         };
         {
             let stop = stop.clone();
+            let capture_done = capture_done.clone();
             let paused = paused.clone();
             let segment_queue = segment_queue.clone();
             let monitor_cell = monitor_cell.clone();
@@ -1342,6 +1351,7 @@ impl Pipeline {
                 move || {
                     let stop = stop.clone();
                     let paused = paused.clone();
+                    let capture_done = capture_done.clone();
                     let segment_queue = segment_queue.clone();
                     let monitor_cell = monitor_cell.clone();
                     let monitor_seq = monitor_seq.clone();
@@ -1371,6 +1381,7 @@ impl Pipeline {
                             interim,
                             // R2/D-60：初值=启动模式；模式热切换时 capture 换置信度源
                             current_mode: mode,
+                            capture_done,
                         };
                         loop_.run(&vad, &stop);
                     })
@@ -1469,6 +1480,7 @@ impl Pipeline {
         // ── ASR 线程：Manager 独占 + 段处理 ──
         {
             let stop = stop.clone();
+            let capture_done = capture_done.clone();
             let sink = sink.clone();
             let segment_queue = segment_queue.clone();
             let settings = settings.clone();
@@ -1488,6 +1500,7 @@ impl Pipeline {
                 Policy::backoff(),
                 move || {
                     let stop = stop.clone();
+                    let capture_done = capture_done.clone();
                     let sink = sink.clone();
                     let segment_queue = segment_queue.clone();
                     let settings = settings.clone();
@@ -1511,6 +1524,7 @@ impl Pipeline {
                                 interim,
                                 bus,
                                 stop,
+                                capture_done,
                                 sink,
                                 tl_switch,
                                 sup,
@@ -1978,6 +1992,8 @@ struct AsrThreadCtx {
     /// AsrRuntime/挂起句柄/target_language 三重镜像）
     bus: Arc<SettingsBus>,
     stop: Arc<AtomicBool>,
+    /// ACR-1a：capture 线程收尾完成标志（退出收尾循环据此判定段队列已终）
+    capture_done: Arc<AtomicBool>,
     sink: EventSink,
     tl_switch: crossbeam_channel::Receiver<TlSwitch>,
     /// 线程监督器句柄（ReplaceRig 重建翻译池用）
@@ -2220,6 +2236,7 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
         interim,
         bus,
         stop,
+        capture_done,
         sink,
         tl_switch,
         sup,
@@ -2454,90 +2471,183 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
                     .store(samples as u64, Ordering::Relaxed);
             }
             SegmentSource::VadFlush => {
-                if audio.is_empty() {
-                    continue;
-                }
-                let seg_seconds = audio.len() as f64 / lt_audio::TARGET_RATE as f64;
-                let t0 = std::time::Instant::now();
-                match manager.transcribe(&audio, false, &eff.asr_lang) {
-                    Ok(result) => {
-                        asr_unavailable_notified = false;
-                        let asr_ms = t0.elapsed().as_secs_f64() * 1000.0;
-                        if interim_state.active {
-                            // 收尾段（原版 _process_interim_final 的 Ok(result) 分支）：
-                            // 回声剥离 → pending 前置拼接 → 噪声过滤 → 提交
-                            commit_interim_final(
-                                &mut interim_state,
-                                &eff.asr_lang.language,
-                                &eff.tl.target_language,
-                                tl.as_deref(),
-                                &sink,
-                                &transcript,
-                                &session_stats,
-                                &result.text,
-                                &result.language,
-                                asr_ms,
-                                seg_seconds,
-                                &msg,
-                            );
-                        } else if let Some(reason) = reject_segment(
-                            &result.text,
-                            seg_seconds,
-                            &eff.asr_lang.language,
-                            &result.language,
-                        ) {
-                            // 段级三层过滤（原版 _process_segment：空/纯标点 → 噪声 → 语言）
-                            match reason {
-                                REJECT_LANGUAGE => {
-                                    // 预览按字符截断，避免切坏 UTF-8 边界
-                                    let preview: String = result.text.chars().take(60).collect();
-                                    tracing::info!(
-                                        "语言过滤: 期望 {:?} 但识别为 {:?}，丢弃: {preview}",
-                                        eff.asr_lang.language,
-                                        result.language
-                                    );
-                                }
-                                REJECT_NOISE => tracing::debug!(
-                                    "噪声过滤: {seg_seconds:.1}s 段仅产出 {:?}",
-                                    result.text
-                                ),
-                                _ => tracing::debug!(
-                                    "ASR 返回空/纯标点结果，跳过: {:?}",
-                                    result.text
-                                ),
-                            }
-                        } else {
-                            commit_text(
-                                &eff.asr_lang.language,
-                                &eff.tl.target_language,
-                                tl.as_deref(),
-                                &sink,
-                                &transcript,
-                                &session_stats,
-                                &result.text,
-                                &result.language,
-                                asr_ms,
-                                &msg,
-                            );
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!("ASR 段识别失败: {e}");
-                        if e.unavailable() && !asr_unavailable_notified {
-                            asr_unavailable_notified = true;
-                            sink.push(UiEvent::AsrUnavailable);
-                        }
-                    }
-                }
-                // 无论走哪支，处理完收尾段后复位全部增量状态（原版 main.py:1715-1719）
-                interim_state.reset();
-                interim.last_interim_samples.store(0, Ordering::Relaxed);
-                interim.last_check_ms.store(0, Ordering::Relaxed);
+                handle_vad_flush(
+                    &mut manager,
+                    &mut interim_state,
+                    &bus,
+                    tl.as_deref(),
+                    &sink,
+                    &transcript,
+                    &session_stats,
+                    &msg,
+                    &mut asr_unavailable_notified,
+                    &interim,
+                    audio,
+                );
             }
         }
     }
+    // ── 退出收尾（ACR-1a）──
+    // capture 线程在退出路径把 VAD 残余作为收尾段入队并置 capture_done；
+    // 这里等它落板的同时持续消费（同一循环，防队列积压把收尾段挤掉），
+    // 残余段与运行期同语义处理（handle_vad_flush，同一份实现）。
+    let drained = exit_drain_segments(&segment_queue, &capture_done, EXIT_GRACE, |_, audio| {
+        handle_vad_flush(
+            &mut manager,
+            &mut interim_state,
+            &bus,
+            tl.as_deref(),
+            &sink,
+            &transcript,
+            &session_stats,
+            &msg,
+            &mut asr_unavailable_notified,
+            &interim,
+            audio,
+        );
+    });
+    tracing::info!(
+        "ASR 线程退出：退出收尾{}",
+        if drained {
+            "完成"
+        } else {
+            "超预算（剩余段已放弃）"
+        }
+    );
     manager.shutdown();
     tracing::info!("ASR 线程退出");
+}
+
+/// 处理一条收尾段（VadFlush）：段级三层过滤 / 增量收尾提交 / 整段提交，末尾
+/// 复位全部增量状态（原版 main.py:1715-1719）。
+/// ACR-1a：主循环与退出收尾（[`exit_drain_segments`]）共用这一份实现——
+/// 退出时最后一条尾巴必须与运行期同语义落屏、落盘、入账。
+#[allow(clippy::too_many_arguments)]
+fn handle_vad_flush(
+    manager: &mut AsrManager,
+    interim_state: &mut InterimState,
+    bus: &Arc<SettingsBus>,
+    tl: Option<&TlRig>,
+    sink: &EventSink,
+    transcript: &lt_audio::transcript::TranscriptWriter,
+    stats: &TlStats,
+    msg: &Msg,
+    asr_unavailable_notified: &mut bool,
+    interim: &Arc<InterimControl>,
+    audio: Vec<f32>,
+) {
+    if audio.is_empty() {
+        return;
+    }
+    // W4：每段生效视图一次 load（语言过滤/同语言判定/翻译提交全部据此）
+    let eff = bus.load();
+    let seg_seconds = audio.len() as f64 / lt_audio::TARGET_RATE as f64;
+    let t0 = Instant::now();
+    match manager.transcribe(&audio, false, &eff.asr_lang) {
+        Ok(result) => {
+            *asr_unavailable_notified = false;
+            let asr_ms = t0.elapsed().as_secs_f64() * 1000.0;
+            if interim_state.active {
+                // 收尾段（原版 _process_interim_final 的 Ok(result) 分支）：
+                // 回声剥离 → pending 前置拼接 → 噪声过滤 → 提交
+                commit_interim_final(
+                    interim_state,
+                    &eff.asr_lang.language,
+                    &eff.tl.target_language,
+                    tl,
+                    sink,
+                    transcript,
+                    stats,
+                    &result.text,
+                    &result.language,
+                    asr_ms,
+                    seg_seconds,
+                    msg,
+                );
+            } else if let Some(reason) = reject_segment(
+                &result.text,
+                seg_seconds,
+                &eff.asr_lang.language,
+                &result.language,
+            ) {
+                // 段级三层过滤（原版 _process_segment：空/纯标点 → 噪声 → 语言）
+                match reason {
+                    REJECT_LANGUAGE => {
+                        // 预览按字符截断，避免切坏 UTF-8 边界
+                        let preview: String = result.text.chars().take(60).collect();
+                        tracing::info!(
+                            "语言过滤: 期望 {:?} 但识别为 {:?}，丢弃: {preview}",
+                            eff.asr_lang.language,
+                            result.language
+                        );
+                    }
+                    REJECT_NOISE => {
+                        tracing::debug!("噪声过滤: {seg_seconds:.1}s 段仅产出 {:?}", result.text)
+                    }
+                    _ => tracing::debug!("ASR 返回空/纯标点结果，跳过: {:?}", result.text),
+                }
+            } else {
+                commit_text(
+                    &eff.asr_lang.language,
+                    &eff.tl.target_language,
+                    tl,
+                    sink,
+                    transcript,
+                    stats,
+                    &result.text,
+                    &result.language,
+                    asr_ms,
+                    msg,
+                );
+            }
+        }
+        Err(e) => {
+            tracing::warn!("ASR 段识别失败: {e}");
+            if e.unavailable() && !*asr_unavailable_notified {
+                *asr_unavailable_notified = true;
+                sink.push(UiEvent::AsrUnavailable);
+            }
+        }
+    }
+    // 无论走哪支，处理完收尾段后复位全部增量状态（原版 main.py:1715-1719）
+    interim_state.reset();
+    interim.last_interim_samples.store(0, Ordering::Relaxed);
+    interim.last_check_ms.store(0, Ordering::Relaxed);
+}
+
+/// 退出收尾循环（ACR-1a）：等 capture 落板（`capture_done`）与持续消费段队列
+/// **放在同一个循环里**——只等后排空的话，段队列满时 push 会挤掉最旧
+/// （[`BoundedDropQueue`] 满丢旧语义），积压会让收尾段把一条还没识别的真句子挤掉。
+/// 残留 interim 标记直接丢弃（与 [`drain_interim_duplicates`] 同规则）。
+/// 预算超期 → warn 并放弃剩余（放弃的是音频，无补救）。
+/// 返回 true = 已见 `capture_done`（队列内容已终）；false = 超预算。
+///
+/// 序约定：`capture_done` 用 `Relaxed` 的安全性来自段队列的内部互斥量（capture
+/// 的 push 与这里的 try_pop 是同一把锁），不来自标志本身——**若队列换无锁
+/// 实现，此处必须升 `Acquire`/`Release`**。
+fn exit_drain_segments(
+    queue: &BoundedDropQueue<(SegmentSource, Vec<f32>)>,
+    capture_done: &AtomicBool,
+    budget: Duration,
+    mut handle: impl FnMut(SegmentSource, Vec<f32>),
+) -> bool {
+    let deadline = Instant::now() + budget;
+    loop {
+        while let Some((source, audio)) = queue.try_pop() {
+            match source {
+                SegmentSource::Interim => continue,
+                other => handle(other, audio),
+            }
+        }
+        if capture_done.load(Ordering::Relaxed) {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            tracing::warn!("退出收尾超预算（{}s），剩余段放弃", budget.as_secs());
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
 
 /// 排空队列头部连续的 interim 标记（原版 `_drain_interim_duplicates`）：
@@ -3734,6 +3844,64 @@ mod tests {
         pool.shutdown();
         let _ = std::fs::remove_dir_all(&dir);
         sup.join_all();
+    }
+
+    /// ACR-1a：退出收尾循环——先取空、再看 `capture_done`、最后看预算；
+    /// 残留 interim 标记丢弃；capture 落板的尾巴必须与预置段一起按序处理。
+    #[test]
+    fn exit_drain_waits_for_capture_then_consumes_tail() {
+        let sup = test_sup();
+        let queue = Arc::new(BoundedDropQueue::<(SegmentSource, Vec<f32>)>::new(
+            16, "drain",
+        ));
+        let done = Arc::new(AtomicBool::new(false));
+        // 预置一条真段 + 一枚残留 interim 标记
+        queue.push((SegmentSource::VadFlush, vec![0.1f32; 16]));
+        queue.push((SegmentSource::Interim, Vec::new()));
+        // capture 线程 50ms 后落板：先入队尾巴、再置标志（顺序与生产一致）。
+        // INV3：夹具线程同样经监督器出生（裸 spawn 被 check_guards 拦截）
+        let q2 = queue.clone();
+        let d2 = done.clone();
+        sup.spawn(
+            ThreadRole::Bench,
+            "acr1a-drain-fixture",
+            Policy::Never,
+            move || {
+                let q = q2.clone();
+                let d = d2.clone();
+                Box::new(move || {
+                    std::thread::sleep(Duration::from_millis(50));
+                    q.push((SegmentSource::VadFlush, vec![0.2f32; 32]));
+                    d.store(true, Ordering::Relaxed);
+                })
+            },
+        );
+        let mut got: Vec<usize> = Vec::new();
+        let ok = exit_drain_segments(&queue, &done, Duration::from_secs(3), |_, audio| {
+            got.push(audio.len());
+        });
+        sup.join_all();
+        assert!(ok, "capture_done 到达即完成");
+        assert_eq!(got, vec![16, 32], "两条真段按序处理，interim 标记被丢弃");
+        assert!(queue.is_empty(), "队列已取空");
+    }
+
+    /// ACR-1a 防御路径：`capture_done` 永不置位（capture 异常死亡）时按预算
+    /// 有界退出——不挂死、不无限等。
+    #[test]
+    fn exit_drain_gives_up_within_budget() {
+        let queue = Arc::new(BoundedDropQueue::<(SegmentSource, Vec<f32>)>::new(
+            16, "drain2",
+        ));
+        let done = Arc::new(AtomicBool::new(false));
+        let t0 = Instant::now();
+        let ok = exit_drain_segments(&queue, &done, Duration::from_millis(200), |_, _| {});
+        let elapsed = t0.elapsed();
+        assert!(!ok, "未见 capture_done → 超预算返回 false");
+        assert!(
+            elapsed >= Duration::from_millis(200) && elapsed < Duration::from_secs(3),
+            "预算附近退出，实际 {elapsed:?}"
+        );
     }
 
     /// W1 泄漏回归（ReplaceRig 路径）：旧 rig 被替换 Drop 后，旧池 8 个 worker
