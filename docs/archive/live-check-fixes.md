@@ -123,8 +123,10 @@
 
 ## 五、遗留走查
 
-- **修后复验（用户，第二轮）**：复验单 = `docs/drafts/1.0.0-live-check-round2.md`（草稿不入库；四条修复复验 + B1/B3 按条件补验 + B4 作废）。
-- A1 推导色（退出/暂停/字幕开/确认窗/字幕窗各族 hover+pressed）**首次落地**，数值以实机目测收口；不通过只调常量，不动结构。
+- **修后复验：已通过**（用户，2026-09-17 第二轮；复验单 `docs/drafts/1.0.0-live-check-round2.md` 全勾）——
+  四条修复（A2 切换可达 + 高度护栏 / A1 三态底色含各族推导色 / B2 禁用态与文案）实机确认，
+  B1/B3 按正确条件补验通过，B4 作废。
+- A1 推导色（退出/暂停/字幕开/确认窗/字幕窗各族 hover+pressed）首个落地版本已被实机接受，后续微调只动常量。
 - B2a 的字色弱化落实在 `panel::panel_btn`（面板 8 处禁用按钮已改走它）；施工期发现全局改灰会波及 40+ 处未着色标签，**未采用**全局方案——后续若再有人想动 `noninteractive.fg_stroke`，先读本档 §1.3。
 - 死 i18n 键 8 个（`theme_dark/light`、`btn_check_update`、`btn_open_repo/issues`、`hotkey_overlay/subtitle`、`changelog_title`）——
   不单独立包，WD-8 落地时一并决定生死。
