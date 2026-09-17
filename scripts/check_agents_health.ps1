@@ -1,5 +1,5 @@
 ﻿# ============================================================
-# 总纲与文档引用网健康守护（AO-4 起家，D-93/ADR-17 扩容；规格史 = docs/archive/agents-md-overhaul.md 附录 D + docs/doc-network-hardening.md）
+# 总纲与文档引用网健康守护（AO-4 起家，D-93/ADR-17 扩容；规格史 = docs/archive/agents-md-overhaul.md 附录 D + docs/archive/doc-network-hardening.md）
 #
 # 断言八组（消融后无重复检查；5~7 共用同一扫描集，见断言 5 注）：
 #   1. 两档预算：`## 8.` 之前主体 ≤190 行 / 19KB（宪法面，ADR-17 重校准）；
