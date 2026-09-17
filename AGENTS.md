@@ -3,7 +3,7 @@
 > **本文是什么**：常驻约束 + 路由表（指令体系 L0）。细节活在 docs/，按 §4 路由按需读，不通读不背。
 > **生效**：2026-09-14 起取代复刻期总纲（ADR-15/16，登记见 docs/decisions.md；旧版与迁移对照见 git 历史）。
 > **冷启动三步**：① 通读本文件 → ② 对照 §8 看板：命中「待拍板」的工作未点头禁动工 → ③ 开工先过 `docs/prompts/kickoff.md`。
-> **改文纪律**：改本文须在 commit message 说明信息去向（删了什么 → 迁去哪）；预算两档现值唯一真源 = `scripts/check_agents_health.ps1` 断言 1（加字优先以回吐支付）；§7 速查只引用 `docs/gotchas.md` 实存的 G-编号（禁死引用）；§8 三小节标题不得缺——`scripts/check_agents_health.ps1` 机械守护。
+> **改文纪律**：改本文须在 commit message 说明信息去向（删了什么 → 迁去哪）；不设机械额度（ADR-18）——防回胀靠 §4 路由纪律、守护断言 2~7 与评审漂移自查；§7 速查只引用 `docs/gotchas.md` 实存的 G-编号（禁死引用）；§8 三小节标题不得缺——`scripts/check_agents_health.ps1` 机械守护。
 
 ## 1. 项目与硬约束
 
@@ -151,8 +151,8 @@ git config core.hooksPath .githooks            # 每 clone 一次启用提交钩
 ### 遗留（完工包的实机走查与未了项，一行一包，清零即删）
 
 - asr-chain-robustness（D-94）：实机走查 8 项——退出尾巴入转录 / 退出延迟 / 流式终态不被半截话盖回 / 字幕窗缺句 / 未就绪记账 / 整段模式回归 / 在跑任务逗留实测 / 重启一致性；评审遗留：清空是否该管字幕窗句子待裁 + 三项测试覆盖缺口（docs/archive/asr-chain-robustness.md §5/§10）
-- doc-network-hardening（D-93）：断言 5 豁免表随误报维护；可选杠杆未取——§7 精选 25→10~12 条（docs/archive/doc-network-hardening.md §五）
-- agents-md-overhaul（ADR-15/16）：gotchas 候选回读（visual-parity/overlay-realign 怪癖收编为新条目）/ prompts 技能化验证（ZCode 工作区级 .zcode/skills）/ 两档预算两周后按实测回调 / i18n 键集 parity 守护候选（docs/archive/agents-md-overhaul.md §五）
+- doc-network-hardening（D-93）：断言 5 豁免表随误报维护（docs/archive/doc-network-hardening.md §五）
+- agents-md-overhaul（ADR-15/16）：gotchas 候选回读（visual-parity/overlay-realign 怪癖收编为新条目）/ prompts 技能化验证（ZCode 工作区级 .zcode/skills）/ i18n 键集 parity 守护候选（docs/archive/agents-md-overhaul.md §五）
 - quit-flow-redesign（D-87）：§五走查矩阵剩余行为项随用随验（docs/archive/quit-flow-redesign.md §九）
 - ci-workflow-suite（D-88/D-89）：deny.toml 首跑校准 + CI 首跑墙钟观察 + nextest/typos 候选 + 仓库设置候选（immutable releases / tag protection；attest 已由 D-90 否决）+ Dependabot alerts/security updates 未开（docs/archive/ci-workflow-suite.md §六）
 - dev-config-audit（收口 2026-09-17）：A3 冒烟配置免手抄——settings.smoke.json 模板或 --smoke 参数，随下次冒烟改造裁决（docs/archive/dev-config-audit.md §4）

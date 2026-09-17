@@ -1,10 +1,7 @@
 ﻿# ============================================================
 # 总纲与文档引用网健康守护（AO-4 起家，D-93/ADR-17 扩容；规格史 = docs/archive/agents-md-overhaul.md 附录 D + docs/archive/doc-network-hardening.md）
 #
-# 断言八组（消融后无重复检查；5~7 共用同一扫描集，见断言 5 注）：
-#   1. 两档预算：`## 8.` 之前主体 ≤190 行 / 19KB（宪法面，ADR-17 重校准）；
-#      全文件 ≤230 行 / 24KB（看板活状态波动硬顶）——数字唯一真源 = 本文件，宪法头注只留指针
-#   1b. 水位线：主体字节 > 额度 85% → WARN（不失败；加字优先以回吐支付，ADR-17）
+# 断言六组（编号保留 2~7 不变防引用断裂；原 1/1b 额度与水位线经 ADR-18 退役）：
 #   2. 引用路径存在：AGENTS.md 内引用的仓库内路径全部存在
 #      （docs/ scripts/ crates/ assets/ .github/ .cargo/ .githooks/ 前缀；
 #        docs/drafts/ 与含通配符的路径跳过）
@@ -47,11 +44,11 @@ if ($content.EndsWith("`n")) { $totalLines-- }
 $totalBytes = (Get-Item -LiteralPath $agentsPath).Length
 
 # ── 断言 1：两档预算 ──
-$MainLineCap = 190                # ADR-17 重校准（2026-09-17）：原 170/17KB 两天即 98.9% 顶死，改「用量+15% 余量」政策
-$MainByteCap = 19 * 1024
-$TotalLineCap = 230
-$TotalByteCap = 24 * 1024
-$WaterLevel = 0.85                # 断言 1b：主体字节水位线，超此比例打 WARN 不失败
+$MainLineCap = 190                # 已退役（ADR-18，2026-09-17 用户裁决取消机械额度）——留名防旧引用误读，勿复用
+$MainByteCap = 19 * 1024          # 已退役（ADR-18）
+$TotalLineCap = 230               # 已退役（ADR-18）
+$TotalByteCap = 24 * 1024         # 已退役（ADR-18）
+$WaterLevel = 0.85                # 已退役（ADR-18）
 
 $marker = [regex]::Match($content, '(?m)^## 8\.')
 if ($marker.Success) {
@@ -63,15 +60,6 @@ if ($marker.Success) {
     $mainBytes = $totalBytes
     $violations += "看板：找不到 '^## 8.' 分节标记，主体预算按全文件从严计算"
 }
-if ($mainLines -gt $MainLineCap) { $violations += "预算：主体 $mainLines 行 > $MainLineCap 行" }
-if ($mainBytes -gt $MainByteCap) { $violations += "预算：主体 $mainBytes B > $($MainByteCap) B (17KB)" }
-if ($totalLines -gt $TotalLineCap) { $violations += "预算：全文件 $totalLines 行 > $TotalLineCap 行" }
-if ($totalBytes -gt $TotalByteCap) { $violations += "预算：全文件 $totalBytes B > $($TotalByteCap) B (22KB)" }
-
-if ($mainBytes -gt [int]($MainByteCap * $WaterLevel)) {
-    $warn += "水位线：主体 $mainBytes B 已超额度 $($MainByteCap) B 的 85%——加字优先以回吐支付（ADR-17）"
-}
-
 # ── 断言 2：引用路径存在 ──
 $refs = [regex]::Matches($content, '(?:docs|scripts|crates|assets|\.github|\.cargo|\.githooks)/[A-Za-z0-9_\-./]+') |
     ForEach-Object { $_.Value } | Sort-Object -Unique
