@@ -4,8 +4,9 @@
 #  与 .github/workflows/ci.yml 同源）。
 #
 # 启用（每 clone 一次）：git config core.hooksPath .githooks
-# 触发条件：暂存区含 *.rs / Cargo.toml / .cargo/** / AGENTS.md / docs/gotchas.md /
-# docs/prompts/** 改动；其余纯 docs/资产提交放行。
+# 触发条件（D-93 DH-18「守护读谁、谁触发」）：暂存区含 *.rs / Cargo.toml / .cargo/** /
+# AGENTS.md / docs/** / scripts/** / .github/** / rust-toolchain* 任一改动即跑全套；
+# 仅 assets/ 资产类提交放行。
 # 应急跳过：git commit --no-verify（CI 仍会拦截）。
 
 if ! command -v pwsh >/dev/null 2>&1; then
@@ -19,12 +20,12 @@ for f in $(git diff --cached --name-only --diff-filter=ACMR); do
     # 尾随 * 容忍 CR（autocrlf 克隆的 name 列表可能带 \r）；方向取 fail-safe——
     # 误判为"有改动"只多跑一次门禁，漏判则会静默放行（不可接受）。
     case "$f" in
-        *.rs* | *Cargo.toml* | .cargo/* | AGENTS.md* | docs/gotchas.md* | docs/prompts/*) run_gate=1 ;;
+        *.rs* | *Cargo.toml* | .cargo/* | AGENTS.md* | docs/* | scripts/* | .github/* | rust-toolchain*) run_gate=1 ;;
     esac
 done
 
 if [ "$run_gate" -eq 0 ]; then
-    echo "precommit: 暂存区无 Rust/Cargo/总纲/坑册/流程卡改动，跳过硬门禁"
+    echo "precommit: 暂存区无门禁覆盖面（Rust/Cargo/AGENTS/docs/scripts/.github）改动，跳过硬门禁"
     exit 0
 fi
 

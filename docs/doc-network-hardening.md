@@ -26,10 +26,10 @@
 
 ## 3. 施工卡
 
-> 提交切分：① 定稿（本提交）→ ② 脚本注释与七卡 → ③ 门面与账本 → ④ 宪法回吐+额度 → ⑤ 归档加注 → ⑥ 守护上线。每提交前手动跑 precommit（⑥ 落地前钩子不覆盖 scripts/docs）。
+> 提交切分：① 定稿（本提交）→ ② 脚本注释与七卡 → ③ 门面与账本 → ④ 宪法回吐+额度 → ⑤ 归档加注 → ⑥ 守护上线。每提交前手动跑 precommit（⑥ 落地前钩子不覆盖 scripts 与 docs 面）。
 
 ### DH-1 `docs/decisions.md` D-88 行
-「（G-b）」残留改为带路径实指：「（dependabot 收窄，局部号出处 = docs/archive/ci-workflow-suite.md §二 G 项）」。
+行内遗留的非数字坑号残号（dependabot 收窄项）改为带路径实指：「（局部号见 docs/archive/ci-workflow-suite.md §二 G 项）」。
 
 ### DH-2 `scripts/check_agents_health.ps1` 头注
 `:2` drafts 旧路径 → `docs/archive/agents-md-overhaul.md`；`:15`「precommit.ps1 第七项」→「第六项」。
@@ -68,7 +68,7 @@ memory 动作补落点说明：项目记忆存于仓外 ZCode 工作区（`~/.zc
 对齐坑册 G-27 对策句（pwsh 裸调 GUI exe 不等待 → `Start-Process -Wait -PassThru`）。
 
 ### DH-14 守护断言 5（路径存在扩面）
-扫描集 = `docs/*.md`（仅顶层）+ `docs/prompts/*.md` + `scripts/*.ps1` + `.github/workflows/*.yml` + 根 `README.md`；正则同断言 2；通配跳过；AGENTS 保留 drafts 豁免；**其余扫描文件指向 `docs/drafts/<具体文件>` 即违规**；排除 archive（史档）与 gotchas（定义源）；误报入脚本内显式豁免表（带理由注释）。
+扫描集 = `docs/*.md`（仅顶层）+ `docs/prompts/*.md` + `scripts/*.ps1` + `.github/workflows/*.yml` + 根 `README.md`；正则同断言 2；通配与裸目录提法跳过；AGENTS 保留 drafts 豁免；**脚本/workflow 头注指向 `docs/drafts/<具体文件>` 即违规，docs 顶层/prompts 指向降为 WARN**（看板机制本就合法指向草稿区）；排除 archive（史档）与 gotchas（定义源）；误报入脚本内显式豁免表（带理由注释）。
 
 ### DH-15 守护断言 6（G 编号全仓）
 同 DH-14 扫描集，`G-([A-Za-z0-9]+)` 每个命中必须 ∈ 坑册 defs。
@@ -93,7 +93,7 @@ kickoff「→ 出口后：施工期自查 = implement.md」（并删 `:16` 的�
 1. `check_agents_health.ps1` exit=0（八断言全绿）。
 2. 红绿演练五项（破坏→复原，对应断言红→绿）：脚本头注假路径→断言5；decisions 写不存在的坑号→断言6；删归档表一行→断言7a；抹归档注记→断言7b；主体塞超 85% → WARN 现且退出码 0（断言8）。
 3. 基线口径：README 无具体测试计数；AGENTS §2 数字 == 最新收口档（615+9）。
-4. 额度唯一性（收口后执行，本档归档后其路径退出扫描面）：`grep -rn "19KB\|24KB"` 在 AGENTS/README/docs 顶层/prompts/scripts/workflows 仅命中 check_agents_health.ps1。
+4. 额度唯一性（收口后执行，本档归档后其路径退出扫描面）：`grep -rn "19KB\|24KB"` 在 AGENTS/README/docs 顶层/prompts/scripts 与 workflows 仅命中 check_agents_health.ps1。
 5. 「AGENTS §5」悬空引用为零；全仓无指向不存在路径的引用。
 6. 触发面：改 scripts/ 或 docs/README.md 均触发本地门禁。
 7. precommit 全过 + `cargo test --workspace` 全绿（615+9）。
