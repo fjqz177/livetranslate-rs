@@ -73,13 +73,15 @@ const TL_QUEUE_CAP: usize = 64;
 /// Pipeline::stop 的 join_all）
 /// 队列任务：被丢弃时**自动补回执**（第二轮评审 ⑬d）——队列满丢最旧、停机清队
 /// 都会走 `Drop`，旧实现下被丢任务不产生任何事件，字幕永远停在"翻译中…"。
+/// ACR-1c：停机清队改为"回执不发、转录照收口"（见 [`TlJob::finalize_dropped`]）。
 /// 正常执行时闭包被取走（`run` 变 None），Drop 无副作用。
 struct TlJob {
     id: u64,
     sink: EventSink,
     /// 转录句柄（2026-09-11 评审修复）：任务从未执行就被丢弃时，`write_original`
     /// 已把原文放进 `pending`，但无人 finalize → 该段原文在 all 转录文件里永久
-    /// 消失。丢弃回执与收尾共用同一条件（非停机），保证"有回执就有落盘"。
+    /// 消失。**ACR-1c：收口无条件，回执条件 = 非停机**（停机时窗口已关、事件
+    /// 无处可去，但 all 文件缺块是永久损伤）。
     transcript: Arc<lt_audio::transcript::TranscriptWriter>,
     /// 停机中丢队的任务不再回执（事件无处可去，且不是"积压丢弃"语义）
     stopped: Arc<AtomicBool>,
@@ -103,9 +105,10 @@ impl TlJob {
 
     /// 丢弃收口（ACR-5 抽公共体：`Drop` 与 panic 分支共用）：转录 all 文件补
     /// "无译文"块（原文不丢）+ UI 回执。
-    /// 收口与回执当前同条件（非停机）——停机中事件无处可去，且不是"积压丢弃"
-    /// 语义；ACR-1c 起收口改无条件、只保留回执的条件判断（只改这一处）。
+    /// ACR-1c：**收口无条件、回执仅非停机**——停机中事件无处可去（窗口已关），
+    /// 但转录必须收口，否则该段在 all 文件里永久缺块（原文行已在 original 里）。
     fn finalize_dropped(&self, kind: FailureKind, detail: String) {
+        self.transcript.finalize_no_translation(self.id);
         if self.stopped.load(Ordering::Relaxed) {
             return;
         }
@@ -4020,8 +4023,8 @@ mod tests {
         sup.join_all();
     }
 
-    /// ACR-1b：discard_pending 显式丢弃在队任务（不依赖进程析构恰好跑到）。
-    /// 停机态丢弃当前不发回执；转录收口语义由 ACR-1c 改为无条件（届时本条断言更新）。
+    /// ACR-1b/1c：discard_pending 显式丢弃在队任务（不依赖进程析构恰好跑到）；
+    /// 停机态丢弃**不发回执、但转录照收口**——不收口则 all 文件永久缺块。
     #[test]
     fn job_pool_discard_pending_drops_queued_jobs() {
         let sup = test_sup();
@@ -4039,7 +4042,13 @@ mod tests {
         while sink.drain_batch(&mut batch, Duration::from_millis(20)) {
             events.append(&mut batch);
         }
-        assert!(events.is_empty(), "停机态丢弃不发回执（当前语义）");
+        assert!(events.is_empty(), "停机态丢弃不发回执（窗口已关）");
+        // ACR-1c：收口无条件——all 文件必须补出原文块（原文行已在 original 里）
+        let all = std::fs::read_to_string(transcript.session_paths().get("all").unwrap()).unwrap();
+        assert!(
+            all.contains("在队段"),
+            "停机丢弃段必须在 all 收口（ACR-1c）：{all}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
         sup.join_all();
     }
