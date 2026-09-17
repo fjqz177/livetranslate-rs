@@ -2413,6 +2413,8 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
                     &eff.tl.target_language,
                     tl.as_deref(),
                     &sink,
+                    &transcript,
+                    &session_stats,
                     &msg,
                 );
                 let samples = { vad.lock().unwrap().speech_samples() };
@@ -2439,6 +2441,8 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
                                 &eff.tl.target_language,
                                 tl.as_deref(),
                                 &sink,
+                                &transcript,
+                                &session_stats,
                                 &result.text,
                                 &result.language,
                                 asr_ms,
@@ -2477,6 +2481,8 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
                                 &eff.tl.target_language,
                                 tl.as_deref(),
                                 &sink,
+                                &transcript,
+                                &session_stats,
                                 &result.text,
                                 &result.language,
                                 asr_ms,
@@ -2532,6 +2538,8 @@ fn run_interim_pass(
     target_language: &str,
     tl: Option<&TlRig>,
     sink: &EventSink,
+    transcript: &lt_audio::transcript::TranscriptWriter,
+    stats: &TlStats,
     msg: &Msg,
 ) -> bool {
     // ① 锁内 peek，立即解锁（原版 with self._vad_lock: peek_buffer）；
@@ -2595,6 +2603,8 @@ fn run_interim_pass(
             target_language,
             tl,
             sink,
+            transcript,
+            stats,
             &text,
             &result.language,
             asr_ms,
@@ -2639,6 +2649,8 @@ fn commit_interim_final(
     target_language: &str,
     tl: Option<&TlRig>,
     sink: &EventSink,
+    transcript: &lt_audio::transcript::TranscriptWriter,
+    stats: &TlStats,
     raw_text: &str,
     lang: &str,
     asr_ms: f64,
@@ -2662,6 +2674,8 @@ fn commit_interim_final(
         target_language,
         tl,
         sink,
+        transcript,
+        stats,
         &text,
         lang,
         asr_ms,
@@ -2679,6 +2693,8 @@ fn commit_text(
     target_language: &str,
     tl: Option<&TlRig>,
     sink: &EventSink,
+    transcript: &lt_audio::transcript::TranscriptWriter,
+    stats: &TlStats,
     text: &str,
     lang: &str,
     asr_ms: f64,
@@ -2709,6 +2725,13 @@ fn commit_text(
         asr_ms,
     });
 
+    // ACR-4：计数与转录落盘先于翻译分流——与"翻译装置是否存在"无关（原版照记，
+    // 只是译文栏失败）。write_original 会把 id 挂进转录 pending 表，故下面每条
+    // 出口路径都必须成对收口（finalize/write_translation），否则该段原文在
+    // 转录 all 文件里永久消失（修漏记变造悬挂）。
+    stats.asr_count.fetch_add(1, Ordering::Relaxed);
+    transcript.write_original(id, &timestamp, original_text);
+
     // ── 翻译分流（原版 _process_segment_text 尾部；字幕窗 extra_langs 随 M4 接入）──
     let Some(rig) = tl else {
         // 翻译装置未就绪（配置无效已被 TranslatorUnavailable 提醒）：立即给结论，
@@ -2716,25 +2739,26 @@ fn commit_text(
         // 正常译文（`UpdateTranslation` + 占位文案），字幕窗用译文样式显示，用户
         // 看不出这是错误（审计 R2：报错必须与译文明显不同）。
         let _ = msg; // 文案由 UI 按 FailureKind 本地化（编排域不依赖 lt-i18n）
+        transcript.finalize_no_translation(id);
         sink.push(UiEvent::TranslationFailed {
             id,
             kind: FailureKind::NotReady,
             detail: "translator not ready (invalid model config or no active model)".into(),
             tl_ms: 0.0,
         });
+        // ACR-4：计数已自增，统计快照随行（否则 UI 统计行与账本脱节）
+        sink.push(stats.snapshot_event());
         return;
     };
-    rig.stats.asr_count.fetch_add(1, Ordering::Relaxed);
-    rig.transcript.write_original(id, &timestamp, original_text);
     if lang == target_language {
         tracing::info!("Same language ({lang}), no translation");
-        rig.transcript.finalize_no_translation(id);
+        transcript.finalize_no_translation(id);
         // W2/INV-A：同语言走显式结论——不再用空串冒充（空串另有"模型没答"的含义）
         sink.push(UiEvent::TranslationSkipped {
             id,
             reason: SkipReason::SameLanguage,
         });
-        sink.push(rig.stats.snapshot_event());
+        sink.push(stats.snapshot_event());
     } else {
         rig.submit_translation(sink, id, original_text.to_string(), lang.to_string());
     }
@@ -4172,6 +4196,80 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(&dir);
         sup.join_all();
+    }
+
+    /// ACR-4：翻译装置未就绪时，识别文字照常记账落盘（原版照记，只是译文栏失败）。
+    /// 病灶 = 旧序把 `asr_count`/`write_original` 放在取翻译器之后，未就绪即提前
+    /// return——转录三文件中间缺一片且统计不计数。
+    #[test]
+    fn not_ready_still_records_transcript_and_stats() {
+        let dir = tmp_models_dir("acr4-not-ready");
+        let transcript = lt_audio::transcript::TranscriptWriter::new(&dir);
+        let stats = test_session_stats();
+        let sink = EventArtery::new();
+
+        // tl = None（配置无效/无活动模型）走完整提交路径
+        commit_text(
+            "auto",
+            "zh",
+            None,
+            &sink,
+            &transcript,
+            &stats,
+            "你好世界",
+            "en",
+            12.5,
+            &Msg::new(|k| k.to_string(), || "zh".into()),
+        );
+
+        // 事件面：AddMessage（照常上屏）+ NotReady 失败结论 + 统计快照（计数已变）
+        let mut events = Vec::new();
+        let mut batch = Vec::new();
+        while sink.drain_batch(&mut batch, Duration::from_millis(20)) {
+            events.append(&mut batch);
+        }
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, UiEvent::AddMessage { .. })),
+            "识别文字照常上屏"
+        );
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                UiEvent::TranslationFailed {
+                    kind: FailureKind::NotReady,
+                    ..
+                }
+            )),
+            "未就绪以失败结论下发"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, UiEvent::UpdateStats { asr_n: 1, .. })),
+            "asr 计数自增 1 并随行快照"
+        );
+
+        // 转录面：original 有行、all 有成对收口的原文块（无 pending 悬挂）
+        transcript.close();
+        let paths = transcript.session_paths();
+        let original = std::fs::read_to_string(paths.get("original").unwrap()).unwrap();
+        let all = std::fs::read_to_string(paths.get("all").unwrap()).unwrap();
+        assert!(
+            original.contains("你好世界"),
+            "original 必须有该行：{original}"
+        );
+        assert!(
+            all.contains("你好世界"),
+            "all 必须有成对收口的原文块（ACR-4）：{all}"
+        );
+        assert!(
+            !all.contains("->"),
+            "未就绪不得出现译文行（失败而非假译文）：{all}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // ── D-85/G/H：会话级累计 + 双币种 ──
