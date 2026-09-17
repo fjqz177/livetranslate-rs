@@ -8,3 +8,5 @@
 4. **用户文案**：orchestrator 域经 `Msg` 注入；只有 lt-ui 碰 i18n yaml（zh/en 必须同步改）。
 5. **踩新坑**：当场记 docs/gotchas.md 候选条目 + AGENTS §7 速查行，别只留在会话里。
 6. **中途新裁决**：当场登记 decisions.md，别攒到收口。
+
+→ 完工前：review.md（八原则）；涉 GUI/实机另过 live-check.md

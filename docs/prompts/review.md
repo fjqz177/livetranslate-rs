@@ -17,3 +17,5 @@
 - 测试盲区逃逸（D-85 教训：全绿 ≠ 对——专查测试没覆盖的路径与断言强度）。
 - 契约旁路（字符串协议 / 直发 proxy / 裸 spawn——check_guards 五禁令的精神面自查）。
 - 文档漂移（代码改了，AGENTS / docs / decisions.md 没跟上）。
+
+→ 评审过后：closeout.md

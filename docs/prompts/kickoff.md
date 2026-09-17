@@ -13,5 +13,7 @@
        PROTO_VERSION 是否须递增。
 6. [ ] **顺序**：定稿 docs(scope) 提交必须早于第一行实现代码。
 
-子代理分工（AGENTS §5）：检索/执行 → flash 级 general-purpose/Explore；
+子代理分工：检索/执行 → flash 级 general-purpose/Explore；
 承重墙（Win32、链接 CRT、下载器、算法移植）→ 主线程亲自做。
+
+→ 出口后：施工期自查 = implement.md

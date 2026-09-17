@@ -14,7 +14,7 @@
 #
 # 与 .github/workflows/ci.yml 同源（CI 跑同样七项）——本地过关 ⇔ CI 过关。
 # .githooks/pre-commit 调用本脚本（启用：git config core.hooksPath .githooks）。
-# 全量测试（cargo test --workspace）不在此列：属收工门禁，见 AGENTS.md「约定」。
+# 全量测试（cargo test --workspace）不在此列：属收工门禁，见 AGENTS.md §2「命令与门禁」。
 #
 # 用法：  pwsh -File scripts/precommit.ps1（本仓 pwsh-only，ADR-16）
 #   应急跳过：git commit --no-verify（CI 仍会拦截）
