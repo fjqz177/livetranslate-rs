@@ -93,7 +93,7 @@
 
 **③ 首次出字幕的三要素**（fresh 默认值即为此设计）：
 - **ASR 模型**：默认 funasr/sensevoice-small（int8 onnx ≈230MB），hub 默认 ModelScope（zh 环境大陆直连快）；whisper 六档经 D-21 后也可走 MS。
-- **翻译 API**：默认预填本地 LM Studio（`http://127.0.0.1:1234/v1` + `hunyuan-mt-chimera-7b`，**key 留空**——不照搬原版硬编码 dev key）→ 用户在翻译页填自己的 key/端点（DeepSeek 等 OpenAI 兼容均可）。源语言=目标语言时直接回空译文不调 API（已移植，pipeline.rs:194）；API 失败非致命，overlay 显示 error 继续。
+- **翻译 API**：默认一条 **DeepSeek 厂商预设**（D-85 起；`presets::default_model_config()`，**key 留空**——不照搬原版硬编码 dev key）→ 用户贴自己的 key 即用，或换端点/预设（智谱、Kimi、通义、火山方舟、OpenAI 及本地 LM Studio / Ollama）。源语言=目标语言时直接回空译文不调 API（已移植，pipeline.rs:194）；API 失败非致命，overlay 显示 error 继续。
 - **音频源**：默认系统默认 loopback（`audio_device=None`），麦克风默认关（`mic_device=None`）。
 
 **④ 日常使用**：托盘四态图标（暂停/恢复、悬浮窗开关、面板、退出带确认）；字幕窗/悬浮窗独立；transcripts 自动落盘；日志窗 + `logs/` 文件双通道；字体内嵌保证任何机器渲染一致；改设置 300ms 防抖落盘。
