@@ -86,31 +86,62 @@ struct TlJob {
 impl TlJob {
     fn run(mut self) {
         if let Some(f) = self.run.take() {
-            f();
+            // ACR-5：执行期 panic 视同任务丢失——补回执 + 转录收口。worker 不再
+            // 因此死亡（`catch_unwind` 就地兜住）：监督器看不到死亡、不重生，
+            // 后续任务由同一 worker 继续服务（比"重生"更好的结果）。
+            if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+                self.finalize_dropped(FailureKind::Dropped, panic_detail(payload.as_ref()));
+            }
         }
+    }
+
+    /// 丢弃收口（ACR-5 抽公共体：`Drop` 与 panic 分支共用）：转录 all 文件补
+    /// "无译文"块（原文不丢）+ UI 回执。
+    /// 收口与回执当前同条件（非停机）——停机中事件无处可去，且不是"积压丢弃"
+    /// 语义；ACR-1c 起收口改无条件、只保留回执的条件判断（只改这一处）。
+    fn finalize_dropped(&self, kind: FailureKind, detail: String) {
+        if self.stopped.load(Ordering::Relaxed) {
+            return;
+        }
+        self.transcript.finalize_no_translation(self.id);
+        self.sink.push(UiEvent::TranslationFailed {
+            id: self.id,
+            kind,
+            detail,
+            tl_ms: 0.0,
+        });
+    }
+}
+
+/// panic 载荷 → 可读文本（ACR-5）：`String` / `&str` 两型，其余兜底文案。
+/// 只做 downcast 与克隆，自身不再 panic。
+fn panic_detail(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else if let Some(s) = payload.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else {
+        "panic（载荷非字符串）".to_string()
     }
 }
 
 impl Drop for TlJob {
     fn drop(&mut self) {
-        if self.run.is_some() && !self.stopped.load(Ordering::Relaxed) {
-            // 段从未翻译：转录 all 文件补一个"无译文"块（原文不丢；与回执同条件）
-            self.transcript.finalize_no_translation(self.id);
+        if self.run.is_some() {
+            // 段从未翻译：转录收口 + 回执（让位路径文案不同，见 superseded）
             let superseded = self.superseded.load(Ordering::Relaxed);
-            self.sink.push(UiEvent::TranslationFailed {
-                id: self.id,
-                kind: if superseded {
+            self.finalize_dropped(
+                if superseded {
                     FailureKind::Superseded
                 } else {
                     FailureKind::Dropped
                 },
-                detail: if superseded {
+                if superseded {
                     "已切换模型，本段未翻译".into()
                 } else {
                     "队列积压，保留最新（本段已放弃）".into()
                 },
-                tl_ms: 0.0,
-            });
+            );
         }
     }
 }
@@ -3628,6 +3659,80 @@ mod tests {
             }
         }
         assert_eq!(dropped_ids, vec![0, 1, 2], "最旧的三条被丢弃并回了执");
+        sup.join_all();
+    }
+
+    /// ACR-5：翻译任务执行期 panic 视同任务丢失——补 `Dropped` 回执 + 转录收口；
+    /// worker 不因该 panic 死亡，后续任务由**同一 worker** 继续服务（不依赖重生）。
+    #[test]
+    fn panicking_job_emits_receipt_and_keeps_worker_serving() {
+        use std::sync::atomic::AtomicU64;
+        let sup = test_sup();
+        let sink = EventArtery::new();
+        let dir = tmp_models_dir("acr5-panic");
+        let transcript = Arc::new(lt_audio::transcript::TranscriptWriter::new(&dir));
+        let pool = JobPool::new(1, &sup, sink.clone(), transcript.clone());
+
+        // 病灶：闭包 panic——旧实现 `run.take()` 已使 Drop 守卫不成立：
+        // 该消息永久"翻译中"、转录 pending 悬挂（all 文件整段消失）
+        transcript.write_original(7, "00:00:07", "会崩的段");
+        pool.submit(7, || panic!("注入 panic（ACR-5 测试）"));
+
+        let mut events = Vec::new();
+        let mut batch = Vec::new();
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while std::time::Instant::now() < deadline {
+            while sink.drain_batch(&mut batch, Duration::from_millis(20)) {
+                events.append(&mut batch);
+            }
+            if events
+                .iter()
+                .any(|e| matches!(e, UiEvent::TranslationFailed { id: 7, .. }))
+            {
+                break;
+            }
+        }
+        let (kind, detail) = events
+            .iter()
+            .find_map(|e| match e {
+                UiEvent::TranslationFailed {
+                    id: 7,
+                    kind,
+                    detail,
+                    ..
+                } => Some((*kind, detail.clone())),
+                _ => None,
+            })
+            .expect("panic 任务必须补回执（ACR-5）");
+        assert_eq!(kind, FailureKind::Dropped);
+        assert!(
+            detail.contains("注入 panic"),
+            "回执 detail 应含 panic 信息，实际：{detail}"
+        );
+
+        // 同一 worker 继续服务（catch_unwind 就地兜住，不依赖监督器重生）
+        let ran = Arc::new(AtomicU64::new(0));
+        let r = ran.clone();
+        pool.submit(8, move || {
+            r.fetch_add(1, Ordering::Relaxed);
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while ran.load(Ordering::Relaxed) == 0 && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            ran.load(Ordering::Relaxed),
+            1,
+            "panic 后 worker 仍能执行后续任务"
+        );
+
+        // 转录面：panic 段成对收口（all 出现原文块），无 pending 悬挂
+        transcript.close();
+        let all = std::fs::read_to_string(transcript.session_paths().get("all").unwrap()).unwrap();
+        assert!(all.contains("会崩的段"), "panic 段必须收口：{all}");
+
+        pool.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
         sup.join_all();
     }
 
