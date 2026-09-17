@@ -139,7 +139,7 @@ git config core.hooksPath .githooks            # 每 clone 一次启用提交钩
 ### 待拍板（等用户裁决；草稿在 docs/drafts/ 不入库）
 
 - 待拍板：**ASR 模型选型**——近一年开源模型调研（FireRed2-CTC / Cohere-14lang / Dolphin / 标点闸门候选，A~H 清单）（docs/drafts/asr-model-survey-2026.md）
-- 待拍板：**增量 ASR 改造**（docs/drafts/incremental-asr-overhaul.md）
+- 待拍板：**增量识别的目标形态**——"做成什么样"未定案（设计无关批已拆出开工，见施工中；余包 B/D/G 与 J7 待定案）（docs/drafts/incremental-asr-overhaul.md）
 - 待拍板：**跨平台分期 ①~⑤**——2026-09-11 可行性评估（无草稿，结论在会话记忆；P0 = 宿主 trait 化）
 - 待拍板：**llm 遗留⑪**——规则 4/5 偏离可见（docs/archive/llm-api-round2.md）
 - 待拍板：**UX 三期可选项**——前缀码枚举化 / 设置保存失败 UI 流 / 错误译文样式（docs/archive/ux-feedback.md）
@@ -147,6 +147,7 @@ git config core.hooksPath .githooks            # 每 clone 一次启用提交钩
 
 ### 施工中
 
+- asr-chain-robustness（D-94）：识别→翻译→显示链路健壮性修复施工中（退出完整性 + 流式终态 + 字幕窗账本 + 未就绪记账 + panic 回执）（docs/asr-chain-robustness.md）
 - doc-network-hardening（D-93/ADR-17）：文档网络加固施工中（docs/doc-network-hardening.md）
 
 ### 遗留（完工包的实机走查与未了项，一行一包，清零即删）
