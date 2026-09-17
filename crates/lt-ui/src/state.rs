@@ -2000,12 +2000,21 @@ pub struct SessionView {
     pub settings_apply_pending: bool,
 }
 
+/// 字幕窗原文旁路账本容量（ACR-3）。在途译文数远小于此（翻译队列上限 64），
+/// 溢出丢最旧——"在途超过 256 条时字幕窗放弃最旧的"实际不可达。
+pub const SUBTITLE_LEDGER_CAP: usize = 256;
+
 /// 悬浮窗域（W5：monitor/messages/stats/overlay 伴生态/ov_* 复选/ASR 标签）
 pub struct OverlayUi {
     /// 监视条数据链（任务 1.6）
     pub monitor: MonitorData,
     /// 悬浮窗消息链（AddMessage 事件追加，上限 50 条、删最旧）
     pub messages: Vec<OverlayMessage>,
+    /// 字幕窗原文旁路账本（ACR-3）：`(id, 原文)`，容量 [`SUBTITLE_LEDGER_CAP`]。
+    /// 字幕窗译文到达时从这里取原文（命中即移除，一句只喂一次）——不再回头查
+    /// `messages`（上限 50 条，话讲得快 + 翻译慢时原文被挤出会让该句静默不上字幕窗）。
+    /// 写入点 = [`OverlayUi::push_message`]（与消息链同增；同清见宿主 clear 路径）。
+    pub subtitle_ledger: std::collections::VecDeque<(u64, String)>,
     /// 翻译/用量统计（UpdateStats 事件更新）
     pub stats: OverlayStats,
     /// 悬浮窗 UI 伴生状态（模式/动画/节流/防抖）
@@ -2166,6 +2175,7 @@ impl AppUi {
             overlay: OverlayUi {
                 monitor: MonitorData::default(),
                 messages: Vec::new(),
+                subtitle_ledger: std::collections::VecDeque::new(),
                 stats: OverlayStats::default(),
                 state: OverlayUiState::default(),
                 // 原版默认：置顶√、自动滚动√、穿透×、任务栏×
@@ -2334,11 +2344,31 @@ impl SessionView {
 
 impl OverlayUi {
     /// 追加一条识别消息；超过 50 条删最旧（原版 _max_messages = 50）。
+    /// ACR-3：原文同步入旁路账本（字幕窗取原文的唯一来源；单一落点，与消息链同增）。
     pub fn push_message(&mut self, msg: OverlayMessage) {
+        self.ledger_push(msg.id, msg.original.clone());
         self.messages.push(msg);
         if self.messages.len() > 50 {
             self.messages.remove(0);
         }
+    }
+
+    /// 原文入账（ACR-3）：满容量丢最旧（先进先出）
+    fn ledger_push(&mut self, id: u64, original: String) {
+        self.subtitle_ledger.push_back((id, original));
+        while self.subtitle_ledger.len() > SUBTITLE_LEDGER_CAP {
+            self.subtitle_ledger.pop_front();
+        }
+    }
+
+    /// 取原文（ACR-3）：命中即移除——一句只喂一次，账本自收缩。
+    /// 未命中返回 None（字幕窗隐藏期间不消费而已被清空、或原文本未入账），
+    /// 调用方直接放弃喂入。
+    pub fn ledger_take(&mut self, id: u64) -> Option<String> {
+        let idx = self.subtitle_ledger.iter().position(|(i, _)| *i == id)?;
+        self.subtitle_ledger
+            .remove(idx)
+            .map(|(_, original)| original)
     }
 
     /// 按 id 从最新往回找消息索引（消息链短，线性即可）
@@ -2874,6 +2904,40 @@ mod tests {
         assert_eq!(st.overlay.messages.len(), 50);
         assert_eq!(st.overlay.messages[0].id, 6);
         assert_eq!(st.overlay.messages.last().unwrap().id, 55);
+    }
+
+    /// ACR-3：字幕窗原文取旁路账本——消息被 50 条窗口挤出后仍取得到原文，
+    /// 命中即移除（一句只喂一次）。
+    #[test]
+    fn subtitle_ledger_outlives_overlay_eviction() {
+        let mut st = AppUi::new(Settings::default());
+        st.overlay.push_message(msg(1));
+        for i in 2..=60u64 {
+            st.overlay.push_message(msg(i));
+        }
+        // 病灶面：id=1 已被 50 条窗口挤出（旧实现从这里取不到原文 = 静默缺句）
+        assert!(st.overlay.messages.iter().all(|m| m.id != 1));
+        // 旁路账本仍持有原文；命中即移除
+        assert_eq!(st.overlay.ledger_take(1).as_deref(), Some("消息 1"));
+        assert!(
+            st.overlay.ledger_take(1).is_none(),
+            "命中即移除，同一 id 二次喂返回 None"
+        );
+        // 未命中 = 无原文可喂（宿主直接放弃喂入）
+        assert!(st.overlay.ledger_take(999).is_none());
+    }
+
+    /// ACR-3：账本容量 256、溢出丢最旧（先进先出）。
+    #[test]
+    fn subtitle_ledger_caps_at_256_drop_oldest() {
+        let mut st = AppUi::new(Settings::default());
+        for i in 1..=300u64 {
+            st.overlay.push_message(msg(i));
+        }
+        assert_eq!(st.overlay.subtitle_ledger.len(), SUBTITLE_LEDGER_CAP);
+        assert!(st.overlay.ledger_take(44).is_none(), "最旧的 44 条已丢");
+        assert_eq!(st.overlay.ledger_take(45).as_deref(), Some("消息 45"));
+        assert_eq!(st.overlay.ledger_take(300).as_deref(), Some("消息 300"));
     }
 
     #[test]

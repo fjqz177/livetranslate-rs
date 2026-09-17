@@ -449,6 +449,8 @@ impl MultiWindowApp {
                 // 草稿箱随列表同清（ACR-2）：残留草稿在下次 flush 时找不到消息，
                 // 本会静默丢弃；同点清理让"清空"语义完整（消息与缓冲一起作废）
                 self.app_state.overlay.state.pending_streams.clear();
+                // 原文账本同清（ACR-3）：列表已空，账本里的原文不再有可喂的宿主
+                self.app_state.overlay.subtitle_ledger.clear();
             }
         }
     }
@@ -1607,15 +1609,9 @@ impl MultiWindowApp {
         if !*self.visible.get(&WinId::Subtitle).unwrap_or(&false) {
             return;
         }
-        let Some(original) = self
-            .app_state
-            .overlay
-            .messages
-            .iter()
-            .rev()
-            .find(|m| m.id == id)
-            .map(|m| m.original.clone())
-        else {
+        // ACR-3：原文取旁路账本（命中即移除）——不再回头查消息链
+        // （上限 50 条，话快 + 翻译慢时原文被挤出会让该句静默不上字幕窗）
+        let Some(original) = self.app_state.overlay.ledger_take(id) else {
             return;
         };
         let mut tl = std::collections::BTreeMap::new();
