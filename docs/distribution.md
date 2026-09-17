@@ -1,11 +1,11 @@
 # 分发与用户旅程（docs/distribution.md）
 
-> 状态：**阶段二活跃文档**（2026-09-07 归档重组；阶段一 docs/archive/ 为决策史）。D-18~D-21 已裁决定案；阶段一（WD-1~WD-5）待施工，阶段二（WD-7 CI / WD-8 检查更新）预案。
+> 状态：**长期文档（常青）**（2026-09-07 归档重组；阶段一 docs/archive/ 为决策史）。D-18~D-21 已裁决定案；WD-6/7/8 未完，其余已落地（状态列见 §3.3/§4）。
 
 
 > 2026-09-07 用户裁决 D-18~D-21 定案。本文 = 阶段一（本地分发）施工依据 + 阶段二（公开发布）预案。
 > 前置调研结论：原版 Python 的分发故事完整（GitHub Releases 便携 zip + CI + 双语 README + 首启强制向导），
-> Rust 版功能面已基本就绪（向导/下载器/单实例/日志落盘均有实现与测试），**分发层完全空白**（无打包脚本/LICENSE/README/版本可见性/CI）。
+> Rust 版功能面已基本就绪（向导/下载器/单实例/日志落盘均有实现与测试），分发层当时空白（无打包脚本/LICENSE/README/版本可见性/CI——现已全部落地，见 §3.3/§4 状态列）。
 
 ## 0. TL;DR
 
@@ -26,7 +26,7 @@
 
 ## 2. 已锁定基线（不因本计划重开）
 
-- 单 exe（release ~75.6MB，打包 zip ~35.6MB）：内嵌 onnxruntime.dll（启动解压 `<config>/ort/` + `ORT_DYLIB_PATH`）、silero_vad.onnx（内存直载，VAD 零下载）、三族字体 brotli（解压 ~100ms，机器无关）。
+- 单 exe（release 约 72MB、zip 约 36MB，滚动值）：内嵌 onnxruntime.dll（启动解压 `<config>/ort/` + `ORT_DYLIB_PATH`）、silero_vad.onnx（内存直载，VAD 零下载）、三族字体 brotli（解压 ~100ms，机器无关）。
 - Windows 10/11 x64、纯 CPU；**分发前置 = Microsoft VC++ 2015-2022 x64 Redist**（C3 裁决 2026-09-09：exe 导入表实锤依赖 VCRUNTIME140/140_1，解压出的 onnxruntime.dll 另需 MSVCP140/140_1；本行旧断言「静态 CRT 无 VC 依赖」有误已勘正——用户装 Redist 即全覆盖，不随包分发系统组件）；仅 Windows 实装。
 - 配置目录 = 字面 `~/.config/livetranslate`（非 %APPDATA%；`LIVETRANSLATE_CONFIG_DIR` 覆写）；子目录 `settings.json` / `models/` / `transcripts/` / `logs/` / `ort/`；`models_dir` 键可重定向模型缓存。
 - 单实例命名互斥体（`main.rs:67-95`）；日志落盘 `logs/livetrans_{时间戳}.log`（DEBUG，按次滚动）+ 应用内日志窗。
@@ -40,8 +40,8 @@
 | 项 | 规格 |
 |---|---|
 | 产物 | `livetranslate.exe`（`cargo build --release -p lt-app`） |
-| 包名 | `LivetranslateRS-<版本>-win-x64.zip`（版本号依赖 WD-2 落实） |
-| 包内容 | exe + `README_zh.md`（使用说明简版）+ `LICENSE`（MIT）+ `THIRD_PARTY_NOTICES.md` + `sha256.txt` |
+| 包名 | `LiveTranslate-<版本>.zip`（与 scripts/package_release.ps1 实产一致） |
+| 包内容 | exe + README.txt + LICENSE + NOTICES.md + OFL.txt（zip 内五件套）；sha256 为 zip 旁车文件（真源 = scripts/package_release.ps1） |
 | THIRD_PARTY 收录 | onnxruntime（MIT）、silero-vad（MIT）、whisper.cpp/ggml 模型（MIT）、SenseVoice 模型（原仓许可）、sherpa-onnx（Apache-2.0）、字体三族（OFL 1.1，全文/出处对齐 `assets/SOURCES.md`） |
 | SmartScreen | 未签名（RESEARCH「签名自便」维持）；README 写明「更多信息 → 仍要运行」，公开发布阶段可再议签名 |
 
@@ -58,14 +58,14 @@
 
 ### 3.3 阶段一工作包
 
-| 包 | 内容 | 估量 | 备注 |
-|---|---|---|---|
-| **WD-1** | `scripts/package_release.ps1` 打包脚本 + 发布手册落档 | 0.5d | §3.1/§3.2 的自动化 |
-| **WD-2** | 版本可见性三件：`build.rs` 写 VERSIONINFO（现只嵌图标无版本字段）、`--version` 参数（现仅 `--asr-worker`）、设置页/关于处版本行（现 UI 无任何版本展示；changelog tab 只有日期） | 1h 级 | zip 命名、用户报障、UA（下载器已带 `livetranslate-rs/{ver}`）都对齐此版本源 |
-| **WD-3** | 随包法律与说明：根目录 `LICENSE`（现仅 Cargo.toml 声明 MIT，无文件）、`THIRD_PARTY_NOTICES.md`、简版 `README_zh.md`（下载解压/SmartScreen/模型下载与代理/日志与配置目录位置/常见问题） | 0.5d | |
-| **WD-4** | whisper 双源落地（D-21）：实测 MS 候选镜像仓六档 q5_1/q5_0 完整性 → `lt-models/src/registry.rs` 增 MS 条目 → 放宽 `always_hf`（backend.rs:124-129）为「所选 hub 优先，缺失回落另一 hub」→ 回归测试 | 0.5~1d | 网络实测为前置；MS 第三方镜像缺档风险见 §6 |
-| **WD-5** | 二次启动反馈：第二实例当前仅 stderr 报错即退（双击场景用户看到"没反应"）；改为激活已有主窗口（FindWindow/SetForegroundWindow）或至少弹 MessageBox | 0.5d | Win32，主线程亲自做；单实例锁是 Rust 新增（原版无），配套体验需补齐 |
-| WD-6（可选，待点头） | 首启缺模型轻引导：控制面板顶部一条「识别模型未就绪 → 去识别页下载」高亮横幅（模型就绪即隐） | 0.5d | D-19 的配套；原版无此场景（有向导），登记为新增偏差 |
+| 包 | 状态 | 内容（行内「现…」为立项时原貌） | 估量 | 备注 |
+|---|---|---|---|---|
+| **WD-1** | 已完工（D-90 起脚本化） | `scripts/package_release.ps1` 打包脚本 + 发布手册落档 | 0.5d | §3.1/§3.2 的自动化 |
+| **WD-2** | 已完工 | 版本可见性三件（立项时均无）：`build.rs` VERSIONINFO、`--version`、设置页版本行——现均已落地（build.rs:11-14 / main.rs:32 / changelog_tab.rs:32-34） | 1h 级 | zip 命名、用户报障、UA（下载器已带 `livetranslate-rs/{ver}`）都对齐此版本源 |
+| **WD-3** | 已完工 | 随包法律与说明（立项时均无）：根目录 `LICENSE`、`NOTICES.md`、简版 `README.txt`——现均已入库并随包 | 0.5d | 实产名与立项名不同：README_zh.md→README.txt、THIRD_PARTY_NOTICES.md→NOTICES.md（见 §3.1） |
+| **WD-4** | **未做（预案）** | whisper 双源落地（D-21）：实测 MS 候选镜像仓六档完整性 → `lt-models/src/registry.rs` 增 MS 条目 → 放宽 `always_hf`（立项锚点 backend.rs:124-129 已漂移，现 always_hf 在 lt-models/src/cache.rs、registry.rs）为「所选 hub 优先，缺失回落另一 hub」→ 回归测试 | 0.5~1d | 网络实测为前置；MS 第三方镜像缺档风险见 §6 |
+| **WD-5** | 已完工（D-73） | 二次启动反馈：立项时第二实例仅 stderr 报错即退；已改为激活已有主窗口 | 0.5d | 单实例锁是 Rust 新增（原版无），配套体验已补齐 |
+| WD-6（可选，待点头） | 待点头 | 首启缺模型轻引导：控制面板顶部一条「识别模型未就绪 → 去识别页下载」高亮横幅（模型就绪即隐） | 0.5d | D-19 的配套；原版无此场景（有向导），登记为新增偏差 |
 
 ### 3.4 更新日志与发布正文（D-91 起）
 
@@ -80,9 +80,9 @@
 
 | 包 | 内容 | 估量 |
 |---|---|---|
-| WD-7 ✅ | **发布链已落地并转正（D-88 首版 → D-90 重做）**：tag `v*` 或手动触发（演练）→ `scripts/release.ps1` 全链（检查→构建→打包→建草稿→回读校验）→ Releases 出草稿 → **人工转正**（CI 永不可发布）；本地等价 = `release` → `promote`（正文默认取 CHANGELOG 本版段落，`-NotesFile` 可覆盖）。**首发前置：旧 v0.1.0 tag 已被远古提交占用且不删 → 必须抬版本号**（只改根 `Cargo.toml` 一处） | 已落地 |
+| WD-7（已完工） | **发布链已落地并转正（D-88 首版 → D-90 重做）**：tag `v*` 或手动触发（演练）→ `scripts/release.ps1` 全链（检查→构建→打包→建草稿→回读校验）→ Releases 出草稿 → **人工转正**（CI 永不可发布）；本地等价 = `release` → `promote`（正文默认取 CHANGELOG 本版段落，`-NotesFile` 可覆盖）。**首发前置：旧 v0.1.0 tag 已被远古提交占用且不删 → 必须抬版本号**（只改根 `Cargo.toml` 一处） | 已落地 |
 | WD-8 | 检查更新按钮（D-20）：GET `releases/latest` 比对版本 → 提示 + 打开下载页；i18n zh/en 同步；失败静默 | 0.5d |
-| WD-9 | 公开 README 双语完善 + 原 Python 仓 README 导流横幅；渠道裁决（新独立仓 vs 沿用原仓双产物） | 0.5d |
+| WD-9 | 公开 README 双语完善 + 原 Python 仓 README 导流横幅；渠道裁决（新独立仓 vs 沿用原仓双产物）；含 README.md 用户节与 README.txt 去重（页签名漂移已实证） | 0.5d |
 | WD-10（可选） | 「打开配置目录/日志目录」入口（现仅缓存页可开 models/transcripts 目录）；panic hook 崩溃尾部落盘，便于反馈 | 0.5d |
 
 ## 5. 用户到手全旅程（裁决后目标态）
@@ -115,9 +115,5 @@
 
 ## 7. 偏差登记汇总（本计划产生）
 
-- **D-18** 暂不公开发布（阶段决策，公开时重开渠道）
-- **D-19** 首启无向导直进主界面（既有 2026-09-01 决策转正；原版强制向导）
-- **D-20** 应用内检查更新（新增能力，阶段二）
-- **D-21** whisper 打破 always-HF 双源 + hub 缺失回落（新增偏差；原版 whisper 仅 HF）
-- **D-91** 更新日志机制：正典落仓根（`CHANGELOG.md` / `CHANGELOG.en.md`）+ 发版三件套闸（`check ②` / CI `notes` 早警告）+ 应用内编译期内嵌；promote 的 `-NotesFile` 降为可选覆盖；应用内渲染改造缓办（docs/archive/changelog-scheme.md）
+- D-18~D-21 与 D-91 的完整登记见 §1 裁决记录与 docs/decisions.md（此处不再复述）。
 - 关联既有偏差：配置目录 `~/.config` 非 exe 旁 portable（RESEARCH 既有）；翻译 API 默认 key 留空不硬编码；单实例锁为 Rust 新增。

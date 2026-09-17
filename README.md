@@ -64,7 +64,7 @@ Windows 上的实时音频翻译工具：**把系统声音抓下来 → 在本�
 
 ## 二、给开发者
 
-> 动代码前务必先读一遍 [AGENTS.md](AGENTS.md)——硬性约束、分层规则、17 条实测踩过的坑都在那。
+> 动代码前务必先读一遍 [AGENTS.md](AGENTS.md)——硬性约束、分层规则、大坑速查都在那（坑册全本 = docs/gotchas.md）。
 
 ### 1. 装三样工具
 
@@ -101,11 +101,11 @@ pwsh -ExecutionPolicy Bypass -File scripts/fetch_sherpa_libs.ps1 -Mirror https:/
 ### 3. 日常命令
 
 ```bash
-cargo test --workspace             # 全量测试（收工必跑）。基线：603 通过 + 9 个默认跳过的真模型/真网络探针
+cargo test --workspace             # 全量测试（收工必跑）。基线：约 600+ 通过 + 9 个默认跳过的真模型/真网络探针（滚动值；操作基线见 AGENTS §2）
 cargo test -p lt-ui                # 只测某个 crate（换成 lt-asr / lt-proto 等）
 cargo clippy --workspace --all-targets   # 手动跑 lint（提交钩子也会自动跑一遍）
 cargo run -p lt-app                # 本机跑 GUI
-cargo build --release -p lt-app    # 出单 exe：target/release/livetranslate.exe（约 76MB）
+cargo build --release -p lt-app    # 出单 exe：target/release/livetranslate.exe（约 72MB，滚动值）
 ```
 
 想跑 GUI 又不想污染真实配置，用临时配置目录（注意 `models_dir` 必须指向真实模型缓存，否则全部探测失败）：
@@ -126,9 +126,9 @@ git add <具体文件>                      # 不要用 git add -A
 git commit -m "fix(overlay): 中文说明"  # 提交信息用中文
 ```
 
-设过钩子之后，`git commit` 会**自动跑六项检查**（代码格式 / clippy 零告警 / 依赖白名单 / 源码禁令 / 路径卫生 / 死契约），约 10 秒，全过才生成提交；只改文档的提交自动跳过。应急可以用 `--no-verify` 绕过，但 CI 会拦。
+设过钩子之后，`git commit` 会**自动跑 scripts/precommit.ps1 全套门禁**（秒级守护 + clippy），全过才生成提交；仅 assets/ 资产类提交自动跳过。应急可以用 `--no-verify` 绕过，但 CI 会拦。
 
-推上去之后 GitHub Actions 跑同一套（`gate` 静态门禁 + `build` 编译门禁：clippy / 全量测试 / release 单 exe 打包），任何分支的 push 和 PR 都会触发；每次全绿的构建都在 Actions 页面挂一个可下载的 zip 产物（Artifacts）。**本地绿而 CI 红基本只有一个原因：忘了跑门禁**——两边同源，跑法见上。
+推上去之后 GitHub Actions 跑同一套（单 job：与本地同源的 precommit.ps1 + 全量测试 + 分发演练），任何分支的 push 和 PR 都会触发；每次全绿的构建都在 Actions 页面挂一个可下载的 zip 产物（Artifacts）。**本地绿而 CI 红基本只有一个原因：忘了跑门禁**——两边同源，跑法见上。
 
 另外两条规矩：计划/调研类文档要先于实现单独提交；生成物（`docs/architecture/`、`docs/ui-audit/`）不入库。
 

@@ -30,7 +30,7 @@ Rust 原生实时音频翻译：实时捕获系统声音（可选叠加麦克风
   日志与转写记录：~/.config/livetranslate/logs\、transcripts\。
 
 常见问题
-  · 悬浮窗 unavailable → 模型未下载/路径不可用，「设置 → 识别」下载。
+  · 悬浮窗 unavailable → 模型未下载/路径不可用，「设置 → VAD / ASR」下载。
   · 翻译空白/报错 → 模型页「测试连接」；超时可在字幕页调大。
   · 隐藏后去哪找 → 托盘图标（左键显示悬浮窗，右键菜单）。
 
@@ -42,4 +42,4 @@ Rust 原生实时音频翻译：实时捕获系统声音（可选叠加麦克风
      %APPDATA%\Microsoft\Windows\Start Menu\Programs\LiveTranslate.lnk。
   彻底重置（保留程序）：仅删数据目录下的 settings.json 即可。
 
-完整说明见项目 README.md；许可信息见 LICENSE 与 NOTICES.md。
+完整说明见 GitHub 仓库 README.md；许可信息见 LICENSE 与 NOTICES.md。
