@@ -2353,6 +2353,15 @@ impl OverlayUi {
         }
     }
 
+    /// 清空列表（ACR-2/3 的**单一落点**）：消息链与两个伴生缓冲一起作废。
+    /// 两条入口共用（overlay.rs 免确认直清 + app.rs 确认后清）——分散清理迟早
+    /// 漂移：完工后严肃评审就抓到 auto_save 直清路径曾绕过同清。
+    pub fn clear_messages(&mut self) {
+        self.messages.clear();
+        self.state.pending_streams.clear();
+        self.subtitle_ledger.clear();
+    }
+
     /// 原文入账（ACR-3）：满容量丢最旧（先进先出）
     fn ledger_push(&mut self, id: u64, original: String) {
         self.subtitle_ledger.push_back((id, original));
@@ -3072,9 +3081,14 @@ mod tests {
             "终态永不回退（flush_streams 守卫）"
         );
 
-        // ④ 清空列表路径（app.rs 同点清草稿）：残留节拍 flush 无副作用
-        st.overlay.messages.clear();
-        st.overlay.state.pending_streams.clear();
+        // ④ 清空列表（单一落点 clear_messages）：三个缓冲一起作废，残留节拍 flush 无副作用
+        st.overlay.clear_messages();
+        assert!(st.overlay.messages.is_empty());
+        assert!(st.overlay.state.pending_streams.is_empty());
+        assert!(
+            st.overlay.subtitle_ledger.is_empty(),
+            "账本必须同清（ACR-3）"
+        );
         st.overlay.flush_streams();
         assert!(st.overlay.messages.is_empty());
     }

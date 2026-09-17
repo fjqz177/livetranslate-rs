@@ -278,7 +278,9 @@ fn row1(
         // D-87：确认走专用窗（悬浮窗只发请求，不再自任宿主）
         if !compact && small_btn(ui, lt_i18n::t("clear"), &SKIN_BTN).clicked() {
             if settings.auto_save_transcript {
-                overlay.messages.clear();
+                // ACR-2/3：走单一落点（消息链 + 草稿箱 + 原文账本同清）——
+                // auto_save 默认 true，本路径才是清空的默认入口
+                overlay.clear_messages();
             } else {
                 modal.request_confirm(
                     ConfirmKind::Clear,

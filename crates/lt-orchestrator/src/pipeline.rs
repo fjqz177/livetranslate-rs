@@ -108,11 +108,11 @@ impl TlJob {
     /// ACR-1c：**收口无条件、回执仅非停机**——停机中事件无处可去（窗口已关），
     /// 但转录必须收口，否则该段在 all 文件里永久缺块（原文行已在 original 里）。
     fn finalize_dropped(&self, kind: FailureKind, detail: String) {
+        // 收口无条件（ACR-1c）：all 文件缺块是永久损伤，停机也照收
         self.transcript.finalize_no_translation(self.id);
         if self.stopped.load(Ordering::Relaxed) {
             return;
         }
-        self.transcript.finalize_no_translation(self.id);
         self.sink.push(UiEvent::TranslationFailed {
             id: self.id,
             kind,
@@ -1102,9 +1102,13 @@ impl TlRig {
             let t0 = Instant::now();
             // 会话内台阶记忆优先（学到的姿势跨段复用；记忆含"退到底"的失败台阶，
             // 避免每段重走整条阶梯）
+            // 中毒防御（完工后严肃评审 P1）：若历史上有人在持锁时 panic，std Mutex
+            // 中毒会让**后续每个任务**在此处 unwrap 失败——被 ACR-5 的 catch_unwind
+            // 逐条兜住 → 翻译域静默全瘫（worker 活着、监督器无感知）。台阶记忆是
+            // 启发式缓存，取值本身不坏，中毒时 into_inner 收回即可。
             let step = learned
                 .lock()
-                .unwrap()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .get(&model_key)
                 .filter(|(fp, _)| *fp == config_fp)
                 .map(|(_, s)| *s)
@@ -1128,7 +1132,7 @@ impl TlRig {
                 // 整条阶梯都没打通过：记住退到底的台阶（下一段一步到位，不再重走）
                 learned
                     .lock()
-                    .unwrap()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
                     .insert(model_key.clone(), (config_fp, outcome.step));
                 fail(
                     &outcome.attempt,
@@ -1147,7 +1151,7 @@ impl TlRig {
             // 记住打赢的台阶
             learned
                 .lock()
-                .unwrap()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .insert(model_key.clone(), (config_fp, outcome.step));
             // ── item 5 / 方案 §2.5 规则 5「偏离可见」──────────────────────
             // 用户要求关闭思考、但阶梯最终只能退到"不含关闭参数"的形态
@@ -1159,7 +1163,10 @@ impl TlRig {
                 thinking_unavailable,
                 outcome.step,
             ) {
-                let first_time = degraded_notified.lock().unwrap().insert(model_key.clone());
+                let first_time = degraded_notified
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .insert(model_key.clone());
                 if first_time {
                     tracing::warn!(
                         "模型 {model_name} 无法关闭思维链（阶梯退到 {}），已回执界面取消勾选",
@@ -2523,10 +2530,11 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
             );
             continue;
         };
-        // W4：每段生效视图一次 load（语言过滤/同语言判定/翻译提交全部据此）
-        let eff = bus.load();
         match source {
             SegmentSource::Interim => {
+                // W4：生效视图按段 load（语言过滤/同语言判定/翻译提交全部据此）；
+                // VadFlush 臂由 handle_vad_flush 自行 load（它同时服务退出收尾）
+                let eff = bus.load();
                 // 增量通道（原版 main.py:1720-1724）：排空重复标记 → 锁 VAD
                 // peek/识别/裁剪 → 更新消费进度（capture 线程的 elapsed 由此起算）
                 drain_interim_duplicates(&segment_queue);
@@ -2710,13 +2718,15 @@ fn exit_drain_segments(
 ) -> bool {
     let deadline = Instant::now() + budget;
     loop {
-        while let Some((source, audio)) = queue.try_pop() {
-            match source {
-                SegmentSource::Interim => continue,
-                other => handle(other, audio),
-            }
+        if !drain_segments_now(queue, deadline, budget, &mut handle) {
+            return false;
         }
         if capture_done.load(Ordering::Relaxed) {
+            // ★竞态收口（完工后严肃评审 P1）：上面那次"取空"可能**早于** capture
+            // 的尾巴入队——读者取空 → capture push → capture 置位 → 读者此刻才
+            // 看到置位。capture 置位后绝不再 push，故这里必须再取一次；否则尾巴
+            // 搁浅在队列里静默丢失（正是本包要修的病灶换个姿势复发）。
+            drain_segments_now(queue, deadline, budget, &mut handle);
             return true;
         }
         if Instant::now() >= deadline {
@@ -2725,6 +2735,30 @@ fn exit_drain_segments(
         }
         std::thread::sleep(Duration::from_millis(20));
     }
+}
+
+/// 取空段队列（interim 标记丢弃）；**每段前查预算**——预算耗尽即中断返回 false
+/// （单次 handle 自身耗时不受控：识别受引擎档案约束，超时后 manager 的超时重生
+/// 等待更是分钟级——那一段的等待属"在跑识别"，本预算封不住，见归档文档 §3.1a）。
+fn drain_segments_now(
+    queue: &BoundedDropQueue<(SegmentSource, Vec<f32>)>,
+    deadline: Instant,
+    budget: Duration,
+    handle: &mut impl FnMut(SegmentSource, Vec<f32>),
+) -> bool {
+    while let Some((source, audio)) = queue.try_pop() {
+        match source {
+            SegmentSource::Interim => continue,
+            other => {
+                if Instant::now() >= deadline {
+                    tracing::warn!("退出收尾超预算（{}s），剩余段放弃", budget.as_secs());
+                    return false;
+                }
+                handle(other, audio);
+            }
+        }
+    }
+    true
 }
 
 /// 排空队列头部连续的 interim 标记（原版 `_drain_interim_duplicates`）：
@@ -3979,6 +4013,41 @@ mod tests {
             elapsed >= Duration::from_millis(200) && elapsed < Duration::from_secs(3),
             "预算附近退出，实际 {elapsed:?}"
         );
+    }
+
+    /// 完工后严肃评审补（P1）：预算**每段前**复查——积压时不得"先整段排空"越过预算。
+    /// 单次 handle 自身耗时不受控（识别受引擎档案约束），故用一次 300ms 的 handle
+    /// 把预算（150ms）打穿，断言其后各段在复查处被拦下。
+    #[test]
+    fn exit_drain_checks_budget_before_each_segment() {
+        use std::sync::atomic::AtomicUsize;
+        let queue = Arc::new(BoundedDropQueue::<(SegmentSource, Vec<f32>)>::new(
+            16, "drain3",
+        ));
+        let done = Arc::new(AtomicBool::new(false));
+        for _ in 0..3 {
+            queue.push((SegmentSource::VadFlush, vec![0.1f32; 8]));
+        }
+        let handled = Arc::new(AtomicUsize::new(0));
+        let h = handled.clone();
+        let t0 = Instant::now();
+        let ok = exit_drain_segments(&queue, &done, Duration::from_millis(150), move |_, _| {
+            std::thread::sleep(Duration::from_millis(300));
+            h.fetch_add(1, Ordering::Relaxed);
+        });
+        let elapsed = t0.elapsed();
+        assert!(!ok, "capture_done 未置位 → 必超预算");
+        assert_eq!(
+            handled.load(Ordering::Relaxed),
+            1,
+            "第 2 段必须在预算复查处被拦下（不得越预算整段排空）"
+        );
+        assert_eq!(
+            queue.len(),
+            1,
+            "被预算拦下的那段已出队即放弃（真丢），其后各段留在队列"
+        );
+        assert!(elapsed < Duration::from_secs(2), "实际 {elapsed:?}");
     }
 
     /// ACR-1b：wait_idle——空池立即收敛；在跑任务必须等它结束；预算耗尽返回 false。

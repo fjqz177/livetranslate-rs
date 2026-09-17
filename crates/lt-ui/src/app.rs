@@ -445,12 +445,8 @@ impl MultiWindowApp {
             }
             if self.app_state.overlay.clear_request {
                 self.app_state.overlay.clear_request = false;
-                self.app_state.overlay.messages.clear();
-                // 草稿箱随列表同清（ACR-2）：残留草稿在下次 flush 时找不到消息，
-                // 本会静默丢弃；同点清理让"清空"语义完整（消息与缓冲一起作废）
-                self.app_state.overlay.state.pending_streams.clear();
-                // 原文账本同清（ACR-3）：列表已空，账本里的原文不再有可喂的宿主
-                self.app_state.overlay.subtitle_ledger.clear();
+                // ACR-2/3：消息链 + 草稿箱 + 原文账本走同一落点（见 clear_messages）
+                self.app_state.overlay.clear_messages();
             }
         }
     }
