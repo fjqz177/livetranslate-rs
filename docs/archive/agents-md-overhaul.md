@@ -1,5 +1,6 @@
 # AGENTS.md 全面重写 + 开发流程提示词套件（工作包：agents-md-overhaul）
 
+> 归档注记（2026-09-17）：本文已完工归档，头注状态行为归档前原貌，以本注记为准；附录 D 为历史出处，现行权威 = scripts/check_agents_health.ps1。
 > 状态：完工已归档
 > 日期：2026-09-14（定稿与完工同日）
 > 修订（2026-09-14 收口）：落盘暂存件 AGENTS-FINAL.md / gotchas-draft.md / check_agents_health.ps1（草稿）已消费删除；四提交 = 定稿 99544be → 施工一 e9d383b → 施工二 3417cca → 收口本提交。

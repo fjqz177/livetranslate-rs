@@ -105,3 +105,4 @@
 | ADR-16 | 2026-09-14 | 守护/脚本调用面统一切 PowerShell 7（pwsh-only）：5.1 feature-frozen 随 OS 生命周期，脚本 5.1∩7 公共子集零改动；钩子加 pwsh 探测兜底 | docs/archive/agents-md-overhaul.md |
 | ADR-17 | 2026-09-17 | AGENTS 额度重校准（主体 ≤190 行/19KB、全文件 ≤230 行/24KB）+ 额度真源指针化（数字只活在 check_agents_health.ps1，宪法头注只留指针）+ 85% 水位线 WARN 不失败 → 额度与水位线被 ADR-18 取代（用户裁决取消机械额度） | docs/archive/doc-network-hardening.md |
 | ADR-18 | 2026-09-17 | AGENTS 取消机械额度与水位线：体量回归自觉治理，防回胀靠 §4 路由纪律 + 守护断言 2~7（引用/看板/归档）+ 评审卡文档漂移自查；断言编号 2~7 保持不变防引用断裂，额度常量留名退役 | docs/archive/doc-network-hardening.md |
+| D-95 | 2026-09-17 | 加固收口后评审修复：钩子触发面补根 README.md（「守护读谁谁触发」补漏）+ changelog-scheme/agents-md-overhaul 补权威牌 + AGENTS §2 测试基线去数字（根治滚动漂移，收口卡基线提醒同步撤销） | docs/archive/doc-network-hardening.md |

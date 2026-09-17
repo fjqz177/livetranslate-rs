@@ -11,7 +11,7 @@
 7. 收口三问：`ls docs/` 健康吗？decisions.md 漏行吗？表和文件对上没？（表↔目录一致已由守护断言机械化，本问聚焦 decisions 漏行）
 
 然后：
-8. 门禁：precommit.ps1 全过 + `cargo test --workspace` 全绿（收工门禁）。测试总数有变 → 同一提交更新 AGENTS §2 滚动基线。
+8. 门禁：precommit.ps1 全过 + `cargo test --workspace` 全绿（收工门禁）。
 9. 提交：显式 pathspec（禁 add -A）；副产物（docs/architecture/、ui-audit/）不入库。
 
 → 提交后：handoff.md（会话收尾）
