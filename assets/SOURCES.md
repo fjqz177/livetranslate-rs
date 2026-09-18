@@ -21,7 +21,7 @@
   （= 微软官方 release 产物，未改动）
 - sha256：`4075344f1057c0d16883fb5a93428aeac5fecfbcb24e1560defb1cb80a6e0a85`（18,093,368 B，2026-09-08 实测入库文件）
 
-## icons/（应用与托盘图标，2026-09-06 由用户提供的 `D:\biancheng\LiveTranslate\assets\icons` 搬入）
+## icons/（应用与托盘图标，2026-09-06 由用户提供的原版工作区副本 icons/ 搬入）
 
 - `app.icns`（78,542 B）sha256 `958b4c63e2f2983d01b8aeca1e166662ddbda746f8740fdfd91ee87e42a7534b`
 - `app.ico`（27,917 B）sha256 `87881526136933bdaf60441ca38c3ff68686a9c7857fe720ef946054eb6f6b7a`
