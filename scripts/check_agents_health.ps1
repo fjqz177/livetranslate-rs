@@ -113,12 +113,15 @@ $readmeRoot = Join-Path $RepoRoot 'README.md'
 if (Test-Path -LiteralPath $readmeRoot) { $scanRel += $readmeRoot }
 # 豁免表：键 = '<相对路径>|<引用>'，值 = 理由（干跑发现误报时在此登记，禁无理由豁免）
 # 豁免表：键 = '<相对路径>|<引用>'，值 = 理由（干跑发现误报时在此登记，禁无理由豁免）
-# 首批登记（2026-09-19，v1.0.0 发布途中）：三处均为「生成物不入库」政策的正文提法、非仓库内链接；
-# 因本机存在同名未入库目录掩盖了 Test-Path 判定，43 个积压提交首次推上 CI 才暴露。
+# 登记史：①2026-09-19 五条——README/closeout 的「生成物不入库」政策提法 ×3，与 G-29 收编后
+# 坑册正文以掩盖目录作反例举证 ×2（fresh clone 验证法当场抓到，见 G-29/G-30）；
+# 根因均为本机未入库同名目录掩盖 Test-Path 判定、43 个积压提交首推 CI 才暴露。
 $refExempt = @{
     'README.md|docs/architecture/'                = '正文讲架构图等生成物不入库的政策提法，非仓库内链接'
     'README.md|docs/ui-audit/'                    = '正文讲走查截图等生成物不入库的政策提法，非仓库内链接'
     'docs/prompts/closeout.md|docs/architecture/' = '收口卡讲副产物不入库的政策提法，非仓库内链接'
+    'docs/gotchas.md|docs/architecture/'          = 'G-29 以掩盖目录为反例举证（坑册合法引用），非仓库内链接'
+    'docs/gotchas.md|docs/ui-audit/'              = 'G-29 以掩盖目录为反例举证（坑册合法引用），非仓库内链接'
 }
 foreach ($f in $scanRel) {
     $rel = ([IO.Path]::GetRelativePath($RepoRoot, $f)) -replace '\\', '/'

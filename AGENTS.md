@@ -133,6 +133,8 @@ git config core.hooksPath .githooks            # 每 clone 一次启用提交钩
 24. G-24 `scroll_to_cursor` 在 ScrollArea 外调用不生效：全局滚动目标被下一帧收尾的滚动区按外层坐标消费、偏移增量≈0——跳底须在内容闭包内执行（「回到最新」浮钮经 request_jump 记一帧）。
 25. G-25 rust-cache 清 target/ 下非 cargo 结构文件（只留目录骨架）——`-sys` crate 解到 target/ 的预编译库缓存恢复后成空目录、build.rs 的 `is_dir()` 守卫照样放行 → 链接期找不到 `.lib`；对策 = 预解包到 `.cache` 并设其 `*_LIB_DIR` 环境变量（sherpa 已改，见 G-25）。
 26. G-27 pwsh 裸调用 GUI 子系统 exe 不等待、不设退出码——CI `--version` 冒烟恒绿只证明文件存在；一律 `Start-Process -Wait -PassThru` 取真退出码（ci.yml / release.ps1 已按此修复）。
+27. G-28 钩子触发面「仅 assets/ 放行」≠ assets 内容免检——放行只是该提交不跑门禁，坏内容延迟到下一个触发面提交/CI 才爆；assets-only 提交也自觉跑 precommit。
+28. G-29 守护 Test-Path 判定被本机未入库同名目录掩盖（本地钩子绿 ≠ CI 绿）——推远端前用本地 fresh clone 复跑文本守护 ≡ CI 检出；政策性提法走断言 5 豁免表登记（须带理由）。
 
 ## 8. 看板（机制：drafts 看板 = 本区，一行一包、清零即删；细节只活在文档里）
 

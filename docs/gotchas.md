@@ -236,6 +236,30 @@
 - **证据**：2026-09-16 实测（pwsh 7.6.6）：先 `cmd /c exit 7` 立基准 → 裸调用 exe 后 `$LASTEXITCODE` 仍是 7、耗时 14ms 且无输出；`Start-Process` 版得 ExitCode=0 + banner `livetranslate 0.1.0`。文件不存在时两种写法都会报错（裸调用 CommandNotFoundException / Start-Process InvalidOperationException）。
 - **版本**：pwsh 7.6.6（行为自 Windows PowerShell 5.1 起一致）。
 
+## G-28 钩子触发面「仅 assets/ 放行」≠ assets 内容免检（个人绝对路径漏网）
+
+- **触发**：assets-only 提交（如改 `assets/SOURCES.md`）——钩子触发面 =「暂存区命中 .rs / Cargo.toml / docs / scripts / .github 等才跑门禁，仅 assets/ 放行」。
+- **症状**：assets 提交全程零门禁，带入的个人绝对路径静默入库；直到后续任一触发面提交在本地全套守护（或 CI）才爆红——且爆的是当时 HEAD，不是引入提交，溯源多花一轮。
+- **根因**：触发面判定（看暂存区）与守护扫描范围（全仓 `git ls-files`）是两回事：放行的是"这次提交不跑门禁"，不是"assets 内容永远免检"；坏内容只是延迟曝光。
+- **对策**：assets-only 提交也自觉 `pwsh -File scripts/precommit.ps1` 跑一遍再交；要收窄/取消放行面属触发面裁决，勿擅自改。
+- **证据**：2026-09-19 v1.0.0 发布当天：41ab253（assets-only）带入 SOURCES.md 个人绝对路径，被 cc38ef4（含 Cargo.toml）的本地钩子拦截，a91035d 修复。
+
+## G-29 守护的 Test-Path 判定被本机未入库同名目录掩盖（本地钩子绿 ≠ CI 绿）
+
+- **触发**：凡用文件存在性判定（`Test-Path` / `is_dir()`）的守护——本仓 `check_agents_health.ps1` 断言 5「引用路径存在」；本机存在但未入库 / gitignored 的目录（`docs/architecture/`、`docs/ui-audit/`、`docs/drafts/` 等生成物与草稿区）。
+- **症状**：文档里"生成物不入库"之类的**政策性提法**（含路径字面量）本地守护全绿，推上 CI 直接 N 处"死引用"红——本仓 43 个积压提交首推即中。
+- **根因**：`Test-Path` 查的是本地磁盘；本机同名目录掩盖了"fresh checkout 上不存在"的事实。本地绿只证明本机状态，不证明 CI 检出状态。
+- **对策**：①政策性提法登记断言 5 豁免表（键 = `<相对路径>|<引用>`，必须带理由，禁无理由豁免）；②**推远端前本地 fresh clone 复跑文本守护 ≡ CI 检出**：`git clone . %TEMP%\x` 后在其内跑守护（clone 只有入库文件，无本机噪音）。
+- **证据**：2026-09-19 CI run 35379102690 红（4 处死引用）→ 豁免表首批登记 3 处 + 过时注释改写；fresh clone 验证法在推送前又抓到守护自扫自（见 G-30），跳过定义源后 exit 0，第二轮 CI（35380417493）绿。
+
+## G-30 给扫描型守护加豁免表：定义源文件必须跳过自身扫描
+
+- **触发**：扫描型守护自带豁免/例外表，而表键必然是它要匹配的字面量（路径、编号……），且守护的扫描集包含定义源文件自己。
+- **症状**：豁免表登记完，fresh clone 验证反而**新增**违规——守护把自己的表键判成命中，自检互搏。
+- **根因**：定义源含模式字面量是常态，扫描集含定义源时必然自毙；同构先例 = 断言 6 不扫 `docs/gotchas.md`（G-编号定义源）。
+- **对策**：扫描循环对定义源文件直接 `continue`（本仓：断言 5 跳过 `scripts/check_agents_health.ps1` 自身）；新写守护时"定义源不扫自"应进设计而非等撞。
+- **证据**：2026-09-19 实测：登记 3 处豁免后 fresh clone 出 3 处 VIOLATION 且全部指向 check_agents_health.ps1 自身；加跳过后 exit 0。
+
 ---
 
 ## 候选清单（尚未收编——能五段式实证表述才收编，不臆造）
