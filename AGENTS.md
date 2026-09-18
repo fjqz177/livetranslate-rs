@@ -149,7 +149,7 @@ git config core.hooksPath .githooks            # 每 clone 一次启用提交钩
 
 ### 施工中
 
-- （无）
+- scripts-doc-system（ADR-19）：施工中——SD-1 十一脚本头注用法卡补全 / SD-2 目录页 + §2 存量收敛 / SD-3 守护断言 8 + 断言5 扩 .py / SD-4 收口（docs/scripts-doc-system.md）
 
 ### 遗留（完工包的实机走查与未了项，一行一包，清零即删）
 
