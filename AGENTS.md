@@ -23,15 +23,16 @@ winget install Microsoft.PowerShell            # 首次/换机前置：装 Power
 uv sync                                        # 首次/换机：钉版 libclang 18.1.1 + cmake 4.4.3 装入仓库内 .venv，
                                                # cargo [env] 相对指向——clone 后零本机路径配置，勿改绝对路径
 pwsh -File scripts/fetch_sherpa_libs.ps1       # 首次：预取 sherpa 预编译库到 .cache/sherpa-onnx（缺失构建硬报错；
-                                               # GitHub 慢用 -Mirror <前缀>/SHERPA_ONNX_MIRROR 走 Release 镜像）
+                                               # 镜像等参数详见脚本头注）
 cargo test --workspace                         # 收工门禁（不在 precommit 内）：全量测试全绿（滚动值，
                                                # 精确基线 = docs/README.md 归档表最新收口行）；真模型/真网络
                                                # 探针标 #[ignore] 默认跳过（离线纪律），CI 保持跳过
 cargo build --release -p lt-app                # 单 exe：target/release/livetranslate.exe ~76MB（滚动值）
 cargo run -p lt-app                            # GUI 冒烟
 pwsh -File scripts/package_release.ps1         # 打包 dist/LiveTranslate-*.zip（CI 同源；发布路线 = docs/distribution.md）
-pwsh -File scripts/release.ps1 <动词>          # 发布链九动词引擎（D-90/D-91；本地/CI 同一份）：rehearse 空跑全链不发布；
-                                               # 真发布 = release → promote（正文自动取 CHANGELOG 本版段落；云端等价 = 推 v* tag，转正永远人工）
+pwsh -File scripts/release.ps1 <动词>          # 发布链引擎（D-90/D-91；本地/CI 同一份；动词与依赖链详见脚本头注）：
+                                               # rehearse 空跑全链不发布；真发布 = release → promote（正文自动取
+                                               # CHANGELOG 本版段落；云端等价 = 推 v* tag，转正永远人工）
 pwsh -File scripts/precommit.ps1               # 提交前门禁：七项清单真源 = 该脚本头注；ci.yml 与 .githooks
                                                # 同源调用本脚本，门禁增删只改这一处（D-88 废除手抄双边同步）
 git config core.hooksPath .githooks            # 每 clone 一次启用提交钩子；触发面 = 守护读谁、谁触发（D-93）：
@@ -39,6 +40,7 @@ git config core.hooksPath .githooks            # 每 clone 一次启用提交钩
                                                # docs / scripts / .github / rust-toolchain* 任一即跑全套（仅 assets/ 放行）
 ```
 
+- 脚本目录页 = docs/scripts.md（一脚本一节：是什么 / 怎么调 / 参数概览；细节以各脚本头注为准）。新增 / 改名 / 删脚本须同步该页——守护断言 8 双向对账。
 - 冒烟（临时配置目录 / models_dir / --version 旗标）= docs/prompts/live-check.md。
 - CI = `.github/workflows/` 三 workflow（结构细节真源 = 各文件头注）：**ci**（单 job，门禁 = precommit.ps1 整脚本入 CI〔D-88 A1〕+ 测试 + 分发演练；触发 = push 全分支 + PR + 手动〔D-89 回摆〕）/ **release**（tag `v*` 或手动演练 → 调 `scripts/release.ps1` 全链出草稿 + sha256，转正人工〔D-90〕）/ **security**（cargo-deny 四表，ubuntu）；工具链真源 = 仓库根 `rust-toolchain.toml`；无分支保护——PR 上会跑 CI，但红叉不拦合并，仍靠提交前自查；CI 绿 ≠ 干净机能跑（runner 自带 VC++）。
 - 改码前摸底优先 MCP `codegraph_explore`（`.codegraph/` 本机索引，不入库）。
@@ -83,6 +85,7 @@ git config core.hooksPath .githooks            # 每 clone 一次启用提交钩
 | 实机走查 / GUI 冒烟取证 | `docs/prompts/live-check.md` |
 | 会话收尾交接 | `docs/prompts/handoff.md` |
 | 写 / 改守护脚本 | 本文 G-20（grep 方言）+ G-23（.ps1 带 BOM）+ 各守护脚本头注（风格对齐） |
+| 查脚本用法 / 新增脚本 | `docs/scripts.md`（目录页）+ 各脚本头注（唯一细节真源） |
 | 分发 / 打包 / 发布 | `docs/distribution.md` + `scripts/release.ps1`（发布链）/ `scripts/package_release.ps1`（打包）头注 |
 | 历史工作包依据（下载器 / ASR 加固 / 视觉…） | `docs/archive/` 一行一档索引见 docs/README.md 归档表（只读） |
 
