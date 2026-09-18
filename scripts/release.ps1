@@ -12,6 +12,28 @@
     release   本地一条龙 = check+build+pack+draft+verify
     promote   转正 draft → published（唯一不可逆；正文默认取 CHANGELOG 本版段落）
 
+  参数：
+    <动词>       省略 = 打印本头注用法并以退出码 2 结束（非法值 = pwsh 参数绑定失败）
+    -NotesFile   仅 promote：显式覆盖 Release 正文（默认由 CHANGELOG 本版段落生成）
+    -Rehearsal   演练模式：拒绝 draft / promote / release 三个写动词，并跳过
+                 check 的「在 main / ci 绿」两道闸（CI 手动触发自动置位）
+
+  依赖链（动词先后）：
+    draft   ← pack 先跑（dist/ 三件 zip+sha256+build-info 缺一即「先跑 pack」）
+              且远端 tag v<版本> 已存在并指向本地 HEAD（铁律①，货不对单即拒）
+    promote ← 草稿已建 + 本版 CHANGELOG 段落在位（铁律③硬闸）
+    verify  ← 远端已有该版草稿或发布；check / notes / rehearse 无远端依赖
+
+  前置：gh 已安装且已登录（draft/promote/verify/release 硬需，缺 = 明确报错；
+    本地 check 的「ci 绿」闸无 gh 时降级跳过并提示 ⚠）；check ⑥ 构建前置
+    （.venv 与 .cache/sherpa-onnx）须就位。
+
+  退出码：0 = 成功；1 = 任一步失败（✗ 即停）；2 = 未给动词。
+
+  副作用：build/pack 重写 target/release 的 exe 与 dist/ 三件；draft 建/刷新
+    GitHub 草稿并上传；promote 转正（唯一不可逆）；verify 下载比对后清理临时
+    目录；全程不改仓库内已跟踪文件。
+
   版本口径：只发正式版本——版本号必须是不带后缀的 x.y.z（预发布在 check ① 直接拒，不白等构建）
 
   三条铁律：

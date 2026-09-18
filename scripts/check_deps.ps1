@@ -6,7 +6,11 @@
 # 见 $DevExtra，均为「探针/集成测试需真实 crate」的已记录决策）。
 #
 # 用法：  pwsh -File scripts/check_deps.ps1
-# 退出码：0 = 通过；非 0 = 存在违规边（输出逐条 VIOLATION）
+# 参数：  -RepoRoot（默认 = 脚本上级目录，一般不用传）
+# 前置：  pwsh 7；crates/ 十 crate 布局（各 Cargo.toml 在位）。
+# 退出码：0 = 通过；非 0 = 存在违规边（输出逐条 VIOLATION）。
+# 产物 / 副作用：无（只读）。
+# 备注：  $Whitelist / $DevExtra 白名单真源 = 本脚本（AGENTS §3「依赖白名单真源」即指此）。
 # ============================================================
 
 param(

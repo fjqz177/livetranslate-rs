@@ -1,6 +1,14 @@
 ﻿# 个人路径卫生守护（docs/archive/path-hygiene.md PH-5）
 # 用法：pwsh -File scripts/check_personal_paths.ps1
+#   （无参数；precommit 第 2 项自动调用）
 # 扫描全部已跟踪文本文件，命中即退出码 1（提交前自查用，配合 AGENTS.md 约定）。
+#
+# 参数：无（$PSScriptRoot 自定位仓库根）。
+# 前置：pwsh 7 + git；扫描面 = git ls-files 已跟踪文件，排除二进制后缀
+#   png/jpg/ico/icns/onnx/dll/br/ttf/otf/woff2/zip/gz（未跟踪/忽略文件不扫）。
+# 退出码：0 = 零命中（archive 内 Tier2 仅 WARN 计数，不拦）；1 = Tier1/Tier2 命中（逐条 FAIL）。
+# 产物 / 副作用：无（只读）。
+# 详见：docs/archive/path-hygiene.md（PH-5、§4.4 豁免规则）。
 #
 # Tier1 硬失败（任何文件，含归档）：
 #   - 本机用户名动态匹配（$env:USERNAME，字面不入库）

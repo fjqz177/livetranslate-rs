@@ -9,6 +9,14 @@
 #   └─ OFL.txt             （三内嵌字体许可）
 #
 # 用法：  pwsh -File scripts/package_release.ps1
+# 参数：  -RepoRoot（默认 = 脚本上级目录，一般不用传）
+# 前置：  先 `cargo build --release -p lt-app`（exe 缺 = exit 1 并提示）；版本号取仓根
+#         Cargo.toml 首个 ^version 行（缺 = exit 1）。CI 同源调用见 scripts/release.ps1 pack。
+# 退出码：0 = 打包完成；1 = exe 缺失或版本解析失败。
+# 产物 / 副作用：只写 dist/ 两样——staging 目录 dist/LiveTranslate-<version>/（打包后
+#         **保留不删**）与 zip（已存在则**先删再建**）；不动仓库内任何文件。
+# 分工：  README.txt/LICENSE/NOTICES.md/OFL.txt 四件「存在才拷入、缺件不失败」；
+#         zip 五件套的强制校验属 scripts/release.ps1 pack 的职责（发布链以此为准）。
 # ============================================================
 
 param(

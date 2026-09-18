@@ -13,6 +13,11 @@
 #   起止相位，下载器当前仅产 Progress）
 #
 # 用法：  pwsh -File scripts/check_dead_contract.ps1
+# 参数：  -RepoRoot（默认 = 脚本上级目录，一般不用传）
+# 前置：  pwsh 7；crates/lt-proto/src/ 契约文件在位。
+# 退出码：0 = 通过（WARN 算过——半死变体仅提示人工定性）；非 0 = 存在死变体或契约文件缺失。
+# 产物 / 副作用：无（只读）。
+# 维护：  $ReservedWhitelist 增删须与 docs/archive/architecture-v2-improvements.md §3 ADR-13 同步。
 # ============================================================
 
 param(

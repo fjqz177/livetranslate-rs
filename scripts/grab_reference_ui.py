@@ -9,6 +9,13 @@
     # 具体解释器路径因机器而异、不写入本库）：
     #   python scripts/grab_reference_ui.py
 
+参数：无（路径全部脚本内定死：读工作区 LiveTranslate/，写 assets/reference/）。
+前置：解释器带 PyQt6 + PyYAML + psutil + openai（依赖链含 httpx，随 openai SDK
+  自带）；工作区 LiveTranslate/ 参考副本在位（缺 = 非零退出）。
+退出码：0 = 全部截图写出；非 0 = sys.exit（副本缺失 / 保存失败 / 面板结构变更）。
+产物 / 副作用：assets/reference/ 下 zh/en 各 10 张 PNG，同名覆盖，目录自动建；
+  不读副本的 user_settings.json、不写回副本任何文件。
+
 输出 assets/reference/（zh/en 各一套）：
   panel_{lang}.png              控制面板·识别 tab（默认落地页）
   panel_{tab}_{lang}.png        控制面板其余 6 个 tab（translation/style/

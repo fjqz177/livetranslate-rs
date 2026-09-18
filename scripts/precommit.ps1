@@ -17,7 +17,13 @@
 # 全量测试（cargo test --workspace）不在此列：属收工门禁，见 AGENTS.md §2「命令与门禁」。
 #
 # 用法：  pwsh -File scripts/precommit.ps1（本仓 pwsh-only，ADR-16）
+# 参数：  -RepoRoot（默认 = 脚本上级目录，一般不用传）
+# 前置：  pwsh 7 + rust-toolchain.toml 工具链 + .venv（libclang/cmake，G-5）+
+#         .cache/sherpa-onnx（clippy 需全量编译，fetch_sherpa_libs.ps1 预取）。
+# 退出码：0 = 七项全过；非 0 = 透传首个失败项自身的退出码（通常 1；clippy 编译错可
+#         为 101），任一失败即停不跑后续项。
 #   应急跳过：git commit --no-verify（CI 仍会拦截）
+# 产物 / 副作用：无仓库内文件改动（target/ 编译缓存正常增长）。
 # ============================================================
 
 param(

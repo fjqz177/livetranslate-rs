@@ -4,6 +4,13 @@
 state 逐 chunk 回喂（与 Rust/裸 ONNX 语义一致），输出逐点误差。
 
 用法：先跑 `cargo run -p lt-audio --example vad_check`，再运行本脚本。
+
+参数：无（输入输出路径脚本内定死）。
+前置：Python 带 numpy + onnxruntime；assets/silero_vad.onnx；
+  target/vad_input.f32 与 target/vad_conf_rust.json（由上一步 example 产出，
+  缺 = 未捕获异常非零退出）。
+退出码：0 = PASS（max_abs_err < 1e-4）；1 = FAIL（打印误差最大 5 个 chunk 明细）。
+产物 / 副作用：无（纯读 + stdout）。
 """
 
 import json

@@ -18,7 +18,10 @@
 # 触发面：precommit.ps1 第六项 + CI gate job；本地钩子触发面 = 「守护读谁、谁触发」
 # （docs/ scripts/ .github/ rust-toolchain*，D-93 DH-18）。
 # 用法：  pwsh -File scripts/check_agents_health.ps1（本仓 pwsh-only，ADR-16）
-# 退出码：0 = 通过（可带 WARN）；非 0 = 存在违规（逐条输出）
+# 参数：  -RepoRoot（默认 = 脚本上级目录，一般不用传）
+# 前置：  pwsh 7；AGENTS.md / docs/gotchas.md / docs/README.md / docs/archive/ 在位。
+# 退出码：0 = 通过（可带 WARN）；非 0 = 存在违规（逐条输出）。
+# 产物 / 副作用：无（只读）。
 # ============================================================
 
 param(

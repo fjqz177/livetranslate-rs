@@ -14,9 +14,19 @@
 # 「tar -tf 全量列举」完整性闸门已由"真解包 + 产物探针"取代（同样是冷路径一次）。
 #
 # 用法（PowerShell）：
-#   scripts\fetch_sherpa_libs.ps1
-#   scripts\fetch_sherpa_libs.ps1 -Mirror https://ghproxy.com/
-#   $env:SHERPA_ONNX_MIRROR = "https://ghproxy.com/"; scripts\fetch_sherpa_libs.ps1
+#   pwsh -File scripts/fetch_sherpa_libs.ps1
+#   pwsh -File scripts/fetch_sherpa_libs.ps1 -Mirror https://ghproxy.com/
+#   $env:SHERPA_ONNX_MIRROR = "https://ghproxy.com/"; pwsh -File scripts/fetch_sherpa_libs.ps1
+# 参数：-Mirror（默认 = $env:SHERPA_ONNX_MIRROR；两者皆无 = 直连 GitHub Releases）。
+# 前置：pwsh 7 + 网络（或镜像可达）+ GNU tar（脚本自动逐级向上找 Git for Windows 的
+#   usr\bin\tar.exe；Windows 自带 bsdtar 读不了 bz2，会被探测跳过）；版本号取自
+#   Cargo.lock 的 sherpa-onnx-sys 条目。
+# 退出码：0 = 就位（已解包秒退，或新下载+解包成功）；非 0 = throw（档名解析/下载/解包
+#   失败、产物探针缺失、找不到 GNU tar）。
+# 强制重下：删 .cache/sherpa-onnx/ 下的归档档（tar.bz2）= 重下+重解；只删 extracted/ =
+#   只重解包不重下载；只删归档不删 extracted = 幂等秒退（无效操作）。
+# 产物 / 副作用：只写 .cache/sherpa-onnx/（归档 ~120MB + extracted/ ~1.1GB + .archive
+#   来源标记；.cache/ 已 gitignore），配合 .cargo/config.toml 的 SHERPA_ONNX_LIB_DIR。
 param(
     [string]$Mirror = $env:SHERPA_ONNX_MIRROR
 )
