@@ -59,7 +59,7 @@ function Test-GhReady {          # gh 可用 = 装了 + 已登录（CI 里由 GH
 function Assert-GhReady { if (-not (Test-GhReady)) { Die '需要可用的 gh（安装 + gh auth login）；不愿本机发就改用 CI：推 tag 即可' } }
 
 # ───────────────────────────── 仓库根与常量（版本是唯一输入） ─────────────────────────────
-# 向上找带 Cargo.toml 的目录：草稿在 docs/drafts、转正后在 scripts/ 都能直接跑
+# 向上找带 Cargo.toml 的目录：脚本无论放在草稿区还是已转正进 scripts/ 都能直接跑
 $Root = $PSScriptRoot
 while ($Root -and -not (Test-Path (Join-Path $Root 'Cargo.toml'))) { $Root = Split-Path -Parent $Root }
 if (-not $Root) { Die '找不到仓库根（向上找 Cargo.toml 失败）' }

@@ -112,10 +112,18 @@ $scanRel += (Get-ChildItem -Path (Join-Path $RepoRoot '.github/workflows') -Filt
 $readmeRoot = Join-Path $RepoRoot 'README.md'
 if (Test-Path -LiteralPath $readmeRoot) { $scanRel += $readmeRoot }
 # 豁免表：键 = '<相对路径>|<引用>'，值 = 理由（干跑发现误报时在此登记，禁无理由豁免）
-$refExempt = @{}
+# 豁免表：键 = '<相对路径>|<引用>'，值 = 理由（干跑发现误报时在此登记，禁无理由豁免）
+# 首批登记（2026-09-19，v1.0.0 发布途中）：三处均为「生成物不入库」政策的正文提法、非仓库内链接；
+# 因本机存在同名未入库目录掩盖了 Test-Path 判定，43 个积压提交首次推上 CI 才暴露。
+$refExempt = @{
+    'README.md|docs/architecture/'                = '正文讲架构图等生成物不入库的政策提法，非仓库内链接'
+    'README.md|docs/ui-audit/'                    = '正文讲走查截图等生成物不入库的政策提法，非仓库内链接'
+    'docs/prompts/closeout.md|docs/architecture/' = '收口卡讲副产物不入库的政策提法，非仓库内链接'
+}
 foreach ($f in $scanRel) {
-    $t = [System.IO.File]::ReadAllText($f)
     $rel = ([IO.Path]::GetRelativePath($RepoRoot, $f)) -replace '\\', '/'
+    if ($rel -eq 'scripts/check_agents_health.ps1') { continue }  # 豁免表定义源不扫（同 gotchas 之于 G-编号）：表键必然含路径字面量
+    $t = [System.IO.File]::ReadAllText($f)
     foreach ($m in [regex]::Matches($t, '(?:docs|scripts|crates|assets|\.github|\.cargo|\.githooks)/[A-Za-z0-9_\-./]+')) {
         $p = $m.Value
         if ($p.Contains('*')) { continue }
