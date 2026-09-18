@@ -1,7 +1,9 @@
 ﻿# ============================================================
 # 总纲与文档引用网健康守护（AO-4 起家，D-93/ADR-17 扩容；规格史 = docs/archive/agents-md-overhaul.md 附录 D + docs/archive/doc-network-hardening.md）
 #
-# 断言六组（编号保留 2~7 不变防引用断裂；原 1/1b 额度与水位线经 ADR-18 退役）：
+# 断言七组（编号 2~7 沿用防引用断裂；8 号曾为水位线断言，ADR-18 退役后由
+# ADR-19 复用为脚本登记面——史档中的「断言 8」均指水位线，现行定义以本头注为准；
+# 原 1/1b 额度与水位线已退役）：
 #   2. 引用路径存在：AGENTS.md 内引用的仓库内路径全部存在
 #      （docs/ scripts/ crates/ assets/ .github/ .cargo/ .githooks/ 前缀；
 #        docs/drafts/ 与含通配符的路径跳过）
@@ -13,6 +15,9 @@
 #   6. G-编号全仓无死引用（同扫描集，gotchas 本身 = 定义源不扫；非数字残留一并逮）
 #   7. 归档机械面：docs/README.md 归档表 ↔ docs/archive 目录双向对账
 #      + 每份档案前 8 行含「已归档/归档注记」标记
+#   8. 脚本登记面：scripts/ 下每个 .ps1/.py 须在 docs 顶层 scripts.md 有节
+#      （### `scripts/<名>`），节指向的脚本须实存——双向对账，无豁免
+#      （对账读目录页与文件清单，不存在内容自触发，守护自身同样须登记）
 #
 # 实现约束（G-20，docs/gotchas.md）：文本匹配用 PowerShell 原生正则，勿调外部 grep。
 # 触发面：precommit.ps1 第六项 + CI gate job；本地钩子触发面 = 「守护读谁、谁触发」
@@ -104,13 +109,14 @@ foreach ($h in '### 待拍板', '### 施工中', '### 遗留') {
 }
 
 # ── 断言 5：引用路径存在扩面（D-93 DH-14）──
-# 扫描集 = docs 顶层 *.md（不递归）+ docs/prompts/*.md + scripts/*.ps1 + .github/workflows/*.yml + 根 README.md
+# 扫描集 = docs 顶层 *.md（不递归）+ docs/prompts/*.md + scripts/*.ps1|.py + .github/workflows/*.yml + 根 README.md
 # 排除：docs/archive/（史档引用为当时快照）、docs/gotchas.md（断言 6 定义源）、gitignored 三目录
 # 草稿区分级：scripts|workflows 指向 docs/drafts/<文件> = 违规；docs 顶层/prompts 指向 = WARN（AGENTS 保留既有豁免）
 $scanRel = @()
 $scanRel += (Get-ChildItem -Path (Join-Path $RepoRoot 'docs') -Filter '*.md' -File).FullName
 $scanRel += (Get-ChildItem -Path (Join-Path $RepoRoot 'docs/prompts') -Filter '*.md' -File).FullName
 $scanRel += (Get-ChildItem -Path (Join-Path $RepoRoot 'scripts') -Filter '*.ps1' -File).FullName
+$scanRel += (Get-ChildItem -Path (Join-Path $RepoRoot 'scripts') -Filter '*.py' -File).FullName
 $scanRel += (Get-ChildItem -Path (Join-Path $RepoRoot '.github/workflows') -Filter '*.yml' -File).FullName
 $readmeRoot = Join-Path $RepoRoot 'README.md'
 if (Test-Path -LiteralPath $readmeRoot) { $scanRel += $readmeRoot }
@@ -185,6 +191,27 @@ foreach ($n in $dirNames) {
     if ($head -notmatch '已归档|归档注记') { $violations += "归档缺注记：docs/archive/$n（前 8 行无『已归档/归档注记』）" }
 }
 
+# ── 断言 8：脚本登记面（scripts-doc-system SD-3 / ADR-19；8 号曾为水位线断言，ADR-18 退役后复用）──
+# (a) 磁盘 → 册：scripts/ 下每个 .ps1/.py 须在目录页（docs 顶层 scripts.md）有节（### `scripts/<名>`）
+# (b) 册 → 磁盘：册上抽出的每个 scripts/… 路径须实存（孤儿条目）
+# 11 节全强制含本守护自身，无豁免代码（对账读目录页与文件清单，不存在内容自触发）。
+# 枚举平铺非递归——scripts/ 出现子目录时须回改此处。正文出现节标题样式字面量会误报，禁。
+$scriptsMd = Join-Path $RepoRoot ('docs' + '/scripts.md')   # 拼接书写：本文件在断言5自豁免面外，此处防自我字面量误伤
+if (-not (Test-Path -LiteralPath $scriptsMd)) {
+    $violations += '脚本目录页（docs 顶层 scripts.md）不存在（新增脚本前先建册）'
+} else {
+    $book = [System.IO.File]::ReadAllText($scriptsMd)
+    $bookPaths = [regex]::Matches($book, '(?m)^### `(scripts/[^`]+)`\s*$') |
+                 ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique
+    $diskScripts = Get-ChildItem -Path (Join-Path $RepoRoot 'scripts') -File |
+                   Where-Object { $_.Extension -in '.ps1', '.py' } |
+                   ForEach-Object { 'scripts/' + $_.Name } | Sort-Object -Unique
+    $unregistered = @($diskScripts | Where-Object { $bookPaths -notcontains $_ })
+    $orphans      = @($bookPaths   | Where-Object { $diskScripts -notcontains $_ })
+    if ($unregistered.Count -gt 0) { $violations += "脚本未登记：$($unregistered -join ', ')（目录页缺对应节）" }
+    if ($orphans.Count -gt 0)      { $violations += "目录页孤儿条目：$($orphans -join ', ')（册上有节、磁盘无脚本）" }
+}
+
 # ── 汇总 ──
 if ($violations.Count -gt 0) {
     Write-Host ""
@@ -201,5 +228,5 @@ if ($violations.Count -gt 0) {
 }
 
 Write-Host ""
-Write-Host "ok：主体 $mainLines 行/$mainBytes B + 全文件 $totalLines 行/$totalBytes B（不设额度，ADR-18）；引用 / G-编号 / 看板 / 引用网扩面 / 归档机械面全过（提醒 $($warn.Count) 条）" -ForegroundColor Green
+Write-Host "ok：主体 $mainLines 行/$mainBytes B + 全文件 $totalLines 行/$totalBytes B（不设额度，ADR-18）；引用 / G-编号 / 看板 / 引用网扩面 / 归档机械面 / 脚本登记面全过（提醒 $($warn.Count) 条）" -ForegroundColor Green
 exit 0

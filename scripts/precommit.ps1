@@ -6,7 +6,8 @@
 #   3. scripts/check_deps.ps1                        ← §3.1 依赖白名单（W7）
 #   4. scripts/check_guards.ps1                      ← §6.2 源码禁令（W7）
 #   5. scripts/check_dead_contract.ps1               ← 死契约（E6）
-#   6. scripts/check_agents_health.ps1               ← 总纲健康（ADR-15：两档预算/路径/G-编号/看板）
+#   6. scripts/check_agents_health.ps1               ← 总纲健康（ADR-15 起家：路径/G-编号/看板 + D-93 引用网扩面
+#                                                     与归档对账 + ADR-19 脚本登记面；断言 2~8）
 #   7. cargo clippy --workspace --all-targets --locked -- -D warnings   ← 编译级检查（分钟级，垫底）
 #
 # 顺序 = 便宜先死（D-88）：秒级文本扫描全过才付 clippy 的编译等待；
