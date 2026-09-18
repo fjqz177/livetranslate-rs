@@ -196,7 +196,8 @@ foreach ($n in $dirNames) {
 # (b) 册 → 磁盘：册上抽出的每个 scripts/… 路径须实存（孤儿条目）
 # 11 节全强制含本守护自身，无豁免代码（对账读目录页与文件清单，不存在内容自触发）。
 # 枚举平铺非递归——scripts/ 出现子目录时须回改此处。正文出现节标题样式字面量会误报，禁。
-$scriptsMd = Join-Path $RepoRoot ('docs' + '/scripts.md')   # 拼接书写：本文件在断言5自豁免面外，此处防自我字面量误伤
+$scriptsMd = Join-Path $RepoRoot ('docs' + '/scripts.md')   # 拼接书写：本文件今日受断言5自豁免（:128）庇护，直写亦无碍；
+                                                            # 拼接防未来该豁免被改时自我字面量误伤（防御性冗余）
 if (-not (Test-Path -LiteralPath $scriptsMd)) {
     $violations += '脚本目录页（docs 顶层 scripts.md）不存在（新增脚本前先建册）'
 } else {
