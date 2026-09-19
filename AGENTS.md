@@ -7,7 +7,7 @@
 
 ## 1. 项目与硬约束
 
-- Rust 原生实时音频翻译应用（Windows 单 exe）。Python 原版 LiveTranslate 仅行为参考，1:1 复刻期已于 2026-09-07 收尾；当前阶段二：以产品体验为准，原版有/没有不再是取舍依据。
+- Rust 原生实时音频翻译应用（Windows 单 exe）。Python 原版 LiveTranslate 仅行为参考，1:1 复刻期已于 2026-09-07 收尾；当前阶段二：以产品体验为准，原版有/没有不再是取舍依据。2026-09-19 起已公开发布（首版经 D-90 发布链上线；分发现状真源 = docs/distribution.md）。
 - 参考副本 = 工作区 `LiveTranslate/`（gitignored、扁平结构，与任何外部仓无关）。改 GUI 前可回读其 `main.py` / `subtitle_overlay.py` / `subtitle_window.py` / `control_panel.py` / `vad_processor.py`。
 - **纯 CPU**：禁 CUDA/DirectML/GPU；whisper GPU feature 禁用；MonitorBar GPU 恒 N/A。
 - **单 exe** 分发；配置目录 = `~/.config/livetranslate`（Windows 下字面 home/.config，不是 %APPDATA%）；`settings.json` 的 `models_dir` 键可指定模型缓存路径。
@@ -25,8 +25,8 @@ uv sync                                        # 首次/换机：钉版 libclang
 pwsh -File scripts/fetch_sherpa_libs.ps1       # 首次：预取 sherpa 预编译库到 .cache/sherpa-onnx（缺失构建硬报错；
                                                # 镜像等参数详见脚本头注）
 cargo test --workspace                         # 收工门禁（不在 precommit 内）：全量测试全绿（滚动值，
-                                               # 精确基线 = docs/README.md 归档表最新收口行）；真模型/真网络
-                                               # 探针标 #[ignore] 默认跳过（离线纪律），CI 保持跳过
+                                               # 数字基线 = docs/README.md 归档表最近带测试计数的收口行）；
+                                               # 真模型/真网络探针标 #[ignore] 默认跳过（离线纪律），CI 保持跳过
 cargo build --release -p lt-app                # 单 exe：target/release/livetranslate.exe ~76MB（滚动值）
 cargo run -p lt-app                            # GUI 冒烟
 pwsh -File scripts/package_release.ps1         # 打包 dist/LiveTranslate-*.zip（CI 同源；发布路线 = docs/distribution.md）
@@ -38,11 +38,12 @@ pwsh -File scripts/precommit.ps1               # 提交前门禁：七项清单�
 git config core.hooksPath .githooks            # 每 clone 一次启用提交钩子；触发面 = 守护读谁、谁触发（D-93）：
                                                # 暂存区命中 .rs / Cargo.toml / .cargo / AGENTS.md / README.md /
                                                # docs / scripts / .github / rust-toolchain* / .gitattributes /
-                                               # .editorconfig 任一即跑全套（仅 assets/ 放行）
+                                               # .editorconfig 任一即跑全套；触发面外（assets/、Cargo.lock、
+                                               # CHANGELOG* 等白名单外路径）一律放行不跑门禁
 ```
 
 - 脚本目录页 = docs/scripts.md（一脚本一节：是什么 / 怎么调 / 参数概览；细节以各脚本头注为准）。新增 / 改名 / 删脚本须同步该页——守护断言 8 双向对账。
-- 冒烟（临时配置目录 / models_dir / --version 旗标）= docs/prompts/live-check.md。
+- 冒烟（临时配置目录 / models_dir / --version / LIVETRANSLATE_SHOW_PANEL 旗标）= docs/prompts/live-check.md。
 - CI = `.github/workflows/` 三 workflow（结构细节真源 = 各文件头注）：**ci**（单 job，门禁 = precommit.ps1 整脚本入 CI〔D-88 A1〕+ 测试 + 分发演练；触发 = push 全分支 + PR + 手动〔D-89 回摆〕）/ **release**（tag `v*` 或手动演练 → 调 `scripts/release.ps1` 全链出草稿 + sha256，转正人工〔D-90〕）/ **security**（cargo-deny 四表，ubuntu）；工具链真源 = 仓库根 `rust-toolchain.toml`；无分支保护——PR 上会跑 CI，但红叉不拦合并，仍靠提交前自查；CI 绿 ≠ 干净机能跑（runner 自带 VC++）。
 - 改码前摸底优先 MCP `codegraph_explore`（`.codegraph/` 本机索引，不入库）。
 
@@ -52,20 +53,20 @@ git config core.hooksPath .githooks            # 每 clone 一次启用提交钩
 |---|---|---|
 | lt-proto | 事件/命令/数据契约 + 翻译域常量（E3/ADR-10） | — |
 | lt-i18n | zh/en 双语键集（两份 yaml 键集必须一致） | — |
-| lt-models | Settings/ModelConfig/模型注册表/缓存探测（零网络） | proto |
+| lt-models | 模型注册表/ModelConfig/缓存探测/Settings 读写 settings_io（零网络；Settings 与值域透镜本体在 lt-proto） | proto |
 | lt-download | 下载器：reqwest/sha2/退避/完整性 | proto |
 | lt-audio | wasapi 采集 + silero VAD + ORT 内嵌 | models |
-| lt-asr | ASR worker 子进程 + IPC + 三引擎（SenseVoice/Whisper/Qwen3；配置经 stdin 首行，D-76） | proto（models 仅 dev-dep） |
+| lt-asr | ASR worker 子进程 + IPC + Job Object 孤儿兜底 + 四引擎（funasr 键 = SenseVoice/Nano 两族，另有 Whisper/Qwen3；配置经 stdin 首行，D-76） | proto（models 仅 dev-dep） |
 | lt-translate | async-openai LLM | proto |
 | lt-orchestrator | 编排域：识别/翻译管道 + 线程监督器 + 下载管理 + 日志桥；禁依赖 ui/winit/i18n，用户文案经 `Msg` 注入 | proto, models, download, audio, asr, translate |
 | lt-ui | egui 多窗口：悬浮/字幕/控制面板/日志窗/托盘（纯投影 crate，禁依赖 lt-app） | proto, i18n, models |
-| lt-app | 组合根：boot + 动脉桥 + 命令路由 + 单实例消息窗 + worker 入口（同 exe `--asr-worker` 自拉起）+ Job Object 孤儿兜底 | 十库全部 |
+| lt-app | 组合根：boot + 动脉桥 + 命令路由 + 单实例消息窗 + worker 入口（同 exe `--asr-worker` 自拉起） | 十库全部 |
 
 - 依赖白名单真源 = `scripts/check_deps.ps1`（含 dev-dep 特批表）；拓扑终局 = `docs/archive/architecture-v2.md` §3.1 + `docs/archive/architecture-v2-improvements.md`。
-- **lt-proto 冻结规则**：`PROTO_VERSION` 随结构变更递增（当前 7）。豁免评审 = 纯新增 Cmd/UiEvent/AppCommand 变体、纯新增 Settings 字段（须 serde default 兼容旧档）、既有枚举增项；仍须评审 = 删除/改名/改型/改语义任何既有契约项（记录入 D-xx）。**跨 crate 字符串编码协议（前缀/分隔符/哨兵值）一经发现按 P1 立案**（check_guards 禁令 5 机械拦截）。
+- **lt-proto 冻结规则**：`PROTO_VERSION` 随结构变更递增（当前 7）。豁免评审 = 纯新增 Cmd/UiEvent/AppCommand 变体、纯新增 Settings 字段（须 serde default 兼容旧档）、既有枚举增项；仍须评审 = 删除/改名/改型/改语义任何既有契约项（记录入 D-xx）。**跨 crate 字符串编码协议（前缀/分隔符/哨兵值）一经发现按 P1 立案**（check_guards 禁令 3 机械拦截；禁令 5 = 契约旁路）。
 - 新增 UI 能力**不得扩 lt-proto 契约**：日志经 `LogLine{target}` 回流。
 - Settings 运行时落盘唯一通道 = `Cmd::PersistSettings`（shell 直排：保存 + 发布总线，300ms debounce 对齐原版）；各命令草稿写入唯一落点 = shell `apply_settings_side_effects` 纯函数（E1-4），UI 只发命令不预写。
-- 值域判定一律走类型化透镜（E2/D-79：`Settings::engine_key()/hub()/proxy_mode()` + EngineKey/Hub/ProxyMode；持久层 String 不改型，透镜归一）；域内禁 `== "funasr"` 类字面量比较（lt-asr/lt-models/lt-app worker 分派为单点分派边界豁免）。
+- 值域判定一律走类型化透镜（E2/D-79：`Settings::engine_key()/hub()/proxy_mode()` + EngineKey/Hub/ProxyMode，均定义在 lt-proto；持久层 String 不改型，透镜归一）；域内禁 `== "funasr"` 类字面量比较（lt-asr/lt-models/lt-app worker 分派为单点分派边界豁免）。
 - UI → 宿主的窗口动作统一走 **`WinAction` 意图通道**（定义 `crates/lt-ui/src/state.rs`；跨平台抽象缝）：新增窗口行为优先加变体让宿主执行，不在 UI 侧散点直调 Win32。
 
 ## 4. 路由表（动手前必读；本表 = 提示词卡唯一索引）
@@ -85,12 +86,12 @@ git config core.hooksPath .githooks            # 每 clone 一次启用提交钩
 | 需要用户裁决 | `docs/prompts/decision-request.md` |
 | 实机走查 / GUI 冒烟取证 | `docs/prompts/live-check.md` |
 | 会话收尾交接 | `docs/prompts/handoff.md` |
-| 写 / 改守护脚本 | 本文 G-20（grep 方言）+ G-23（文本卫生：无 BOM/合法 UTF-8/LF）+ 各守护脚本头注（风格对齐） |
+| 写 / 改守护脚本 | 本文 G-20（grep 方言）+ G-23（文本卫生：无 BOM/合法 UTF-8/LF）+ G-30（守护定义源须跳过自扫）+ 各守护脚本头注（风格对齐） |
 | 查脚本用法 / 新增脚本 | `docs/scripts.md`（目录页）+ 各脚本头注（唯一细节真源） |
 | 分发 / 打包 / 发布 | `docs/distribution.md` + `scripts/release.ps1`（发布链）/ `scripts/package_release.ps1`（打包）头注 |
 | 历史工作包依据（下载器 / ASR 加固 / 视觉…） | `docs/archive/` 一行一档索引见 docs/README.md 归档表（只读） |
 
-## 5. 纪律速记（全文真源 = docs/README.md 顶部九条，此处只留最绑定的）
+## 5. 纪律速记（docs 目录治理九条真源 = docs/README.md 顶部；git/文风/i18n 等条目真源在各自锚点，此处只留最绑定的）
 
 - 主干直推：提交直接落 main，无 PR 流程（CI 全分支 push 兜底）。
 - 汇报文风：结论先行、判对项与待拍板项分列、最直白零废话（评审全文风 = `docs/prompts/review.md`）。
@@ -124,32 +125,34 @@ git config core.hooksPath .githooks            # 每 clone 一次启用提交钩
 11. G-11 edition 2021 if-let scrutinee 临时值自死锁；共享锁 + 分支派发一律先绑定再分支。
 12. G-12 `FontFamily::Name(族名)` 未注册即 panic；渲染一律经 `fonts::font_family_for` 取。
 13. G-13 PROPVARIANT Drop 会 PropVariantClear→CoTaskMemFree；VT_LPWSTR 必须 CoTaskMemAlloc 分配、所有权交析构。
-14. G-14 事件循环线程禁同步 MessageBox/模态（含 rfd MessageDialog）；用 egui 内嵌模态或原生 Toast。
+14. G-14 事件循环线程禁同步 MessageBox/模态（含 rfd MessageDialog）；用 egui 内嵌模态或原生通知。
 15. G-15 winit apply_diff 整体重写 EXSTYLE，手工位（LAYERED/TRANSPARENT）被清；层属性每帧实测缺位即重挂。
 16. G-16 tray TrackPopupMenu = 嵌套模态循环：托盘专用线程（crates/lt-ui/src/tray.rs）+ GetMessage 泵 + PostThreadMessageW 唤醒；禁 WM_QUIT 退出。
 17. G-17 winit drag_window 不可靠（哑 WM_MOUSEMOVE + 仅左键）；字幕窗/悬浮窗手工拖动 SetCapture+GetCursorPos；拖动中隐藏必须 ReleaseCapture。
 18. G-18 Qt 6.11 `grab()` 不渲染 QTextEdit 自身样式表背景（重拍参照图脚本坑，脚本已补）。
 19. G-19 多代理并行期 stash 手术曾混入他人暂存（af0ff58）：提交前逐项 pathspec 复核。
-20. G-20 会话内 grep 是 ugrep 包装函数，复杂 ERE 与 GNU grep 结果不同；入库脚本一律 `command grep` / `sh -c`，勿依赖 grep 方言。
+20. G-20 会话内 grep 是 ugrep 包装函数，复杂 ERE 与 GNU grep 结果不同；校验用 `sh -c` / `command grep`，入库脚本勿依赖 grep 方言（PowerShell 用原生 -match）。
 21. G-21 sherpa binding `Default` 不可裸用：qwen3 默认 max_new_tokens=128（官方 512）、nano Default 是 max_new_tokens=0/temperature=1.0/top_p=1.0——一律用 OFFICIAL_* 常量（engines/qwen3.rs、nano.rs 头注）。
 22. G-22 测试临时目录必须唯一化：共享同名目录在 Windows 报 code 183 竞态飘测（8f964c5 根治）。
 23. G-23 无 BOM 的 .ps1 被 Windows PowerShell 按 ANSI 解析（中文全乱码、解析失败）——政策已翻转（ADR-20）：全仓文本一律无 BOM 合法 UTF-8 + index LF，check_personal_paths 三查机械拦截；.ps1 走 pwsh 7（ADR-16），误用 powershell.exe = 快速失败。
 24. G-24 `scroll_to_cursor` 在 ScrollArea 外调用不生效：全局滚动目标被下一帧收尾的滚动区按外层坐标消费、偏移增量≈0——跳底须在内容闭包内执行（「回到最新」浮钮经 request_jump 记一帧）。
-25. G-25 rust-cache 清 target/ 下非 cargo 结构文件（只留目录骨架）——`-sys` crate 解到 target/ 的预编译库缓存恢复后成空目录、build.rs 的 `is_dir()` 守卫照样放行 → 链接期找不到 `.lib`；对策 = 预解包到 `.cache` 并设其 `*_LIB_DIR` 环境变量（sherpa 已改，见 G-25）。
+25. G-25 rust-cache 清 target/ 下非 cargo 结构文件（只留目录骨架）——`-sys` crate 解到 target/ 的预编译库缓存恢复后成空目录、build.rs 的 `is_dir()` 守卫照样放行 → 链接期找不到 `.lib`；对策 = 预解包到 `.cache` 并设其 `*_LIB_DIR` 环境变量（sherpa 已按此迁移）。
 26. G-27 pwsh 裸调用 GUI 子系统 exe 不等待、不设退出码——CI `--version` 冒烟恒绿只证明文件存在；一律 `Start-Process -Wait -PassThru` 取真退出码（ci.yml / release.ps1 已按此修复）。
-27. G-28 钩子触发面「仅 assets/ 放行」≠ assets 内容免检——放行只是该提交不跑门禁，坏内容延迟到下一个触发面提交/CI 才爆；assets-only 提交也自觉跑 precommit。
+27. G-28 钩子触发面外放行 ≠ 内容免检（assets/、Cargo.lock 等白名单外提交不跑门禁）——坏内容延迟到下一个触发面提交/CI 才爆；放行面提交也自觉跑 precommit。
 28. G-29 守护 Test-Path 判定被本机未入库同名目录掩盖（本地钩子绿 ≠ CI 绿）——推远端前用本地 fresh clone 复跑文本守护 ≡ CI 检出；政策性提法走断言 5 豁免表登记（须带理由）。
+29. G-30 扫描型守护带豁免表时，定义源文件必须跳过自身扫描（豁免表键必含路径字面量，不跳 = 自检互搏恒红）——check_agents_health 断言 5 即此。
 
 ## 8. 看板（机制：drafts 看板 = 本区，一行一包、清零即删；细节只活在文档里）
 
 ### 待拍板（等用户裁决；草稿在 docs/drafts/ 不入库）
 
 - 待拍板：**ASR 模型选型**——近一年开源模型调研（FireRed2-CTC / Cohere-14lang / Dolphin / 标点闸门候选，A~H 清单）（docs/drafts/asr-model-survey-2026.md）
-- 待拍板：**增量识别的目标形态**——"做成什么样"未定案（设计无关批已拆出开工，见施工中；余包 B/D/G 与 J7 待定案）（docs/drafts/incremental-asr-overhaul.md）
+- 待拍板：**增量识别的目标形态**——"做成什么样"未定案（设计无关缺陷批已拆出完工归档 = D-94；余包 B/D/G 与 J7 待定案）（docs/drafts/incremental-asr-overhaul.md）
 - 待拍板：**跨平台分期 ①~⑤**——2026-09-11 可行性评估（无草稿，结论在会话记忆；P0 = 宿主 trait 化）
 - 待拍板：**llm 遗留⑪**——规则 4/5 偏离可见（docs/archive/llm-api-round2.md）
 - 待拍板：**UX 三期可选项**——前缀码枚举化 / 设置保存失败 UI 流 / 错误译文样式（docs/archive/ux-feedback.md）
 - 待拍板：**PH-6**——参考图 GPU 型号中性化重拍（可选）（docs/archive/path-hygiene.md）
+- 待拍板：**非代码面七块问题清单**——正式 33 条目（轻 21/中 6/待拍板 6，含 8 条老账重提）待逐条裁决（docs/drafts/noncode-infra-issues-2026.md）
 
 ### 施工中
 
@@ -163,12 +166,12 @@ git config core.hooksPath .githooks            # 每 clone 一次启用提交钩
 - quit-flow-redesign（D-87）：§五走查矩阵剩余行为项随用随验（docs/archive/quit-flow-redesign.md §九）
 - ci-workflow-suite（D-88/D-89）：deny.toml 首跑校准 + CI 首跑墙钟观察 + nextest/typos 候选 + 仓库设置候选（immutable releases / tag protection；attest 已由 D-90 否决）+ Dependabot alerts/security updates 未开（docs/archive/ci-workflow-suite.md §六）
 - dev-config-audit（收口 2026-09-17）：A3 冒烟配置免手抄——settings.smoke.json 模板或 --smoke 参数，随下次冒烟改造裁决（docs/archive/dev-config-audit.md §4）
-- release-engine（D-90）：首次真 tag 演练未跑（runner 的 gh 用法 / publish job 写入 / 摘要实貌待验）+ 首发须抬版本（旧 v0.1.0 tag 不删，见 docs/distribution.md §4）+ zip 五件套断言与 build-info 是否随 Release 永久留档待表态
-- 架构 v2/2.1：实机走查 11 项 + WP-9 性能预算（后续单独方案）（docs/archive/architecture-v2.md §6.4）；W5 走查 6 项——悬浮窗拖动/字幕窗拖动穿透回归/导出保存框/背景图选择框/设备下拉/Monitor 条（同文档 W5 节）
+- release-engine（D-90）：v1.0.0 已真 tag 首发转正（发布链全链实战验证——runner gh 用法 / publish job 写入 / 摘要实貌均过实；旧 v0.1.0 tag 未删）；余 zip 五件套断言与 build-info 是否随 Release 永久留档待表态（v1.0.0 现状 = 仅 zip+sha256 上架，build-info 留本地 dist/）（docs/distribution.md §4）
+- 架构 v2/2.1：实机走查 11 项 + WP-9 性能预算（后续单独方案）（docs/archive/architecture-v2.md §6.4）；W5 走查 6 项——悬浮窗拖动/字幕窗拖动穿透回归/导出保存框/背景图选择框/设备下拉/Monitor 条（同文档 §6.4 表来源列）
 - translator（D-85）：实机走查 13 项（docs/archive/translator-probe-hotswap.md §6.2）
 - model-trust（D-83）：实机走查——改坏一个模型文件应自动隔离+重下+装载（docs/archive/model-trust-repair.md）
 - context-turns（D-84）：实机走查 4 项（docs/archive/context-turns-ui.md）
 - asr-hardening：GUI 冒烟 A/B/C + T1 qwen3 长样例校准（whisper 六档 sha256 已全量登记）（docs/archive/asr-hardening.md）
 - download-overhaul：S1/S6 全程真实网络走查（docs/archive/download-overhaul.md）
 - 复刻期：WP-9 M6 调优（启动<2s / 空闲 CPU<1% / 8h 长跑 / 内存回收 / 端到端）；WP-5 托盘气泡、WP-8 热键届时按产品价值裁决（docs/archive/parity-closure.md）
-- distribution：WD-6 首启横幅待点头；WD-7 tag→Release、WD-8 检查更新随公开发布推进（docs/distribution.md）；1.0.0 前置：应用内更新日志真实内容待 Phase B 置换（changelog-scheme）、干净机端到端未跑（就绪评估 2026-09-11）；更新日志机制已建（D-91，2026-09-16）——应用内渲染改造（真粗体/切 tab 滚动/多版本折叠）待立包；8 个死 i18n 键（theme_*/btn_check_update/btn_open_repo·issues/hotkey_*/changelog_title）随 WD-8 一并定生死（docs/archive/live-check-fixes.md §五）
+- distribution（v1.0.0 已发布，WD-7 已完成）：WD-6 首启横幅待点头；WD-4 whisper 双源、WD-8 检查更新未做（docs/distribution.md §3.3/§4）；干净机端到端仍欠跑；更新日志机制已建（D-91）——应用内渲染改造（真粗体/切 tab 滚动/多版本折叠）待立包；8 个死 i18n 键（theme_*/btn_check_update/btn_open_repo·issues/hotkey_*/changelog_title）随 WD-8 一并定生死（docs/archive/live-check-fixes.md §五）
