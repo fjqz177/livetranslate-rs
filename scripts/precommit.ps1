@@ -2,7 +2,7 @@
 # 提交前门禁（2026-09-11 起；2026-09-14 增第七项）：单一入口，七项顺序执行、任一失败即停
 #
 #   1. cargo fmt --all -- --check                    ← 格式（秒级）
-#   2. scripts/check_personal_paths.ps1              ← 个人路径卫生（PH-5）
+#   2. scripts/check_personal_paths.ps1              ← 个人路径（PH-5）+ 文本卫生三查（ADR-20）
 #   3. scripts/check_deps.ps1                        ← §3.1 依赖白名单（W7）
 #   4. scripts/check_guards.ps1                      ← §6.2 源码禁令（W7）
 #   5. scripts/check_dead_contract.ps1               ← 死契约（E6）
