@@ -1,4 +1,4 @@
-﻿# 个人路径卫生守护（docs/archive/path-hygiene.md PH-5）
+# 个人路径卫生守护（docs/archive/path-hygiene.md PH-5）
 # 用法：pwsh -File scripts/check_personal_paths.ps1
 #   （无参数；precommit 第 2 项自动调用）
 # 扫描全部已跟踪文本文件，命中即退出码 1（提交前自查用，配合 AGENTS.md 约定）。

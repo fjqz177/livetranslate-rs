@@ -1,4 +1,4 @@
-﻿# 预取并解包 sherpa-onnx-sys 构建期所需的预编译静态库到仓库内 .cache/sherpa-onnx/。
+# 预取并解包 sherpa-onnx-sys 构建期所需的预编译静态库到仓库内 .cache/sherpa-onnx/。
 # 默认从 GitHub Releases 下载归档（约 120MB），可用 -Mirror <前缀> 或 $env:SHERPA_ONNX_MIRROR
 # 走任意 GitHub Release 镜像（如 https://ghproxy.com/）。
 #

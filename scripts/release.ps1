@@ -1,4 +1,4 @@
-﻿<#
+<#
   LiveTranslate-rs 发布引擎 —— 本地与 CI 共用同一份（D-90；与 .github/workflows/release.yml 成对）
 
   用法：pwsh -File scripts/release.ps1 <动词>
