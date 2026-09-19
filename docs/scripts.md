@@ -14,7 +14,7 @@
 ## 守护（precommit 五项）
 
 ### `scripts/check_personal_paths.ps1`
-个人路径卫生：全仓已跟踪文本文件禁个人用户名与实名绝对路径（PH-5）。
+个人路径卫生（PH-5）+ 文本卫生三查（ADR-20）：无 BOM / 严格 UTF-8 解码 / index 行尾全 LF。
 典型调用：`pwsh -File scripts/check_personal_paths.ps1`
 参数概览：无参数。
 参数细节与失败行为以脚本头注为准。
