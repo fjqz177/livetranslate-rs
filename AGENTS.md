@@ -37,7 +37,8 @@ pwsh -File scripts/precommit.ps1               # 提交前门禁：七项清单�
                                                # 同源调用本脚本，门禁增删只改这一处（D-88 废除手抄双边同步）
 git config core.hooksPath .githooks            # 每 clone 一次启用提交钩子；触发面 = 守护读谁、谁触发（D-93）：
                                                # 暂存区命中 .rs / Cargo.toml / .cargo / AGENTS.md / README.md /
-                                               # docs / scripts / .github / rust-toolchain* 任一即跑全套（仅 assets/ 放行）
+                                               # docs / scripts / .github / rust-toolchain* / .gitattributes /
+                                               # .editorconfig 任一即跑全套（仅 assets/ 放行）
 ```
 
 - 脚本目录页 = docs/scripts.md（一脚本一节：是什么 / 怎么调 / 参数概览；细节以各脚本头注为准）。新增 / 改名 / 删脚本须同步该页——守护断言 8 双向对账。
