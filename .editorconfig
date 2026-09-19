@@ -1,14 +1,12 @@
-# 多语言仓库（Rust/PS1/Py/YAML/TOML/MD）统一编辑器基线（dev-config-audit C6）
+# 多语言仓库（Rust/PS1/Py/YAML/TOML/MD）统一编辑器基线（dev-config-audit C6；2026-09-19 ADR-20 改造：去 BOM 钉 LF）
 root = true
 
 [*]
 charset = utf-8
 insert_final_newline = true
 trim_trailing_whitespace = true
-# 换行符不钉死：仓库仅 .githooks 显式 LF（.gitattributes），其余交给 git autocrlf
-
-[*.ps1]
-charset = utf-8-bom   # G-23：入库 .ps1 一律带 UTF-8 BOM
+end_of_line = lf
+# 换行符已由 .gitattributes「* text=auto eol=lf」全仓钉死（ADR-20）；此处管编辑器新建/保存，与守护分层
 
 [*.{rs,py,toml}]
 indent_style = space

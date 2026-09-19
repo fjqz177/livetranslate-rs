@@ -84,7 +84,7 @@ git config core.hooksPath .githooks            # 每 clone 一次启用提交钩
 | 需要用户裁决 | `docs/prompts/decision-request.md` |
 | 实机走查 / GUI 冒烟取证 | `docs/prompts/live-check.md` |
 | 会话收尾交接 | `docs/prompts/handoff.md` |
-| 写 / 改守护脚本 | 本文 G-20（grep 方言）+ G-23（.ps1 带 BOM）+ 各守护脚本头注（风格对齐） |
+| 写 / 改守护脚本 | 本文 G-20（grep 方言）+ G-23（文本卫生：无 BOM/合法 UTF-8/LF）+ 各守护脚本头注（风格对齐） |
 | 查脚本用法 / 新增脚本 | `docs/scripts.md`（目录页）+ 各脚本头注（唯一细节真源） |
 | 分发 / 打包 / 发布 | `docs/distribution.md` + `scripts/release.ps1`（发布链）/ `scripts/package_release.ps1`（打包）头注 |
 | 历史工作包依据（下载器 / ASR 加固 / 视觉…） | `docs/archive/` 一行一档索引见 docs/README.md 归档表（只读） |
@@ -132,7 +132,7 @@ git config core.hooksPath .githooks            # 每 clone 一次启用提交钩
 20. G-20 会话内 grep 是 ugrep 包装函数，复杂 ERE 与 GNU grep 结果不同；入库脚本一律 `command grep` / `sh -c`，勿依赖 grep 方言。
 21. G-21 sherpa binding `Default` 不可裸用：qwen3 默认 max_new_tokens=128（官方 512）、nano Default 是 max_new_tokens=0/temperature=1.0/top_p=1.0——一律用 OFFICIAL_* 常量（engines/qwen3.rs、nano.rs 头注）。
 22. G-22 测试临时目录必须唯一化：共享同名目录在 Windows 报 code 183 竞态飘测（8f964c5 根治）。
-23. G-23 无 BOM 的 .ps1 被 Windows PowerShell 按 ANSI 解析（中文全乱码、解析失败）——入库 .ps1 一律带 UTF-8 BOM（本仓已 pwsh-only〔ADR-16〕，pwsh 默认 UTF-8 无此坑，BOM 保留双读兼容）。
+23. G-23 无 BOM 的 .ps1 被 Windows PowerShell 按 ANSI 解析（中文全乱码、解析失败）——政策已翻转（ADR-20）：全仓文本一律无 BOM 合法 UTF-8 + index LF，check_personal_paths 三查机械拦截；.ps1 走 pwsh 7（ADR-16），误用 powershell.exe = 快速失败。
 24. G-24 `scroll_to_cursor` 在 ScrollArea 外调用不生效：全局滚动目标被下一帧收尾的滚动区按外层坐标消费、偏移增量≈0——跳底须在内容闭包内执行（「回到最新」浮钮经 request_jump 记一帧）。
 25. G-25 rust-cache 清 target/ 下非 cargo 结构文件（只留目录骨架）——`-sys` crate 解到 target/ 的预编译库缓存恢复后成空目录、build.rs 的 `is_dir()` 守卫照样放行 → 链接期找不到 `.lib`；对策 = 预解包到 `.cache` 并设其 `*_LIB_DIR` 环境变量（sherpa 已改，见 G-25）。
 26. G-27 pwsh 裸调用 GUI 子系统 exe 不等待、不设退出码——CI `--version` 冒烟恒绿只证明文件存在；一律 `Start-Process -Wait -PassThru` 取真退出码（ci.yml / release.ps1 已按此修复）。
