@@ -82,6 +82,7 @@
 | D-92 | 2026-09-17 | 面板「删除全部」不退出应用（原版 `_delete_all_and_exit` 退出）：行为差异登记 + 按钮/对话框文案与行为对齐（去"并退出"） | docs/archive/live-check-fixes.md |
 | D-93 | 2026-09-17 | 文档网络加固：全仓清淤（README/distribution/归档注记/流程卡链）+ 守护断言 5~8（路径扩面/G 编号全仓/归档对账/水位线）+ 钩子触发面「守护读谁、谁触发」+ 宪法回吐（~0.7KB 复述迁回流程卡） | docs/archive/doc-network-hardening.md |
 | D-94 | 2026-09-17 | 退出收尾冲刷用 force_flush 不设 min_speech 门槛（与 Python 非增量路径的带门槛 flush() 有意不同）：capture 侧不知增量是否激活、退出时刚说的话优先保真、下游 reject_segment 三层过滤仍兜底（识别→翻译→显示链路健壮性修复批随行登记） | docs/archive/asr-chain-robustness.md |
+| D-95 | 2026-09-17 | 加固收口后评审修复：钩子触发面补根 README.md（「守护读谁谁触发」补漏）+ changelog-scheme/agents-md-overhaul 补权威牌 + AGENTS §2 测试基线去数字（根治滚动漂移，收口卡基线提醒同步撤销） | docs/archive/doc-network-hardening.md |
 
 ## ADR-x（架构决策）
 
@@ -107,4 +108,3 @@
 | ADR-18 | 2026-09-17 | AGENTS 取消机械额度与水位线：体量回归自觉治理，防回胀靠 §4 路由纪律 + 守护断言 2~7（引用/看板/归档）+ 评审卡文档漂移自查；断言编号 2~7 保持不变防引用断裂，额度常量留名退役 | docs/archive/doc-network-hardening.md |
 | ADR-19 | 2026-09-19 | 脚本管理与文档体系：十一脚本头注「用法卡」标准化（参数/前置/退出码/副作用为唯一细节真源）+ docs 顶层脚本目录页（导览不抄默认值，节标题=精确路径）+ 守护断言 8 脚本登记面（双向对账，无豁免）+ AGENTS §2 存量参数级细节收敛 | docs/archive/scripts-doc-system.md |
 | ADR-20 | 2026-09-19 | 文本卫生：全仓文本文件强制无 BOM 合法 UTF-8 + index 全 LF——G-23 BOM 对策翻转（剥 9 个 .ps1 BOM）+ .gitattributes `* text=auto eol=lf` 全仓锁 LF + check_personal_paths 扩三查机械拦截（BOM/严格 UTF-8/index 行尾）+ .editorconfig 去 BOM 钉 LF | docs/archive/text-hygiene.md |
-| D-95 | 2026-09-17 | 加固收口后评审修复：钩子触发面补根 README.md（「守护读谁谁触发」补漏）+ changelog-scheme/agents-md-overhaul 补权威牌 + AGENTS §2 测试基线去数字（根治滚动漂移，收口卡基线提醒同步撤销） | docs/archive/doc-network-hardening.md |
