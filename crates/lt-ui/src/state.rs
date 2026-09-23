@@ -166,8 +166,8 @@ impl OverlayMessage {
 }
 
 /// 失败原因 → 用户可见文案（W2/方案 §4.4：中文在前，provider 原文只做 tooltip）。
-/// **穷尽 match**：每个 `FailureKind` 都必须在此有消费点——死契约守卫据此计数，
-/// 新增变体忘了接线会被 CI 挡下。
+/// **穷尽 match**：每个 `FailureKind` 都必须在此有消费点——新增变体忘了接线，
+/// 无 `_ =>` 的匹配在编译期即报错（原死契约守卫计数项，ADR-21 后为评审纪律）。
 pub fn failure_text(kind: lt_proto::FailureKind) -> String {
     // 键名来自契约层（lt_proto::FailureKind::i18n_key），编排层与 UI 同源
     lt_i18n::t(kind.i18n_key())

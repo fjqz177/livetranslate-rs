@@ -3970,7 +3970,7 @@ mod tests {
         queue.push((SegmentSource::VadFlush, vec![0.1f32; 16]));
         queue.push((SegmentSource::Interim, Vec::new()));
         // capture 线程 50ms 后落板：先入队尾巴、再置标志（顺序与生产一致）。
-        // INV3：夹具线程同样经监督器出生（裸 spawn 被 check_guards 拦截）
+        // INV3：夹具线程同样经监督器出生（裸 spawn 由 clippy.toml 禁令拦截，ADR-21）
         let q2 = queue.clone();
         let d2 = done.clone();
         sup.spawn(

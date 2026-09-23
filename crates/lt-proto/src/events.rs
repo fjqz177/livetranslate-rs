@@ -244,7 +244,7 @@ pub enum ProbeOutcome {
 }
 
 /// 翻译失败/无输出的原因（W2；UI 据此选 i18n 文案，禁止 `_ =>` 兜底——
-/// 死契约守卫要求每个变体都有消费点）
+/// 每个变体必须有消费点：原死契约守卫计数项，ADR-21 后为评审纪律）
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FailureKind {
     /// 模型无输出（体检 EmptyReasoningBudget / EmptyNoOutput）

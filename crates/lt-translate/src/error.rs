@@ -42,7 +42,7 @@ impl TranslateError {
 
     /// W2/方案 §4.4：错误 → 用户可见的原因分类（UI 按分类选中文文案）。
     /// 本函数是 `lt_proto::FailureKind` 在错误侧的唯一生产者；UI 侧的穷尽 match
-    /// 是唯一消费者（两侧共同满足死契约守卫的 ≥2 引用判定）。
+    /// 是唯一消费者（原死契约守卫 ≥2 引用判定项，ADR-21 后为评审纪律）。
     pub fn failure_kind(&self) -> lt_proto::FailureKind {
         use lt_proto::FailureKind as K;
         match self {
