@@ -260,10 +260,26 @@
 - **对策**：扫描循环对定义源文件直接 `continue`（本仓：断言 5 跳过 `scripts/check_agents_health.ps1` 自身）；新写守护时"定义源不扫自"应进设计而非等撞。
 - **证据**：2026-09-19 实测：登记 3 处豁免后 fresh clone 出 3 处 VIOLATION 且全部指向 check_agents_health.ps1 自身；加跳过后 exit 0。
 
+## G-31 egui `ScrollArea::horizontal` 给内容无限宽：长文本不换行 + 嵌套滚动区宽度错位
+
+- **触发**：egui 里用 `ScrollArea::horizontal` 装可能很长的内容（日志行、changelog 条目、任意文本）；或在滚动区里再嵌套一层滚动区。
+- **症状**：长行不换行、横向溢出被裁；嵌套 ScrollArea 内容宽度错位，内层拿不到正确可用宽。
+- **根因**：`horizontal` 方向给内容**无限可用宽**，布局器无从换行，文本按单行 galley 排；嵌套时外层的无限宽约束传导进内层，宽度计算失效。
+- **对策**：要「横向区域 + 长文本」用 `ScrollArea::horizontal_wrapped`（按可用宽换行）；滚动区不嵌套。
+- **证据**：visual-parity 施工修复（2026-09-07）：changelog 条目 `horizontal`→`horizontal_wrapped`（横向溢出）+ 删除嵌套 ScrollArea（宽度错位），docs/archive/visual-parity.md 头注施工注记。
+
+## G-32 悬浮窗透明度刻度错位：`opa()` 0-100 钳死 Qt 0-255 设置值
+
+- **触发**：把设置层的透明度值（Qt 遗产语义 0-255 alpha，如 `bg_opacity=240`、`header_opacity=230`）直接喂给按 0-100 百分比处理的 `opa()`；`window_opacity`（百分比）只乘文字 stroke 不乘容器/头部填充。
+- **症状**：任何非满值透明度被 `.min(100)` 全部钳成 100%——悬浮窗纯黑不透明、把底下窗口遮死；调低 window_opacity 只见文字变淡、底板纹丝不动。
+- **根因**：①单位错位：两个刻度（0-255 vs 0-100）直接相接，min 钳满；②作用域错位：原版 `setWindowOpacity(0.95)` 作用于**整窗**，Rust 只乘了文字。字幕窗同一套透明背板机制实现正确（`with_alpha`/`/255`），可作对照。
+- **对策**：显式双参数预乘 `k = a/255 × w/100`（预乘空间合成）；容器与头部填充都过 `fade(color, opacity, window_opacity)`；透明度值跨层（设置↔渲染）必须显式换算，禁裸传。
+- **证据**：docs/archive/overlay-realign.md 根因表（`overlay.rs:29-33` `opa()` `.min(100)`、`:61`/`:88-91` 填充无 opa_pct；对照 `settings.rs:292-294` 注释 0-255、`panel/style.rs:158-160` 正确写法）；实机对照：原版 RMS 37% 时可透视底下文字，Rust 版为纯黑矩形。
+
 ---
 
 ## 候选清单（尚未收编——能五段式实证表述才收编，不臆造）
 
-- visual-parity 施工「horizontal 无限宽」egui 布局陷阱（表述不全，待回读 docs/archive/visual-parity.md 取证）。
-- visual-parity 施工「hidden 窗口定位失效」（同上）。
-- overlay-realign 施工「opa() 刻度错位」（待回读 docs/archive/overlay-realign.md 取证）。
+- ~~visual-parity 施工「horizontal 无限宽」egui 布局陷阱~~ **已收编 G-31（2026-09-22）**。
+- ~~overlay-realign 施工「opa() 刻度错位」~~ **已收编 G-32（2026-09-22）**。
+- ~~visual-parity 施工「hidden 窗口定位失效」~~ **撤出候选（2026-09-22 回读取证未命中）**：visual-parity.md 全文无此记载、git 史无对应提交（该档施工修复仅 horizontal_wrapped / 删嵌套 ScrollArea / 面板居中三件）——出处仅存于施工会话记忆，无法实证不收编；实机再遇时重新立案。
