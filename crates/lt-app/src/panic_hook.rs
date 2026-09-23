@@ -28,6 +28,8 @@ pub fn install() {
     });
     let _ = CRASH_PATH.set(path);
 
+    // panic hook 本体：全仓唯一构造点（安装 = main.rs 调本函数；原白名单，ADR-21）
+    #[allow(clippy::disallowed_methods)]
     std::panic::set_hook(Box::new(|info| {
         let thread = std::thread::current();
         let name = thread.name().unwrap_or("<unnamed>");

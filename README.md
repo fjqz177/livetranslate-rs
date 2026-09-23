@@ -151,7 +151,7 @@ lt-proto → lt-i18n → lt-models → lt-download → lt-audio → lt-asr → l
 | `lt-ui` | egui 多窗口界面（只依赖 proto/i18n/models） |
 | `lt-app` | 组合根：启动、命令路由、worker 分派 |
 
-依赖规则是**机器强制**的（`scripts/check_deps.ps1` + CI），改依赖前先看 `docs/archive/architecture-v2.md` §3.1。
+依赖规则是**机器强制**的（`crates/lt-app/tests/topology.rs` + `cargo test`），改依赖前先看 `docs/archive/architecture-v2.md` §3.1。
 
 ### 6. 卡住了看这里
 

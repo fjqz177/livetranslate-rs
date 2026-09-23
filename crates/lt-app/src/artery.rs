@@ -45,6 +45,8 @@ pub fn spawn_bridge(
                 if !arte.drain_batch(&mut batch, BRIDGE_POLL) {
                     continue;
                 }
+                // 动脉桥 = 事件发送唯一正式生产者（INV1；原 check_guards proxy 白名单，ADR-21）
+                #[allow(clippy::disallowed_methods)]
                 if proxy
                     .send_event(lt_proto::UiMsg::Events(std::mem::take(&mut batch)))
                     .is_err()

@@ -1,6 +1,7 @@
 //! Translator 集成测试：本地 mock OpenAI 兼容服务器（原始 TCP），验证
 //! 流式 byot 全链路（R-13 运行时验证）、先带后撤、usage、json 提取、
 //! 重复检测、超时与错误分类、上下文历史。
+#![allow(clippy::disallowed_methods)] // mock 服务器/夹具线程（原 check_guards tests/* 白名单，ADR-21）
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};

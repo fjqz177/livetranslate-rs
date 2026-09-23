@@ -612,6 +612,8 @@ impl ApplicationHandler<UiMsg> for AppShell {
         // 于 ActiveEventLoop，故 shell 持构造期代理）
         while let Ok(cmd) = self.cmd_rx.try_recv() {
             if let Cmd::Stop = cmd {
+                // W4 注记：about_to_wait 无 ActiveEventLoop，持构造期代理直发（原白名单，ADR-21）
+                #[allow(clippy::disallowed_methods)]
                 let _ = self.proxy.send_event(UiMsg::AppCommand(AppCommand::Quit));
                 continue;
             }

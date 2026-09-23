@@ -40,3 +40,9 @@ winit = { workspace = true }
 
 [target."cfg(windows)".dependencies]
 windows = { workspace = true }
+
+[dev-dependencies]
+# ADR-21：topology.rs 依赖白名单守护（原 scripts/check_deps.ps1）
+toml = "0.8"
+# ADR-21：repo_hygiene.rs 个人路径守护（原 scripts/check_personal_paths.ps1）
+regex = "1"

@@ -51,7 +51,7 @@
 | `llm-api-redesign.md` | LLM 翻译接口层改造方案与施工（W1~W5） | 2026-09-10 |
 | `llm-api-review.md` | LLM API 一轮评审（P1/P2/P3 清单，驱动 W1~W5） | 2026-09-10 |
 | `architecture-v2-improvements.md` | 架构 v2.1 收尾 E1~E6 + ADR-8~14 + 开发体系 | 2026-09-09 |
-| `architecture-v2.md` | 架构 2.0 方案与 W0~W7 八波迁移（D-60+；拓扑权威=check_deps.ps1） | 2026-09-09 |
+| `architecture-v2.md` | 架构 2.0 方案与 W0~W7 八波迁移（D-60+；拓扑权威=topology.rs） | 2026-09-09 |
 | `architecture-review.md` | 全系统架构评审（R1~R32 风险登记册） | 2026-09-09 |
 | `path-hygiene.md` | 硬编码路径排查与清理（PH-1~PH-5） | 2026-09-09 |
 | `data-lifecycle.md` | 数据生命周期与足迹盘点（12 项候选全裁决） | 2026-09-09 |

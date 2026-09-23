@@ -112,6 +112,8 @@ impl super::AudioBackend for WasapiBackend {
         let running = self.running.clone();
         let device = self.device.clone();
         let mic = self.mic_device.clone();
+        #[allow(clippy::disallowed_methods)]
+        // wasapi 采集读环：依赖方向所限的表外补充（W3；原 check_guards 白名单，ADR-21）
         let h = std::thread::Builder::new()
             .name("lt-audio".into())
             .spawn(move || {

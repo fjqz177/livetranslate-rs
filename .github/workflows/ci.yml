@@ -3,7 +3,7 @@
 # 本文件只做一件事：质量门禁 + 全量测试 + 分发演练。
 # 发布另有 release.yml（tag→Draft Release），依赖安全另有 security.yml（cargo-deny）。
 #
-# 门禁不手抄（A1）：第一步原样执行 scripts/precommit.ps1（fmt+五守护+clippy 七项）——
+# 门禁不手抄（A1）：第一步原样执行 scripts/precommit.ps1（fmt+总纲健康+clippy 三项，ADR-21）——
 # 「本地过关 ⇔ CI 过关」由同一脚本保证，清单真源 = precommit.ps1 头注（CI 侧不复述）。
 #
 # 触发面（J1 回摆，D-89）：push 全分支 + pull_request + 手动三路。
@@ -38,7 +38,7 @@ concurrency:
 
 jobs:
   gate-and-build:
-    name: 门禁（precommit 七项整脚本）+ 测试 + 分发演练
+    name: 门禁（precommit 三项整脚本）+ 测试 + 分发演练
     runs-on: windows-latest
     timeout-minutes: 150
     steps:
@@ -79,7 +79,7 @@ jobs:
           shared-key: lt
           # 候选：save-if 只在 main 存缓存（ruff 式）——PR 流量大时再开
 
-      - name: Precommit gate（七项整脚本 = 唯一门禁真源，与本地同源）
+      - name: Precommit gate（三项整脚本 = 唯一门禁真源，与本地同源）
         run: pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/precommit.ps1
 
       - name: Test workspace

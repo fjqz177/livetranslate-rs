@@ -1,0 +1,10 @@
+# 源码禁令（原 scripts/check_guards.ps1 禁令 1/2/4，ADR-21 迁入 clippy 官方机制）。
+# 纪律真源 = AGENTS.md §3；豁免 = 代码现场 #[allow(clippy::disallowed_methods)] + 理由注释。
+# 原禁令 3（字符串协议）为评审纪律无机械拦截；原禁令 5 = lt-proto/tests/contract_purity.rs。
+disallowed-methods = [
+    { path = "std::thread::spawn",  reason = "线程出生点必须走 Supervisor::spawn（监督树纪律）" },
+    { path = "std::thread::Builder::new", reason = "同上——Builder 出生的线程同样必须入监督树" },
+    { path = "std::thread::scope",  reason = "同上——scope 出生同样逃出监督树（旧 PS 守护曾漏此项，本条为净增强）" },
+    { path = "std::panic::set_hook", reason = "panic hook 仅限 lt-app：main.rs 安装 / panic_hook.rs 本体" },
+    { path = "winit::event_loop::EventLoopProxy::send_event", reason = "事件发送唯一通道 = lt-app 动脉桥；例外就地 #[allow]" },
+]

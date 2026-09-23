@@ -1,6 +1,6 @@
 # 施工卡——施工期间滚动自查
 
-1. **分层**：每写一个跨 crate use，对照 AGENTS §3 白名单（check_deps.ps1 会拦，别攒到提交才红）。
+1. **分层**：每写一个跨 crate use，对照 AGENTS §3 白名单（topology.rs 测试会拦，别攒到提交才红）；禁令豁免就地 #[allow] + 理由（clippy.toml）。
 2. **质量**：行为改动带测试；写测试守离线纪律（禁真模型/真网络/真设备，探针 #[ignore]）+ 临时目录
    唯一化（G-22）；fmt + clippy -D warnings 滚动跑，别攒到最后。
 3. **提交**：里程碑 + 全绿即自主中文 commit（`feat(scope): 中文主题`）；多代理并行 → 提交前

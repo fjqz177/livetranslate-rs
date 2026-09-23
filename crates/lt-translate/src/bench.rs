@@ -313,6 +313,8 @@ pub fn run_benchmark_blocking(
             let m = m.clone();
             let sentences = sentences.clone();
             let prompt = prompt.to_string();
+            #[allow(clippy::disallowed_methods)]
+            // 基准内层线程：监督器包装 + join 兜底（W5/R22；ADR-21 豁免编目）
             std::thread::spawn(move || {
                 let mut r = BenchResult {
                     name: m.name.clone(),
@@ -364,6 +366,7 @@ where
     let target_lang = target_lang.to_string();
     let prompt = prompt.to_string();
     let rounds = sentences_for(&source_lang).len();
+    #[allow(clippy::disallowed_methods)] // 基准内层线程（W5/R22；ADR-21 豁免编目）
     std::thread::spawn(move || {
         let t0 = std::time::Instant::now();
         on_event(BenchOutput::Line(format!(
@@ -383,6 +386,7 @@ where
             .map(|m| {
                 let sentences: Vec<&str> = sentences_for(&source_lang).to_vec();
                 let prompt = prompt.clone();
+                #[allow(clippy::disallowed_methods)] // 基准内层线程（W5/R22；ADR-21 豁免编目）
                 std::thread::spawn(move || {
                     let mut lines = vec![
                         format!("Model: {}", m.name),

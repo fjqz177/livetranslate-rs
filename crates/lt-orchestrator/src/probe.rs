@@ -233,6 +233,7 @@ mod tests {
     /// 极简 mock 服务端：每次请求按处理器返回整段响应（原始 TCP，够用即止）
     type Handler = Arc<dyn Fn(&str) -> Vec<u8> + Send + Sync>;
 
+    #[allow(clippy::disallowed_methods)] // cfg(test) 夹具：探测单测的 mock 服务器（D-85；原白名单，ADR-21）
     fn start_server(handler: Handler) -> String {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
         let port = listener.local_addr().unwrap().port();
@@ -529,6 +530,7 @@ Connection: close
         }));
         let flag = Arc::new(AtomicBool::new(false));
         let f2 = flag.clone();
+        #[allow(clippy::disallowed_methods)] // cfg(test) 时序夹具（ADR-21 豁免编目）
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(200));
             f2.store(true, Ordering::SeqCst);

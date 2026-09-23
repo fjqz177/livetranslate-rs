@@ -190,6 +190,8 @@ fn run_download(
     let (tx, rx) = std::sync::mpsc::channel::<DownloadEvent>();
     let dl_dir = models_dir.clone();
     let worker_proxy = proxy.clone();
+    #[allow(clippy::disallowed_methods)]
+    // 下载 worker 子线程：父会话线程 join（W7 注记；ADR-21 豁免编目）
     let worker = std::thread::Builder::new()
         .name("lt-download".into())
         .spawn(move || {

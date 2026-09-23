@@ -133,6 +133,8 @@ pub fn build(proxy: std::sync::Arc<dyn Fn(UiMsg) + Send + Sync>) -> anyhow::Resu
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<TrayCmd>();
     let (tid_tx, tid_rx) = std::sync::mpsc::channel::<u32>();
     let (quit_tx, quit_rx) = std::sync::mpsc::channel::<()>();
+    // D-35 托盘专用线程：GetMessage 泵 + PostThreadMessageW 唤醒（G-16；原 check_guards 白名单，ADR-21）
+    #[allow(clippy::disallowed_methods)]
     let handle = std::thread::Builder::new()
         .name("lt-tray".to_string())
         .spawn(move || tray_thread(proxy, cmd_rx, tid_tx, quit_tx))

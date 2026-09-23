@@ -105,6 +105,8 @@ impl AsrWorkerClient {
 
         // stderr → tracing 线程
         if let Some(stderr) = child.stderr.take() {
+            #[allow(clippy::disallowed_methods)]
+            // worker I/O 泵：随子进程生命周期，EOF 收敛（原 check_guards 白名单，ADR-21）
             std::thread::Builder::new()
                 .name("asr-worker-stderr".into())
                 .spawn(move || drain_stderr(stderr))
@@ -113,6 +115,7 @@ impl AsrWorkerClient {
 
         let stdout: ChildStdout = child.stdout.take().expect("stdout piped");
         let (tx, rx) = std::sync::mpsc::channel();
+        #[allow(clippy::disallowed_methods)] // worker I/O 泵：同上（ADR-21 豁免编目）
         std::thread::Builder::new()
             .name("asr-worker-reader".into())
             .spawn(move || reader_loop(stdout, tx))

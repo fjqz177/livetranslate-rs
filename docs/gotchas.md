@@ -197,7 +197,7 @@
 - **触发**：生成/入库 PowerShell 脚本且文件为无 BOM 的 UTF-8（含中文注释或字符串）。
 - **症状**：脚本直接解析失败——中文字符串乱码（如「预算」→「棰勭畻」），报「表达式或语句中包含意外的标记」。
 - **根因**：Windows PowerShell 5.1 对无 BOM 的 .ps1 按 ANSI 代码页（中文系统 = GBK）解码；有 BOM 才识别为 UTF-8。
-- **对策（2026-09-19 政策翻转，ADR-20）**：全仓文本文件一律无 BOM 合法 UTF-8（.ps1 不再豁免，既有 9 个 BOM 已剥）；.ps1 由 pwsh 7 执行（ADR-16），误用 powershell.exe 会乱码+语法炸 = 预期快速失败；入库强制 = check_personal_paths.ps1 文本卫生三查（BOM / 严格 UTF-8 / index 行尾，precommit 第 2 项）；脚本内文本匹配按 G-20 用 PowerShell 原生正则。
+- **对策（2026-09-19 政策翻转，ADR-20）**：全仓文本文件一律无 BOM 合法 UTF-8（.ps1 不再豁免，既有 9 个 BOM 已剥）；.ps1 由 pwsh 7 执行（ADR-16），误用 powershell.exe 会乱码+语法炸 = 预期快速失败；入库强制 = lt-app/tests/repo_hygiene.rs 三查（BOM / 严格 UTF-8 / 个人路径，ADR-21 cargo test 承载；index LF 由 .gitattributes 锁）；脚本内文本匹配按 G-20 用 PowerShell 原生正则。
 - **证据**：check_agents_health.ps1 草稿 2026-09-13 干跑实锤（加 BOM 前解析失败、加 BOM 后同脚本五断言输出全对）。
 - **注（2026-09-13 Q9/ADR-16 → 2026-09-19 翻转 ADR-20）**：pwsh-only 后 BOM 只剩「防误用 powershell.exe」一个价值；text-hygiene 起政策翻转——无 BOM 是常态，带 BOM 反被守护拒收（旧「BOM 保留双读兼容、零 churn 不剥」对策废止，沿革见 git 历史）。
 

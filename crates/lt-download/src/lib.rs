@@ -915,6 +915,8 @@ mod probe_nano_tmp {
         let t0 = Instant::now();
         let worker = {
             let cancel = cancel.clone();
+            #[allow(clippy::disallowed_methods)]
+            // #[ignore] 网络探针（原 check_guards 白名单，ADR-21）
             std::thread::spawn(move || {
                 dl.download_model(&[(Hub::Hf, NANO_REPO)], &nano_specs(), &cancel, Some(&tx))
             })
@@ -1031,6 +1033,8 @@ mod probe_whisper_tmp {
         let t0 = Instant::now();
         let worker = {
             let cancel = cancel.clone();
+            #[allow(clippy::disallowed_methods)]
+            // #[ignore] 网络探针（原 check_guards 白名单，ADR-21）
             std::thread::spawn(move || dl.download_model(&chain, &specs, &cancel, Some(&tx)))
         };
         while let Ok(ev) = rx.recv() {

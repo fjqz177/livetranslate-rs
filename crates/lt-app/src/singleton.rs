@@ -62,6 +62,8 @@ mod win {
     ) -> LRESULT {
         if msg == WM_APP {
             if let Some(proxy) = PROXY.get() {
+                // W6 注记：系统消息 WIN32 契约外通道的 SecondInstance 激活（原白名单，ADR-21）
+                #[allow(clippy::disallowed_methods)]
                 let _ = proxy.send_event(UiMsg::Event(UiEvent::SecondInstance));
             }
             return LRESULT(0);

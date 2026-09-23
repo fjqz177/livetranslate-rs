@@ -13,6 +13,10 @@
 //! abort/栈溢出；监督 crate 生态不成熟，std 原语零依赖）。panic 细节由全局
 //! panic hook 落 crash 文件与 tracing，本层只上报「死亡 + 是否已重启」。
 
+// 监督器本体 = 全仓线程合法出生点（INV3：Supervisor::spawn 与 monitor 轮询线程；
+// 原由 check_guards 白名单圈定，ADR-21 起就地豁免）
+#![allow(clippy::disallowed_methods)]
+
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;

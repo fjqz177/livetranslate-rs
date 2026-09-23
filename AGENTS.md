@@ -33,13 +33,14 @@ pwsh -File scripts/package_release.ps1         # 打包 dist/LiveTranslate-*.zip
 pwsh -File scripts/release.ps1 <动词>          # 发布链引擎（D-90/D-91；本地/CI 同一份；动词与依赖链详见脚本头注）：
                                                # rehearse 空跑全链不发布；真发布 = release → promote（正文自动取
                                                # CHANGELOG 本版段落；云端等价 = 推 v* tag，转正永远人工）
-pwsh -File scripts/precommit.ps1               # 提交前门禁：七项清单真源 = 该脚本头注；ci.yml 与 .githooks
-                                               # 同源调用本脚本，门禁增删只改这一处（D-88 废除手抄双边同步）
-git config core.hooksPath .githooks            # 每 clone 一次启用提交钩子；触发面 = 守护读谁、谁触发（D-93）：
-                                               # 暂存区命中 .rs / Cargo.toml / .cargo / AGENTS.md / README.md /
-                                               # docs / scripts / .github / rust-toolchain* / .gitattributes /
-                                               # .editorconfig 任一即跑全套；触发面外（assets/、Cargo.lock、
-                                               # CHANGELOG* 等白名单外路径）一律放行不跑门禁
+pwsh -File scripts/precommit.ps1               # 提交前门禁：三项清单真源 = 该脚本头注（fmt → 总纲健康 →
+                                               # clippy，ADR-21）；ci.yml 与 .githooks 同源调用本脚本，
+                                               # 门禁增删只改这一处（D-88 废除手抄双边同步）
+git config core.hooksPath .githooks            # 每 clone 一次启用提交钩子；触发面 = 门禁读谁、谁触发（D-93）：
+                                               # 暂存区命中 .rs / Cargo.toml / .cargo（fmt/clippy 读）、AGENTS.md /
+                                               # README.md / docs / scripts（check_agents_health 读）、.github /
+                                               # rust-toolchain* / .gitattributes / .editorconfig 任一即跑全套；
+                                               # 触发面外（assets/、Cargo.lock、CHANGELOG* 等白名单外路径）一律放行不跑门禁
 ```
 
 - 脚本目录页 = docs/scripts.md（一脚本一节：是什么 / 怎么调 / 参数概览；细节以各脚本头注为准）。新增 / 改名 / 删脚本须同步该页——守护断言 8 双向对账。
@@ -62,8 +63,8 @@ git config core.hooksPath .githooks            # 每 clone 一次启用提交钩
 | lt-ui | egui 多窗口：悬浮/字幕/控制面板/日志窗/托盘（纯投影 crate，禁依赖 lt-app） | proto, i18n, models |
 | lt-app | 组合根：boot + 动脉桥 + 命令路由 + 单实例消息窗 + worker 入口（同 exe `--asr-worker` 自拉起） | 十库全部 |
 
-- 依赖白名单真源 = `scripts/check_deps.ps1`（含 dev-dep 特批表）；拓扑终局 = `docs/archive/architecture-v2.md` §3.1 + `docs/archive/architecture-v2-improvements.md`。
-- **lt-proto 冻结规则**：`PROTO_VERSION` 随结构变更递增（当前 7）。豁免评审 = 纯新增 Cmd/UiEvent/AppCommand 变体、纯新增 Settings 字段（须 serde default 兼容旧档）、既有枚举增项；仍须评审 = 删除/改名/改型/改语义任何既有契约项（记录入 D-xx）。**跨 crate 字符串编码协议（前缀/分隔符/哨兵值）一经发现按 P1 立案**（check_guards 禁令 3 机械拦截；禁令 5 = 契约旁路）。
+- 依赖白名单真源 = `crates/lt-app/tests/topology.rs`（含 dev-dep 特批表；cargo test 承载，ADR-21）；源码禁令（裸线程 / 直发 proxy / panic hook 位置）真源 = 根级 `clippy.toml`（disallowed-methods，豁免就地 #[allow]）；文本卫生与个人路径真源 = `crates/lt-app/tests/repo_hygiene.rs`。拓扑终局 = `docs/archive/architecture-v2.md` §3.1 + `docs/archive/architecture-v2-improvements.md`。
+- **lt-proto 冻结规则**：`PROTO_VERSION` 随结构变更递增（当前 7）。豁免评审 = 纯新增 Cmd/UiEvent/AppCommand 变体、纯新增 Settings 字段（须 serde default 兼容旧档）、既有枚举增项；仍须评审 = 删除/改名/改型/改语义任何既有契约项（记录入 D-xx）。**跨 crate 字符串编码协议（前缀/分隔符/哨兵值）一经发现按 P1 立案**（评审纪律，无机械拦截）；契约面禁 serde_json::Value 裸载荷 = `crates/lt-proto/tests/contract_purity.rs`（ADR-21）。
 - 新增 UI 能力**不得扩 lt-proto 契约**：日志经 `LogLine{target}` 回流。
 - Settings 运行时落盘唯一通道 = `Cmd::PersistSettings`（shell 直排：保存 + 发布总线，300ms debounce 对齐原版）；各命令草稿写入唯一落点 = shell `apply_settings_side_effects` 纯函数（E1-4），UI 只发命令不预写。
 - 值域判定一律走类型化透镜（E2/D-79：`Settings::engine_key()/hub()/proxy_mode()` + EngineKey/Hub/ProxyMode，均定义在 lt-proto；持久层 String 不改型，透镜归一）；域内禁 `== "funasr"` 类字面量比较（lt-asr/lt-models/lt-app worker 分派为单点分派边界豁免）。
@@ -134,7 +135,7 @@ git config core.hooksPath .githooks            # 每 clone 一次启用提交钩
 20. G-20 会话内 grep 是 ugrep 包装函数，复杂 ERE 与 GNU grep 结果不同；校验用 `sh -c` / `command grep`，入库脚本勿依赖 grep 方言（PowerShell 用原生 -match）。
 21. G-21 sherpa binding `Default` 不可裸用：qwen3 默认 max_new_tokens=128（官方 512）、nano Default 是 max_new_tokens=0/temperature=1.0/top_p=1.0——一律用 OFFICIAL_* 常量（engines/qwen3.rs、nano.rs 头注）。
 22. G-22 测试临时目录必须唯一化：共享同名目录在 Windows 报 code 183 竞态飘测（8f964c5 根治）。
-23. G-23 无 BOM 的 .ps1 被 Windows PowerShell 按 ANSI 解析（中文全乱码、解析失败）——政策已翻转（ADR-20）：全仓文本一律无 BOM 合法 UTF-8 + index LF，check_personal_paths 三查机械拦截；.ps1 走 pwsh 7（ADR-16），误用 powershell.exe = 快速失败。
+23. G-23 无 BOM 的 .ps1 被 Windows PowerShell 按 ANSI 解析（中文全乱码、解析失败）——政策已翻转（ADR-20）：全仓文本一律无 BOM 合法 UTF-8 + index LF，repo_hygiene.rs 三查机械拦截（ADR-21，cargo test 承载）；.ps1 走 pwsh 7（ADR-16），误用 powershell.exe = 快速失败。
 24. G-24 `scroll_to_cursor` 在 ScrollArea 外调用不生效：全局滚动目标被下一帧收尾的滚动区按外层坐标消费、偏移增量≈0——跳底须在内容闭包内执行（「回到最新」浮钮经 request_jump 记一帧）。
 25. G-25 rust-cache 清 target/ 下非 cargo 结构文件（只留目录骨架）——`-sys` crate 解到 target/ 的预编译库缓存恢复后成空目录、build.rs 的 `is_dir()` 守卫照样放行 → 链接期找不到 `.lib`；对策 = 预解包到 `.cache` 并设其 `*_LIB_DIR` 环境变量（sherpa 已按此迁移）。
 26. G-27 pwsh 裸调用 GUI 子系统 exe 不等待、不设退出码——CI `--version` 冒烟恒绿只证明文件存在；一律 `Start-Process -Wait -PassThru` 取真退出码（ci.yml / release.ps1 已按此修复）。

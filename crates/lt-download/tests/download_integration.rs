@@ -1,4 +1,5 @@
 //! 下载器集成测试：本地 mock HTTP 服务器覆盖续传/回退/重试全场景（无外部网络依赖）。
+#![allow(clippy::disallowed_methods)] // mock 服务器/夹具线程（原 check_guards tests/* 白名单，ADR-21）
 
 use lt_download::{DownloadEvent, Downloader, Hub, ProxyMode};
 use std::io::{Read, Write};

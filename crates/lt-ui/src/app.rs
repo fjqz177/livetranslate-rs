@@ -166,6 +166,8 @@ impl MultiWindowApp {
         // 托盘（主线程创建；事件经 proxy 回流）
         let proxy = self.proxy.clone();
         let sender = move |msg: UiMsg| {
+            // D-35 托盘子线程回流（A5 专用协议；原 check_guards proxy 白名单，ADR-21）
+            #[allow(clippy::disallowed_methods)]
             let _ = proxy.send_event(msg);
         };
         self.tray = Some(tray::build(Arc::new(sender))?);

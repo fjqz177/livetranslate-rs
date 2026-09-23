@@ -12,6 +12,9 @@
 //! - `exit_after_ms`：后台线程延时退出进程——模拟 worker 在**两次请求之间**死亡
 //!   （引擎只在请求内拿到控制权，间隙死亡必须由旁观线程制造，H2 回归用例依赖）。
 
+// 测试用假 worker 整体 = 夹具（exit_after_ms 旁观线程等；原 check_guards 白名单，ADR-21）
+#![allow(clippy::disallowed_methods)]
+
 use lt_asr::engine::AsrEngine;
 use lt_asr::worker::{EchoOptions, WorkerConfig, WorkerOptions};
 use lt_proto::{AsrResult, EngineError};

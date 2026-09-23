@@ -323,6 +323,7 @@ mod tests {
         };
         let vad = Arc::new(Mutex::new(vad));
         let r = running.clone();
+        #[allow(clippy::disallowed_methods)] // cfg(test) 夹具（生产侧无 spawn；ADR-21 豁免编目）
         let h = std::thread::spawn(move || {
             lp.run(&vad, &r);
         });
@@ -419,6 +420,7 @@ mod tests {
         };
         let vad = Arc::new(Mutex::new(vad));
         let r = running.clone();
+        #[allow(clippy::disallowed_methods)] // cfg(test) 夹具（生产侧无 spawn；ADR-21 豁免编目）
         let h = std::thread::spawn(move || lp.run(&vad, &r));
         let (source, seg) = match seg_tx.pop_timeout(Duration::from_secs(3)) {
             Some(v) => v,
@@ -463,6 +465,7 @@ mod tests {
         let vad = Arc::new(Mutex::new(vad));
         let vad_obs = vad.clone();
         let r = running.clone();
+        #[allow(clippy::disallowed_methods)] // cfg(test) 夹具（生产侧无 spawn；ADR-21 豁免编目）
         let h = std::thread::spawn(move || lp.run(&vad, &r));
         // 喂弱数据让循环跑起来，确认版本 0 不应用
         for _ in 0..4 {

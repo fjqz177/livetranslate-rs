@@ -6,36 +6,16 @@
 ## 门禁
 
 ### `scripts/precommit.ps1`
-提交前门禁：七项顺序执行（fmt → 五守护 → clippy），任一失败即停；git 钩子与 CI 同源调用本脚本。
+提交前门禁：三项顺序执行（fmt → 总纲健康守护 → clippy），任一失败即停；git 钩子与 CI 同源调用本脚本（ADR-21 七项并三项）。
 典型调用：`pwsh -File scripts/precommit.ps1`
 参数概览：`-RepoRoot`（一般不用传）。
 参数细节与失败行为以脚本头注为准。
 
-## 守护（precommit 五项）
+## 守护
 
-### `scripts/check_personal_paths.ps1`
-个人路径卫生（PH-5）+ 文本卫生三查（ADR-20）：无 BOM / 严格 UTF-8 解码 / index 行尾全 LF。
-典型调用：`pwsh -File scripts/check_personal_paths.ps1`
-参数概览：无参数。
-参数细节与失败行为以脚本头注为准。
-
-### `scripts/check_deps.ps1`
-依赖方向守护：十 crate 内部依赖图严格对齐 §3.1 白名单（含 dev-dep 特批表）。
-典型调用：`pwsh -File scripts/check_deps.ps1`
-参数概览：`-RepoRoot`（一般不用传）。
-参数细节与失败行为以脚本头注为准。
-
-### `scripts/check_guards.ps1`
-源码禁令守护：裸线程 / 直发 proxy / 字符串协议 / panic hook 位置 / 契约旁路，五组禁令白名单封口。
-典型调用：`pwsh -File scripts/check_guards.ps1`
-参数概览：`-RepoRoot`（一般不用传）。
-参数细节与失败行为以脚本头注为准。
-
-### `scripts/check_dead_contract.ps1`
-死契约守护：lt-proto 契约变体零引用即红（0 命中失败 / 1 命中 WARN 人工定性 / ≥2 通过）。
-典型调用：`pwsh -File scripts/check_dead_contract.ps1`
-参数概览：`-RepoRoot`（一般不用传）。
-参数细节与失败行为以脚本头注为准。
+> 另三处机械守护自 ADR-21 起以 Rust 形态存在（非 scripts/ 脚本，不设节）：
+> 依赖白名单 = `crates/lt-app/tests/topology.rs`；文本卫生+个人路径 = `crates/lt-app/tests/repo_hygiene.rs`；
+> 契约纯度 = `crates/lt-proto/tests/contract_purity.rs`；源码禁令 = 根级 `clippy.toml`。均随 `cargo test` / `cargo clippy` 执行。
 
 ### `scripts/check_agents_health.ps1`
 总纲与文档引用网健康：AGENTS 引用路径 / G-编号死引用 / 看板小节 / 引用网扩面 / 归档对账（断言 2~7；断言 8 = 本目录页的双向对账，详见该脚本头注）。

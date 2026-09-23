@@ -1,6 +1,6 @@
 # LiveTranslate-rs 架构 2.0 方案：目标架构与迁移路线
 
-> 修订（2026-09-13）：本文档已归档。**拓扑现行权威 = `scripts/check_deps.ps1` §3.1 白名单断言**（CI gate，随代码演进）；本文为设计决策史（D-60+ 登记表见 §3.7，全局索引 `docs/decisions.md`）。
+> 修订（2026-09-13）：本文档已归档。拓扑现行权威（2026-09-23 起，ADR-21）= `crates/lt-app/tests/topology.rs`（原 check_deps.ps1 已退役）；本文为设计决策史（D-60+ 登记表见 §3.7，全局索引 `docs/decisions.md`）。
 
 - **定稿日期**：2026-09-09
 - **证据基线**：commit `314644b`（评审基线）+ `4d7d84f`（评审报告 `docs/archive/architecture-review.md`）；405 测 = 398 常规 + 7 ignored

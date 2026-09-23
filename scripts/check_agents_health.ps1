@@ -20,7 +20,7 @@
 #      （对账读目录页与文件清单，不存在内容自触发，守护自身同样须登记）
 #
 # 实现约束（G-20，docs/gotchas.md）：文本匹配用 PowerShell 原生正则，勿调外部 grep。
-# 触发面：precommit.ps1 第六项 + CI gate job；本地钩子触发面 = 「守护读谁、谁触发」
+# 触发面：precommit.ps1 第二项 + CI gate job；本地钩子触发面 = 「门禁读谁、谁触发」
 # （docs/ scripts/ .github/ rust-toolchain*，D-93 DH-18）。
 # 用法：  pwsh -File scripts/check_agents_health.ps1（本仓 pwsh-only，ADR-16）
 # 参数：  -RepoRoot（默认 = 脚本上级目录，一般不用传）
@@ -194,7 +194,8 @@ foreach ($n in $dirNames) {
 # ── 断言 8：脚本登记面（scripts-doc-system SD-3 / ADR-19；8 号曾为水位线断言，ADR-18 退役后复用）──
 # (a) 磁盘 → 册：scripts/ 下每个 .ps1/.py 须在目录页（docs 顶层 scripts.md）有节（### `scripts/<名>`）
 # (b) 册 → 磁盘：册上抽出的每个 scripts/… 路径须实存（孤儿条目）
-# 11 节全强制含本守护自身，无豁免代码（对账读目录页与文件清单，不存在内容自触发）。
+# 全部节强制含本守护自身，无豁免代码（对账读目录页与文件清单，不存在内容自触发；
+# 节数随脚本增删浮动——ADR-21 后现役 7 节）。
 # 枚举平铺非递归——scripts/ 出现子目录时须回改此处。正文出现节标题样式字面量会误报，禁。
 $scriptsMd = Join-Path $RepoRoot ('docs' + '/scripts.md')   # 拼接书写：本文件今日受断言5自豁免（:128）庇护，直写亦无碍；
                                                             # 拼接防未来该豁免被改时自我字面量误伤（防御性冗余）
