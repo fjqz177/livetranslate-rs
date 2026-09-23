@@ -32,6 +32,7 @@
 
 | 文档 | 一句话（D-xx） | 完工日期 |
 |---|---|---|
+| `legacy-cleanup.md` | 遗留清账批：总纲 §8 瘦身（15→10 行）+ 拍板批 12 项分堆处置（D-96~99）+ gotchas 收编 G-31/32 候选清零；走查 51 条转 issue 驱动验收附录（D-96） | 2026-09-22 |
 | `text-hygiene.md` | 文本卫生：全仓文本强制无 BOM 合法 UTF-8 + LF——G-23 政策翻转（剥 9 BOM）+ gitattributes 全仓锁 LF + check_personal_paths 三查 + editorconfig 改造（ADR-20） | 2026-09-19 |
 | `scripts-doc-system.md` | 脚本管理与文档体系：十一脚本头注用法卡（唯一细节真源）+ docs 顶层目录页（导览不抄细节）+ 断言 8 脚本登记面双向对账 + AGENTS §2 存量参数级细节收敛（ADR-19） | 2026-09-19 |
 | `asr-chain-robustness.md` | 识别→翻译→显示链路健壮性修复：退出完整性（尾巴冲刷 / 翻译排空 / 停机收口）+ 流式终态不可覆盖 + 字幕窗旁路账本 + 未就绪成对记账 + panic 补回执（D-94） | 2026-09-17 |

@@ -153,7 +153,6 @@ git config core.hooksPath .githooks            # 每 clone 一次启用提交钩
 - 待拍板：**UX 三期可选项**——前缀码枚举化 / 设置保存失败 UI 流 / 错误译文样式（docs/archive/ux-feedback.md）
 - 待拍板：**PH-6**——参考图 GPU 型号中性化重拍（可选）（docs/archive/path-hygiene.md）
 - 待拍板：**非代码面七块问题清单**——正式 33 条目（轻 21/中 6/待拍板 6，含 8 条老账重提）待逐条裁决（docs/drafts/noncode-infra-issues-2026.md）
-- 待拍板：**遗留清账批**——12 项按「零代码阶段」分堆处置：Q1/Q4/Q7/Q8/Q11 本批执行，Q2/Q3/Q6/Q9/Q10 缓办归队，Q5/Q12 已裁；本批全部销项后删本行（docs/drafts/legacy-cleanup-2026.md §1）
 
 ### 施工中
 
@@ -161,6 +160,7 @@ git config core.hooksPath .githooks            # 每 clone 一次启用提交钩
 
 ### 遗留（完工包的实机走查与未了项，一行一包，清零即删）
 
+- 遗留清账批（D-96）：本阶段三项已执行（Q1 开关 / 瘦身 `21bd5a6` / Q4 收编 `d2cbad9`，记录 = docs/archive/legacy-cleanup.md）；余缓办队列 Q2/Q3/Q6/Q9/Q10 与 Q12 backlog 代码解禁后按档 §1 归队，走查 51 条转 issue 驱动按档 §3 单条验证——队列消纳完删本行
 - asr-chain-robustness（D-94）：实机走查 8 项（档 §5）；评审遗留 8 条（档 §10）——清空是否管字幕窗 + 三项测试缺口随「遗留清账批」，余 5 条 P3 留档（§10-4~8）（docs/archive/asr-chain-robustness.md §5/§10）
 - quit-flow-redesign（D-87）：§九遗留走查 6 组随用随验（docs/archive/quit-flow-redesign.md §九）
 - 架构 v2/2.1：实机走查 11 项（docs/archive/architecture-v2.md §6.4；原「W5 6 项」为该表子集已并）
