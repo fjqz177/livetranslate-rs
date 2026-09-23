@@ -1,9 +1,9 @@
 # ============================================================
 # 总纲与文档引用网健康守护（AO-4 起家，D-93/ADR-17 扩容；规格史 = docs/archive/agents-md-overhaul.md 附录 D + docs/archive/doc-network-hardening.md）
 #
-# 断言七组（编号 2~7 沿用防引用断裂；8 号曾为水位线断言，ADR-18 退役后由
+# 断言八组（编号 2~7 沿用防引用断裂；8 号曾为水位线断言，ADR-18 退役后由
 # ADR-19 复用为脚本登记面——史档中的「断言 8」均指水位线，现行定义以本头注为准；
-# 原 1/1b 额度与水位线已退役）：
+# 9 号 = 看板双真源对账，ADR-22 新增；原 1/1b 额度与水位线已退役）：
 #   2. 引用路径存在：AGENTS.md 内引用的仓库内路径全部存在
 #      （docs/ scripts/ crates/ assets/ .github/ .cargo/ .githooks/ 前缀；
 #        docs/drafts/ 与含通配符的路径跳过）
@@ -13,11 +13,13 @@
 #   5. 引用路径存在（扩面）：docs 顶层 md / prompts / scripts / workflows / 根 README；
 #      scripts|workflows 指向 docs/drafts/<文件> = 违规，docs 顶层/prompts 指向 = WARN
 #   6. G-编号全仓无死引用（同扫描集，gotchas 本身 = 定义源不扫；非数字残留一并逮）
-#   7. 归档机械面：docs/README.md 归档表 ↔ docs/archive 目录双向对账
+#   7. 归档机械面：docs/archive-index.md 归档表 ↔ docs/archive 目录双向对账
 #      + 每份档案前 8 行含「已归档/归档注记」标记
 #   8. 脚本登记面：scripts/ 下每个 .ps1/.py 须在 docs 顶层 scripts.md 有节
 #      （### `scripts/<名>`），节指向的脚本须实存——双向对账，无豁免
 #      （对账读目录页与文件清单，不存在内容自触发，守护自身同样须登记）
+#   9. 看板双真源对账：docs/board.md 三小节（待拍板/施工中/遗留）存在
+#      + AGENTS.md 含指向 docs/board.md 的指针（防条目回流宪法 / 防指针丢失）
 #
 # 实现约束（G-20，docs/gotchas.md）：文本匹配用 PowerShell 原生正则，勿调外部 grep。
 # 触发面：precommit.ps1 第二项 + CI gate job；本地钩子触发面 = 「门禁读谁、谁触发」
@@ -81,7 +83,7 @@ foreach ($p in $refs) {
 $gotchasPath = Join-Path $RepoRoot 'docs/gotchas.md'
 $defs = @()   # 提升作用域：断言 6（G 编号全仓）复用
 if (-not (Test-Path -LiteralPath $gotchasPath)) {
-    $violations += "docs/gotchas.md 不存在（坑册是 AGENTS §7 速查的真源）"
+    $violations += "docs/gotchas.md 不存在（坑册是 AGENTS §7 防呆行与 §4 坑册路由的真源）"
 } else {
     $gotchas = [System.IO.File]::ReadAllText($gotchasPath)
     $defs = [regex]::Matches($gotchas, '(?m)^## G-(\d+)') |
@@ -168,21 +170,30 @@ foreach ($f in $gScan) {
     }
 }
 
-# ── 断言 7：归档机械面（D-93 DH-16）──
-# (a) docs/README.md 归档表 ↔ docs/archive 目录双向对账（缺行/多行/孤儿都红）
+# ── 断言 7：归档机械面（D-93 DH-16；ADR-22 起索引真源 = docs/archive-index.md，docs/README.md 只留指针）──
+# (a) docs/archive-index.md 归档表 ↔ docs/archive 目录双向对账（缺行/多行/孤儿都红）
 # (b) 每份档案前 8 行必须含「已归档|归档注记」（单点进入不再被归档前状态误导）
-$readmeDocs = [System.IO.File]::ReadAllText((Join-Path $RepoRoot 'docs/README.md'))
-$secMatch = [regex]::Match($readmeDocs, '## 归档文档(?<sec>.*?)\r?\n## ', [System.Text.RegularExpressions.RegexOptions]::Singleline)
+$archiveIndexPath = Join-Path $RepoRoot 'docs/archive-index.md'
 $indexNames = @()
-if ($secMatch.Success) {
-    foreach ($m in [regex]::Matches($secMatch.Groups['sec'].Value, '(?m)^\|\s*`([a-z0-9\-]+\.md)`')) {
-        $indexNames += $m.Groups[1].Value
-    }
+$indexParsed = $false
+if (-not (Test-Path -LiteralPath $archiveIndexPath)) {
+    $violations += "归档索引（docs/archive-index.md）不存在（归档表真源缺失）"
 } else {
-    $violations += "docs/README.md 找不到「## 归档文档」节（索引结构漂移？）"
+    $indexDocs = [System.IO.File]::ReadAllText($archiveIndexPath)
+    # 行首锚定（(?m)^）：正文散文里提到节标题字面量时不再抢匹配（G-30 同族自检互搏坑）
+    $secMatch = [regex]::Match($indexDocs, '(?m)^## 归档文档(?<sec>.*?)\r?\n## ', [System.Text.RegularExpressions.RegexOptions]::Singleline)
+    if ($secMatch.Success) {
+        $indexParsed = $true
+        foreach ($m in [regex]::Matches($secMatch.Groups['sec'].Value, '(?m)^\|\s*`([a-z0-9\-]+\.md)`')) {
+            $indexNames += $m.Groups[1].Value
+        }
+    } else {
+        $violations += "docs/archive-index.md 找不到「## 归档文档」节（索引结构漂移？）"
+    }
 }
 $dirNames = (Get-ChildItem -Path (Join-Path $RepoRoot 'docs/archive') -Filter '*.md' -File).Name
-$missingInIndex = @($dirNames | Where-Object { $indexNames -notcontains $_ })
+$missingInIndex = @()
+if ($indexParsed) { $missingInIndex = @($dirNames | Where-Object { $indexNames -notcontains $_ }) }
 $missingOnDisk  = @($indexNames | Where-Object { $dirNames -notcontains $_ })
 if ($missingInIndex.Count -gt 0) { $violations += "归档索引缺行：$($missingInIndex -join ', ')" }
 if ($missingOnDisk.Count -gt 0)  { $violations += "索引指向不存在的档案：$($missingOnDisk -join ', ')" }
@@ -214,6 +225,26 @@ if (-not (Test-Path -LiteralPath $scriptsMd)) {
     if ($orphans.Count -gt 0)      { $violations += "目录页孤儿条目：$($orphans -join ', ')（册上有节、磁盘无脚本）" }
 }
 
+# ── 断言 9：看板双真源对账（ADR-22）──
+# (a) docs/board.md 三小节存在（条目真源，与 AGENTS §8 同名对齐）
+# (b) AGENTS §8 段内（'^## 8.' 到文末）含 docs/board.md 指针——只查到全文级会被 §4/头注的同名提法掩盖
+$boardPath = Join-Path $RepoRoot 'docs/board.md'
+if (-not (Test-Path -LiteralPath $boardPath)) {
+    $violations += "看板真源（docs/board.md）不存在——AGENTS §8 指针悬空"
+} else {
+    $boardDoc = [System.IO.File]::ReadAllText($boardPath)
+    foreach ($h in '## 待拍板', '## 施工中', '## 遗留') {
+        if (-not [regex]::IsMatch($boardDoc, [regex]::Escape($h))) {
+            $violations += "docs/board.md 缺小节：'$h'（条目真源结构；AGENTS §8 三小节同名对齐）"
+        }
+    }
+    $sec8 = [regex]::Match($content, '(?m)^## 8\.[\s\S]*$')
+    $sec8Text = if ($sec8.Success) { $sec8.Value } else { '' }
+    if ($sec8Text -notmatch 'docs/board\.md') {
+        $violations += "AGENTS.md §8 段内无 docs/board.md 指针（看板双真源防线断）"
+    }
+}
+
 # ── 汇总 ──
 if ($violations.Count -gt 0) {
     Write-Host ""
@@ -230,5 +261,5 @@ if ($violations.Count -gt 0) {
 }
 
 Write-Host ""
-Write-Host "ok：主体 $mainLines 行/$mainBytes B + 全文件 $totalLines 行/$totalBytes B（不设额度，ADR-18）；引用 / G-编号 / 看板 / 引用网扩面 / 归档机械面 / 脚本登记面全过（提醒 $($warn.Count) 条）" -ForegroundColor Green
+Write-Host "ok：主体 $mainLines 行/$mainBytes B + 全文件 $totalLines 行/$totalBytes B（不设额度，ADR-18）；引用 / G-编号 / 看板 / 引用网扩面 / 归档机械面 / 脚本登记面 / 看板双真源全过（提醒 $($warn.Count) 条）" -ForegroundColor Green
 exit 0

@@ -6,7 +6,7 @@
 3. **提交**：里程碑 + 全绿即自主中文 commit（`feat(scope): 中文主题`）；多代理并行 → 提交前
    `git status` / `git diff` 逐项复核，显式 pathspec，禁 `git add -A`（G-19）。
 4. **用户文案**：orchestrator 域经 `Msg` 注入；只有 lt-ui 碰 i18n yaml（zh/en 必须同步改）。
-5. **踩新坑**：当场记 docs/gotchas.md 候选条目 + AGENTS §7 速查行，别只留在会话里。
+5. **踩新坑**：当场记 `docs/gotchas.md` 候选条目（AGENTS §7 只留 5 条防呆，新坑不在此列），别只留在会话里。
 6. **中途新裁决**：当场登记 decisions.md，别攒到收口。
 
 → 完工前：review.md（八原则）；涉 GUI/实机另过 live-check.md

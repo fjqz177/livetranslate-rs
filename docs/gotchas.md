@@ -2,7 +2,7 @@
 
 > **定位**：常青参考（docs/README.md 纪律①「常青参考」类）。只收**坑**——五段式：触发 / 症状 / 根因 / 对策 / 证据；规则与约定不收（那些归 AGENTS.md / prompts 卡）。
 > **前缀**：G-（slug 派生自 gotchas，头注声明，全局唯一含 archive）。编号连续不复用；出本档引用带路径（如 `docs/gotchas.md` G-13）。
-> **与 AGENTS §7 的关系**：§7 速查可精选不全列，但引用的每个 G-n 必须实存（check_agents_health.ps1 断言 3）。
+> **与 AGENTS §7 的关系**：§7 只留 5 条「不读会静默踩」的防呆行（G-1/5/9/12/14），其余全在本册（触发词五段式自索引，AGENTS §4 有专门路由行）；§7 引用的每个 G-n 必须实存（check_agents_health.ps1 断言 3）。
 > **增长机制**：施工卡第 5 条「踩新坑当场记候选」；另设候选清单（文末）承接 archive 各文档「怪癖」节回读——能五段式实证表述的才收编，表述不了的不臆造。
 > **版本注记**：涉及依赖版本的条目带「版本」行；依赖升级时 grep「版本」回查相关条目。
 
@@ -275,6 +275,23 @@
 - **根因**：①单位错位：两个刻度（0-255 vs 0-100）直接相接，min 钳满；②作用域错位：原版 `setWindowOpacity(0.95)` 作用于**整窗**，Rust 只乘了文字。字幕窗同一套透明背板机制实现正确（`with_alpha`/`/255`），可作对照。
 - **对策**：显式双参数预乘 `k = a/255 × w/100`（预乘空间合成）；容器与头部填充都过 `fade(color, opacity, window_opacity)`；透明度值跨层（设置↔渲染）必须显式换算，禁裸传。
 - **证据**：docs/archive/overlay-realign.md 根因表（`overlay.rs:29-33` `opa()` `.min(100)`、`:61`/`:88-91` 填充无 opa_pct；对照 `settings.rs:292-294` 注释 0-255、`panel/style.rs:158-160` 正确写法）；实机对照：原版 RMS 37% 时可透视底下文字，Rust 版为纯黑矩形。
+
+## G-33 扫描型守护「按节截取」的正则被正文节标题字面量抢匹配
+
+- **触发**：给扫描型守护写「按节标题截到下一个节标题」的正则；同时被扫描的文档在头注/正文里复述了同一个节标题字面量（如引号中的 `## 归档文档`）。
+- **症状**：检查恒红但指错方向——报「缺行：<整表全部条目>」（或反向的静默零命中），不报解析错误，排查被误导到内容层。
+- **根因**：正则未锚行首，`## 归档文档` 先命中正文里被引号包住的字面量；lazy `.*?` 到下一个 `\n## ` 截出的「节」是一段散文，表零行。
+- **对策**：① 节截取正则一律加 `(?m)^` 行首锚定（节标题必须整行起始）；② 扫描面文档避免复述节标题字面量；③ 此类断言报「全表缺行」时，先怀疑「是不是被别处的字面量抢匹配」，再看内容。
+- **证据**：2026-09-24 归档索引外迁（ADR-22）——docs/archive-index.md 头注写了 `## 归档文档` 字面量 → 断言 7 假报「归档索引缺行」全 42 档；已加 `(?m)^` 锚定并在 `scripts/check_agents_health.ps1` 断言 7 就地注释成因。
+
+## G-34 窗口透明栈边界：逐像素 alpha 不可达 + COLORKEY 抖动 + 圆角硬裁毛边
+
+- **触发**：想给悬浮窗/字幕窗/确认窗做逐像素透明或外阴影；用 LWA_COLORKEY 抠色键做透明；用 SetWindowRgn 裁圆角。
+- **症状**：① 逐像素 alpha 做不出来（要么整窗均匀半透明，连文字一起变灰）；② 抠色键边缘随窗口位置 ±1 抖动闪变；③ 圆角边缘出现马赛克毛边。
+- **根因**：① wgpu-hal `SurfaceTarget::WndHandle` 只报 `CompositeAlphaMode::Opaque`（per-pixel 仅 SwapChainPanel / VisualFromWndHandle 分支），而项目 Painter 只走 WndHandle 路径 → **单窗逐像素 alpha 在当前栈不可达**；② LWA_COLORKEY = 抠色键，与 winit 抖动 ±1 不合；③ SetWindowRgn 是 1-bit 硬裁切，会切过 egui 抗锯齿渐变带。
+- **对策**：半透明走**整窗** LWA_ALPHA；圆角走 SetWindowRgn 裁区 + 体填充分 `r=6`、裁区曲线内侧 2px rim 抗毛边；逐像素/双窗列为 P2 远期（不做外阴影，靠描边+半透明浮起）。
+- **证据**：D-36 裁定 + docs/archive/subtitle-window-overhaul.md §5.5（wgpu-hal 30.0.1 `src/dx12/adapter.rs:1364-1365` 源码实锤、Painter = `egui_wgpu::winit::Painter`）、悬浮窗修复 2e94bf3、docs/archive/quit-flow-redesign.md（圆角抗毛刺法：`FILL_RADIUS`/`RIM_STROKE`）。
+- **版本**：wgpu-hal 30.0.1。
 
 ---
 

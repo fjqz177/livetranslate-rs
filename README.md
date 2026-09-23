@@ -64,7 +64,7 @@ Windows 上的实时音频翻译工具：**把系统声音抓下来 → 在本�
 
 ## 二、给开发者
 
-> 动代码前务必先读一遍 [AGENTS.md](AGENTS.md)——硬性约束、分层规则、大坑速查都在那（坑册全本 = docs/gotchas.md）。
+> 动代码前务必先读一遍 [AGENTS.md](AGENTS.md)——硬性约束、分层规则、路由表都在那（坑册全本 = docs/gotchas.md；当前待办 = docs/board.md）。
 
 ### 1. 装三样工具
 
@@ -101,7 +101,7 @@ pwsh -ExecutionPolicy Bypass -File scripts/fetch_sherpa_libs.ps1 -Mirror https:/
 ### 3. 日常命令
 
 ```bash
-cargo test --workspace             # 全量测试（收工必跑）。基线：约 600+ 通过 + 9 个默认跳过的真模型/真网络探针（滚动值；操作基线见 AGENTS §2）
+cargo test --workspace             # 全量测试（收工必跑）。约 600+ 通过 + 9 个默认跳过的真模型/真网络探针（滚动值，数字不作门槛）
 cargo test -p lt-ui                # 只测某个 crate（换成 lt-asr / lt-proto 等）
 cargo clippy --workspace --all-targets   # 手动跑 lint（提交钩子也会自动跑一遍）
 cargo run -p lt-app                # 本机跑 GUI
@@ -170,7 +170,8 @@ lt-proto → lt-i18n → lt-models → lt-download → lt-audio → lt-asr → l
 
 | 文档 | 内容 |
 |---|---|
-| [AGENTS.md](AGENTS.md) | 项目定位、硬性约束、分层规则、已知大坑、当前待办（**施工第一参考**） |
+| [AGENTS.md](AGENTS.md) | 项目定位、硬性约束、分层规则、路由表与 5 条大坑防呆（**施工第一参考**） |
+| [docs/board.md](docs/board.md) | 工作看板：待拍板 / 施工中 / 遗留（施工前必看） |
 | [docs/README.md](docs/README.md) | 文档总索引（活跃文档 + 归档决策史） |
 | [docs/distribution.md](docs/distribution.md) | 分发路线：打包规范、发布手册、待办 |
 | [docs/archive/architecture-v2.md](docs/archive/architecture-v2.md) | 架构 2.0：十 crate 拓扑与依赖白名单 |

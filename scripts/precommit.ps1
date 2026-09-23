@@ -3,7 +3,7 @@
 #
 #   1. cargo fmt --all -- --check                    ← 格式（秒级）
 #   2. scripts/check_agents_health.ps1               ← 总纲健康（ADR-15 起家：路径/G-编号/看板 + D-93 引用网扩面
-#                                                     与归档对账 + ADR-19 脚本登记面；断言 2~8）
+#                                                     与归档对账 + ADR-19 脚本登记面 + ADR-22 看板双真源；断言 2~9）
 #   3. cargo clippy --workspace --all-targets --locked -- -D warnings   ← 编译级检查（分钟级，垫底；
 #                                                     含 clippy.toml disallowed 禁令——原 check_guards
 #                                                     禁令 1/2/4；依赖白名单 topology.rs、文本卫生
