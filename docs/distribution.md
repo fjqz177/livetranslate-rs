@@ -85,6 +85,8 @@
 | WD-9 | 公开 README 双语完善 + 原 Python 仓 README 导流横幅；渠道裁决（新独立仓 vs 沿用原仓双产物）；含 README.md 用户节与 README.txt 去重（页签名漂移已实证） | 0.5d |
 | WD-10（可选） | 「打开配置目录/日志目录」入口（现仅缓存页可开 models/transcripts 目录）；panic hook 崩溃尾部落盘，便于反馈 | 0.5d |
 
+> 2026-09-22 表态（D-98）：tag protection + immutable releases 随下次发版一并开启；build-info 维持现状（本地 dist/ + step summary），不随 Release 永久留档。WD-4 前提修正（2026-09-22 用户实证）：部分模型仓本无 ModelScope 源，实际解法 = HF 镜像——whisper 双源降为未来功能候选，文档级动作只剩 README whisper 下载指引改真实（非代码清单 M3）。
+
 ## 5. 用户到手全旅程（裁决后目标态）
 
 **① 获取**：拿到 zip → 解压到任意目录（免安装，不放系统保护目录即可）。无 Python/运行库/字体任何前置要求——exe 全内嵌。

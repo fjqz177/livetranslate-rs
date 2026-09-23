@@ -198,9 +198,9 @@ L4  项目记忆            ZCode memory（跨会话长事实）                
 
 1. **gotchas 候选回读（G-23+）**：过一遍 archive 各文档「怪癖/坑」节——visual-parity 的 horizontal 无限宽与 hidden 窗口定位失效、overlay-realign 的 opa() 刻度错位等；能以五段式实证表述的收编，表述不了的不臆造、留候选清单（gotchas 头注登记处）。
 2. ~~看板候选两半句~~ **已闭合（Q8 照准）**：1.0.0 前置两半句已写入 AGENTS-v2 §8 快照 distribution 行（落盘替换现值时保留增补）——随施工生效，不再是遗留。
-3. **prompts 技能化升级验证**（Q3 备选）：验证 ZCode 是否装载工作区级 .zcode/skills；支持则七卡可升级为 /命令 调用。
+3. ~~prompts 技能化升级验证~~ **已裁销（D-97，2026-09-22）**：流程纪律载体必须工具中立（AGENTS.md + 纯 Markdown，任何 agent 软件统一行为），不绑单家扩展机制（.zcode/skills 系 ZCode 专有）。
 4. **预算数值再校准**：体系运转约两周后按实测回调两档数值（当前实测：主体 133 行 / 15,709B、全文件 164 行 / 18,642B——余量 22% / 15%）；§6「ASR 域」块为第一候砍对象（不自信点 4）。
-5. **i18n 键集 parity 守护候选**：AGENTS 写了「zh/en 键集必须一致」但无机械断言——候选 check_i18n_parity（比对两 yaml 叶键集合）；独立小守护，不塞进 check_agents_health（高内聚）。
+5. ~~i18n 键集 parity 守护候选~~ **已被取代（2026-09-22 销）**：`crates/lt-i18n/src/lib.rs` `zh_en_key_sets_identical` 单测实存且随 CI 全量跑，机械断言已存在，无需独立守护脚本。
 6. **坑册版本注记回改机制**：依赖升级（egui/winit/tray-icon/sherpa）时须回读坑册相关条目更新语义——暂无提醒机制，靠升级提交自觉 grep「版本注记」。
 
 ---

@@ -7,7 +7,7 @@
 
 ## 1. 项目与硬约束
 
-- Rust 原生实时音频翻译应用（Windows 单 exe）。Python 原版 LiveTranslate 仅行为参考，1:1 复刻期已于 2026-09-07 收尾；当前阶段二：以产品体验为准，原版有/没有不再是取舍依据。2026-09-19 起已公开发布（首版经 D-90 发布链上线；分发现状真源 = docs/distribution.md）。
+- Rust 原生实时音频翻译应用（Windows 单 exe）。Python 原版 LiveTranslate 仅行为参考，1:1 复刻期已于 2026-09-07 收尾；当前阶段二：以产品体验为准，原版有/没有不再是取舍依据。2026-09-19 起已公开发布（首版经 D-90 发布链上线；分发现状真源 = docs/distribution.md）。2026-09-22 起进入零代码整理阶段（D-96）：只做文档治理与流程严谨化，改码须用户明示解禁。
 - 参考副本 = 工作区 `LiveTranslate/`（gitignored、扁平结构，与任何外部仓无关）。改 GUI 前可回读其 `main.py` / `subtitle_overlay.py` / `subtitle_window.py` / `control_panel.py` / `vad_processor.py`。
 - **纯 CPU**：禁 CUDA/DirectML/GPU；whisper GPU feature 禁用；MonitorBar GPU 恒 N/A。
 - **单 exe** 分发；配置目录 = `~/.config/livetranslate`（Windows 下字面 home/.config，不是 %APPDATA%）；`settings.json` 的 `models_dir` 键可指定模型缓存路径。
@@ -153,6 +153,7 @@ git config core.hooksPath .githooks            # 每 clone 一次启用提交钩
 - 待拍板：**UX 三期可选项**——前缀码枚举化 / 设置保存失败 UI 流 / 错误译文样式（docs/archive/ux-feedback.md）
 - 待拍板：**PH-6**——参考图 GPU 型号中性化重拍（可选）（docs/archive/path-hygiene.md）
 - 待拍板：**非代码面七块问题清单**——正式 33 条目（轻 21/中 6/待拍板 6，含 8 条老账重提）待逐条裁决（docs/drafts/noncode-infra-issues-2026.md）
+- 待拍板：**遗留清账批**——12 项按「零代码阶段」分堆处置：Q1/Q4/Q7/Q8/Q11 本批执行，Q2/Q3/Q6/Q9/Q10 缓办归队，Q5/Q12 已裁；本批全部销项后删本行（docs/drafts/legacy-cleanup-2026.md §1）
 
 ### 施工中
 
@@ -160,18 +161,13 @@ git config core.hooksPath .githooks            # 每 clone 一次启用提交钩
 
 ### 遗留（完工包的实机走查与未了项，一行一包，清零即删）
 
-- asr-chain-robustness（D-94）：实机走查 8 项——退出尾巴入转录 / 退出延迟 / 流式终态不被半截话盖回 / 字幕窗缺句 / 未就绪记账 / 整段模式回归 / 在跑任务逗留实测 / 重启一致性；评审遗留：清空是否该管字幕窗句子待裁 + 三项测试覆盖缺口（docs/archive/asr-chain-robustness.md §5/§10）
-- doc-network-hardening（D-93）：断言 5 豁免表随误报维护（docs/archive/doc-network-hardening.md §五）
-- agents-md-overhaul（ADR-15/16）：gotchas 候选回读（visual-parity/overlay-realign 怪癖收编为新条目）/ prompts 技能化验证（ZCode 工作区级 .zcode/skills）/ i18n 键集 parity 守护候选（docs/archive/agents-md-overhaul.md §五）
-- quit-flow-redesign（D-87）：§五走查矩阵剩余行为项随用随验（docs/archive/quit-flow-redesign.md §九）
-- ci-workflow-suite（D-88/D-89）：deny.toml 首跑校准 + CI 首跑墙钟观察 + nextest/typos 候选 + 仓库设置候选（immutable releases / tag protection；attest 已由 D-90 否决）+ Dependabot alerts/security updates 未开（docs/archive/ci-workflow-suite.md §六）
-- dev-config-audit（收口 2026-09-17）：A3 冒烟配置免手抄——settings.smoke.json 模板或 --smoke 参数，随下次冒烟改造裁决（docs/archive/dev-config-audit.md §4）
-- release-engine（D-90）：v1.0.0 已真 tag 首发转正（发布链全链实战验证——runner gh 用法 / publish job 写入 / 摘要实貌均过实；旧 v0.1.0 tag 未删）；余 zip 五件套断言与 build-info 是否随 Release 永久留档待表态（v1.0.0 现状 = 仅 zip+sha256 上架，build-info 留本地 dist/）（docs/distribution.md §4）
-- 架构 v2/2.1：实机走查 11 项 + WP-9 性能预算（后续单独方案）（docs/archive/architecture-v2.md §6.4）；W5 走查 6 项——悬浮窗拖动/字幕窗拖动穿透回归/导出保存框/背景图选择框/设备下拉/Monitor 条（同文档 §6.4 表来源列）
+- asr-chain-robustness（D-94）：实机走查 8 项（档 §5）；评审遗留 8 条（档 §10）——清空是否管字幕窗 + 三项测试缺口随「遗留清账批」，余 5 条 P3 留档（§10-4~8）（docs/archive/asr-chain-robustness.md §5/§10）
+- quit-flow-redesign（D-87）：§九遗留走查 6 组随用随验（docs/archive/quit-flow-redesign.md §九）
+- 架构 v2/2.1：实机走查 11 项（docs/archive/architecture-v2.md §6.4；原「W5 6 项」为该表子集已并）
 - translator（D-85）：实机走查 13 项（docs/archive/translator-probe-hotswap.md §6.2）
-- model-trust（D-83）：实机走查——改坏一个模型文件应自动隔离+重下+装载（docs/archive/model-trust-repair.md）
-- context-turns（D-84）：实机走查 4 项（docs/archive/context-turns-ui.md）
-- asr-hardening：GUI 冒烟 A/B/C + T1 qwen3 长样例校准（whisper 六档 sha256 已全量登记）（docs/archive/asr-hardening.md）
-- download-overhaul：S1/S6 全程真实网络走查（docs/archive/download-overhaul.md）
-- 复刻期：WP-9 M6 调优（启动<2s / 空闲 CPU<1% / 8h 长跑 / 内存回收 / 端到端）；WP-5 托盘气泡、WP-8 热键届时按产品价值裁决（docs/archive/parity-closure.md）
-- distribution（v1.0.0 已发布，WD-7 已完成）：WD-6 首启横幅待点头；WD-4 whisper 双源、WD-8 检查更新未做（docs/distribution.md §3.3/§4）；干净机端到端仍欠跑；更新日志机制已建（D-91）——应用内渲染改造（真粗体/切 tab 滚动/多版本折叠）待立包；8 个死 i18n 键（theme_*/btn_check_update/btn_open_repo·issues/hotkey_*/changelog_title）随 WD-8 一并定生死（docs/archive/live-check-fixes.md §五）
+- model-trust（D-83）：实机走查——改坏一个模型文件应自动隔离+重下+装载（docs/archive/model-trust-repair.md；档内无锚点，条目以本行为准）
+- context-turns（D-84）：实机走查 4 项（docs/archive/context-turns-ui.md §4）
+- asr-hardening：GUI 冒烟 A/B/C + T1 qwen3 长样例校准（whisper sha256 子项已销项）（docs/archive/asr-hardening.md §6）
+- download-overhaul：S1/S6 全程真实网络走查（docs/archive/download-overhaul.md §6.2）
+- 复刻期：WP-9 M6 性能调优五步（启动<2s / 空闲 CPU<1% / 8h 长跑 / 内存回收 / 端到端——需单独方案）；WP-5/WP-8 随「遗留清账批」（docs/archive/parity-closure.md）
+- distribution：WD-4/6/8、干净机端到端、更新日志渲染立包、8 死 i18n 键随「遗留清账批」；状态真源 = docs/distribution.md §3.3/§4

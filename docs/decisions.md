@@ -83,6 +83,10 @@
 | D-93 | 2026-09-17 | 文档网络加固：全仓清淤（README/distribution/归档注记/流程卡链）+ 守护断言 5~8（路径扩面/G 编号全仓/归档对账/水位线）+ 钩子触发面「守护读谁、谁触发」+ 宪法回吐（~0.7KB 复述迁回流程卡） | docs/archive/doc-network-hardening.md |
 | D-94 | 2026-09-17 | 退出收尾冲刷用 force_flush 不设 min_speech 门槛（与 Python 非增量路径的带门槛 flush() 有意不同）：capture 侧不知增量是否激活、退出时刚说的话优先保真、下游 reject_segment 三层过滤仍兜底（识别→翻译→显示链路健壮性修复批随行登记） | docs/archive/asr-chain-robustness.md |
 | D-95 | 2026-09-17 | 加固收口后评审修复：钩子触发面补根 README.md（「守护读谁谁触发」补漏）+ changelog-scheme/agents-md-overhaul 补权威牌 + AGENTS §2 测试基线去数字（根治滚动漂移，收口卡基线提醒同步撤销） | docs/archive/doc-network-hardening.md |
+| D-96 | 2026-09-22 | 阶段定调：进入零代码整理阶段——只做文档治理与流程严谨化（实机走查转 issue 驱动，遗留清账批 12 项分堆处置：Q1/Q4/Q7/Q8/Q11 本批执行、Q2/Q3/Q6/Q9/Q10 缓办归队、Q5/Q12 已裁），改码须用户明示解禁 | AGENTS.md §1 |
+| D-97 | 2026-09-22 | 流程纪律载体工具中立：AGENTS.md + docs/prompts/ 纯 Markdown 为唯一载体，不绑单家 agent 软件扩展机制——prompts 技能化（.zcode/skills）验证候选项裁销 | docs/archive/agents-md-overhaul.md §五 |
+| D-98 | 2026-09-22 | 仓库治理两表态：tag protection + immutable releases 随下次发版一并开启（现不动手）；build-info 维持现状（本地 dist/ + step summary），不随 Release 永久留档 | docs/distribution.md §4 |
+| D-99 | 2026-09-22 | 复刻期 WP-8（ErrorBanner 与全局热键）正式销项：出处未证实，依档案「确认出处前不动工」建议裁销；需求真实出现时再立包 | docs/archive/parity-closure.md |
 
 ## ADR-x（架构决策）
 
