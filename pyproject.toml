@@ -1,10 +1,15 @@
 # 构建期辅助依赖（uv 仅作"仓库内工具分发器"，不打包任何 Python 项目产物）：
-#   libclang —— whisper-rs-sys 的 bindgen 需要；
-#   cmake    —— whisper-rs-sys 构建 vendored whisper.cpp 需要（cmake crate 读 CMAKE 环境变量）。
-# 二者均由 uv 装进仓库内 .venv，.cargo/config.toml 以 relative=true 指向（零绝对路径，
-# 免系统级安装 LLVM / CMake）。
+#   libclang     —— whisper-rs-sys 的 bindgen 需要；
+#   cmake        —— whisper-rs-sys 构建 vendored whisper.cpp 需要（cmake crate 读 CMAKE 环境变量）；
+#   onnxruntime  —— 主进程 VAD 的 ort 运行时库（wheel 内 capi DLL）；
+#   silero-vad   —— Silero VAD v5 模型（wheel 内 data 模型文件）。
+# 后两者经 lt-audio 的 include_bytes! 直接从 .venv 内嵌进 exe（来源与 sha256 见
+# assets/SOURCES.md；版本钉死在本文件 + uv.lock，换版改这里后 uv sync）。
+# silero-vad 的依赖（torch 全家）只占 .venv 磁盘、构建链不读——管理单点优先，接受拖带。
 [dependency-groups]
 dev = [
     "libclang==18.1.1",
     "cmake==4.4.3",
+    "onnxruntime==1.29.0",
+    "silero-vad==5.1.2",
 ]

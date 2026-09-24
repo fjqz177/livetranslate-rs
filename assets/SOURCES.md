@@ -2,10 +2,16 @@
 
 ## silero_vad.onnx
 
-- 模型：Silero VAD v5（ONNX 导出版，f32）
-- 来源：ModelScope 镜像 `pengzhendong/silero-vad`（根目录 `silero_vad.onnx`，与上游
-  `snakers4/silero-vad` master `src/silero_vad/data/silero_vad.onnx` 同一文件）
-- 下载端点：`https://modelscope.cn/api/v1/models/pengzhendong/silero-vad/repo?Revision=master&FilePath=silero_vad.onnx`
+- 模型：Silero VAD v5（ONNX 导出版，f32）——v5 末态，精确版本 = PyPI `silero-vad==5.1.2`
+- 版本身份（2026-09-24 四方实测闭环，sha256 逐位一致）：本仓入库份 = PyPI 官方包
+  `silero-vad==5.1.2` wheel 内 `silero_vad/data/silero_vad.onnx` = GitHub 官方仓
+  `snakers4/silero-vad` commit `f0d880d`（2024-07-09 "make package structure"，v5 末态）=
+  ModelScope 镜像 `pengzhendong/silero-vad`。上游 master 已于 2025-11-06 换入 v6.2
+  （sha256 `1a153a22…`，I/O 契约未验证）——**一切引用钉 v5，禁追 master**。
+  （HF 上无 Silero 官方库；`onnx-community/silero-vad` 为第三方重导出版，大小/哈希均不符。）
+- 复现 / 重取：`uv sync`（pyproject dev 组钉版 `silero-vad==5.1.2`，装进仓库内 .venv）；
+  仓库内位置 = `.venv\Lib\site-packages\silero_vad\data\`（gitignored，构建期由
+  vad.rs include_bytes! 内嵌）
 - 大小：2,327,524 字节
 - sha256：`2623a2953f6ff3d2c1e61740c6cdb7168133479b267dfef114a4a3cc5bdd788f`
 - I/O 契约（v5，首次使用前以 examples/vad_check.rs 实际打印为准）：
@@ -18,7 +24,10 @@
   每进程仅一份 ORT——R-4 预案 A 的落地形态，保持单 exe：dll 内嵌并首次运行解压）
 - 版本：ONNX Runtime 1.29.0（C API 向后兼容，覆盖 ort 2.0-rc.13 所需 API 22）
 - 来源：PyPI `onnxruntime-1.29.0` win_amd64 wheel 内 capi/onnxruntime.dll
-  （= 微软官方 release 产物，未改动）
+  （= 微软官方 release 产物，未改动；2026-09-24 实测 wheel 内 DLL 与入库份逐位一致）
+- 复现 / 重取：`uv sync`（pyproject dev 组钉版 `onnxruntime==1.29.0`，装进仓库内 .venv）；
+  仓库内位置 = `.venv\Lib\site-packages\onnxruntime\capi\`（gitignored，构建期由
+  vad.rs include_bytes! 内嵌）
 - sha256：`4075344f1057c0d16883fb5a93428aeac5fecfbcb24e1560defb1cb80a6e0a85`（18,093,368 B，2026-09-08 实测入库文件）
 
 ## icons/（应用与托盘图标，2026-09-06 由用户提供的原版工作区副本 icons/ 搬入）

@@ -8,12 +8,15 @@ use anyhow::Context;
 use std::collections::VecDeque;
 use std::path::Path;
 
-/// 内嵌 Silero v5 模型（来源与 sha256 见 assets/SOURCES.md）
-static SILERO_MODEL: &[u8] = include_bytes!("../../../assets/silero_vad.onnx");
+/// 内嵌 Silero v5 模型（uv 管理：pyproject dev 组钉版 `silero-vad==5.1.2`，uv sync 装进
+/// 仓库内 .venv，本处直接内嵌 wheel 里的模型文件；来源与 sha256 见 assets/SOURCES.md）
+static SILERO_MODEL: &[u8] =
+    include_bytes!("../../../.venv/Lib/site-packages/silero_vad/data/silero_vad.onnx");
 
 /// 内嵌 onnxruntime.dll（R-4 预案 A：ort 走 load-dynamic，主进程独占一份 ORT；
-/// worker 子进程用 sherpa 静态 ORT，互不冲突）
-static ORT_DLL: &[u8] = include_bytes!("../../../assets/ort/onnxruntime.dll");
+/// worker 子进程用 sherpa 静态 ORT，互不冲突；同为 uv dev 组钉版 wheel 内文件）
+static ORT_DLL: &[u8] =
+    include_bytes!("../../../.venv/Lib/site-packages/onnxruntime/capi/onnxruntime.dll");
 
 /// 解压 onnxruntime.dll 到配置目录并设置 ORT_DYLIB_PATH（幂等，进程内只需成功一次）。
 /// 必须在首个 ort Session 创建前调用。
@@ -78,7 +81,7 @@ pub struct SileroVad {
 }
 
 impl SileroVad {
-    /// 从内嵌模型构建；`assets/silero_vad.onnx` 可被同路径文件覆盖（调试用）
+    /// 从内嵌模型构建（调试换源用 from_path / from_bytes）
     pub fn new() -> anyhow::Result<Self> {
         Self::from_bytes(SILERO_MODEL)
     }

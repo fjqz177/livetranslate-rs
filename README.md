@@ -80,7 +80,7 @@ Windows 上的实时音频翻译工具：**把系统声音抓下来 → 在本�
 
 ```bash
 git clone <仓库地址> && cd livetranslate-rs
-uv sync                                                                 # 约 10 秒：把 libclang + cmake 装进项目内 .venv
+uv sync                                                                 # 约 10 秒（首装有 torch 依赖约 1 分钟）：把 libclang + cmake + 内嵌资产两包装进项目内 .venv
 pwsh -ExecutionPolicy Bypass -File scripts/fetch_sherpa_libs.ps1  # 约 120MB 预编译库，只需一次
 ```
 
@@ -159,6 +159,7 @@ lt-proto → lt-i18n → lt-models → lt-download → lt-audio → lt-asr → l
 |---|---|
 | 构建报 `Unable to find libclang` 或 `cmake` 找不到 | 没跑 `uv sync`，或 `.venv` 被删了 → 跑 `uv sync` |
 | 构建报 `SHERPA_ONNX_ARCHIVE_DIR does not contain expected archive` | 没跑预取脚本（这点它不回落联网）→ 跑 `scripts\fetch_sherpa_libs.ps1` |
+| 构建报 `内嵌资产缺失：…\.venv\…` | 没跑 `uv sync`（pyproject dev 组钉版装 onnxruntime + silero-vad 两包，构建期内嵌进 exe） |
 | 下载 sherpa 库太慢/失败 | 加 `-Mirror https://gh-proxy.com/` 重跑，或设 `HTTPS_PROXY` 走代理 |
 | 链接报 `LNK2005` / `LNK1169`（CRT 冲突） | `.cargo/config.toml` 里两行 `CMAKE_*` 被改了 → 改回去（**勿动**） |
 | 测试报 StorageFull / 假死 | C 盘满了 → 把 `TMPDIR` 指到别的盘再跑 |
