@@ -93,7 +93,8 @@ pub fn dispatch(win: WinId, ui: &mut Ui, app: &mut AppUi) {
             let AppUi { log, .. } = app;
             logwin::log_ui(ui, log);
         }
-        // 启动流对话框（首启向导/缺模型下载/模型加载按 state 内部阶段再分派）
+        // 启动流对话框（首启向导/缺模型下载按 state 内部阶段再分派；模型加载
+        // 已退役并入悬浮窗状态行，WFC-2/D-100）
         WinId::Setup => {
             let AppUi {
                 session,

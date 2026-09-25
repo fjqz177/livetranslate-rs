@@ -2104,12 +2104,10 @@ pub struct BenchUi {
     pub tgt: usize,
 }
 
-/// 启动流域（W5：首启向导/缺模型下载/Ready + 模型加载对话框）
+/// 启动流域（W5：首启向导/缺模型下载/Ready；模型加载对话框已退役，WFC-2/D-100）
 pub struct StartupUi {
     /// 启动流状态机（首启向导/缺模型下载/Ready）
     pub flow: StartupFlow,
-    /// 模型加载对话框（_ModelLoadDialog）：Some(label)=显示中
-    pub load_dialog: Option<String>,
 }
 
 /// 模态域（W5：通用确认模态 + 退出请求）
@@ -2207,10 +2205,7 @@ impl AppUi {
                 src: 0,
                 tgt: 0,
             },
-            startup: StartupUi {
-                flow,
-                load_dialog: None,
-            },
+            startup: StartupUi { flow },
             modal: ModalUi {
                 confirm: None,
                 quit_requested: false,
@@ -2618,7 +2613,7 @@ impl StartupUi {
     /// 若启动流需要节拍（向导倒计时 / 成功后 500ms 收尾延迟）则安排 Setup 节拍。
     /// 倒计时按 1s 一拍；收尾延迟按 500ms。
     pub fn kick_tick(&mut self, session: &mut SessionView) {
-        if !crate::windows::setup::needs_setup_tick(&self.flow, &self.load_dialog) {
+        if !crate::windows::setup::needs_setup_tick(&self.flow) {
             return;
         }
         let idle_countdown = matches!(
@@ -2674,7 +2669,8 @@ pub fn initial_visibility(
         .unwrap_or(false);
     visible.insert(WinId::Panel, !startup_pending && show_panel);
     visible.insert(WinId::Log, false); // 原版：启动即建但隐藏
-                                       // Setup 对话框窗口：仅启动流进行中初始可见（运行期 load_dialog 单独控制）
+                                       // Setup 对话框窗口：仅启动流进行中初始可见
+                                       //（WFC-2/D-100 后运行期不再显示该窗）
     visible.insert(WinId::Setup, startup_pending);
     // Benchmark 工具窗：启动即建但隐藏（原版仅点识别页"性能基准…"时 exec）
     visible.insert(WinId::Benchmark, false);

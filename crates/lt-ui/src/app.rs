@@ -185,6 +185,23 @@ impl MultiWindowApp {
             self.restack_subtitle_below_overlay();
             self.raise_overlay();
         }
+        // WFC-1（D-100）先画后显：真值表应显的窗口在此统一揭示——先同步画一帧
+        // （内容/圆角/整窗 alpha 就位）再上屏，杜绝"可见在先、绘制在后"的类刷子
+        // 白底（2026-09-25 录屏实测 0.7s）。揭示走裸 set_visible：启动期不需要
+        // focus（悬浮窗 NOACTIVATE 不抢焦点），重绘已由 create_window 尾部请求。
+        let to_reveal: Vec<WinId> = self
+            .windows
+            .iter()
+            .filter(|w| self.is_visible(w.id))
+            .map(|w| w.id)
+            .collect();
+        for id in to_reveal {
+            self.run_frame(id);
+            self.apply_needs_position(id);
+            if let Some(hw) = self.find(id) {
+                hw.window.set_visible(true);
+            }
+        }
         Ok(())
     }
 
@@ -239,8 +256,11 @@ impl MultiWindowApp {
             // 原版 setFixedWidth：宽度固定（高度自适应）→ 禁用户拖拽缩放
             attrs = attrs.with_resizable(false);
         }
-        let visible = *self.visible.get(&id).unwrap_or(&true);
-        attrs = attrs.with_visible(visible);
+        // WFC-1（D-100）：一律隐藏创建——"可见在先、绘制在后"会让窗口类刷子的
+        // 白底上屏（2026-09-25 录屏实测 0.7s 白窗）。真值表只驱动 setup() 尾部
+        // 的揭示时机（先画后显），不驱动创建可见性。
+        let should_reveal = *self.visible.get(&id).unwrap_or(&true);
+        attrs = attrs.with_visible(false);
 
         let window = Arc::new(event_loop.create_window(attrs)?);
         // 悬浮窗/字幕窗：surface 创建前先挂 layered 层属性（避免呈现抖动）；
@@ -323,7 +343,7 @@ impl MultiWindowApp {
             layer_alpha,
             region_key: None,
         });
-        if visible {
+        if should_reveal {
             self.window(id).request_redraw();
         }
         Ok(())
@@ -654,28 +674,37 @@ impl MultiWindowApp {
         }
     }
 
+    /// 首显定位（WFC-1）：消费一次 `needs_position`——面板首次显示前主屏偏上
+    /// 居中（Windows 对话框惯例；避免固定左上角与用户日常悬浮窗位置重叠被遮挡）。
+    /// 供 `set_visible` 与 setup() 揭示段两处复用；创建期（隐藏态）定位被
+    /// Windows 初始化级联覆盖的旧坑由实机走查盯防（docs/archive/window-flash-cleanup.md）。
+    fn apply_needs_position(&mut self, id: WinId) {
+        let Some(pos) = self.windows.iter().position(|w| w.id == id) else {
+            return;
+        };
+        if !self.windows[pos].needs_position {
+            return;
+        }
+        self.windows[pos].needs_position = false;
+        let window = self.windows[pos].window.clone();
+        if let Some(mon) = window
+            .primary_monitor()
+            .or_else(|| window.current_monitor())
+        {
+            let (mp, ms) = (mon.position(), mon.size());
+            let inner = window.inner_size();
+            let x = mp.x + ((ms.width as i32 - inner.width as i32) / 2).max(0);
+            let y = mp.y + ((ms.height as i32 - inner.height as i32) / 4).max(0);
+            window.set_outer_position(winit::dpi::PhysicalPosition::new(x, y));
+        }
+    }
+
     fn set_visible(&mut self, id: WinId, vis: bool) {
+        if vis {
+            self.apply_needs_position(id);
+        }
         if let Some(hw) = self.find_mut(id) {
             if vis {
-                // 面板首次显示时主屏偏上居中（Windows 对话框惯例；避免固定
-                // 左上角与用户日常悬浮窗位置重叠被遮挡）。窗口显示后定位，
-                // 规避创建期（隐藏态）set_outer_position 被 Windows 初始化
-                // 级联位置覆盖的问题。
-                if hw.needs_position {
-                    hw.needs_position = false;
-                    if let Some(mon) = hw
-                        .window
-                        .primary_monitor()
-                        .or_else(|| hw.window.current_monitor())
-                    {
-                        let (mp, ms) = (mon.position(), mon.size());
-                        let inner = hw.window.inner_size();
-                        let x = mp.x + ((ms.width as i32 - inner.width as i32) / 2).max(0);
-                        let y = mp.y + ((ms.height as i32 - inner.height as i32) / 4).max(0);
-                        hw.window
-                            .set_outer_position(winit::dpi::PhysicalPosition::new(x, y));
-                    }
-                }
                 hw.window.set_visible(true);
                 hw.window.focus_window();
                 hw.window.request_redraw();
@@ -871,16 +900,8 @@ impl MultiWindowApp {
         }
     }
 
-    /// 关闭模型加载对话框（ModelLoadDone / AsrDevice / AsrUnavailable 触发）。
-    /// 仅 load_dialog 显示中才动作，且仅 startup==Ready 时隐藏 Setup 窗——
-    /// 避免误关首启向导/缺模型下载流程仍在使用的窗口。
-    fn close_load_dialog(&mut self) {
-        if self.app_state.startup.load_dialog.take().is_some()
-            && matches!(self.app_state.startup.flow, StartupFlow::Ready)
-        {
-            self.set_visible(WinId::Setup, false);
-        }
-    }
+    // WFC-2（D-100）：close_load_dialog 随独立加载窗一并退役——加载态并入
+    // 悬浮窗状态行，终态由 AsrDevice/AsrUnavailable 事件臂直接覆写 asr_label。
 
     // ── D-83 模型零信任修复闭环（docs/archive/model-trust-repair.md §2.2/§2.3）──
 
@@ -1037,11 +1058,9 @@ impl MultiWindowApp {
     /// 揭开主窗口（字幕窗按 settings.subtitle_mode.enabled，日志窗保持隐藏）
     fn finish_startup(&mut self) {
         self.app_state.startup.flow = StartupFlow::Ready;
-        // 下载成功即启管道（AppShell），ModelLoadStart 可能落在 500ms 收尾期内——
-        // 原版两个对话框先后出现，这里共用一个原生窗口，故加载框已开则保留窗口
-        if self.app_state.startup.load_dialog.is_none() {
-            self.set_visible(WinId::Setup, false);
-        }
+        // WFC-2（D-100）：加载态已并入悬浮窗状态行，与 Setup 窗不再耦合——
+        // 启动流收尾一律隐藏向导/下载窗
+        self.set_visible(WinId::Setup, false);
         let subtitle = self.app_state.settings.subtitle_mode.enabled;
         self.set_visible(WinId::Overlay, true);
         self.set_visible(WinId::Subtitle, subtitle);
@@ -1209,8 +1228,8 @@ impl MultiWindowApp {
                 self.app_state.panel.state.active_model_note = Some((name, Instant::now()));
                 self.redraw(WinId::Panel);
             }
-            // ASR 设备标签（悬浮窗 MonitorBar device 段）；同时视作加载框关闭信号
-            //（原版 App.model_load_done 在设备就绪/不可用时都会被调用）
+            // ASR 设备标签（悬浮窗 MonitorBar device 段）；终态覆写加载中标签
+            //（WFC-2/D-100：原版 App.model_load_done 在设备就绪/不可用时都会被调用）
             lt_proto::UiEvent::AsrDevice(label) => {
                 // D-83：装载成功 = 修复闭环的成功判据 → 自动重试计数清零
                 self.app_state.panel.auto_retry = crate::state::DownloadAutoRetry::default();
@@ -1226,9 +1245,8 @@ impl MultiWindowApp {
                 if let Some(hw) = self.find_mut(WinId::Overlay) {
                     hw.window.request_redraw();
                 }
-                self.close_load_dialog();
             }
-            // ASR 完全不可用（沿用原版字面文案）；同样关闭加载框 + 托盘错误图标
+            // ASR 完全不可用（沿用原版字面文案）；终态覆写加载中标签 + 托盘错误图标
             lt_proto::UiEvent::AsrUnavailable => {
                 self.app_state.overlay.asr_label = Some(lt_i18n::t("asr_unavailable"));
                 if let Some(t) = &self.tray {
@@ -1237,7 +1255,6 @@ impl MultiWindowApp {
                 if let Some(hw) = self.find_mut(WinId::Overlay) {
                     hw.window.request_redraw();
                 }
-                self.close_load_dialog();
             }
             // 翻译装置配置无效：状态行红字（翻译页）+ 日志已由 pipeline 落
             lt_proto::UiEvent::TranslatorUnavailable { reason } => {
@@ -1540,15 +1557,17 @@ impl MultiWindowApp {
                 let text = format!("{}（{state}）：{}", lt_i18n::t("thread_died"), d.detail);
                 self.push_log_line(40, "supervisor", &text);
             }
-            // ── 模型加载对话框打开（标题固定 "LiveTranslate"）──
+            // ── 模型加载开始：状态行内联（WFC-2/D-100，独立加载窗退役，对齐
+            // less-is-more）——终态由 AsrDevice（真实标签）覆写收敛，失败由
+            // AsrUnavailable 覆写为不可用文案；两者恒后于本事件到达 ──
             lt_proto::UiEvent::ModelLoadStart(label) => {
-                self.app_state.startup.load_dialog = Some(label);
-                self.set_visible(WinId::Setup, true);
-                self.set_setup_title("LiveTranslate");
-                self.redraw_setup();
+                self.app_state.overlay.asr_label =
+                    Some(lt_i18n::t("loading_model_short").replace("{name}", &label));
+                self.redraw(WinId::Overlay);
             }
-            // ── 模型加载结束：关闭加载框（仅 load_dialog 显示中才动作）──
-            lt_proto::UiEvent::ModelLoadDone { .. } => self.close_load_dialog(),
+            // ── 模型加载结束：全仓无生产者的预留事件（标签收敛实际走
+            // AsrDevice/AsrUnavailable），空臂满足穷尽匹配（WFC-2/D-100）──
+            lt_proto::UiEvent::ModelLoadDone { .. } => {}
             // ── 音频设备枚举回执（W5/R13）：`Cmd::RefreshDevices` 的响应——
             // 面板识别页设备缓存替换为事件载荷（帧内 COM 枚举已下线）；
             // 空表也落 Ready（收敛在途态，避免 Probe 重发）──
@@ -2566,6 +2585,14 @@ impl ApplicationHandler<UiMsg> for MultiWindowApp {
         // 0) 缺模型下载失败后点"关闭"：退出应用（原版 reject → main 返回）
         if self.app_state.modal.quit_requested {
             tracing::info!("退出请求（启动流对话框关闭）");
+            // WFC-3（D-100）：先全窗离屏再进收尾——收尾期 wgpu surface 先于窗口
+            // 销毁（字段序 painter 先于 windows），失内容窗口会被类刷子刷白 +
+            // NCCALCSIZE 抑制的原生标题栏弹回（2026-09-25 录屏实证）。隐藏与
+            // 销毁时序解耦，屏幕即刻干净；复用 set_visible 白拿拖动中断清理。
+            let ids: Vec<WinId> = self.windows.iter().map(|w| w.id).collect();
+            for id in ids {
+                self.set_visible(id, false);
+            }
             event_loop.exit();
             return;
         }

@@ -17,10 +17,11 @@
 
 ## 施工中
 
-- **窗口闪现整治（D-100）**——启动先画后显 / 加载弹窗退役并入悬浮窗状态行 / 退出先离屏后收尾；代码施工中未提交，用户实机测试后收口（`docs/window-flash-cleanup.md`）
+- （无）
 
 ## 遗留（完工包的实机走查与未了项，一行一包，清零即删）
 
+- window-flash-cleanup（D-100）：面板/确认窗/基准窗**首次显示**是否存在 ≤2 帧白帧存疑（取证采样 200ms 间隔未证实）——走查若扎眼，按先画后显机制扩展 `set_visible` 显示路径另立小包（`docs/archive/window-flash-cleanup.md` §五）
 - docs 指令体系元方法化（ADR-22）：三项未了——M11 句式归一未做 /「滚动测试基线」是否设真源待裁（现无真源，悬空指针已拆）/ 断言 9 指针检查为「§8 段内出现即过」（P3）（`docs/archive/agents-meta-restructure.md` §五）
 - 遗留清账批（D-96）：本阶段三项已执行（Q1 开关 / 瘦身 `21bd5a6` / Q4 收编 `d2cbad9`，记录 = `docs/archive/legacy-cleanup.md`）；余缓办队列 Q2/Q3/Q6/Q9/Q10 与 Q12 backlog 代码解禁后按档 §1 归队，走查 51 条转 issue 驱动按档 §3 单条验证——队列消纳完删本行
 - asr-chain-robustness（D-94）：实机走查 8 项（档 §5）；评审遗留 8 条（档 §10）——清空是否管字幕窗 + 三项测试缺口随「遗留清账批」，余 5 条 P3 留档（§10-4~8）（`docs/archive/asr-chain-robustness.md` §5/§10）

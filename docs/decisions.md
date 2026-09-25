@@ -87,7 +87,7 @@
 | D-97 | 2026-09-22 | 流程纪律载体工具中立：AGENTS.md + docs/prompts/ 纯 Markdown 为唯一载体，不绑单家 agent 软件扩展机制——prompts 技能化（.zcode/skills）验证候选项裁销 | docs/archive/agents-md-overhaul.md §五 |
 | D-98 | 2026-09-22 | 仓库治理两表态：tag protection + immutable releases 随下次发版一并开启（现不动手）；build-info 维持现状（本地 dist/ + step summary），不随 Release 永久留档 | docs/distribution.md §4 |
 | D-99 | 2026-09-22 | 复刻期 WP-8（ErrorBanner 与全局热键）正式销项：出处未证实，依档案「确认出处前不动工」建议裁销；需求真实出现时再立包 | docs/archive/parity-closure.md |
-| D-100 | 2026-09-25 | 窗口闪现整治三裁决：启动全窗隐藏创建 + 首帧后揭示（先画后显，杜绝窗口类刷子白底上屏）；运行期取消模型加载独立弹窗——ModelLoadStart 并入悬浮窗状态行 asr_label（对齐 less-is-more；ModelLoadDone 确认全仓无生产者留空臂）；退出先全窗离屏再 event_loop.exit（surface 持 Arc<Window> 致 drop 序重排无效，隐藏与销毁时序解耦） | docs/window-flash-cleanup.md |
+| D-100 | 2026-09-25 | 窗口闪现整治三裁决：启动全窗隐藏创建 + 首帧后揭示（先画后显，杜绝窗口类刷子白底上屏）；运行期取消模型加载独立弹窗——ModelLoadStart 并入悬浮窗状态行 asr_label（对齐 less-is-more；ModelLoadDone 确认全仓无生产者留空臂）；退出先全窗离屏再 event_loop.exit（surface 持 Arc<Window> 致 drop 序重排无效，隐藏与销毁时序解耦） | docs/archive/window-flash-cleanup.md |
 
 ## ADR-x（架构决策）
 

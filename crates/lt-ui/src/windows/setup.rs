@@ -1,9 +1,11 @@
-//! 启动流三合一对话框（对照原版 LiveTranslate/dialogs.py）：
+//! 启动流二合一对话框（对照原版 LiveTranslate/dialogs.py）：
 //! - 首启向导 SetupWizardDialog：hub/代理选择 + 15s 倒计时自动下载 + 日志区 + 失败重试；
-//! - 缺模型下载 ModelDownloadDialog：说明行 + 日志区，失败才出现"关闭"（成功自动关）；
-//! - 模型加载 _ModelLoadDialog：消息 + 日志区占位，无关闭按钮。
+//! - 缺模型下载 ModelDownloadDialog：说明行 + 日志区，失败才出现"关闭"（成功自动关）。
 //!
-//! 三者共用 WinId::Setup 常规窗口，按 AppState.load_dialog / AppState.startup 分派。
+//! 两者共用 WinId::Setup 常规窗口，按 AppState.startup 分派。模型加载
+//! _ModelLoadDialog 已退役（WFC-2/D-100）：加载态并入悬浮窗状态行
+//! （overlay.asr_label），运行期不再显示本窗——不变量：运行期弹窗 ⟺ 用户主动操作。
+//!
 //! 定时不在这里做：倒计时与 500ms 收尾延迟由宿主 about_to_wait 的 Setup 节拍驱动，
 //! 本模块只提供 [`needs_setup_tick`] 供宿主判断是否需要节拍。
 //!
@@ -32,11 +34,6 @@ pub fn setup_ui(
     session: &mut SessionView,
     modal: &mut ModalUi,
 ) {
-    // 模型加载对话框优先（与启动流互斥，加载框显示期间覆盖向导/下载内容）
-    if startup.load_dialog.is_some() {
-        load_dialog_ui(ui, startup);
-        return;
-    }
     let is_wizard = matches!(startup.flow, StartupFlow::Wizard(_));
     let is_missing = matches!(startup.flow, StartupFlow::DownloadMissing { .. });
     if is_wizard {
@@ -44,14 +41,13 @@ pub fn setup_ui(
     } else if is_missing {
         download_missing_ui(ui, startup, session, modal);
     } else {
-        // 无启动流且无加载框：窗口此时不应可见，兜底空显示
+        // 无启动流：窗口此时不应可见，兜底空显示
     }
 }
 
 /// Setup 窗是否需要节拍驱动：向导倒计时（Idle）/ 向导成功后的 500ms 收尾（Done）/
 /// 缺模型下载成功后的 500ms 收尾（finished）。失败与下载中由事件驱动，无需节拍。
-pub fn needs_setup_tick(flow: &StartupFlow, load_dialog: &Option<String>) -> bool {
-    let _ = load_dialog; // 加载框在调度期由事件驱动，无需节拍
+pub fn needs_setup_tick(flow: &StartupFlow) -> bool {
     match flow {
         StartupFlow::Wizard(w) => matches!(w.phase, WizardPhase::Idle | WizardPhase::Done),
         StartupFlow::DownloadMissing { finished, .. } => *finished,
@@ -206,21 +202,6 @@ fn download_missing_ui(
         session.send_cmd(lt_proto::Cmd::Stop);
         modal.quit_requested = true;
     }
-}
-
-/// 模型加载对话框（对照 _ModelLoadDialog，简化版）。
-/// 已知偏差：原版加载框内嵌 INFO 日志流（_LogCapture 捕获 tracing 输出），
-/// 本版日志窗 M4 才有，这里日志区暂为占位不接日志流，先显示消息本体（M4 接线）。
-fn load_dialog_ui(ui: &mut Ui, startup: &mut StartupUi) {
-    let Some(label) = startup.load_dialog.clone() else {
-        return;
-    };
-    ui.add_space(4.0);
-    // zh.yaml 模板 "正在加载 {name}...\n请稍候。"（YAML 双引号 \n 已解析为真实换行）
-    ui.label(lt_i18n::t("loading_model").replace("{name}", &label));
-    ui.add_space(6.0);
-    log_view(ui, &[]); // M2.5 占位；M4 接 LogLine 日志流
-                       // 无关闭按钮：加载结束由 ModelLoadDone / AsrDevice / AsrUnavailable 事件关窗
 }
 
 /// 日志区：暗底圆角 + 等宽小字 + ScrollArea 自动滚底。

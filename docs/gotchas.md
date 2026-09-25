@@ -293,6 +293,15 @@
 - **证据**：D-36 裁定 + docs/archive/subtitle-window-overhaul.md §5.5（wgpu-hal 30.0.1 `src/dx12/adapter.rs:1364-1365` 源码实锤、Painter = `egui_wgpu::winit::Painter`）、悬浮窗修复 2e94bf3、docs/archive/quit-flow-redesign.md（圆角抗毛刺法：`FILL_RADIUS`/`RIM_STROKE`）。
 - **版本**：wgpu-hal 30.0.1。
 
+## G-35 退出白帧：wgpu surface 先于窗口销毁 + winit 无边框窗 WS_CAPTION 弹回
+
+- **触发**：退出应用（确认退出 → `event_loop.exit()` → 收尾 drop）；或任何「渲染表面先亡、窗口后亡」的窗口期。启动期同机理反向表现：窗口创建即可见、首帧未画 → 白底上屏。
+- **症状**：收尾期主界面最后几帧突然变成一扇带原生标题栏（最小化/最大化/关闭）的纯白 Windows 窗，闪 ~0.25s 后消失；启动期表现为纯白空窗 ~0.7s 后才画出内容。
+- **根因**：① `MultiWindowApp` 字段序 painter 先于 windows，Rust 按声明序 drop → egui-wgpu surface（`Painter::set_window` 持 `Arc<Window>`）先销毁、窗口本体后销毁，窗口期内失内容的窗口被**窗口类背景刷子**刷白；② winit 0.30 无边框窗的 WS_CAPTION 恒置位（实测 style=0x16CF0000，靠 WM_NCCALCSIZE 抑制绘制），surface 亡后非客户区重画时抑制失效 → 标题栏弹回。
+- **对策**：与销毁时序解耦，**不调字段 drop 序**（surface 持 `Arc<Window>`，重排动不了窗口真身销毁时机）——退出分支在 `event_loop.exit()` 前全窗 `set_visible(false)` 先离屏；启动侧反向同理：全窗隐藏创建，`setup()` 尾先同步画首帧再揭示（app.rs WFC-1/WFC-3，D-100）。
+- **证据**：docs/archive/window-flash-cleanup.md §一（2026-09-25 gdigrab 30fps 录屏逐帧 + EnumWindows 实测：白窗矩形 = 悬浮窗 GetWindowRect 原位、title="LiveTranslate"、exstyle 含 LAYERED）。
+- **版本**：winit 0.30 / egui-wgpu 0.36.1。
+
 ---
 
 ## 候选清单（尚未收编——能五段式实证表述才收编，不臆造）
