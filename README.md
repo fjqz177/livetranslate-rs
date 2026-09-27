@@ -2,6 +2,8 @@
 
 Windows 上的实时音频翻译工具：**把系统声音抓下来 → 在本机做语音识别 → 用你自己的 AI 接口翻译 → 实时显示在悬浮窗或 OBS 字幕窗里。**
 
+> 📥 **下载安装**：到 [Releases](releases/latest) 取 `LiveTranslate-<版本>.zip`，解压双击即用 · **English**: [README.en.md](README.en.md)
+
 - Windows 10/11 x64（其他系统暂不支持）
 - **纯 CPU**：不需要显卡；语音识别在本机完成，**音频不出网**
 - **单个 exe**：双击就能跑，onnxruntime、语音检测模型、字体都打包在里面
@@ -25,13 +27,13 @@ Windows 上的实时音频翻译工具：**把系统声音抓下来 → 在本�
 
 没有向导，直接进主界面并自动开始工作。还没下载模型时，悬浮窗显示 `unavailable` 是正常的。
 
-（目前没有公开发布渠道：自己构建，或找维护者要本地 zip。）
+（还没装？到 [Releases](releases/latest) 下载 zip，解压后双击 `livetranslate.exe`。）
 
 **2. 下载识别模型**：「设置 → VAD / ASR」页
 
 - 「ASR 引擎」选引擎和档位——新手推荐 **SenseVoice**（中文好、体积小）；
 - 「音频」默认抓系统声音；想同时收自己说话，勾上「麦克风」；
-- 「下载源」国内选 **ModelScope**（快），国外选 HuggingFace；
+- 「下载源」选 **ModelScope**（国内快）：SenseVoice Small 直连 ModelScope，Nano / Qwen3 / Whisper 自动走 hf-mirror.com 镜像；选 **HuggingFace** 则全部直连官方源；
 - 点「**下载**」，进度条走完引擎自动就绪。
 
 模型大小参考：SenseVoice 约 230MB；Whisper 从 tiny 约 30MB 到 large-v3 约 1.1GB；Nano / Qwen3 各约 1GB。下载支持断点续传和取消。
@@ -166,9 +168,9 @@ lt-proto → lt-i18n → lt-models → lt-download → lt-audio → lt-asr → l
 | 下载 sherpa 库太慢/失败 | 加 `-Mirror https://gh-proxy.com/` 重跑，或设 `HTTPS_PROXY` 走代理 |
 | 链接报 `LNK2005` / `LNK1169`（CRT 冲突） | `.cargo/config.toml` 里两行 `CMAKE_*` 被改了 → 改回去（**勿动**） |
 | 测试报 StorageFull / 假死 | C 盘满了 → 把 `TMPDIR` 指到别的盘再跑 |
-| 模型下载极慢 | 「设置 → VAD/ASR」页把下载源换成 ModelScope |
+| 模型下载极慢 | 「设置 → VAD / ASR」页把下载源换成 ModelScope |
 | 提示「已在运行」 | 单实例设计 → 从托盘退出，或任务管理器结束旧进程 |
-| 切换界面语言没反应 | 语言在「VAD/ASR」页底部切换，**重启才生效** |
+| 切换界面语言没反应 | 语言在「VAD / ASR」页底部切换，**重启才生效** |
 
 ### 7. 文档去哪看
 

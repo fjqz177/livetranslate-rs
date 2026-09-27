@@ -82,10 +82,10 @@
 |---|---|---|
 | WD-7（已完工） | **发布链已落地并转正（D-88 首版 → D-90 重做）**：tag `v*` 或手动触发（演练）→ `scripts/release.ps1` 全链（检查→构建→打包→建草稿→回读校验）→ Releases 出草稿 → **人工转正**（CI 永不可发布）；本地等价 = `release` → `promote`（正文默认取 CHANGELOG 本版段落，`-NotesFile` 可覆盖）。**首发前置：旧 v0.1.0 tag 已被远古提交占用且不删 → 必须抬版本号**（只改根 `Cargo.toml` 一处） | 已落地 |
 | WD-8 | 检查更新按钮（D-20）：GET `releases/latest` 比对版本 → 提示 + 打开下载页；i18n zh/en 同步；失败静默 | 0.5d |
-| WD-9 | 公开 README 双语完善 + 原 Python 仓 README 导流横幅；渠道已裁沿用原仓（D-106，2026-09-28）；含 README.md 用户节与 README.txt 去重（页签名漂移已实证） | 0.5d |
+| WD-9 | **本仓面已完工（2026-09-28，#17）**：README 双语（新增 README.en.md）+ Releases 导流横幅 + whisper 下载指引改真实（M3）+ 与 README.txt 重叠段校对一致；**余原 Python 仓 README 导流横幅（外部仓，须维护者自行添加）** | 0.5d |
 | WD-10（可选） | 「打开配置目录/日志目录」入口（现仅缓存页可开 models/transcripts 目录）；panic hook 崩溃尾部落盘，便于反馈 | 0.5d |
 
-> 2026-09-22 表态（D-98）：tag protection + immutable releases 随下次发版一并开启；build-info 维持现状（本地 dist/ + step summary），不随 Release 永久留档。WD-4 前提修正（2026-09-22 用户实证）：部分模型仓本无 ModelScope 源，实际解法 = HF 镜像——whisper 双源降为未来功能候选，文档级动作只剩 README whisper 下载指引改真实（非代码清单 M3）。
+> 2026-09-22 表态（D-98）：tag protection + immutable releases 随下次发版一并开启；build-info 维持现状（本地 dist/ + step summary），不随 Release 永久留档。WD-4 前提修正（2026-09-22 用户实证）：部分模型仓本无 ModelScope 源，实际解法 = HF 镜像——whisper 双源降为未来功能候选，文档级动作只剩 README whisper 下载指引改真实（非代码清单 M3；2026-09-28 已随 #17 完成）。
 
 ## 5. 用户到手全旅程（裁决后目标态）
 
