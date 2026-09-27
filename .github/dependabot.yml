@@ -17,6 +17,13 @@
 #
 # cooldown 7 天：新版发布冷却一周再开 PR（meili/fd 式），压缩上游投毒窗口；
 # 对 actions 生态的实际生效有上游未关 issue 报怨，首个 PR 到达时核实间隔。
+#
+# cargo 生态（2026-09-28，#22）：仅登记以承载 ignore——glib 是 Linux-only 传递依赖
+# （tray-icon/muda → gtk 链，Windows 产物根本不编译；RUSTSEC 告警 0.15~0.20 跨 minor
+# 升不动），Dependabot security job 对它反复红。open-pull-requests-limit: 0 维持
+# D-88「cargo 升级手动」不变；ignore 条件随 yml 注入 security job 的 ignore-conditions。
+# 兜底：若安全任务仍对 glib 报错（ignore 未被 security updates 认账的旧行为），
+# 网页 Settings 关闭 Dependabot security updates（security.yml 的 cargo-deny 仍在盯 CVE）。
 
 version: 2
 updates:
@@ -26,3 +33,10 @@ updates:
       interval: monthly
     cooldown:
       default-days: 7
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 0
+    ignore:
+      - dependency-name: glib
