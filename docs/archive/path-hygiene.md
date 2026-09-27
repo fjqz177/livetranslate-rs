@@ -287,6 +287,6 @@ powershell -File scripts/check_personal_paths.ps1   # 退出码 0
 
 ## 9. 公开发布前检查单（关联 D-18"暂不公开发布"）
 
-1. 本计划 PH-1~PH-5 落地后，对全历史跑 `git filter-repo --replace-text`（替换清单 = §4.1/4.2 原值 → 脱敏形式），或评估" squash 重建公开仓"（历史短，成本可控）。
+1. 本计划 PH-1~PH-5 落地后，对全历史跑 `git filter-repo --replace-text`（替换清单 = §4.1/4.2 原值 → 脱敏形式），或评估" squash 重建公开仓"（历史短，成本可控）。（**2026-09-28 注记：本项裁不做——D-108。**历史仅路径字符串非凭据、向前已根治，重写已发布历史代价大于收益。）
 2. PH-6 裁决（参考图 GPU 型号）。
 3. `assets/SOURCES.md` 复核无本机信息；`assets/reference/` 20 图人工过一遍（日志窗示例行、缓存页模型体积等均无机器信息，已核）。

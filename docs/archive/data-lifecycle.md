@@ -365,4 +365,4 @@ C:\Users\<u>\.config\livetranslate\            ← config_dir() paths.rs:9-17；
 
 - **方法**：5 个并行只读研究代理（代码取证全部 file:line）+ 本机实测（`ls`/`du`/`reg query`/PE 导入表 Python 解析/开始菜单与注册表核对）。落盘点封闭清单由 4 个代理独立 grep 交叉，结果一致。
 - **局限（诚实边界）**：① sherpa-onnx/whisper.cpp/onnxruntime 等 C++ 原生库运行期写盘行为未逐行读 C++ 源证明（按惯例纯内存运算，Procmon 实机走查可闭环——可挂 WP-9）；② lnk 的 AUMID 属性未做机器侧读取验证（基于代码 :155-183）；③ HKCU\Software\Classes 深树未逐级扫（代码零写注册表 API 互证）；④ clippy 存量计数为文档快照（本次纪律禁 build 未实测）。
-- **关联待办**：WD-1~WD-5（分发链路）、WD-3（用户文档，§7.2 缺口直接可喂）、WP-9（实机调优，Procmon 走查）、§8 整改候选待用户裁决。
+- **关联待办**：WD-1~WD-5（分发链路）、WD-3（用户文档，§7.2 缺口直接可喂）、WP-9（实机调优，Procmon 走查）、§8 整改候选待用户裁决（**2026-09-28 注记**：十二项候选已全部裁决完毕，见 §8.1，本句过期）。
