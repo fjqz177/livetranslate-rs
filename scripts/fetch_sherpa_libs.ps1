@@ -57,8 +57,11 @@ if ($gitCmd) {
     foreach ($i in 1..3) {
         $cand = Join-Path $p 'usr\bin\tar.exe'
         if (Test-Path $cand) {
-            $ver = (& $cand --version 2>&1 | Select-Object -First 1)
-            if ($ver -match 'GNU tar') { $tar = $cand; break }
+            # 独立变量名：此处曾复用 $ver（sherpa-onnx-sys 版本号），探测后版本被
+            # tar --version 输出覆盖 → 第 80 行 URL 拼成 download/vtar (GNU tar) 1.35/…
+            #（G-36，2026-09-27 CI 冷缓存首跑实锤）。PowerShell 变量名大小写不敏感，短名勿共用。
+            $tarVer = (& $cand --version 2>&1 | Select-Object -First 1)
+            if ($tarVer -match 'GNU tar') { $tar = $cand; break }
         }
         $p = Split-Path -Parent $p
     }

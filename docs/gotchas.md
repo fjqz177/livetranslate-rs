@@ -302,6 +302,14 @@
 - **证据**：docs/archive/window-flash-cleanup.md §一（2026-09-25 gdigrab 30fps 录屏逐帧 + EnumWindows 实测：白窗矩形 = 悬浮窗 GetWindowRect 原位、title="LiveTranslate"、exstyle 含 LAYERED）。
 - **版本**：winit 0.30 / egui-wgpu 0.36.1。
 
+## G-36 fetch_sherpa_libs 版本变量被 tar 探测覆盖：冷缓存路径下载 URL 畸形
+
+- **触发**：CI sherpa 缓存未命中（Cargo.lock 变化 + 上次可命中的缓存过 7 天未访问被 GitHub 回收）→ `scripts/fetch_sherpa_libs.ps1` 走真下载路径；本地/热缓存恒走「已解包秒退」，永远看不到它——2026-09-15（3a0074e）引入即潜伏，首跑冷缓存实锤。
+- **症状**：CI「Fetch sherpa-onnx libs」步骤秒红：`curl: (3) URL rejected: Malformed input to a URL function`，URL 被拼成 `https://github.com/k2-fsa/sherpa-onnx/releases/download/vtar (GNU tar) 1.35/sherpa-onnx-v1.13.7-…`（`v$ver` 里整串探测输出混入）。
+- **根因**：PowerShell 变量名大小写不敏感（同 G-27 家族陷阱）——脚本第 39 行 `$ver` 存 sherpa-onnx-sys 版本号（Cargo.lock 解析），tar 探测循环内原地复用 `$ver` 接 `tar --version` 首行输出（`tar (GNU tar) 1.35`），其后拼 `$baseUrl` 的 `download/v$ver` 就被污染；秒退路径不用 `$ver` 所以热缓存无恙。
+- **对策**：探测循环内改用独立变量名 `$tarVer`（就地注释锁因）；短名禁共用——路径类叫 `*Path`、版本类叫 `*Ver`，同一脚本内一名一义。
+- **证据**：2026-09-27 v1.0.1 发布链 ci run 36315366056 失败日志（`gh run view --log-failed`；Cache 步显示 success 但实无缓存可还原 → 冷路径首跑）；修复提交见 git log 本文件。
+
 ---
 
 ## 候选清单（尚未收编——能五段式实证表述才收编，不臆造）
