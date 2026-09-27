@@ -7,13 +7,6 @@
 
 ## 待拍板（等用户裁决；草稿在 `docs/drafts/` 不入库）
 
-- **ASR 模型选型**——近一年开源模型调研（FireRed2-CTC / Cohere-14lang / Dolphin / 标点闸门候选，A~H 清单）；草稿 = `asr-model-survey-2026.md`
-- **增量识别的目标形态**——「做成什么样」未定案（设计无关缺陷批已拆出完工归档 = D-94；余包 B/D/G 与 J7 待定案）；草稿 = `incremental-asr-overhaul.md`
-- **跨平台分期 ①~⑤**——2026-09-11 可行性评估（无草稿，结论在会话记忆；P0 = 宿主 trait 化）
-- **llm 遗留⑪**——规则 4/5 偏离可见（`docs/archive/llm-api-round2.md`）
-- **UX 三期可选项**——前缀码枚举化 / 设置保存失败 UI 流 / 错误译文样式（`docs/archive/ux-feedback.md`）
-- **PH-6**——参考图 GPU 型号中性化重拍（可选）（`docs/archive/path-hygiene.md`）
-- **非代码面七块问题清单**——正式 33 条目（轻 21/中 6/待拍板 6，含 8 条老账重提）待逐条裁决；草稿 = `noncode-infra-issues-2026.md`
 
 ## 施工中
 
