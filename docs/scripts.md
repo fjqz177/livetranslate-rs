@@ -18,7 +18,7 @@
 > 契约纯度 = `crates/lt-proto/tests/contract_purity.rs`；源码禁令 = 根级 `clippy.toml`。均随 `cargo test` / `cargo clippy` 执行。
 
 ### `scripts/check_agents_health.ps1`
-总纲与文档引用网健康：AGENTS 引用路径 / G-编号死引用 / 看板小节 / 引用网扩面 / 归档对账 / 看板双真源（断言 2~7 + 9；断言 8 = 本目录页的双向对账，详见该脚本头注）。
+总纲与文档引用网健康：AGENTS 引用路径 / G-编号死引用 / 状态·流程双真源指针 / 引用网扩面 / 归档对账 / 流程装机四件套（断言 2~7 + 9；断言 8 = 本目录页的双向对账，详见该脚本头注）。
 典型调用：`pwsh -File scripts/check_agents_health.ps1`
 参数概览：`-RepoRoot`（一般不用传）。
 参数细节与失败行为以脚本头注为准。

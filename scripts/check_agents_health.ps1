@@ -69,7 +69,7 @@ if ($marker.Success) {
 } else {
     $mainLines = $totalLines
     $mainBytes = $totalBytes
-    $violations += "看板：找不到 '^## 8.' 分节标记，主体预算按全文件从严计算"
+    $violations += "状态与工单：找不到 '^## 8.' 分节标记，主体预算按全文件从严计算"
 }
 # ── 断言 2：引用路径存在 ──
 $refs = [regex]::Matches($content, '(?:docs|scripts|crates|assets|\.github|\.cargo|\.githooks)/[A-Za-z0-9_\-./]+') |
@@ -126,7 +126,6 @@ $scanRel += (Get-ChildItem -Path (Join-Path $RepoRoot 'scripts') -Filter '*.py' 
 $scanRel += (Get-ChildItem -Path (Join-Path $RepoRoot '.github/workflows') -Filter '*.yml' -File).FullName
 $readmeRoot = Join-Path $RepoRoot 'README.md'
 if (Test-Path -LiteralPath $readmeRoot) { $scanRel += $readmeRoot }
-# 豁免表：键 = '<相对路径>|<引用>'，值 = 理由（干跑发现误报时在此登记，禁无理由豁免）
 # 豁免表：键 = '<相对路径>|<引用>'，值 = 理由（干跑发现误报时在此登记，禁无理由豁免）
 # 登记史：①2026-09-19 五条——README/closeout 的「生成物不入库」政策提法 ×3，与 G-29 收编后
 # 坑册正文以掩盖目录作反例举证 ×2（fresh clone 验证法当场抓到，见 G-29/G-30）；
