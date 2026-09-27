@@ -88,6 +88,7 @@
 | D-98 | 2026-09-22 | 仓库治理两表态：tag protection + immutable releases 随下次发版一并开启（现不动手）；build-info 维持现状（本地 dist/ + step summary），不随 Release 永久留档 | docs/distribution.md §4 |
 | D-99 | 2026-09-22 | 复刻期 WP-8（ErrorBanner 与全局热键）正式销项：出处未证实，依档案「确认出处前不动工」建议裁销；需求真实出现时再立包 | docs/archive/parity-closure.md |
 | D-100 | 2026-09-25 | 窗口闪现整治三裁决：启动全窗隐藏创建 + 首帧后揭示（先画后显，杜绝窗口类刷子白底上屏）；运行期取消模型加载独立弹窗——ModelLoadStart 并入悬浮窗状态行 asr_label（对齐 less-is-more；ModelLoadDone 确认全仓无生产者留空臂）；退出先全窗离屏再 event_loop.exit（surface 持 Arc<Window> 致 drop 序重排无效，隐藏与销毁时序解耦） | docs/archive/window-flash-cleanup.md |
+| D-101 | 2026-09-27 | v1.0.1 发布 + D-98 兑现：tag protection ruleset `release-tags-immutable` 建成（id 24072922，target=tag 匹配 `refs/tags/v*`，禁删除/禁改指向、不禁新建，零 bypass——含管理员）；immutable releases 无 REST API 字段，待用户网页设置（Settings → General → Releases）；build-info 维持现状照旧 | docs/distribution.md §4 + scripts/release.ps1 |
 
 ## ADR-x（架构决策）
 
