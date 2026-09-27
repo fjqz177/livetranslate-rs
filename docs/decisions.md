@@ -96,6 +96,7 @@
 | D-106 | 2026-09-28 | 分发渠道裁决：沿用原仓单渠道——v1.0.x 已在原仓发布运转，无迁移理由；WD-9 余下 README 双语完善与导流横幅仍可做（零代码） | docs/distribution.md §4 |
 | D-107 | 2026-09-28 | WP-5 托盘气泡通知销项（G-7 对策落裁）：D-33 原生 Toast 已覆盖提示场景，气泡为重复面；与原版行为偏差 +1 随裁登记（D-99 同款销项模式） | docs/gotchas.md G-7 |
 | D-108 | 2026-09-28 | path-hygiene §9 全历史脱敏裁不做（`git filter-repo --replace-text` / squash 重建公开仓均不做）：历史仅含个人路径字符串、非凭据，向前已根治（repo_hygiene.rs 为现行权威，ADR-21），仓已 public 且 tag / immutable release 不可变——重写历史代价大于收益 | docs/archive/path-hygiene.md §9 |
+| D-109 | 2026-09-28 | llm-api ⑪ 规则 4/5 偏离可见拍板做：重建失败回执「仍在使用 <旧装置名>：<原因>」（规则 4）+ 自愈/降级偏离状态行「当前实际在用：X」（规则 5），界面与日志一致；改码面随解禁施工，排解禁队列 | docs/archive/llm-api-redesign.md §2.5 + issue #21 |
 
 ## ADR-x（架构决策）
 
