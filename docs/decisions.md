@@ -29,7 +29,7 @@
 | D-17 | 2026-09-07 | 字体默认统一内嵌思源黑体 + 行级级联，系统字体仅锦上添花 | docs/archive/rewrite-research.md |
 | D-18 | 2026-09-07 | 暂不公开发布，先本地 zip 分发验证 | docs/distribution.md |
 | D-19 | 2026-09-07 | 首启直进主界面，向导代码保留不接线（偏差转正） | docs/distribution.md |
-| D-20 | 2026-09-07 | 应用内「检查更新」按钮，随公开发布启用 | docs/distribution.md |
+| D-20 | 2026-09-07 | 应用内「检查更新」按钮，随公开发布启用 → 被 D-110 裁不做（2026-09-28） | docs/distribution.md |
 | D-21 | 2026-09-07 | 全模型双源：whisper 打破 always-HF + hub 缺失回落 | docs/distribution.md |
 | D-22 | 2026-09-08 | 缓存完整性探测由体积阈值改 manifest 逐文件校验 | docs/archive/download-overhaul.md |
 | D-23 | 2026-09-08 | 下载可取消，取消保留续传现场 | docs/archive/download-overhaul.md |
@@ -97,6 +97,7 @@
 | D-107 | 2026-09-28 | WP-5 托盘气泡通知销项（G-7 对策落裁）：D-33 原生 Toast 已覆盖提示场景，气泡为重复面；与原版行为偏差 +1 随裁登记（D-99 同款销项模式） | docs/gotchas.md G-7 |
 | D-108 | 2026-09-28 | path-hygiene §9 全历史脱敏裁不做（`git filter-repo --replace-text` / squash 重建公开仓均不做）：历史仅含个人路径字符串、非凭据，向前已根治（repo_hygiene.rs 为现行权威，ADR-21），仓已 public 且 tag / immutable release 不可变——重写历史代价大于收益 | docs/archive/path-hygiene.md §9 |
 | D-109 | 2026-09-28 | llm-api ⑪ 规则 4/5 偏离可见拍板做：重建失败回执「仍在使用 <旧装置名>：<原因>」（规则 4）+ 自愈/降级偏离状态行「当前实际在用：X」（规则 5），界面与日志一致；改码面随解禁施工，排解禁队列 | docs/archive/llm-api-redesign.md §2.5 + issue #21 |
+| D-110 | 2026-09-28 | WD-8 检查更新按钮 + WD-10 可选入口（打开配置/日志目录入口 + panic 崩溃尾部落盘）裁不做，推翻 D-20 的启用承诺：产品已发布运转而需求未被用户追讨，公开渠道 + 更新日志页已承接「知道新版本」的职责，维护面优先走查批；WD-10 panic 落盘若日后报障需要再立包 | docs/distribution.md §4 + issue #19 |
 
 ## ADR-x（架构决策）
 
