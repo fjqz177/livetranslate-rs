@@ -98,6 +98,7 @@
 | D-108 | 2026-09-28 | path-hygiene §9 全历史脱敏裁不做（`git filter-repo --replace-text` / squash 重建公开仓均不做）：历史仅含个人路径字符串、非凭据，向前已根治（repo_hygiene.rs 为现行权威，ADR-21），仓已 public 且 tag / immutable release 不可变——重写历史代价大于收益 | docs/archive/path-hygiene.md §9 |
 | D-109 | 2026-09-28 | llm-api ⑪ 规则 4/5 偏离可见拍板做：重建失败回执「仍在使用 <旧装置名>：<原因>」（规则 4）+ 自愈/降级偏离状态行「当前实际在用：X」（规则 5），界面与日志一致；改码面随解禁施工，排解禁队列 | docs/archive/llm-api-redesign.md §2.5 + issue #21 |
 | D-110 | 2026-09-28 | WD-8 检查更新按钮 + WD-10 可选入口（打开配置/日志目录入口 + panic 崩溃尾部落盘）裁不做，推翻 D-20 的启用承诺：产品已发布运转而需求未被用户追讨，公开渠道 + 更新日志页已承接「知道新版本」的职责，维护面优先走查批；WD-10 panic 落盘若日后报障需要再立包 | docs/distribution.md §4 + issue #19 |
+| D-111 | 2026-09-28 | SmartScreen 代码签名暂不买：证书年费对当前下载量是纯成本、警告劝退程度无反馈证据；再议触发 = 真实用户反馈「被 SmartScreen 拦住」，届时先评估 OV 级；维持未签名现状 | docs/distribution.md §4 尾注 + issue #18 |
 
 ## ADR-x（架构决策）
 
