@@ -2,7 +2,7 @@
 
 > **定位**：常青参考（docs/README.md 纪律①）——`docs/archive/` 的**唯一索引真源**；docs/README.md 只留指针（2026-09-24 自该页提取，表格整体搬来，内容未改）。
 > **一行一档**：文档 / 一句话（D-xx）/ 完工日期；细节只活在档案里，本表不转述。
-> **维护**：收口卡第 3 步——`git mv` 归档后本表加行（一行一档），与 docs/README.md 活跃表移行同一提交。
+> **维护**：归档波次（`docs/agents/workflow.md` §4）——`git mv` 归档后本表加行（一行一档），与 docs/README.md 活跃表移行同一提交。
 
 ## 归档文档
 
@@ -10,7 +10,7 @@
 |---|---|---|
 | `scripts-usability-review.md` | 脚本评审与守护瘦身底稿（ADR-21）：已删四守护死因存档 + check_agents_health 留任五点理由；S1/S2 已落地，S3/S4 未了项细单 + 归档核销注记（随用随做、须代码解禁） | 2026-09-27 |
 | `window-flash-cleanup.md` | 窗口闪现整治：启动先画后显（全窗隐藏创建+首帧揭示）/ 加载弹窗退役并入悬浮窗状态行（ModelLoadStart 内联、load_dialog 全删）/ 退出先全窗离屏再收尾；坑册 G-35 入册（D-100） | 2026-09-25 |
-| `agents-meta-restructure.md` | 指令体系元方法化（ADR-22）：AGENTS 三类内容层 + 准入三问 + 四层披露链；§7 镜像→5 条防呆、§8 条目外迁 `docs/board.md`、README 归档表外迁 `docs/archive-index.md`；守护断言 7 改读 + 断言 9 看板双真源；坑册 G-33/G-34 入册；全文件 -32% | 2026-09-24 |
+| `agents-meta-restructure.md` | 指令体系元方法化（ADR-22）：AGENTS 三类内容层 + 准入三问 + 四层披露链；§7 镜像→5 条防呆、§8 条目外迁看板（board.md，已随 D-102 退役）、README 归档表外迁 `docs/archive-index.md`；守护断言 7 改读 + 断言 9 看板双真源；坑册 G-33/G-34 入册；全文件 -32% | 2026-09-24 |
 | `legacy-cleanup.md` | 遗留清账批：总纲 §8 瘦身（15→10 行）+ 拍板批 12 项分堆处置（D-96~99）+ gotchas 收编 G-31/32 候选清零；走查 51 条转 issue 驱动验收附录（D-96） | 2026-09-22 |
 | `text-hygiene.md` | 文本卫生：全仓文本强制无 BOM 合法 UTF-8 + LF——G-23 政策翻转（剥 9 BOM）+ gitattributes 全仓锁 LF + check_personal_paths 三查 + editorconfig 改造（ADR-20） | 2026-09-19 |
 | `scripts-doc-system.md` | 脚本管理与文档体系：十一脚本头注用法卡（唯一细节真源）+ docs 顶层目录页（导览不抄细节）+ 断言 8 脚本登记面双向对账 + AGENTS §2 存量参数级细节收敛（ADR-19） | 2026-09-19 |
@@ -56,6 +56,6 @@
 
 ## 维护与对账（机械面）
 
-- **加行时机** = 收口卡第 3 步：`git mv docs/<包>.md docs/archive/` 后本表加行（一行一档），与 docs/README.md「活跃文档」表移行同一提交（docs/README.md 纪律⑤「挪卡连带改索引」）。
+- **加行时机** = 归档波次（`docs/agents/workflow.md` §4）：`git mv docs/<包>.md docs/archive/` 后本表加行（一行一档），与 docs/README.md「活跃文档」表移行同一提交（docs/README.md 纪律⑤「挪卡连带改索引」）。
 - **断言 7 解析口径**（`scripts/check_agents_health.ps1`）：本档「## 归档文档」节内的表行须形如 ``| `文件名.md` | … |``（小写 kebab 文件名），并与 `docs/archive/` 目录双向对账（缺行 / 多行 / 孤儿都红）；每份档案前 8 行须含「已归档 / 归档注记」。
 - **节序约束**：断言按「`## 归档文档` 到下一个 `## ` 标题」截取本节——本节的表不得置于文末（现由本「维护与对账」节兜底）；重建索引结构时勿删本节标题。

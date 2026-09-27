@@ -13,9 +13,9 @@ Issues and specs for this repo live as GitHub issues. Use the `gh` CLI for all o
 
 Infer the repo from `git remote -v`; `gh` does this automatically when run inside a clone.
 
-## Relationship to docs/board.md
+## Relationship to the (retired) board
 
-`docs/board.md`（待拍板 / 施工中 / 遗留）is the single source of truth for current work packages and stays authoritative for active work. GitHub Issues are the long-lived / external request pool that `to-tickets`, `triage`, `to-spec` and `wayfinder` read and write. Promote an issue into active work through the normal 拍板 flow (`docs/prompts/decision-request.md`); don't duplicate active board items as issues.
+GitHub Issues are the **single** work-status surface: `ready-for-human` = awaiting a user decision, `ready-for-agent` = spec-complete but **not** a work order — starting work still needs the user's explicit go (`docs/agents/workflow.md` §2). The former local board was retired on 2026-09-28 (D-102); don't recreate local boards. 拍板纪律 = AGENTS.md「拍板机制」节; don't duplicate active work outside issues.
 
 ## Pull requests as a triage surface
 

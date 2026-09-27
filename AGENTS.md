@@ -1,11 +1,11 @@
 # AGENTS.md — LiveTranslate-rs 工作区总纲
 
-> **本文是什么**：指令体系 L0 = 元方法层。只收三类内容——**① 不读就会做错事的硬约束**（必须 / 禁止）、**② 索引**（去哪儿读：路由表、真源指针、看板指针）、**③ 方法**（怎么干活：冷启动、流程卡、纪律、文风）。
+> **本文是什么**：指令体系 L0 = 元方法层。只收三类内容——**① 不读就会做错事的硬约束**（必须 / 禁止）、**② 索引**（去哪儿读：路由表、真源指针、状态指针）、**③ 方法**（怎么干活：冷启动、流程指针、纪律、文风）。
 > **准入三问**（往本文加一行 / 一节前先过，答错即下沉）：① 不读会犯错吗？（答「否」= 属于「读了才知道」的事实 → 下沉）② 有唯一真源在别处吗？（答「是」→ 只留指针，不留复述）③ 每个工作包都会变吗？（答「是」→ 迁活文档，本文只留机制与指针）。
-> **渐进披露链**：L0 本文（冷启动通读一遍，分钟级）→ L1 常青页与流程卡（`docs/`，按 §4 触发词按需读）→ L2 决策史与机器真源（`docs/archive/`、`crates/lt-app/tests/topology.rs`、`clippy.toml`）→ L3 未拍板草稿（`docs/drafts/`，不入库）。**禁把 L1/L2 内容抄回 L0**——准入三问是唯一例外通道。
-> **冷启动三步**：① 通读本文 → ② 打开 `docs/board.md`：命中「待拍板」的工作未点头禁动工 → ③ 开工先过 `docs/prompts/kickoff.md`。
-> **改文纪律**：改本文须在 commit message 说明信息去向（删了什么 → 迁去哪）；不设机械额度（ADR-18）——防回胀靠准入三问、§4 路由覆盖与评审漂移自查；§7 只引用 `docs/gotchas.md` 实存的 G-编号（禁死引用）；§8 三小节标题不得缺——`scripts/check_agents_health.ps1` 机械守护。
-> **生效**：2026-09-14 起取代复刻期总纲（ADR-15/16）；本次元方法化 = ADR-22。登记见 `docs/decisions.md`，旧版与迁移对照见 git 历史。
+> **渐进披露链**：L0 本文（冷启动通读一遍，分钟级）→ L1 常青页与流程真源（`docs/` 与 `docs/agents/`，按 §4 触发词按需读）→ L2 决策史与机器真源（`docs/archive/`、`crates/lt-app/tests/topology.rs`、`clippy.toml`）→ L3 未拍板草稿（`docs/drafts/`，不入库）。**禁把 L1/L2 内容抄回 L0**——准入三问是唯一例外通道。
+> **冷启动三步**：① 通读本文 → ② 开 GitHub Issues（`gh issue list`）：`ready-for-human` 项未点头禁动工（开工令规则 = `docs/agents/workflow.md` §2）→ ③ 开工先过 `docs/agents/workflow.md`。
+> **改文纪律**：改本文须在 commit message 说明信息去向（删了什么 → 迁去哪）；不设机械额度（ADR-18）——防回胀靠准入三问、§4 路由覆盖与评审漂移自查；§7 只引用 `docs/gotchas.md` 实存的 G-编号（禁死引用）；§8 状态 / 流程双真源指针不得缺——`scripts/check_agents_health.ps1` 机械守护。
+> **生效**：2026-09-14 起取代复刻期总纲（ADR-15/16）；元方法化 = ADR-22；流程层换血 = D-102（2026-09-28，Matt Pocock Skills 为唯一流程载体，七卡 / 看板退役）。登记见 `docs/decisions.md`，旧版与迁移对照见 git 历史。
 
 ## 1. 项目与硬约束
 
@@ -24,7 +24,7 @@
 ```bash
 cargo test --workspace                 # 收工门禁（不在 precommit 内）：全量测试全绿；真模型/真网络探针 #[ignore] 默认跳过
 cargo build --release -p lt-app         # 单 exe：target/release/livetranslate.exe（~76MB，滚动值）
-cargo run -p lt-app                     # GUI 冒烟；冒烟全套 = docs/prompts/live-check.md
+cargo run -p lt-app                     # GUI 冒烟；冒烟全套 = 根 README.md §二
 pwsh -File scripts/precommit.ps1         # 提交门禁：三项清单真源 = 该脚本头注（ADR-21）
 pwsh -File scripts/package_release.ps1   # 打包 dist/LiveTranslate-*.zip（发布路线 = docs/distribution.md）
 pwsh -File scripts/release.ps1 <动词>    # 发布链引擎：rehearse 空跑；真发布 = release → promote（转正永远人工）
@@ -56,28 +56,29 @@ git config core.hooksPath .githooks      # 每 clone 一次：钩子触发面 = 
 - **设置与值域**：Settings 运行时落盘唯一通道 = `Cmd::PersistSettings`（shell 直排 + 发布总线，300ms debounce 对齐原版）；命令草稿写入唯一落点 = shell `apply_settings_side_effects` 纯函数（E1-4），UI 只发命令不预写；值域判定一律走类型化透镜（`Settings::engine_key()/hub()/proxy_mode()` + EngineKey/Hub/ProxyMode，E2/D-79），域内禁 `== "funasr"` 类字面量比较（lt-asr / lt-models / lt-app worker 分派为单点分派边界豁免）。
 - **窗口动作**：UI → 宿主统一走 **`WinAction` 意图通道**（`crates/lt-ui/src/state.rs`，跨平台抽象缝）；新增窗口行为优先加变体让宿主执行，不在 UI 侧散点直调 Win32。
 
-## 4. 路由表（动手前必读；本表 = 提示词卡唯一索引）
+## 4. 路由表（动手前必读；本表 = 流程真源与各真源的唯一索引）
 
-> 卡（`docs/prompts/`）= 各阶段强制自查清单：出口条件不满足不得进入下一阶段。
+> 流程 = `docs/agents/workflow.md`（Matt Pocock Skills ↔ 本仓映射，D-102）：各阶段出口条件不满足不得进入下一阶段。
 
 | 场景 | 必读 |
 |---|---|
-| 任何工作包动第一行代码前 | `docs/prompts/kickoff.md` |
-| 施工中写码自查（分层/测试/提交） | `docs/prompts/implement.md` |
+| 任何工作包开工前 | `docs/agents/workflow.md`（主流程映射；Matt 技能自 `/grill-with-docs` 起） |
+| 施工中写码自查（分层/测试/提交） | `docs/agents/workflow.md` §3 + 本文 §3/§5 |
 | 改 GUI / 窗口 / 托盘 / Win32 / 字体渲染 | `docs/gotchas.md`（触发词索引）+ `assets/reference/` 参照截图（zh/en 各 10 张） |
 | **任何与预期不符的怪现象**（编译 / 链接 / 渲染 / 托盘 / 测试 / 脚本 / CI / 磁盘） | `docs/gotchas.md`（触发词五段式：触发/症状/根因/对策/证据；踩新坑当场记候选） |
-| **当前待拍板 / 施工中 / 遗留** | `docs/board.md`（§8 只留指针；未点头禁动工） |
+| **当前待办 / 施工中 / 等裁决** | GitHub Issues（`gh issue list`，状态真源）+ `docs/agents/workflow.md` §2 |
 | **首次 / 换机环境、日常命令** | 根 `README.md` §二 + `docs/scripts.md` |
 | **资产 / 字体 / 参照图来源** | `assets/SOURCES.md` + `docs/scripts.md` |
 | **架构分层细节 / 依赖白名单** | `crates/lt-app/tests/topology.rs` + 根 `README.md` §二5 |
 | 动契约（lt-proto / Settings 结构） | 本文 §3 冻结规则 + `docs/decisions.md` |
 | 翻译供应商 / LLM 接口改动 | 本文 §6 翻译域 + `docs/archive/llm-api-round2.md`（四厂商对照表） |
 | 模型加载 / 校验 / 缓存探测改动 | 本文 §6 模型信任 + `docs/archive/model-trust-repair.md` |
-| 立档 / 归档 / 收口 | `docs/README.md` 顶部纪律条文（唯一真源）+ `docs/prompts/closeout.md` |
-| 评审 / 代码自查 | `docs/prompts/review.md`（八原则） |
-| 需要用户裁决 | `docs/prompts/decision-request.md` |
-| 实机走查 / GUI 冒烟取证 | `docs/prompts/live-check.md` |
-| 会话收尾交接 | `docs/prompts/handoff.md` |
+| 立档 / 归档 / 收口 | `docs/README.md` 顶部纪律条文（唯一真源）+ `docs/agents/workflow.md` §4 |
+| 评审 / 代码自查 | 本文「评审八原则」节（用户 2026-09-12 定框） |
+| 需要用户裁决 | 本文「拍板机制」节 + `docs/agents/workflow.md` §2 |
+| 实机走查 / GUI 冒烟取证 | `docs/agents/workflow.md` §4 + 根 `README.md` §二 |
+| 会话收尾交接 | `docs/agents/workflow.md` §5 |
+| Matt 技能选用（想不起用哪个） | `/ask-matt`（套件地图）；装机面 = 本文「Agent skills」节 |
 | 写 / 改守护脚本 | 本文 G-20（grep 方言）+ G-23（文本卫生）+ G-30（定义源跳过自扫）+ G-33（节截取正则须行首锚定）+ 各守护脚本头注（风格对齐） |
 | 查脚本用法 / 新增脚本 | `docs/scripts.md` + 各脚本头注 |
 | 分发 / 打包 / 发布 | `docs/distribution.md` + `scripts/release.ps1` / `scripts/package_release.ps1` 头注 |
@@ -88,10 +89,12 @@ git config core.hooksPath .githooks      # 每 clone 一次：钩子触发面 = 
 - **主干直推**：提交直接落 main，无 PR 流程（CI 全分支 push 兜底）。
 - **提交**：里程碑 + 全绿即自主中文 commit（`feat(scope): 中文主题`）；收尾逐项显式 pathspec，禁 `git add -A` / `git add .`（G-19）；生成副产物不入库。
 - **定稿先行**：`docs(scope)` 定稿提交必须早于第一行实现代码；草稿只进 `docs/drafts/`（不入库）；决策号（D/ADR）随定稿**同一提交**登记 `docs/decisions.md`。
-- **收口**：一气呵成 + 收口三问（全文 = `docs/README.md` 纪律⑤ + `docs/prompts/closeout.md`）。
+- **收口**：一气呵成 + 收口三问（全文 = `docs/README.md` 纪律⑤ + `docs/agents/workflow.md` §4）。
 - **文本卫生**：全仓文本无 BOM 合法 UTF-8 + LF（ADR-20，`crates/lt-app/tests/repo_hygiene.rs` 机械拦截）。
 - **i18n**：zh/en 两份 yaml 必须同步修改（键集一致）。
-- **文风**：结论先行、判对项与待拍板项分列、最直白零废话（评审全文风 = `docs/prompts/review.md`）。
+- **文风**：结论先行、判对项与待拍板项分列、最直白零废话（评审八原则 = 本文下节）。
+- **评审八原则**（用户 2026-09-12 定框，勿改；自原评审卡迁入，D-102）：输出 = 结论先行、「判对项」与「待拍板项」分列、每项标 P0~P3 + 实证（源码行 / 测试 / 命令输出）、文风最直白零废话不迎合。原则：① 第一性：从需求倒推，不从惯性正推。② 对抗式：主动找反例，找不到才算稳。③ 消融：删掉这个组件/分支会坏什么？说不出 = 疑似死代码。④ 奥卡姆：有更简单的解释/实现吗？⑤ 不自信点：明示没把握的地方，别包装成确定。⑥ 独立思考：不迎合既有方案与先前结论（含自己先前给的）。⑦ 批判性思维：区分事实/推断/假设，标注证据等级。⑧ 高内聚低耦合：本次改动有没有打穿边界？**加查四条**：测试盲区逃逸（D-85：全绿 ≠ 对——专查测试没覆盖的路径与断言强度）；契约旁路精神面（字符串协议 / 直发 proxy / 裸 spawn——ADR-21 禁令的自查面）；文档漂移（代码改了本文 / docs / decisions.md 没跟上）；总纲回胀（新增内容过没过本文头注**准入三问**）。
+- **拍板机制**（需要用户裁决时；自原裁决请求卡迁入，D-102）：逐条出表 `| # | 问题 | 推荐 | 备选（≤2） | 代价 |`，一屏内；推荐必附一句理由，代价不许空；不确定意图先问齐再动工，别猜；**用户裁决优先于既有方案**——裁决引入新政策，不视为偏离；待裁决稿不提交（`docs/drafts/` 未跟踪放置，点头后再 docs 提交）；实施后逐条回报：做了 / 未做 + 为什么；新决策当场登记 `docs/decisions.md`（下一个号 = 表尾 + 1）。
 
 ## 6. 域速记（各处细裁的既往裁决——只留「不知道就会做错」的一句，细节追真源）
 
@@ -109,29 +112,24 @@ git config core.hooksPath .githooks      # 每 clone 一次：钩子触发面 = 
 4. G-12 `FontFamily::Name(族名)` 未注册即 panic：渲染一律经 `fonts::font_family_for` 取。
 5. G-14 事件循环线程禁同步 MessageBox / 模态（含 rfd MessageDialog）：用 egui 内嵌模态或原生通知。
 
-## 8. 看板（机制：一行一包、清零即删；**条目真源 = `docs/board.md`**，本区只留机制与指针）
+## 8. 状态与工单（机制：GitHub Issues 全接管，D-102；本区只留指针）
 
-### 待拍板（等用户裁决；草稿在 `docs/drafts/` 不入库）
-
-- 真源 = `docs/board.md` §待拍板。**命中任一条目 = 未拍板，未点头禁动工**（先走 `docs/prompts/decision-request.md`）。
-
-### 施工中
-
-- 真源 = `docs/board.md` §施工中（有包必列，完工即挪出）。
-
-### 遗留（完工包的实机走查与未了项，一行一包，清零即删）
-
-- 真源 = `docs/board.md` §遗留（每行 = 一包 + 归档档锚点）。
+- **状态真源** = 本仓 GitHub Issues（`gh` CLI 读写）：`ready-for-human` = 等用户裁决，**未点头禁动工**；`ready-for-agent` = 工单规格合格，**≠ 开工令**（动工须用户明示指派）；分诊标签映射 = `docs/agents/triage-labels.md`，流转细则 = `docs/agents/issue-tracker.md`。
+- **流程真源** = `docs/agents/workflow.md`（主流程映射 / 施工纪律 / 走查收口 / 交接卫生）。
+- 旧本地看板已退役删除（2026-09-28，D-102，历史看 git）——**禁再造本地看板**，防双真源。
 
 ## Agent skills
 
-> Matt Pocock 工程技能套件的仓库级装机配置；三个子节各指向 `docs/agents/` 下唯一真源，细节改那里，本节只留一行指针。
+> Matt Pocock 工程技能套件的仓库级装机配置；四个子节各指向 `docs/agents/` 下唯一真源，细节改那里，本节只留一行指针。
 
 ### Issue tracker
-工单池 = 本仓 GitHub Issues（`gh` CLI 读写）；`docs/board.md` 仍是当前施工唯一真源，分工见 `docs/agents/issue-tracker.md`。
+工单池与状态板 = 本仓 GitHub Issues（`gh` CLI 读写；本地看板已退役，D-102），分工见 `docs/agents/issue-tracker.md`。
 
 ### Triage labels
 五分诊标签沿用默认串（needs-triage / needs-info / ready-for-agent / ready-for-human / wontfix），映射表 = `docs/agents/triage-labels.md`。
 
 ### Domain docs
 single-context：根 `CONTEXT.md`（按需惰建）+ 决策真源 = `docs/decisions.md` 台账（套件所说 "ADR" ≙ 台账条目，不另设 ADR 目录）；消费规则 = `docs/agents/domain.md`。
+
+### Workflow
+流程层唯一真源 = `docs/agents/workflow.md`（D-102）：主流程映射、开工令规则（ready-for-agent ≠ 开工令）、施工 / 走查 / 交接纪律。

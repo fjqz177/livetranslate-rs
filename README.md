@@ -64,7 +64,7 @@ Windows 上的实时音频翻译工具：**把系统声音抓下来 → 在本�
 
 ## 二、给开发者
 
-> 动代码前务必先读一遍 [AGENTS.md](AGENTS.md)——硬性约束、分层规则、路由表都在那（坑册全本 = docs/gotchas.md；当前待办 = docs/board.md）。
+> 动代码前务必先读一遍 [AGENTS.md](AGENTS.md)——硬性约束、分层规则、路由表都在那（坑册全本 = docs/gotchas.md；流程真源 = docs/agents/workflow.md；工作状态 = GitHub Issues，`gh issue list`）。
 
 ### 1. 装三样工具
 
@@ -115,8 +115,11 @@ $env:LIVETRANSLATE_CONFIG_DIR = "$env:TEMP\lt-smoke"
 New-Item -ItemType Directory -Force $env:LIVETRANSLATE_CONFIG_DIR | Out-Null
 '{ "models_dir": "C:/Users/<你的用户名>/.config/livetranslate/models" }' |
   Set-Content -Encoding Ascii "$env:LIVETRANSLATE_CONFIG_DIR\settings.json"   # 必须 Ascii，UTF8 会写 BOM 导致配置解析失败
+$env:LIVETRANSLATE_SHOW_PANEL = "1"   # 走查旗标：启动直开控制面板（不用可去掉）
 cargo run -p lt-app
 ```
+
+产物能起的最小证明：`target/release/livetranslate.exe --version`（无 GUI，打印版本即退）。
 
 ### 4. 提交代码
 
@@ -172,7 +175,8 @@ lt-proto → lt-i18n → lt-models → lt-download → lt-audio → lt-asr → l
 | 文档 | 内容 |
 |---|---|
 | [AGENTS.md](AGENTS.md) | 项目定位、硬性约束、分层规则、路由表与 5 条大坑防呆（**施工第一参考**） |
-| [docs/board.md](docs/board.md) | 工作看板：待拍板 / 施工中 / 遗留（施工前必看） |
+| [docs/agents/workflow.md](docs/agents/workflow.md) | 开发流程：Matt Skills ↔ 本仓映射（流程真源，D-102） |
+| GitHub Issues（`gh issue list`） | 工作状态板：ready-for-human 等裁决 / ready-for-agent 规格合格（≠ 开工令） |
 | [docs/README.md](docs/README.md) | 文档总索引（活跃文档 + 归档决策史） |
 | [docs/distribution.md](docs/distribution.md) | 分发路线：打包规范、发布手册、待办 |
 | [docs/archive/architecture-v2.md](docs/archive/architecture-v2.md) | 架构 2.0：十 crate 拓扑与依赖白名单 |

@@ -3,23 +3,24 @@
 #
 # 断言八组（编号 2~7 沿用防引用断裂；8 号曾为水位线断言，ADR-18 退役后由
 # ADR-19 复用为脚本登记面——史档中的「断言 8」均指水位线，现行定义以本头注为准；
-# 9 号 = 看板双真源对账，ADR-22 新增；原 1/1b 额度与水位线已退役）：
+# 9 号曾为看板双真源对账（ADR-22），D-102 看板退役后改为流程装机完整性；
+# 原 1/1b 额度与水位线已退役）：
 #   2. 引用路径存在：AGENTS.md 内引用的仓库内路径全部存在
 #      （docs/ scripts/ crates/ assets/ .github/ .cargo/ .githooks/ 前缀；
 #        docs/drafts/ 与含通配符的路径跳过）
 #   3. G-编号无死引用：AGENTS 出现的每个 G-编号均在 docs/gotchas.md 实存
 #      + gotchas 编号连续（防速查与全书漂移）
-#   4. 看板三小节标题（待拍板/施工中/遗留）存在
-#   5. 引用路径存在（扩面）：docs 顶层 md / prompts / scripts / workflows / 根 README；
-#      scripts|workflows 指向 docs/drafts/<文件> = 违规，docs 顶层/prompts 指向 = WARN
+#   4. AGENTS §8 段内状态/流程双真源指针（GitHub Issues + docs/agents/workflow.md，D-102）
+#   5. 引用路径存在（扩面）：docs 顶层 md / docs/agents / scripts / workflows / 根 README；
+#      scripts|workflows 指向 docs/drafts/<文件> = 违规，docs 顶层|agents 指向 = WARN
 #   6. G-编号全仓无死引用（同扫描集，gotchas 本身 = 定义源不扫；非数字残留一并逮）
 #   7. 归档机械面：docs/archive-index.md 归档表 ↔ docs/archive 目录双向对账
 #      + 每份档案前 8 行含「已归档/归档注记」标记
 #   8. 脚本登记面：scripts/ 下每个 .ps1/.py 须在 docs 顶层 scripts.md 有节
 #      （### `scripts/<名>`），节指向的脚本须实存——双向对账，无豁免
 #      （对账读目录页与文件清单，不存在内容自触发，守护自身同样须登记）
-#   9. 看板双真源对账：docs/board.md 三小节（待拍板/施工中/遗留）存在
-#      + AGENTS.md 含指向 docs/board.md 的指针（防条目回流宪法 / 防指针丢失）
+#   9. 流程装机完整性：docs/agents/ 四件套实存（workflow.md = 流程真源，
+#      issue-tracker / triage-labels / domain = 装机配置；D-102）
 #
 # 实现约束（G-20，docs/gotchas.md）：文本匹配用 PowerShell 原生正则，勿调外部 grep。
 # 触发面：precommit.ps1 第二项 + CI gate job；本地钩子触发面 = 「门禁读谁、谁触发」
@@ -103,20 +104,23 @@ if (-not (Test-Path -LiteralPath $gotchasPath)) {
     }
 }
 
-# ── 断言 4：看板三小节标题 ──
-foreach ($h in '### 待拍板', '### 施工中', '### 遗留') {
-    if (-not [regex]::IsMatch($content, [regex]::Escape($h))) {
-        $violations += "看板缺小节：'$h'（纪律①机制的机械面）"
-    }
+# ── 断言 4：AGENTS §8 状态/流程双真源指针（D-102）──
+$sec8 = [regex]::Match($content, '(?m)^## 8\.[\s\S]*$')
+$sec8Text = if ($sec8.Success) { $sec8.Value } else { '' }
+if ($sec8Text -notmatch 'GitHub Issues') {
+    $violations += "AGENTS.md §8 段内无 'GitHub Issues' 状态真源指针（D-102）"
+}
+if ($sec8Text -notmatch 'docs/agents/workflow\.md') {
+    $violations += "AGENTS.md §8 段内无 docs/agents/workflow.md 流程真源指针（D-102）"
 }
 
-# ── 断言 5：引用路径存在扩面（D-93 DH-14）──
-# 扫描集 = docs 顶层 *.md（不递归）+ docs/prompts/*.md + scripts/*.ps1|.py + .github/workflows/*.yml + 根 README.md
+# ── 断言 5：引用路径存在扩面（D-93 DH-14；D-102 scan 集 prompts → docs/agents）──
+# 扫描集 = docs 顶层 *.md（不递归）+ docs/agents/*.md + scripts/*.ps1|.py + .github/workflows/*.yml + 根 README.md
 # 排除：docs/archive/（史档引用为当时快照）、docs/gotchas.md（断言 6 定义源）、gitignored 三目录
-# 草稿区分级：scripts|workflows 指向 docs/drafts/<文件> = 违规；docs 顶层/prompts 指向 = WARN（AGENTS 保留既有豁免）
+# 草稿区分级：scripts|workflows 指向 docs/drafts/<文件> = 违规；docs 顶层|agents 指向 = WARN（AGENTS 保留既有豁免）
 $scanRel = @()
 $scanRel += (Get-ChildItem -Path (Join-Path $RepoRoot 'docs') -Filter '*.md' -File).FullName
-$scanRel += (Get-ChildItem -Path (Join-Path $RepoRoot 'docs/prompts') -Filter '*.md' -File).FullName
+$scanRel += (Get-ChildItem -Path (Join-Path $RepoRoot 'docs/agents') -Filter '*.md' -File).FullName
 $scanRel += (Get-ChildItem -Path (Join-Path $RepoRoot 'scripts') -Filter '*.ps1' -File).FullName
 $scanRel += (Get-ChildItem -Path (Join-Path $RepoRoot 'scripts') -Filter '*.py' -File).FullName
 $scanRel += (Get-ChildItem -Path (Join-Path $RepoRoot '.github/workflows') -Filter '*.yml' -File).FullName
@@ -127,12 +131,15 @@ if (Test-Path -LiteralPath $readmeRoot) { $scanRel += $readmeRoot }
 # 登记史：①2026-09-19 五条——README/closeout 的「生成物不入库」政策提法 ×3，与 G-29 收编后
 # 坑册正文以掩盖目录作反例举证 ×2（fresh clone 验证法当场抓到，见 G-29/G-30）；
 # 根因均为本机未入库同名目录掩盖 Test-Path 判定、43 个积压提交首推 CI 才暴露。
+# ② 2026-09-28 D-102——退役 closeout 卡键，新增 domain.md 政策提法与台账史行退役路径提法三条。
 $refExempt = @{
-    'README.md|docs/architecture/'                = '正文讲架构图等生成物不入库的政策提法，非仓库内链接'
-    'README.md|docs/ui-audit/'                    = '正文讲走查截图等生成物不入库的政策提法，非仓库内链接'
-    'docs/prompts/closeout.md|docs/architecture/' = '收口卡讲副产物不入库的政策提法，非仓库内链接'
-    'docs/gotchas.md|docs/architecture/'          = 'G-29 以掩盖目录为反例举证（坑册合法引用），非仓库内链接'
-    'docs/gotchas.md|docs/ui-audit/'              = 'G-29 以掩盖目录为反例举证（坑册合法引用），非仓库内链接'
+    'README.md|docs/architecture/'       = '正文讲架构图等生成物不入库的政策提法，非仓库内链接'
+    'README.md|docs/ui-audit/'           = '正文讲走查截图等生成物不入库的政策提法，非仓库内链接'
+    'docs/gotchas.md|docs/architecture/' = 'G-29 以掩盖目录为反例举证（坑册合法引用），非仓库内链接'
+    'docs/gotchas.md|docs/ui-audit/'     = 'G-29 以掩盖目录为反例举证（坑册合法引用），非仓库内链接'
+    'docs/agents/domain.md|docs/adr/'    = '政策提法（禁建该目录），非仓库内链接（D-102 扩扫 docs/agents 进网）'
+    'docs/decisions.md|docs/prompts/'    = '台账史行（D-97/ADR-15/D-102）提及退役卡区路径；台账行禁改写，只加取代注记（D-102）'
+    'docs/decisions.md|docs/board.md'    = '台账史行（ADR-22/D-102）提及退役看板路径；台账行禁改写，只加取代注记（D-102）'
 }
 foreach ($f in $scanRel) {
     $rel = ([IO.Path]::GetRelativePath($RepoRoot, $f)) -replace '\\', '/'
@@ -225,23 +232,11 @@ if (-not (Test-Path -LiteralPath $scriptsMd)) {
     if ($orphans.Count -gt 0)      { $violations += "目录页孤儿条目：$($orphans -join ', ')（册上有节、磁盘无脚本）" }
 }
 
-# ── 断言 9：看板双真源对账（ADR-22）──
-# (a) docs/board.md 三小节存在（条目真源，与 AGENTS §8 同名对齐）
-# (b) AGENTS §8 段内（'^## 8.' 到文末）含 docs/board.md 指针——只查到全文级会被 §4/头注的同名提法掩盖
-$boardPath = Join-Path $RepoRoot 'docs/board.md'
-if (-not (Test-Path -LiteralPath $boardPath)) {
-    $violations += "看板真源（docs/board.md）不存在——AGENTS §8 指针悬空"
-} else {
-    $boardDoc = [System.IO.File]::ReadAllText($boardPath)
-    foreach ($h in '## 待拍板', '## 施工中', '## 遗留') {
-        if (-not [regex]::IsMatch($boardDoc, [regex]::Escape($h))) {
-            $violations += "docs/board.md 缺小节：'$h'（条目真源结构；AGENTS §8 三小节同名对齐）"
-        }
-    }
-    $sec8 = [regex]::Match($content, '(?m)^## 8\.[\s\S]*$')
-    $sec8Text = if ($sec8.Success) { $sec8.Value } else { '' }
-    if ($sec8Text -notmatch 'docs/board\.md') {
-        $violations += "AGENTS.md §8 段内无 docs/board.md 指针（看板双真源防线断）"
+# ── 断言 9：流程装机完整性（D-102）──
+# docs/agents/ 四件套实存（workflow.md = 流程真源；issue-tracker / triage-labels / domain = 装机配置）
+foreach ($f in 'docs/agents/workflow.md', 'docs/agents/issue-tracker.md', 'docs/agents/triage-labels.md', 'docs/agents/domain.md') {
+    if (-not (Test-Path -LiteralPath (Join-Path $RepoRoot $f))) {
+        $violations += "流程装机缺件：$f（D-102 四件套）"
     }
 }
 
@@ -261,5 +256,5 @@ if ($violations.Count -gt 0) {
 }
 
 Write-Host ""
-Write-Host "ok：主体 $mainLines 行/$mainBytes B + 全文件 $totalLines 行/$totalBytes B（不设额度，ADR-18）；引用 / G-编号 / 看板 / 引用网扩面 / 归档机械面 / 脚本登记面 / 看板双真源全过（提醒 $($warn.Count) 条）" -ForegroundColor Green
+Write-Host "ok：主体 $mainLines 行/$mainBytes B + 全文件 $totalLines 行/$totalBytes B（不设额度，ADR-18）；引用 / G-编号 / 状态指针 / 引用网扩面 / 归档机械面 / 脚本登记面 / 装机四件套全过（提醒 $($warn.Count) 条）" -ForegroundColor Green
 exit 0
