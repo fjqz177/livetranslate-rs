@@ -122,3 +122,16 @@ git config core.hooksPath .githooks      # 每 clone 一次：钩子触发面 = 
 ### 遗留（完工包的实机走查与未了项，一行一包，清零即删）
 
 - 真源 = `docs/board.md` §遗留（每行 = 一包 + 归档档锚点）。
+
+## Agent skills
+
+> Matt Pocock 工程技能套件的仓库级装机配置；三个子节各指向 `docs/agents/` 下唯一真源，细节改那里，本节只留一行指针。
+
+### Issue tracker
+工单池 = 本仓 GitHub Issues（`gh` CLI 读写）；`docs/board.md` 仍是当前施工唯一真源，分工见 `docs/agents/issue-tracker.md`。
+
+### Triage labels
+五分诊标签沿用默认串（needs-triage / needs-info / ready-for-agent / ready-for-human / wontfix），映射表 = `docs/agents/triage-labels.md`。
+
+### Domain docs
+single-context：根 `CONTEXT.md`（按需惰建）+ 决策真源 = `docs/decisions.md` 台账（套件所说 "ADR" ≙ 台账条目，不另设 ADR 目录）；消费规则 = `docs/agents/domain.md`。
