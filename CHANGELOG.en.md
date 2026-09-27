@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.0.1] - 2026-09-25
+
+Window experience fixes.
+
+- **A complete interface right from launch**: every window is now painted before it is shown — no more white flash at startup and no separate "loading model" popup; what appears is simply the overlay (and the subtitle window, if enabled).
+- **No loading popups while running**: when switching ASR models or audio devices, auto-reloading a corrupted model file, or recovering from a disconnect, the loading status now shows on the overlay's status line instead of a separate window that steals focus. Windows you open yourself — control panel, benchmark, confirm dialogs, export dialogs — are unaffected.
+- **Clean exit**: once you confirm, all windows vanish within a frame or two while the app shuts down quietly in the background — no stray white window between the confirmation and process exit.
+
 ## [1.0.0] - 2026-09-19
 
 First official release.
