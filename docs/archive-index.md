@@ -8,6 +8,7 @@
 
 | 文档 | 一句话（D-xx） | 完工日期 |
 |---|---|---|
+| `scripts-usability-review.md` | 脚本评审与守护瘦身底稿（ADR-21）：已删四守护死因存档 + check_agents_health 留任五点理由；S1/S2 已落地，S3/S4 未了项细单 + 归档核销注记（随用随做、须代码解禁） | 2026-09-27 |
 | `window-flash-cleanup.md` | 窗口闪现整治：启动先画后显（全窗隐藏创建+首帧揭示）/ 加载弹窗退役并入悬浮窗状态行（ModelLoadStart 内联、load_dialog 全删）/ 退出先全窗离屏再收尾；坑册 G-35 入册（D-100） | 2026-09-25 |
 | `agents-meta-restructure.md` | 指令体系元方法化（ADR-22）：AGENTS 三类内容层 + 准入三问 + 四层披露链；§7 镜像→5 条防呆、§8 条目外迁 `docs/board.md`、README 归档表外迁 `docs/archive-index.md`；守护断言 7 改读 + 断言 9 看板双真源；坑册 G-33/G-34 入册；全文件 -32% | 2026-09-24 |
 | `legacy-cleanup.md` | 遗留清账批：总纲 §8 瘦身（15→10 行）+ 拍板批 12 项分堆处置（D-96~99）+ gotchas 收编 G-31/32 候选清零；走查 51 条转 issue 驱动验收附录（D-96） | 2026-09-22 |
