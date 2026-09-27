@@ -62,7 +62,7 @@
 - **触发**：想做托盘气泡通知。
 - **症状**：API 不存在。
 - **根因**：tray-icon 0.24 未封装。
-- **对策**：`Shell_NotifyIcon` 直调或换库（WP-5 遗留，届时按产品价值裁决）。
+- **对策**：WP-5 托盘气泡已裁**不做**（D-107，2026-09-28——D-33 原生 Toast 已覆盖提示场景，气泡为重复面）；若未来翻案，`Shell_NotifyIcon` 直调或换库。
 - **证据**：旧 AGENTS 大坑 7。
 - **版本**：tray-icon 0.24。
 
@@ -310,6 +310,14 @@
 - **对策**：探测循环内改用独立变量名 `$tarVer`（就地注释锁因）；短名禁共用——路径类叫 `*Path`、版本类叫 `*Ver`，同一脚本内一名一义。
 - **证据**：2026-09-27 v1.0.1 发布链 ci run 36315366056 失败日志（`gh run view --log-failed`；Cache 步显示 success 但实无缓存可还原 → 冷路径首跑）；修复提交见 git log 本文件。
 
+## G-37 构建期 LNK4098/LIBCMT 警告 = G-5 双栈 CRT 固有产物，无害
+
+- **触发**：`cargo build --release` 链接 lt-app（1.98.1 实测；rustc 1.97 起该 lint 默认 warn）。
+- **症状**：`linker stdout: LINK : warning LNK4098: defaultlib 'LIBCMT' conflicts with use of other libs`（中文 link.exe 另多一行「正在创建库 … .lib 和对象 … .exp」进度行；英文链 CI 只显 LNK4098——本地化进度行未被识别）。
+- **根因**：sherpa/whisper 静态库带 `/DEFAULTLIB:LIBCMT`（/MT）与 Rust 侧 /MD 冲突（G-5 双栈 CRT 的固有产物，链接器自动择一并警告）；`[workspace.lints.rust] warnings = "deny"` 管不到（lint 带 `ignore_deny_warnings`）。
+- **对策**：无害不修（无 LNK2005/2019，动态 CRT 胜出，与 data-lifecycle C3=A 一致）；噪音静音已裁 `[lints.rust] linker_messages = "allow"`（D-103）——施工随代码解禁，落地后更新本行。上游 1.99 起计划归 allow-by-default 的 `linker_info` 会让进度行自动消失（尚未发布，届时复核）。
+- **证据**：`dumpbin /directives`（静态库带 /DEFAULTLIB:LIBCMT）、`/dependents`（exe 导入 VCRUNTIME140.dll+UCRT）、v1.0.0 发布链 run 35381400025 与 09-18 ci run 35383389311 同警告且全绿。
+
 ---
 
 ## 候选清单（尚未收编——能五段式实证表述才收编，不臆造）
@@ -317,4 +325,4 @@
 - ~~visual-parity 施工「horizontal 无限宽」egui 布局陷阱~~ **已收编 G-31（2026-09-22）**。
 - ~~overlay-realign 施工「opa() 刻度错位」~~ **已收编 G-32（2026-09-22）**。
 - ~~visual-parity 施工「hidden 窗口定位失效」~~ **撤出候选（2026-09-22 回读取证未命中）**：visual-parity.md 全文无此记载、git 史无对应提交（该档施工修复仅 horizontal_wrapped / 删嵌套 ScrollArea / 面板居中三件）——出处仅存于施工会话记忆，无法实证不收编；实机再遇时重新立案。
-- 构建期 `linker_messages` 警告（1.98.1 实测，2026-09-24 立案）：`cargo build --release` 链接 lt-app 报 `linker stdout: LINK : warning LNK4098: defaultlib 'LIBCMT' conflicts with use of other libs`（中文 link.exe 另多一行「正在创建库 … .lib 和对象 … .exp」；英文链 CI 只显 LNK4098——本地化进度行未被识别，上游 1.99 起计划归 allow-by-default 的 `linker_info` 自动消失（尚未发布，收编时复核），LNK4098 因带 LNK 码预计仍在）。已实证无害 + 非新发：`dumpbin /directives` 见 sherpa/whisper 静态库带 `/DEFAULTLIB:LIBCMT`（/MT）与 Rust 侧 /MD 冲突（G-5 双栈 CRT 的固有产物，链接器自动择一并警告）；无 LNK2005/LNK2019，`dumpbin /dependents` 见 exe 导入 VCRUNTIME140.dll+UCRT（动态 CRT 胜出，与 docs/archive/data-lifecycle.md C3=A 一致）；v1.0.0 发布链 run 35381400025 与 2026-09-18 ci run 35383389311 均同一警告且全绿。注意 `[workspace.lints.rust] warnings = "deny"` 覆盖不到它（lint 带 `ignore_deny_warnings`）。待拍板：是否 `[lints.rust] linker_messages = "allow"` 静音（代价：连真链接警告一起藏）。
+- ~~构建期 `linker_messages` 警告（1.98.1 实测，2026-09-24 立案）~~ **已收编 G-37（2026-09-28），静音已裁 D-103（施工随代码解禁）**。

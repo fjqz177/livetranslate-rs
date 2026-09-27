@@ -90,6 +90,11 @@
 | D-100 | 2026-09-25 | 窗口闪现整治三裁决：启动全窗隐藏创建 + 首帧后揭示（先画后显，杜绝窗口类刷子白底上屏）；运行期取消模型加载独立弹窗——ModelLoadStart 并入悬浮窗状态行 asr_label（对齐 less-is-more；ModelLoadDone 确认全仓无生产者留空臂）；退出先全窗离屏再 event_loop.exit（surface 持 Arc<Window> 致 drop 序重排无效，隐藏与销毁时序解耦） | docs/archive/window-flash-cleanup.md |
 | D-101 | 2026-09-27 | v1.0.1 发布 + D-98 兑现：tag protection ruleset `release-tags-immutable` 建成（id 24072922，target=tag 匹配 `refs/tags/v*`，禁删除/禁改指向、不禁新建，零 bypass——含管理员）；immutable releases 无 REST API 字段，待用户网页设置（Settings → General → Releases）；build-info 维持现状照旧 | docs/distribution.md §4 + scripts/release.ps1 |
 | D-102 | 2026-09-28 | 流程层换血：Matt Pocock Skills 为唯一流程载体（推翻 D-97）——docs/prompts/ 七卡删除，孤本知识迁 AGENTS §5（评审八原则 + 拍板机制）与根 README §二（冒烟配方）与 docs/agents/workflow.md（流程纪律）；docs/board.md 退役，状态真源移交 GitHub Issues（ready-for-agent ≠ 开工令）；check_agents_health 断言 4/5/9 改口并扩扫 docs/agents/；ADR-15/22 流程面注记取代。用户四项拍板：删看板 / 删卡 / 标签非开工令 / 授权断言改口 | docs/agents/workflow.md |
+| D-103 | 2026-09-28 | LNK4098 链接警告静音拍板：`[lints.rust] linker_messages = "allow"`——实证无害 + 非新发（G-37：dumpbin 三实证 + v1.0.0 发布链/09-18 CI 同警告全绿；`warnings = "deny"` 管不到带 ignore_deny_warnings 的该 lint）；Cargo.toml 属代码面，施工随解禁令 | docs/gotchas.md G-37 |
+| D-104 | 2026-09-28 | 滚动测试基线不设真源：真源 = `cargo test --workspace` 全绿本身，数字是滚动值（D-95 已定调数字不作门槛），立真源必漂移；ADR-22 未了项就此全销（断言 9 已随 D-102 重写消解，M11 句式归一转 issue #3 施工） | GitHub issue #3 |
+| D-105 | 2026-09-28 | WD-6 首启缺模型轻引导横幅拍板做，P2 低优先——D-78 向导精神的轻量兑现；随代码解禁施工 | docs/distribution.md §3.3 |
+| D-106 | 2026-09-28 | 分发渠道裁决：沿用原仓单渠道——v1.0.x 已在原仓发布运转，无迁移理由；WD-9 余下 README 双语完善与导流横幅仍可做（零代码） | docs/distribution.md §4 |
+| D-107 | 2026-09-28 | WP-5 托盘气泡通知销项（G-7 对策落裁）：D-33 原生 Toast 已覆盖提示场景，气泡为重复面；与原版行为偏差 +1 随裁登记（D-99 同款销项模式） | docs/gotchas.md G-7 |
 
 ## ADR-x（架构决策）
 

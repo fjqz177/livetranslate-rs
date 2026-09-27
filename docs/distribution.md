@@ -65,7 +65,7 @@
 | **WD-3** | 已完工 | 随包法律与说明（立项时均无）：根目录 `LICENSE`、`NOTICES.md`、简版 `README.txt`——现均已入库并随包 | 0.5d | 实产名与立项名不同：README_zh.md→README.txt、THIRD_PARTY_NOTICES.md→NOTICES.md（见 §3.1） |
 | **WD-4** | **未做（预案；前提 2026-09-22 修正——降为未来功能候选，见 §4 尾注）** | whisper 双源落地（D-21）：实测 MS 候选镜像仓六档完整性 → `lt-models/src/registry.rs` 增 MS 条目 → 放宽 `always_hf`（立项锚点 backend.rs:124-129 已漂移，现 always_hf 在 lt-models/src/cache.rs、registry.rs）为「所选 hub 优先，缺失回落另一 hub」→ 回归测试 | 0.5~1d | 网络实测为前置；MS 第三方镜像缺档风险见 §6 |
 | **WD-5** | 已完工（D-73） | 二次启动反馈：立项时第二实例仅 stderr 报错即退；已改为激活已有主窗口 | 0.5d | 单实例锁是 Rust 新增（原版无），配套体验已补齐 |
-| WD-6（可选，待点头） | 待点头 | 首启缺模型轻引导：控制面板顶部一条「识别模型未就绪 → 去识别页下载」高亮横幅（模型就绪即隐） | 0.5d | D-19 的配套；原版无此场景（有向导），登记为新增偏差 |
+| WD-6（已点头，P2 低优先） | 已裁做（D-105，2026-09-28；随代码解禁施工） | 首启缺模型轻引导：控制面板顶部一条「识别模型未就绪 → 去识别页下载」高亮横幅（模型就绪即隐） | 0.5d | D-19 的配套；原版无此场景（有向导），登记为新增偏差 |
 
 ### 3.4 更新日志与发布正文（D-91 起）
 
@@ -82,7 +82,7 @@
 |---|---|---|
 | WD-7（已完工） | **发布链已落地并转正（D-88 首版 → D-90 重做）**：tag `v*` 或手动触发（演练）→ `scripts/release.ps1` 全链（检查→构建→打包→建草稿→回读校验）→ Releases 出草稿 → **人工转正**（CI 永不可发布）；本地等价 = `release` → `promote`（正文默认取 CHANGELOG 本版段落，`-NotesFile` 可覆盖）。**首发前置：旧 v0.1.0 tag 已被远古提交占用且不删 → 必须抬版本号**（只改根 `Cargo.toml` 一处） | 已落地 |
 | WD-8 | 检查更新按钮（D-20）：GET `releases/latest` 比对版本 → 提示 + 打开下载页；i18n zh/en 同步；失败静默 | 0.5d |
-| WD-9 | 公开 README 双语完善 + 原 Python 仓 README 导流横幅；渠道裁决（新独立仓 vs 沿用原仓双产物）；含 README.md 用户节与 README.txt 去重（页签名漂移已实证） | 0.5d |
+| WD-9 | 公开 README 双语完善 + 原 Python 仓 README 导流横幅；渠道已裁沿用原仓（D-106，2026-09-28）；含 README.md 用户节与 README.txt 去重（页签名漂移已实证） | 0.5d |
 | WD-10（可选） | 「打开配置目录/日志目录」入口（现仅缓存页可开 models/transcripts 目录）；panic hook 崩溃尾部落盘，便于反馈 | 0.5d |
 
 > 2026-09-22 表态（D-98）：tag protection + immutable releases 随下次发版一并开启；build-info 维持现状（本地 dist/ + step summary），不随 Release 永久留档。WD-4 前提修正（2026-09-22 用户实证）：部分模型仓本无 ModelScope 源，实际解法 = HF 镜像——whisper 双源降为未来功能候选，文档级动作只剩 README whisper 下载指引改真实（非代码清单 M3）。
