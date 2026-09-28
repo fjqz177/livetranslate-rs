@@ -108,3 +108,16 @@ python -c "import brotli;open('x.br','wb').write(brotli.compress(open('x','rb').
   - google/fonts 仓 `ofl/notosanssymbols2/`（镜像 jsDelivr 同目录）
 - 许可：三者均 SIL Open Font License 1.1（OFL.txt 随附）
 - 裁剪记录（2026-09-07）：NotoSansMonoCJKsc 已移除——等宽 chrome 的中文回落思源（与有 Consolas 机器现状一致）；区域子集（NotoSansSC 8.3MB）经实测缺失韩文音节，否决不采纳。
+
+## .cache/sherpa-onnx/（构建期预取，gitignored 不入库）
+
+- 用途：sherpa-onnx-sys 构建期静态库（ASR worker 链接用；预取+解包脚本 = `scripts/fetch_sherpa_libs.ps1`，
+  版本号取自 Cargo.lock 的 sherpa-onnx-sys 条目）
+- 版本：sherpa-onnx v1.13.7（win-x64-static-MT-Release-lib）
+- 来源：上游官方仓 `k2-fsa/sherpa-onnx` Release `v1.13.7` 资产
+  `sherpa-onnx-v1.13.7-win-x64-static-MT-Release-lib.tar.bz2`
+  （`https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.7/<档名>`；镜像前缀走 `-Mirror`）
+- sha256：`04734146fb3a21a297604c586ea826346dbb167c19b9ccc79c1f85d39f490395`（2026-09-28 本机
+  .cache 实测，来源 = fetch 脚本自上游 Release 下载；同值已登记 fetch 脚本期望表，下载后强校验）
+- 复现 / 重取：跑 `scripts/fetch_sherpa_libs.ps1`（幂等：extracted/lib + 来源标记在即秒退；
+  强制重下 = 删 .cache/sherpa-onnx/ 下归档）

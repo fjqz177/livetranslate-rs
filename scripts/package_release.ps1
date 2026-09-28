@@ -10,13 +10,14 @@
 #
 # 用法：  pwsh -File scripts/package_release.ps1
 # 参数：  -RepoRoot（默认 = 脚本上级目录，一般不用传）
-# 前置：  先 `cargo build --release -p lt-app`（exe 缺 = exit 1 并提示）；版本号取仓根
-#         Cargo.toml 首个 ^version 行（缺 = exit 1）。CI 同源调用见 scripts/release.ps1 pack。
-# 退出码：0 = 打包完成；1 = exe 缺失或版本解析失败。
+# 前置：  先 `cargo build --release -p lt-app`（exe 缺 = exit 1 并提示）；版本号取
+#         cargo metadata 的 lt-app 版本（= workspace 版本，与 VERSIONINFO 同源；缺 = exit 1）。
+#         CI 同源调用见 scripts/release.ps1 pack。
+# 退出码：0 = 打包完成；1 = exe 缺失或版本解析失败 / zip 缺件。
 # 产物 / 副作用：只写 dist/ 两样——staging 目录 dist/LiveTranslate-<version>/（打包后
 #         **保留不删**）与 zip（已存在则**先删再建**）；不动仓库内任何文件。
-# 分工：  README.txt/LICENSE/NOTICES.md/OFL.txt 四件「存在才拷入、缺件不失败」；
-#         zip 五件套的强制校验属 scripts/release.ps1 pack 的职责（发布链以此为准）。
+# 分工：  zip 五件套清单的**唯一真源在本文件**（打包后自检，S4-③ 收拢——release.ps1
+#         pack 不再各养一份）；release.ps1 pack 只查 zip+边车+build-info 三件存在。
 # ============================================================
 
 param(
@@ -25,11 +26,17 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-# ── 版本号（Cargo.toml workspace 前缀；打包产物名与 VERSIONINFO 同源） ──
-$workspaceToml = Join-Path $RepoRoot 'Cargo.toml'
-$versionLine = Get-Content $workspaceToml | Select-String '^version\s*=\s*"(.*)"' | Select-Object -First 1
-if (-not $versionLine) { Write-Host "Cargo.toml 未找到版本号" -ForegroundColor Red; exit 1 }
-$version = $versionLine.Matches[0].Groups[1].Value
+# ── 版本号（S4-③ 收拢：cargo metadata 单一来源，不再各养一份 ^version 正则；
+#    workspace 版本随成员 lt-app 暴露，与 VERSIONINFO/打包产物名同源） ──
+$metaRaw = & cargo metadata --no-deps --format-version 1 --offline 2>$null
+if ($LASTEXITCODE -ne 0 -or -not $metaRaw) {
+    Write-Host "cargo metadata 失败——版本号无从解析（在仓库根内跑？）" -ForegroundColor Red
+    exit 1
+}
+$version = ($metaRaw | ConvertFrom-Json).packages |
+    Where-Object { $_.name -eq 'lt-app' } |
+    Select-Object -First 1 -ExpandProperty version
+if (-not $version) { Write-Host "cargo metadata 里找不到 lt-app 版本" -ForegroundColor Red; exit 1 }
 Write-Host "版本：$version"
 
 # ── 前置校验：release exe 必须已构建 ──
@@ -57,6 +64,29 @@ if (Test-Path $ofl) { Copy-Item $ofl (Join-Path $staging 'OFL.txt') }
 $zip = Join-Path $RepoRoot "dist\LiveTranslate-$version.zip"
 if (Test-Path $zip) { Remove-Item -Force $zip }
 Compress-Archive -Path (Join-Path $staging '*') -DestinationPath $zip -CompressionLevel Optimal
+
+# ── 五件套自检（S4-③：清单唯一真源在此——缺一件即 exit 1，不劳 release.ps1 复查） ──
+$wantList = @('livetranslate.exe', 'README.txt', 'LICENSE', 'NOTICES.md', 'OFL.txt')
+$archive = [IO.Compression.ZipFile]::OpenRead((Resolve-Path $zip).Path)
+try { $haveList = @($archive.Entries | ForEach-Object FullName) } finally { $archive.Dispose() }
+$missing = @($wantList | Where-Object { $_ -notin $haveList })
+if ($missing) {
+    Write-Host "zip 缺件：$($missing -join ', ')（五件套清单在本文件顶部循环+本表，改清单两处同步）" -ForegroundColor Red
+    exit 1
+}
+
+# ── dist/ 旧版残留提示（S4-①：不自动删——只张目，处置权在维护者） ──
+$stale = @()
+$distDir = Join-Path $RepoRoot 'dist'
+$stale += @(Get-ChildItem -Path $distDir -File -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -like 'LiveTranslate-*.zip' -and $_.Name -ne "LiveTranslate-$version.zip" } |
+    ForEach-Object { $_.Name })
+$stale += @(Get-ChildItem -Path $distDir -Directory -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -like 'LiveTranslate-*' -and $_.Name -ne "LiveTranslate-$version" } |
+    ForEach-Object { $_.Name + '/' })
+if ($stale.Count -gt 0) {
+    Write-Host "⚠ dist/ 有旧版残留（未自动删）：$($stale -join '、')" -ForegroundColor Yellow
+}
 
 $zipSize = (Get-Item $zip).Length
 $exeSize = (Get-Item $exe).Length

@@ -22,7 +22,8 @@
     draft   ← pack 先跑（dist/ 三件 zip+sha256+build-info 缺一即「先跑 pack」）
               且远端 tag v<版本> 已存在并指向本地 HEAD（铁律①，货不对单即拒）
     promote ← 草稿已建 + 本版 CHANGELOG 段落在位（铁律③硬闸）
-    verify  ← 远端已有该版草稿或发布；check / notes / rehearse 无远端依赖
+    verify  ← 远端已有该版草稿或发布；check / notes / rehearse 无远端**写**操作
+              （check ④⑤ 的主线/ci 绿闸软依赖 gh，缺则降级跳过，见「前置」）
 
   前置：gh 已安装且已登录（draft/promote/verify/release 硬需，缺 = 明确报错；
     本地 check 的「ci 绿」闸无 gh 时降级跳过并提示 ⚠）；check ⑥ 构建前置
@@ -31,8 +32,8 @@
   退出码：0 = 成功；1 = 任一步失败（✗ 即停）；2 = 未给动词。
 
   副作用：build/pack 重写 target/release 的 exe 与 dist/ 三件；draft 建/刷新
-    GitHub 草稿并上传；promote 转正（唯一不可逆）；verify 下载比对后清理临时
-    目录；全程不改仓库内已跟踪文件。
+    GitHub 草稿并上传；promote 转正（唯一不可逆）；verify 下载比对（无论成败）
+    都清理临时目录；全程不改仓库内已跟踪文件。
 
   版本口径：只发正式版本——版本号必须是不带后缀的 x.y.z（预发布在 check ① 直接拒，不白等构建）
 
@@ -87,9 +88,14 @@ while ($Root -and -not (Test-Path (Join-Path $Root 'Cargo.toml'))) { $Root = Spl
 if (-not $Root) { Die '找不到仓库根（向上找 Cargo.toml 失败）' }
 Set-Location -LiteralPath $Root
 
-$match = Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"(.*)"' | Select-Object -First 1
-if (-not $match) { Die 'Cargo.toml 里找不到 ^version = "…"（结构变了？先对齐本脚本的版本正则）' }
-$Ver      = $match.Matches[0].Groups[1].Value
+# 版本唯一输入（S4-③ 收拢：与 package_release.ps1 同走 cargo metadata——曾各自养一份
+# ^version 正则易漂移；也曾用 $match 作变量名，与自动变量 $Matches 大小写同名单独成雷）
+$metaRaw = & cargo metadata --no-deps --format-version 1 --offline 2>$null
+if ($LASTEXITCODE -ne 0 -or -not $metaRaw) { Die 'cargo metadata 失败——版本号无从解析（在仓库根内跑？）' }
+$Ver = ($metaRaw | ConvertFrom-Json).packages |
+    Where-Object { $_.name -eq 'lt-app' } |
+    Select-Object -First 1 -ExpandProperty version
+if (-not $Ver) { Die 'cargo metadata 里找不到 lt-app 版本' }
 $Tag      = "v$Ver"
 $Artifact = "LiveTranslate-$Ver.zip"
 $Zip      = "dist/$Artifact"
@@ -248,8 +254,9 @@ function Do-Check {
     Step 'check ⑥ 构建前置就位（uv 工具链 / sherpa 预解包库）' {
         if ($InCi) { Note 'CI：由后续 workflow 步骤保证，跳过' }
         else {
-            if (-not (Test-Path '.venv')) { Die '缺 .venv（libclang + cmake）——先跑 uv sync' }
-            if (-not (Test-Path '.cache/sherpa-onnx/extracted/lib')) { Die '缺 sherpa 预解包库——先跑 scripts/fetch_sherpa_libs.ps1' }
+            # 文件级探针（S4-②，对齐 fetch 的精确探针——目录在但内容被裁也能识破，G-25 同族）
+            if (-not (Test-Path '.venv/pyvenv.cfg')) { Die '缺 .venv（libclang + cmake）——先跑 uv sync' }
+            if (-not (Test-Path '.cache/sherpa-onnx/extracted/lib/sherpa-onnx-c-api.lib')) { Die '缺 sherpa 预解包库——先跑 scripts/fetch_sherpa_libs.ps1' }
             Note '工具链与 sherpa 库就位'
         }
     }
@@ -283,26 +290,21 @@ function Do-Pack {
         & (Join-Path $Root 'scripts/package_release.ps1')
         if ($LASTEXITCODE -and $LASTEXITCODE -ne 0) { Die 'package_release.ps1 失败' }
     }
-    Step 'pack ② 校验产物齐备（zip 内容 + 边车 + build-info）' {
+    Step 'pack ② 校验产物齐备（边车 + build-info；zip 五件套已由 package_release.ps1 自检，S4-③ 收拢）' {
         if (-not (Test-Path $Zip)) { Die "package_release.ps1 未产出 $Zip" }
-        # 发布物清单：少一件都不许发（README/LICENSE/NOTICES/OFL 是分发义务）
-        $wantList = @('livetranslate.exe', 'README.txt', 'LICENSE', 'NOTICES.md', 'OFL.txt')
-        $archive = [IO.Compression.ZipFile]::OpenRead((Resolve-Path $Zip).Path)
-        try { $haveList = @($archive.Entries | ForEach-Object FullName) } finally { $archive.Dispose() }
-        $missing = @($wantList | Where-Object { $_ -notin $haveList })
-        if ($missing) { Die "zip 缺件：$($missing -join ', ')（清单在本步骤；故意增删请同步这里）" }
         # 边车：行尾必须 LF（sha256sum -c 遇 CRLF 会报 No such file），格式 = "<hash>␣␣<文件名>"
-        [IO.File]::WriteAllText((Join-Path $Root $Sidecar), "$(Sha256 $Zip)  $Artifact`n")
+        $zipHash = Sha256 $Zip    # 算一次三处用（S4-⑤）：边车 / build-info / 完工提示
+        [IO.File]::WriteAllText((Join-Path $Root $Sidecar), "$zipHash  $Artifact`n")
         $buildInfo = @(
             "version: $Ver",
             "commit:  $(git rev-parse HEAD)",
-            "zip:     $Artifact ($([math]::Round((Get-Item $Zip).Length / 1MB, 1)) MB) sha256 $(Sha256 $Zip)",
+            "zip:     $Artifact ($([math]::Round((Get-Item $Zip).Length / 1MB, 1)) MB) sha256 $zipHash",
             "exe:     livetranslate.exe ($([math]::Round((Get-Item $Exe).Length / 1MB, 1)) MB) sha256 $(Sha256 $Exe)",
             "rustc:   $((& rustc -V) -join ' ')",
             "runner:  $env:ImageOS $env:ImageVersion".TrimEnd()
         )
         [IO.File]::WriteAllText((Join-Path $Root $BuildInfoPath), (($buildInfo -join "`n") + "`n"))    # 统一 LF
-        Note "zip 五件套齐备；边车与 build-info 就绪（zip sha256 = $(Sha256 $Zip)）"
+        Note "zip 五件套齐备；边车与 build-info 就绪（zip sha256 = $zipHash）"
     }
 }
 
@@ -358,24 +360,28 @@ function Do-Verify([switch]$Strict) {      # Strict：release 一条龙用——
     Step "verify 从 Release 回读 $Tag 并比对 sha256" {
         $tmp = 'dist/.reread'
         Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
-        Invoke-Gh @('release', 'download', $Tag, '--pattern', '*.zip', '--pattern', '*.sha256', '--dir', $tmp, '--clobber') | Out-Null
-        $gotZip = Join-Path $tmp $Artifact
-        $gotSum = "$gotZip.sha256"
-        if (-not (Test-Path $gotZip)) { Die "Release 上找不到 $Artifact" }
-        if (-not (Test-Path $gotSum)) { Die "Release 上找不到 $Artifact.sha256（资产不完整？先补跑 draft）" }
-        $want = (Get-Content -LiteralPath $gotSum -Raw).Trim().Split(' ')[0]     # 远端自洽：zip ↔ 边车
-        $have = Sha256 $gotZip
-        if ($want -ne $have) { Die "远端 zip 与远端边车不一致：$have ≠ $want" }
-        if (Test-Path $Sidecar) {
-            $local = (Get-Content -LiteralPath $Sidecar -Raw).Trim().Split(' ')[0]
-            if ($local -ne $have) {
-                if ($Strict) { Die "本地 $Artifact 与远端不一致：本地 $local ≠ 远端 $have（上传错了对象或本地被污染）" }
-                Note "⚠ 本地字节与远端不同（本地 $local）——两边各自构建过时属正常"
-            }
-        } elseif ($Strict) { Die "缺本地边车 $Sidecar —— 一条龙里应当刚 pack 过" }
-        Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
-        Note "一致：$have"
-        Summary "verify 通过：Release $Tag 的 zip 与边车 sha256 自洽（$have）"
+        try {
+            Invoke-Gh @('release', 'download', $Tag, '--pattern', '*.zip', '--pattern', '*.sha256', '--dir', $tmp, '--clobber') | Out-Null
+            $gotZip = Join-Path $tmp $Artifact
+            $gotSum = "$gotZip.sha256"
+            if (-not (Test-Path $gotZip)) { Die "Release 上找不到 $Artifact" }
+            if (-not (Test-Path $gotSum)) { Die "Release 上找不到 $Artifact.sha256（资产不完整？先补跑 draft）" }
+            $want = (Get-Content -LiteralPath $gotSum -Raw).Trim().Split(' ')[0]     # 远端自洽：zip ↔ 边车
+            $have = Sha256 $gotZip
+            if ($want -ne $have) { Die "远端 zip 与远端边车不一致：$have ≠ $want" }
+            if (Test-Path $Sidecar) {
+                $local = (Get-Content -LiteralPath $Sidecar -Raw).Trim().Split(' ')[0]
+                if ($local -ne $have) {
+                    if ($Strict) { Die "本地 $Artifact 与远端不一致：本地 $local ≠ 远端 $have（上传错了对象或本地被污染）" }
+                    Note "⚠ 本地字节与远端不同（本地 $local）——两边各自构建过时属正常"
+                }
+            } elseif ($Strict) { Die "缺本地边车 $Sidecar —— 一条龙里应当刚 pack 过" }
+            Note "一致：$have"
+            Summary "verify 通过：Release $Tag 的 zip 与边车 sha256 自洽（$have）"
+        } finally {
+            # 清理挪 finally（S4-⑤）：中途 Die 也不留 120MB 回读残骸
+            Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
+        }
     }
 }
 
@@ -417,6 +423,10 @@ if (-not $Verb) {
 if ($Rehearsal -and $Verb -in @('draft', 'promote', 'release')) {
     Die "演练模式禁止 $Verb（它会写 GitHub）——演练只允许 check / build / pack / verify / notes"
 }
+if ($NotesFile -and $Verb -ne 'promote') {
+    # S4-⑤：非 promote 传 -NotesFile 一律是误会，出声提醒不吃哑巴亏
+    Write-Host '⚠ -NotesFile 仅 promote 生效，本次忽略' -ForegroundColor Yellow
+}
 
 switch ($Verb) {
     'check'    { Do-Check }
@@ -431,4 +441,10 @@ switch ($Verb) {
 }
 Write-Host ''
 Write-Host "✓ $Verb 完成（$Tag）" -ForegroundColor Green
+# S4-③（原③）：本地出草稿后最容易踩的坑 = 以为已经发布——收尾两行把下一步说穿
+#（该提示此前只在 CI Summary 可见）；CI 通道由 Summary 承载，不重复
+if (-not $InCi -and $Verb -in @('draft', 'release')) {
+    Write-Host '草稿不等于发布：回读校验 → pwsh -File scripts/release.ps1 verify' -ForegroundColor Yellow
+    Write-Host '确认无误后人工转正 → pwsh -File scripts/release.ps1 promote（唯一不可逆）' -ForegroundColor Yellow
+}
 if ($InCi) { Summary $(if ($Rehearsal) { "## 演练通道：$Verb 完成（未创建 / 修改任何 Release）" } else { "## 发布引擎：$Verb 完成（$Tag）" }) }

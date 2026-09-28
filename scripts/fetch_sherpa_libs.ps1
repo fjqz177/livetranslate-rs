@@ -12,6 +12,8 @@
 #
 # 幂等：extracted/lib 就位且来源档名一致即秒退；档损坏/截断在解包处即失败——旧的
 # 「tar -tf 全量列举」完整性闸门已由"真解包 + 产物探针"取代（同样是冷路径一次）。
+# 归档完整性：下载/复用后先过 sha256 期望表（S4-④/M2，对齐 D-83 凡加载必验精神；
+# 未登记版本降级为提醒，新档先实测补表再施工）。
 #
 # 用法（PowerShell）：
 #   pwsh -File scripts/fetch_sherpa_libs.ps1
@@ -37,6 +39,13 @@ $lock = Get-Content -Raw "$repoRoot\Cargo.lock"
 $m = [regex]::Match($lock, 'name = "sherpa-onnx-sys"\s+version = "([^"]+)"')
 if (-not $m.Success) { throw 'Cargo.lock 中找不到 sherpa-onnx-sys 版本' }
 $ver = $m.Groups[1].Value
+
+# 归档 sha256 期望值（S4-④/M2）：键 = sherpa-onnx-sys 版本号，值 = 上游 Release
+# 资产实测 sha256（2026-09-28 本机 .cache 实测，来源 = 本脚本自 GitHub Release 下载）。
+# 版本升级换档时：先实测新档更新本表 + assets/SOURCES.md 对应条目。
+$expectedSha = @{
+    '1.13.7' = '04734146fb3a21a297604c586ea826346dbb167c19b9ccc79c1f85d39f490395'
+}
 
 $fileName = "sherpa-onnx-v$ver-win-x64-static-MT-Release-lib.tar.bz2"
 $archiveStem = $fileName -replace '\.tar\.bz2$', ''
@@ -90,10 +99,23 @@ if (-not (Test-Path $dest)) {
     New-Item -ItemType Directory -Force $destDir | Out-Null
     Write-Host "下载 sherpa-onnx 预编译静态库 v$ver（约 120MB）到 $destDir ..."
     curl.exe -L -C - --fail --retry 3 --connect-timeout 30 -o "$dest.tmp" "$url"
-    if ($LASTEXITCODE -ne 0) { throw "下载失败：$url（可试 -Mirror <镜像前缀>，或设置 HTTP_PROXY/HTTPS_PROXY 走代理）" }
+    if ($LASTEXITCODE -ne 0) { throw "下载失败：$url（可试 -Mirror <镜像前缀>，或设置 HTTP_PROXY/HTTPS_PROXY 走代理；残缺的 $dest.tmp 可直接删除，重跑自动续传/重下）" }
     Move-Item -Force "$dest.tmp" $dest
 } else {
     Write-Host "归档已存在，跳过下载：$dest"
+}
+
+# ── 归档完整性：sha256 校验（S4-④/M2；未登记版本降级为提醒不拦） ──
+if ($expectedSha.ContainsKey($ver)) {
+    $haveSha = (Get-FileHash -Algorithm SHA256 $dest).Hash.ToLower()
+    if ($haveSha -ne $expectedSha[$ver]) {
+        Remove-Item -Force $dest -ErrorAction SilentlyContinue
+        Remove-Item -Force "$dest.tmp" -ErrorAction SilentlyContinue
+        throw "归档 sha256 不符：$haveSha ≠ $($expectedSha[$ver])——坏档（含 .tmp）已删，重跑本脚本重下"
+    }
+    Write-Host "归档 sha256 校验通过（$($expectedSha[$ver].Substring(0, 12))…）"
+} else {
+    Write-Host "⚠ sherpa-onnx-sys $ver 未登记 sha256 期望值——先实测新档补 fetch 脚本本表与 assets/SOURCES.md" -ForegroundColor Yellow
 }
 
 # ── 解包到临时目录再原子换名（不依赖 --strip-components，任何能读 bz2 的 tar 都能干） ──
@@ -118,4 +140,9 @@ Remove-Item -Recurse -Force $extractDir -ErrorAction SilentlyContinue
 Move-Item -Force $staged $extractDir
 Set-Content -Path (Join-Path $extractDir '.archive') -Value $fileName -Encoding utf8 -NoNewline
 Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
+# S4-③：成功后清旧版归档与历史探针残留——版本升级后旧档（~120MB/份）不再有用，
+# 留着只吃磁盘；只清 .cache/sherpa-onnx/ 内可识别的旧命名，不碰他物
+Get-ChildItem -Path $destDir -File -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -ne $fileName -and ($_.Name -like 'sherpa-onnx-v*.tar.bz2' -or $_.Name -like '*.probe-tmp*') } |
+    ForEach-Object { Write-Host "清理旧版残留：$($_.Name)"; Remove-Item -Force $_.FullName }
 Write-Host "完成：$extractDir\lib（.cargo/config.toml 的 SHERPA_ONNX_LIB_DIR 指向它）"
