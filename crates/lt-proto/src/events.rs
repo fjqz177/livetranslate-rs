@@ -546,12 +546,13 @@ pub enum Cmd {
     /// 取消在途下载（DL-4/D-23）：backend 置会话取消令牌，Downloader 在文件
     /// 边界/重试间隙/读块检查点停止并保留 .incomplete 续传现场（仅追加成员）
     CancelDownload,
-    /// 引擎/模型/hub 任一变化触发（签名相同则管道侧自行跳过）
+    /// 引擎/模型变化触发（签名相同则管道侧自行跳过）。
+    /// D-118（扫描批 C4）：`hub` 字段删除——两生产者都填、两消费者全忽略、
+    /// `switch_engine` 签名不收，删除测试满分（死契约，D-81 先例）。
     SwitchEngine {
         engine: String,
         funasr_model: String,
         whisper_model_size: String,
-        hub: String,
         language: String,
     },
     SetAsrLanguage(String),

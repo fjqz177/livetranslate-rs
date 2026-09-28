@@ -293,7 +293,6 @@ impl AppShell {
                 engine,
                 funasr_model,
                 whisper_model_size,
-                hub: _,
                 language,
             } => {
                 if let Some(p) = self.pipeline.as_ref() {
@@ -567,7 +566,6 @@ impl AppShell {
                     engine: s.asr_engine,
                     funasr_model: s.funasr_model,
                     whisper_model_size: s.whisper_model_size,
-                    hub: s.hub,
                     language: s.asr_language,
                 });
             }
@@ -767,7 +765,6 @@ mod tests {
             engine: "qwen3".into(),
             funasr_model: "funasr-nano-2512".into(),
             whisper_model_size: String::new(),
-            hub: String::new(),
             language: "zh".into(),
         };
         assert!(engine_cmd.touches_settings_draft());

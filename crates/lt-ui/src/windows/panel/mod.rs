@@ -109,7 +109,6 @@ pub fn send_switch_engine(settings: &Settings, session: &SessionView) {
         engine: s.asr_engine.clone(),
         funasr_model: s.funasr_model.clone(),
         whisper_model_size: s.whisper_model_size.clone(),
-        hub: s.hub.clone(),
         language: s.asr_language.clone(),
     });
 }
