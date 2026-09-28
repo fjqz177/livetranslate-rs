@@ -97,7 +97,8 @@ fn derive(raw: &Settings, version: u64) -> EffectiveSettings {
         engine: raw.engine_key(),
         vad: clamp_vad_for_engine(raw.engine_key(), vad_from_settings(raw)),
         asr_lang: {
-            let (t_base, t_per) = lt_asr::engine_timeout_profile(&raw.asr_engine);
+            // C1/D-116：档案吃 settings 级身份（透镜），不吃裸持久层字符串
+            let (t_base, t_per) = lt_asr::engine_timeout_profile(raw.engine_key());
             lt_asr::AsrEffectiveSettings {
                 language: raw.asr_language.clone(),
                 sensevoice_pad: raw.sensevoice_pad_seconds,
