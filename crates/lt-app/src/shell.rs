@@ -700,4 +700,155 @@ mod tests {
         apply_settings_side_effects(&mut s, &Cmd::SwitchTranslator(Box::new(ghost)));
         assert_eq!(s.active_model, 1, "未知名不得改激活模型");
     }
+
+    // ── D-117（C3）：草稿写入面穷尽防线 ──
+    //
+    // 「带设置效果的 Cmd 变体 ⇔ apply_settings_side_effects 写入臂」的对应：
+    // 编译期由 lt-proto `Cmd::touches_settings_draft` 的无通配 match 强制表态
+    // （新增变体必须显式归类），运行期由本组测试钉住当前对应——漏登记写入臂
+    // 在此红。判真集合：SetAsrLanguage / SetPadding / IncrementalAsr /
+    // SetTargetLanguage / SwitchTranslator / SwitchEngine / SetAudioDevice /
+    // SetMicDevice / ApplySettings / PersistSettings（后二者共臂）；判假：其余 12 变体。
+
+    #[test]
+    fn judged_true_variants_write_draft() {
+        let mut s = Settings::default();
+
+        assert!(Cmd::SetAsrLanguage("zh".into()).touches_settings_draft());
+        apply_settings_side_effects(&mut s, &Cmd::SetAsrLanguage("zh".into()));
+        assert_eq!(s.asr_language, "zh");
+
+        assert!(Cmd::SetPadding {
+            engine: "funasr".into(),
+            secs: 1.5,
+        }
+        .touches_settings_draft());
+        apply_settings_side_effects(
+            &mut s,
+            &Cmd::SetPadding {
+                engine: "funasr".into(),
+                secs: 1.5,
+            },
+        );
+        assert_eq!(s.sensevoice_pad_seconds, 1.5);
+
+        assert!(Cmd::IncrementalAsr {
+            enabled: false,
+            interval: 9.0,
+        }
+        .touches_settings_draft());
+        apply_settings_side_effects(
+            &mut s,
+            &Cmd::IncrementalAsr {
+                enabled: false,
+                interval: 9.0,
+            },
+        );
+        assert!(
+            !s.incremental_asr,
+            "增量默认开（默认值非 false）→ 关闭须可见"
+        );
+        assert_eq!(s.interim_interval, 9.0);
+
+        assert!(Cmd::SetTargetLanguage("ja".into()).touches_settings_draft());
+        apply_settings_side_effects(&mut s, &Cmd::SetTargetLanguage("ja".into()));
+        assert_eq!(s.target_language, "ja");
+
+        s.models.push(lt_proto::ModelConfig {
+            name: "second".into(),
+            ..Default::default()
+        });
+        let cfg = s.models[1].clone();
+        assert!(Cmd::SwitchTranslator(Box::new(cfg.clone())).touches_settings_draft());
+        apply_settings_side_effects(&mut s, &Cmd::SwitchTranslator(Box::new(cfg)));
+        assert_eq!(s.active_model, 1);
+
+        let engine_cmd = Cmd::SwitchEngine {
+            engine: "qwen3".into(),
+            funasr_model: "funasr-nano-2512".into(),
+            whisper_model_size: String::new(),
+            hub: String::new(),
+            language: "zh".into(),
+        };
+        assert!(engine_cmd.touches_settings_draft());
+        apply_settings_side_effects(&mut s, &engine_cmd);
+        assert_eq!(s.asr_engine, "qwen3");
+        assert_eq!(s.funasr_model, "funasr-nano-2512");
+        assert_eq!(s.asr_language, "zh");
+
+        assert!(Cmd::SetAudioDevice(lt_proto::AudioDeviceChoice::Disabled).touches_settings_draft());
+        apply_settings_side_effects(
+            &mut s,
+            &Cmd::SetAudioDevice(lt_proto::AudioDeviceChoice::Disabled),
+        );
+        assert_eq!(s.audio_device.as_deref(), Some("__disabled__"));
+
+        assert!(Cmd::SetMicDevice(lt_proto::MicDeviceChoice::Default).touches_settings_draft());
+        apply_settings_side_effects(
+            &mut s,
+            &Cmd::SetMicDevice(lt_proto::MicDeviceChoice::Default),
+        );
+        assert_eq!(s.mic_device.as_deref(), Some("__default__"));
+
+        let next = Settings {
+            timeout: 99,
+            ..Default::default()
+        };
+        assert!(Cmd::ApplySettings(Box::new(next.clone())).touches_settings_draft());
+        apply_settings_side_effects(&mut s, &Cmd::ApplySettings(Box::new(next)));
+        assert_eq!(s.timeout, 99);
+
+        let next = Settings {
+            timeout: 77,
+            ..Default::default()
+        };
+        assert!(Cmd::PersistSettings(Box::new(next.clone())).touches_settings_draft());
+        apply_settings_side_effects(&mut s, &Cmd::PersistSettings(Box::new(next)));
+        assert_eq!(s.timeout, 77);
+    }
+
+    #[test]
+    fn judged_false_variants_leave_draft_untouched() {
+        let cases = vec![
+            Cmd::Pause,
+            Cmd::Resume,
+            Cmd::Stop,
+            Cmd::StartDownload {
+                hub: lt_proto::layout::Hub::Hf,
+                proxy: lt_proto::ProxyMode::None,
+            },
+            Cmd::CancelDownload,
+            Cmd::TestTranslator {
+                config: Box::new(lt_proto::ModelConfig::default()),
+                probe_id: 1,
+            },
+            Cmd::CancelTranslatorTest { probe_id: 1 },
+            Cmd::RefreshDevices,
+            Cmd::RunBench {
+                models: vec![],
+                src: String::new(),
+                tgt: String::new(),
+                timeout: 0,
+                prompt: String::new(),
+            },
+            Cmd::CancelBench,
+            Cmd::PickExportFile {
+                mode: lt_proto::ExportFileMode::All,
+                default_name: String::new(),
+                dialog_title: String::new(),
+            },
+            Cmd::PickBgImage {
+                dialog_title: String::new(),
+            },
+        ];
+        for cmd in cases {
+            assert!(
+                !cmd.touches_settings_draft(),
+                "{cmd:?} 判假却出现在判假表外——两表漂移"
+            );
+            let mut s = Settings::default();
+            apply_settings_side_effects(&mut s, &cmd);
+            assert_eq!(s, Settings::default(), "{cmd:?} 不得动草稿");
+        }
+    }
 }

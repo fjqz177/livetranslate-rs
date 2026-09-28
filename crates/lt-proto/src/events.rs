@@ -612,6 +612,46 @@ pub enum Cmd {
     },
 }
 
+impl Cmd {
+    /// D-117（扫描批 C3）：该命令是否携带设置草稿效果。
+    ///
+    /// 「带设置载荷的变体 ⇒ lt-app `apply_settings_side_effects` 写入臂」的
+    /// 编译期防线：本 match **无通配臂**——新增任何 Cmd 变体必须在此显式
+    /// 表态，漏表态即编译错误；运行期对应关系由 lt-app shell 测试
+    /// `judged_true_variants_write_draft` / `judged_false_variants_leave_draft_untouched`
+    /// 钉住，漏登记写入臂在测试红。
+    /// 规格 = `docs/architecture-deepening-batch.md` §五（D-117）。
+    /// 纯新增方法，wire 零变化，PROTO_VERSION 不递增。
+    pub fn touches_settings_draft(&self) -> bool {
+        match self {
+            // ── 判真：草稿写入面九臂对应（ApplySettings/PersistSettings 共臂）──
+            Cmd::SetAsrLanguage(_)
+            | Cmd::SetPadding { .. }
+            | Cmd::IncrementalAsr { .. }
+            | Cmd::SetTargetLanguage(_)
+            | Cmd::SwitchTranslator(_)
+            | Cmd::SwitchEngine { .. }
+            | Cmd::SetAudioDevice(_)
+            | Cmd::SetMicDevice(_)
+            | Cmd::ApplySettings(_)
+            | Cmd::PersistSettings(_) => true,
+            // ── 判假：管道控制/下载/测试探针/对话框类，不携带设置语义 ──
+            Cmd::Pause
+            | Cmd::Resume
+            | Cmd::Stop
+            | Cmd::StartDownload { .. }
+            | Cmd::CancelDownload
+            | Cmd::TestTranslator { .. }
+            | Cmd::CancelTranslatorTest { .. }
+            | Cmd::RefreshDevices
+            | Cmd::RunBench { .. }
+            | Cmd::CancelBench
+            | Cmd::PickExportFile { .. }
+            | Cmd::PickBgImage { .. } => false,
+        }
+    }
+}
+
 /// 音频设备选择（对应 settings.audio_device 语义）
 #[derive(Debug, Clone, PartialEq)]
 pub enum AudioDeviceChoice {
