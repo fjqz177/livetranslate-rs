@@ -51,7 +51,7 @@ git config core.hooksPath .githooks      # 每 clone 一次：钩子触发面 = 
 | lt-app | 组合根：boot + 动脉桥 + 命令路由 + 单实例消息窗 + worker 入口（同 exe `--asr-worker` 自拉起） | 十库全部 |
 
 - **机器真源**（不读会撞墙，改代码前先看这里）：依赖白名单 = `crates/lt-app/tests/topology.rs`（含 dev-dep 特批表；cargo test 承载，ADR-21）；源码禁令（裸线程 / 直发 proxy / panic hook 位置）= 根级 `clippy.toml`（disallowed-methods，豁免就地 `#[allow]` + 理由）；文本卫生与个人路径 = `crates/lt-app/tests/repo_hygiene.rs`；契约纯度（禁 `serde_json::Value` 裸载荷）= `crates/lt-proto/tests/contract_purity.rs`。拓扑终局 = `docs/archive/architecture-v2.md` §3.1。
-- **lt-proto 冻结规则**：`PROTO_VERSION` 随结构变更递增（当前 7）。豁免评审 = 纯新增 Cmd/UiEvent/AppCommand 变体、纯新增 Settings 字段（须 serde default 兼容旧档）、既有枚举增项；仍须评审 = 删除 / 改名 / 改型 / 改语义任何既有契约项（记录入 D-xx）。**跨 crate 字符串编码协议（前缀 / 分隔符 / 哨兵值）一经发现按 P1 立案**。
+- **lt-proto 冻结规则**：`PROTO_VERSION` 随结构变更递增（当前 8）。豁免评审 = 纯新增 Cmd/UiEvent/AppCommand 变体、纯新增 Settings 字段（须 serde default 兼容旧档）、既有枚举增项、契约类型上的纯新增方法（不动 wire）；仍须评审 = 删除 / 改名 / 改型 / 改语义任何既有契约项（记录入 D-xx）。**跨 crate 字符串编码协议（前缀 / 分隔符 / 哨兵值）一经发现按 P1 立案**。
 - **新增 UI 能力不得扩 lt-proto 契约**：日志经 `LogLine{target}` 回流。
 - **设置与值域**：Settings 运行时落盘唯一通道 = `Cmd::PersistSettings`（shell 直排 + 发布总线，300ms debounce 对齐原版）；命令草稿写入唯一落点 = shell `apply_settings_side_effects` 纯函数（E1-4），UI 只发命令不预写；值域判定一律走类型化透镜（`Settings::engine_key()/hub()/proxy_mode()` + EngineKey/Hub/ProxyMode，E2/D-79），域内禁 `== "funasr"` 类字面量比较（lt-asr / lt-models / lt-app worker 分派为单点分派边界豁免）。
 - **窗口动作**：UI → 宿主统一走 **`WinAction` 意图通道**（`crates/lt-ui/src/state.rs`，跨平台抽象缝）；新增窗口行为优先加变体让宿主执行，不在 UI 侧散点直调 Win32。

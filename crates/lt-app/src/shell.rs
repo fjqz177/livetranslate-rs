@@ -59,7 +59,6 @@ fn apply_settings_side_effects(s: &mut Settings, cmd: &Cmd) {
             funasr_model,
             whisper_model_size,
             language,
-            ..
         } => {
             s.asr_engine = engine.clone();
             s.funasr_model = funasr_model.clone();
@@ -764,13 +763,17 @@ mod tests {
         let engine_cmd = Cmd::SwitchEngine {
             engine: "qwen3".into(),
             funasr_model: "funasr-nano-2512".into(),
-            whisper_model_size: String::new(),
+            whisper_model_size: "small".into(),
             language: "zh".into(),
         };
         assert!(engine_cmd.touches_settings_draft());
         apply_settings_side_effects(&mut s, &engine_cmd);
         assert_eq!(s.asr_engine, "qwen3");
         assert_eq!(s.funasr_model, "funasr-nano-2512");
+        assert_eq!(
+            s.whisper_model_size, "small",
+            "默认 \"medium\"，四载荷字段全须落稿"
+        );
         assert_eq!(s.asr_language, "zh");
 
         assert!(Cmd::SetAudioDevice(lt_proto::AudioDeviceChoice::Disabled).touches_settings_draft());
