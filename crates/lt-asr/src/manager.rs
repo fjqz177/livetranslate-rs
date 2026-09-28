@@ -13,7 +13,7 @@
 //!   下发"——替代旧双线程共享挂起句柄（原版 _asr_pending_*），同步边消灭）
 
 use crate::client::{AsrClientError, AsrWorkerClient};
-use crate::worker::WorkerConfig;
+use crate::worker::{WorkerConfig, WorkerEngine};
 use lt_proto::AsrResult;
 
 /// 自动重启上限（原版 _asr_restart_max）
@@ -58,19 +58,6 @@ impl AsrManagerError {
 }
 
 pub type Spawner = Box<dyn Fn(&WorkerConfig) -> Result<AsrWorkerClient, AsrClientError> + Send>;
-
-/// 引擎名 → 引擎家族（padding 生效键，对应原版 asr_type "funasr"/"whisper"）。
-/// 注意：M5 nano 接入时复核（nano 属 funasr 家族但不支持 padding）。
-/// WP-B：qwen3 独立家族——若落 whisper 兜底，此前挂起的 whisper padding 会
-/// 泄漏到 qwen3 worker（Unsupported 噪音）；UI 不产生 "qwen3" 家族键 → 恒 no-op。
-fn engine_family(engine: &str) -> &'static str {
-    match engine {
-        "sensevoice" | "nano" => "funasr",
-        "qwen3" => "qwen3",
-        // 其余（whisper 系）一律归 whisper 家族
-        _ => "whisper",
-    }
-}
 
 pub struct AsrManager {
     client: Option<AsrWorkerClient>,
@@ -197,7 +184,7 @@ impl AsrManager {
                     // 回滚成功：manager 仍可用，但对调用方而言本次切换失败（非 Unavailable）
                     Err(AsrManagerError::Failed(format!(
                         "新引擎加载失败: {e}；已回滚 {}",
-                        old_config.engine
+                        old_config.engine.as_str()
                     )))
                 }
                 Err(re) => {
@@ -312,24 +299,26 @@ impl AsrManager {
                 cfg.language = eff.language.clone();
             }
         }
-        // ── padding：只取当前 worker 引擎家族对应的生效条目 ──
-        let Some(engine) = self.config.as_ref().map(|c| c.engine.clone()) else {
+        // ── padding：只取当前 worker 身份对应的生效条目 ──
+        // D-116 单源化：原 engine_family 字符串表 + nano 特例折叠为一个穷尽
+        // match——家族/padding 知识只活在这一处，改名漏同步从注释义务变编译错误。
+        let Some(engine) = self.config.as_ref().map(|c| c.engine) else {
             return Ok(());
         };
-        let family = engine_family(&engine);
-        let Some(secs) = (match family {
-            "funasr" => Some(eff.sensevoice_pad),
-            "whisper" => Some(eff.whisper_pad),
-            // qwen3 独立家族：无 padding 语义（B-α），恒 no-op
-            _ => None,
+        let Some(secs) = (match engine {
+            // funasr 家族：sensevoice 用 sensevoice_pad
+            WorkerEngine::SenseVoice => Some(eff.sensevoice_pad),
+            // nano 属 funasr 家族但不支持 padding（原版 funasr_supports_padding：
+            // sensevoice=true、nano=false）——不下发也不写回 config
+            WorkerEngine::Nano => None,
+            // whisper 家族（测试 echo 身份沿旧通配行为：视同 whisper）
+            WorkerEngine::Whisper | WorkerEngine::Echo => Some(eff.whisper_pad),
+            // qwen3 独立家族：无 padding 语义（B-α），恒 no-op——不得落
+            // whisper 兜底，防此前挂起的 whisper padding 泄漏进 qwen3 worker
+            WorkerEngine::Qwen3 => None,
         }) else {
             return Ok(());
         };
-        // funasr 家族中 nano 不支持 padding（原版 funasr_supports_padding：
-        // sensevoice=true、nano=false）：不下发也不写回 config
-        if family == "funasr" && engine == "nano" {
-            return Ok(());
-        }
         if self.config.as_ref().map(|c| c.pad_seconds) == Some(Some(secs)) {
             return Ok(());
         }
@@ -486,7 +475,7 @@ impl Default for AsrManager {
 
 #[cfg(test)]
 mod should_recycle_tests {
-    use super::{engine_family, should_recycle};
+    use super::should_recycle;
 
     #[test]
     fn recycle_only_past_delta() {
@@ -497,16 +486,7 @@ mod should_recycle_tests {
         assert!(should_recycle(0, 1, 0));
     }
 
-    #[test]
-    fn nano_family_and_padding_invariants() {
-        // WP-A 回归：nano 归 funasr 家族（padding 挂起键）；但 nano 不支持 padding
-        // （原版 funasr_supports_padding: nano=false），apply_pending_asr_settings
-        // 对 engine=="nano" 跳过下发——worker 引擎名经 build_worker_config 的
-        // "funasr-nano-2512" → "nano" 分派与本表耦合，改名须同步。
-        assert_eq!(engine_family("nano"), "funasr");
-        assert_eq!(engine_family("sensevoice"), "funasr");
-        assert_eq!(engine_family("whisper"), "whisper");
-        // WP-B 回归：qwen3 独立家族（不得落 whisper 兜底——防挂起 padding 泄漏）
-        assert_eq!(engine_family("qwen3"), "qwen3");
-    }
+    // nano/qwen3 的家族与 padding 不变量已上移 manager_flow 行为测试
+    // （nano_gets_no_padding / qwen3_ignores_pending_whisper_pad，D-116）：
+    // 经 AsrManager 公共 interface 断言，强度高于旧字符串表查表断言。
 }

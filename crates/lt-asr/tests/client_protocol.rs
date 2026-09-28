@@ -1,12 +1,12 @@
 //! M2.1/2.2 完成标准：echo 假 worker 全命令往返 + 崩溃/超时/回收语义。
 
 use lt_asr::client::{AsrClientError, AsrWorkerClient, Status};
-use lt_asr::worker::WorkerConfig;
+use lt_asr::worker::{WorkerConfig, WorkerEngine};
 use std::time::Duration;
 
 fn fake_config(_name: &str, options: lt_asr::worker::EchoOptions) -> WorkerConfig {
     WorkerConfig {
-        engine: "echo".into(),
+        engine: WorkerEngine::Echo,
         language: "auto".into(),
         pad_seconds: Some(0.5),
         options: lt_asr::worker::WorkerOptions::Echo(options),

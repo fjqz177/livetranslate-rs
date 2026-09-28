@@ -13,11 +13,41 @@ use std::path::PathBuf;
 /// 引擎工厂：由装配层注入（M2.3 SenseVoice / M5 whisper / 测试 echo）
 pub type EngineFactory<E> = fn(&WorkerConfig) -> anyhow::Result<E>;
 
+/// worker 级引擎身份（D-116 单源化）：worker 分派/家族/padding 的唯一词表。
+///
+/// settings 级身份是 `lt_proto::EngineKey`（三变体，funasr 合并两族）；本枚举
+/// 是 worker 侧的真身份——funasr 在此拆分为 SenseVoice/Nano。serde 形态
+/// （lowercase）与旧 `WorkerConfig.engine: String` 的字符串逐字节一致。
+/// Echo 为测试假 worker 专用身份（先例 = `WorkerOptions::Echo`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WorkerEngine {
+    SenseVoice,
+    Nano,
+    Whisper,
+    Qwen3,
+    /// 测试假 worker 行为注入专用（fake_asr_worker；生产入口拒绝）
+    Echo,
+}
+
+impl WorkerEngine {
+    /// worker 键字符串（= serde wire 形态）：ReadyInfo/日志沿用旧词表
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::SenseVoice => "sensevoice",
+            Self::Nano => "nano",
+            Self::Whisper => "whisper",
+            Self::Qwen3 => "qwen3",
+            Self::Echo => "echo",
+        }
+    }
+}
+
 /// worker 启动配置（父进程经参数/环境传入；Rust 版走 stdin 首帧前固定通道，
 /// 这里与原版一致：由 spawn 方把配置作为 argv JSON 传入）
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct WorkerConfig {
-    pub engine: String,
+    pub engine: WorkerEngine,
     pub language: String,
     #[serde(default)]
     pub pad_seconds: Option<f32>,
@@ -85,7 +115,7 @@ pub fn run<E: AsrEngine + 'static>(
         }
     };
     writer.write_response(&Response::ready(ReadyInfo {
-        engine: config.engine.clone(),
+        engine: config.engine.as_str().to_string(),
     }))?;
 
     let mut engine = Some(engine);
@@ -133,4 +163,30 @@ pub fn run<E: AsrEngine + 'static>(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod worker_engine_tests {
+    use super::WorkerEngine;
+
+    #[test]
+    fn wire_is_lowercase_and_matches_as_str() {
+        // C2/D-116：engine 改枚举后 IPC wire 必须与旧字符串逐字节一致
+        //（同 exe 父子恒同构建，无跨版兼容负担，但形态要钉死防漂移）；
+        // as_str 与 serde 是两处独立编码，此测试钉住二者不漂移。
+        for (e, s) in [
+            (WorkerEngine::SenseVoice, "sensevoice"),
+            (WorkerEngine::Nano, "nano"),
+            (WorkerEngine::Whisper, "whisper"),
+            (WorkerEngine::Qwen3, "qwen3"),
+            (WorkerEngine::Echo, "echo"),
+        ] {
+            assert_eq!(serde_json::to_string(&e).unwrap(), format!(r#""{s}""#));
+            assert_eq!(
+                serde_json::from_str::<WorkerEngine>(&format!(r#""{s}""#)).unwrap(),
+                e
+            );
+            assert_eq!(e.as_str(), s);
+        }
+    }
 }

@@ -25,7 +25,7 @@ use crate::settings_bus::{EffectiveSettings, SettingsBus};
 use crate::supervisor::{artery_sink, Policy, Supervisor};
 use crate::Msg;
 use arc_swap::ArcSwap;
-use lt_asr::{AsrEffectiveSettings, AsrManager, WorkerConfig};
+use lt_asr::{AsrEffectiveSettings, AsrManager, WorkerConfig, WorkerEngine};
 use lt_audio::audio::capture::VadSource;
 use lt_audio::audio::wasapi_win::WasapiBackend;
 use lt_audio::interim::{
@@ -1863,7 +1863,8 @@ fn build_worker_config(
 ) -> Option<(WorkerConfig, String)> {
     // E2/D-79：值域先验（未实装引擎诚实 None——不用 from_settings_str 的
     // FunAsr 回退，那会把"未知引擎"错装配成 funasr worker），再走枚举分派。
-    // WorkerConfig.engine 保持 String：worker IPC 是唯一真进程边界
+    // D-116：WorkerConfig.engine = WorkerEngine（serde lowercase 与旧字符串
+    // wire 逐字节一致）；本函数是 worker 身份的唯一生产点。
     if !ASR_ENGINES.contains(&engine) {
         tracing::warn!("引擎 {engine:?} 未实装，无法启动 worker");
         return None;
@@ -1875,13 +1876,13 @@ fn build_worker_config(
             // WP-A：nano 为独立 worker 引擎（LLM 解码、无 padding 语义）；
             // sensevoice 维持原路径
             let (engine, pad) = if entry.key == "funasr-nano-2512" {
-                ("nano", None)
+                (WorkerEngine::Nano, None)
             } else {
-                ("sensevoice", Some(pad_seconds))
+                (WorkerEngine::SenseVoice, Some(pad_seconds))
             };
             Some((
                 WorkerConfig {
-                    engine: engine.into(),
+                    engine,
                     language: language.to_string(),
                     pad_seconds: pad,
                     options: lt_asr::WorkerOptions::ModelDir(model_dir.to_path_buf()),
@@ -1895,7 +1896,7 @@ fn build_worker_config(
             let (model_path, display) = resolve_whisper_model(models_dir, whisper_model)?;
             Some((
                 WorkerConfig {
-                    engine: "whisper".into(),
+                    engine: WorkerEngine::Whisper,
                     language: language.to_string(),
                     pad_seconds: Some(whisper_pad),
                     options: lt_asr::WorkerOptions::ModelPath(model_path),
@@ -1909,7 +1910,7 @@ fn build_worker_config(
             let model_dir = lt_models::cache::local_model_dir(models_dir, &entry)?;
             Some((
                 WorkerConfig {
-                    engine: "qwen3".into(),
+                    engine: WorkerEngine::Qwen3,
                     language: language.to_string(),
                     pad_seconds: None,
                     options: lt_asr::WorkerOptions::ModelDir(model_dir.to_path_buf()),
@@ -1964,13 +1965,14 @@ fn trust_files_for_config(
     };
     match &config.options {
         lt_asr::WorkerOptions::ModelDir(dir) => {
-            // worker 引擎名 → 注册表条目（sensevoice/nano 同属 funasr 家族，
-            // 但清单不同；qwen3 单一模型）
-            let entry = match config.engine.as_str() {
-                "sensevoice" => registry::SENSEVOICE_SMALL.clone(),
-                "nano" => registry::FUNASR_NANO.clone(),
-                "qwen3" => registry::qwen3_entry(),
-                _ => return None,
+            // worker 身份 → 注册表条目（sensevoice/nano 同属 funasr 家族，
+            // 但清单不同；qwen3 单一模型）。D-116：按 WorkerEngine 穷尽匹配。
+            let entry = match config.engine {
+                WorkerEngine::SenseVoice => registry::SENSEVOICE_SMALL.clone(),
+                WorkerEngine::Nano => registry::FUNASR_NANO.clone(),
+                WorkerEngine::Qwen3 => registry::qwen3_entry(),
+                // ModelDir 下不应出现 whisper；echo 仅测试假 worker
+                WorkerEngine::Whisper | WorkerEngine::Echo => return None,
             };
             Some(TrustFiles {
                 display: entry.display.into(),
@@ -2094,7 +2096,7 @@ fn report_load_failure(
     // 变量名避开 tracing::field::display（同名会让宏把标识符解析成函数项）
     let model_name = trust_files_for_config(models_dir, config)
         .map(|t| t.display)
-        .unwrap_or_else(|| config.engine.clone());
+        .unwrap_or_else(|| config.engine.as_str().to_string());
     tracing::error!(
         "模型加载失败（指纹与登记一致，重下无解）: {} / {}",
         model_name,
@@ -3252,7 +3254,7 @@ mod tests {
         let bin = snap.join("ggml-tiny-q5_1.bin");
         std::fs::write(&bin, b"x").unwrap();
         let cfg = WorkerConfig {
-            engine: "whisper".into(),
+            engine: WorkerEngine::Whisper,
             language: "auto".into(),
             pad_seconds: Some(0.5),
             options: lt_asr::WorkerOptions::ModelPath(bin.clone()),
@@ -3307,7 +3309,7 @@ mod tests {
         let (cfg, display) =
             build_worker_config(&base, "funasr", "funasr-nano-2512", 0.5, "auto", "", 2.0)
                 .expect("nano 已缓存应可装配");
-        assert_eq!(cfg.engine, "nano");
+        assert_eq!(cfg.engine, WorkerEngine::Nano);
         assert_eq!(cfg.pad_seconds, None, "nano 无 padding 语义");
         assert_eq!(display, "Fun-ASR-Nano");
         assert!(matches!(cfg.options, lt_asr::WorkerOptions::ModelDir(_)));
@@ -3315,7 +3317,7 @@ mod tests {
         let (cfg2, display2) =
             build_worker_config(&base, "funasr", "sensevoice-small", 0.5, "auto", "", 2.0)
                 .expect("sensevoice 已缓存应可装配");
-        assert_eq!(cfg2.engine, "sensevoice");
+        assert_eq!(cfg2.engine, WorkerEngine::SenseVoice);
         assert_eq!(cfg2.pad_seconds, Some(0.5));
         assert_eq!(display2, "SenseVoice Small");
 
@@ -3330,7 +3332,7 @@ mod tests {
             2.0,
         )
         .expect("mlt 回退 sensevoice 应可装配");
-        assert_eq!(cfg3.engine, "sensevoice");
+        assert_eq!(cfg3.engine, WorkerEngine::SenseVoice);
         assert_eq!(display3, "SenseVoice Small");
 
         let _ = std::fs::remove_dir_all(&base);
@@ -3347,7 +3349,7 @@ mod tests {
         sparse_manifest(&base, &registry::QWEN3_ASR);
         let (cfg, display) = build_worker_config(&base, "qwen3", "", 0.5, "auto", "", 2.0)
             .expect("qwen3 已缓存应可装配");
-        assert_eq!(cfg.engine, "qwen3");
+        assert_eq!(cfg.engine, WorkerEngine::Qwen3);
         assert_eq!(cfg.pad_seconds, None, "qwen3 无 padding 语义");
         assert_eq!(display, "Qwen3-ASR-0.6B");
         assert!(matches!(cfg.options, lt_asr::WorkerOptions::ModelDir(_)));
@@ -4457,7 +4459,7 @@ mod tests {
         write_tiny_cache(&dir);
         let got = build_worker_config(&dir, "whisper", "", 0.5, "auto", "tiny", 0.7);
         let (cfg, display) = got.expect("tiny 已缓存应可装配");
-        assert_eq!(cfg.engine, "whisper");
+        assert_eq!(cfg.engine, WorkerEngine::Whisper);
         assert_eq!(display, "Whisper tiny");
         assert_eq!(cfg.language, "auto");
         // whisper 分支必须用 whisper_pad 而非 sensevoice pad
@@ -4502,7 +4504,7 @@ mod tests {
             0.6,
         );
         let (cfg, display) = got.expect("存在的本地路径应直通");
-        assert_eq!(cfg.engine, "whisper");
+        assert_eq!(cfg.engine, WorkerEngine::Whisper);
         let lp = match &cfg.options {
             lt_asr::WorkerOptions::ModelPath(p) => p.to_path_buf(),
             other => panic!("whisper 应带 ModelPath，实际 {other:?}"),
@@ -4539,7 +4541,7 @@ mod tests {
         std::fs::write(ms.join("tokens.txt"), vec![0u8; 4_096]).unwrap();
         let got = build_worker_config(&dir, "funasr", "sensevoice-small", 0.4, "auto", "tiny", 0.5);
         let (cfg, display) = got.expect("MS 缓存命中应可装配");
-        assert_eq!(cfg.engine, "sensevoice");
+        assert_eq!(cfg.engine, WorkerEngine::SenseVoice);
         assert_eq!(display, "SenseVoice Small");
         assert_eq!(cfg.pad_seconds, Some(0.4)); // funasr 用 sensevoice pad
         assert!(matches!(cfg.options, lt_asr::WorkerOptions::ModelDir(_)));

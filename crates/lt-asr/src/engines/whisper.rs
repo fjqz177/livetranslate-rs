@@ -237,7 +237,7 @@ mod tests {
     #[test]
     fn from_config_requires_model_path_option() {
         let cfg = WorkerConfig {
-            engine: "whisper".into(),
+            engine: crate::worker::WorkerEngine::Whisper,
             language: "auto".into(),
             pad_seconds: Some(0.5),
             options: crate::worker::WorkerOptions::ModelPath(std::path::PathBuf::from("m.bin")),

@@ -2,7 +2,7 @@
 
 use lt_asr::{
     AsrClientError, AsrEffectiveSettings, AsrManager, AsrManagerError, AsrWorkerClient, Spawner,
-    WorkerConfig,
+    WorkerConfig, WorkerEngine,
 };
 use std::path::PathBuf;
 
@@ -32,11 +32,12 @@ fn fake_spawn() -> Spawner {
     Box::new(move |cfg: &WorkerConfig| AsrWorkerClient::spawn_program(&path, cfg.clone()))
 }
 
-/// engine=="bad" 时注入加载失败，其余起真假 worker（切换回滚测试用）
+/// fail_load 注入的配置加载失败，其余起真假 worker（切换回滚测试用；
+/// D-116：引擎身份闭合为枚举后，"坏配置"用 EchoOptions::fail_load 标记）
 fn switch_fail_spawn() -> Spawner {
     let path = PathBuf::from(env!("CARGO_BIN_EXE_fake_asr_worker"));
     Box::new(move |cfg: &WorkerConfig| {
-        if cfg.engine == "bad" {
+        if matches!(&cfg.options, lt_asr::worker::WorkerOptions::Echo(e) if e.fail_load) {
             return Err(AsrClientError::Status("注入的新引擎加载失败".into()));
         }
         AsrWorkerClient::spawn_program(&path, cfg.clone())
@@ -65,23 +66,27 @@ fn flaky_spawn() -> Spawner {
     })
 }
 
-/// 指定引擎名的配置（engine_family / 回滚测试用）
-fn cfg_engine(engine: &str, _name: &str) -> WorkerConfig {
+/// 指定 worker 身份的配置（家族/padding/回滚测试用）；nano/qwen3 无 padding
+/// 语义 → pad 恒 None（对齐 build_worker_config 实际产出）
+fn cfg_engine(engine: WorkerEngine, _name: &str) -> WorkerConfig {
     WorkerConfig {
-        engine: engine.into(),
+        engine,
         language: "auto".into(),
-        pad_seconds: Some(0.5),
+        pad_seconds: match engine {
+            WorkerEngine::Nano | WorkerEngine::Qwen3 => None,
+            _ => Some(0.5),
+        },
         options: lt_asr::worker::WorkerOptions::Echo(lt_asr::worker::EchoOptions::default()),
     }
 }
 
 fn cfg(name: &str) -> WorkerConfig {
-    cfg_engine("echo", name)
+    cfg_engine(WorkerEngine::Echo, name)
 }
 
 /// 带行为注入的配置（json! 语义迁移：注入参数类型化为 EchoOptions）
 fn cfg_echo(name: &str, echo: lt_asr::worker::EchoOptions) -> WorkerConfig {
-    let mut c = cfg_engine("echo", name);
+    let mut c = cfg_engine(WorkerEngine::Echo, name);
     if let lt_asr::worker::WorkerOptions::Echo(e) = &mut c.options {
         *e = echo;
     }
@@ -224,7 +229,7 @@ fn effective_language_applied_and_committed() {
 fn effective_padding_wrong_family_ignored() {
     let mut m = AsrManager::with_spawner(fake_spawn());
     // sensevoice → funasr 家族：快照换个 whisper 家族 padding 不应影响它
-    m.ensure_started(&cfg_engine("sensevoice", "SenseVoice"))
+    m.ensure_started(&cfg_engine(WorkerEngine::SenseVoice, "SenseVoice"))
         .expect("start");
     assert_eq!(m.config().unwrap().pad_seconds, Some(0.5));
 
@@ -240,6 +245,50 @@ fn effective_padding_wrong_family_ignored() {
     m.transcribe(&audio(), false, &eff_with("auto", 1.5, 3.0))
         .expect("transcribe 2");
     assert_eq!(m.config().unwrap().pad_seconds, Some(1.5));
+    m.shutdown();
+}
+
+#[test]
+fn nano_gets_no_padding() {
+    // D-116 回归（原 nano_family_and_padding_invariants 升行为级）：nano 属
+    // funasr 家族但不支持 padding（原版 funasr_supports_padding: nano=false）
+    // ——sensevoice_pad 变化不得下发，也不写回 config
+    let mut m = AsrManager::with_spawner(fake_spawn());
+    m.ensure_started(&cfg_engine(WorkerEngine::Nano, "Nano"))
+        .expect("start");
+    assert_eq!(m.config().unwrap().pad_seconds, None);
+
+    m.transcribe(&audio(), false, &eff_with("auto", 1.5, 0.5))
+        .expect("transcribe");
+    assert_eq!(
+        m.config().unwrap().pad_seconds,
+        None,
+        "nano 不得收到 padding 下发"
+    );
+    m.shutdown();
+}
+
+#[test]
+fn qwen3_ignores_pending_whisper_pad() {
+    // WP-B 回归（D-116 保持）：whisper 挂起 padding 不得泄漏进后续 qwen3
+    // worker（旧 engine_family 若落 whisper 兜底即触发此洞）
+    let mut m = AsrManager::with_spawner(fake_spawn());
+    m.ensure_started(&cfg_engine(WorkerEngine::Whisper, "Whisper"))
+        .expect("start");
+    m.transcribe(&audio(), false, &eff_with("auto", 0.5, 3.0))
+        .expect("transcribe");
+    assert_eq!(m.config().unwrap().pad_seconds, Some(3.0));
+
+    // 切 qwen3（独立家族）：同快照再来一段，pad 不得下发
+    m.ensure_started(&cfg_engine(WorkerEngine::Qwen3, "Qwen3"))
+        .expect("switch");
+    m.transcribe(&audio(), false, &eff_with("auto", 0.5, 3.0))
+        .expect("transcribe 2");
+    assert_eq!(
+        m.config().unwrap().pad_seconds,
+        None,
+        "qwen3 无 padding 语义，不得吃 whisper 挂起值"
+    );
     m.shutdown();
 }
 
@@ -282,18 +331,24 @@ fn effective_retries_when_worker_dies_during_apply() {
 #[test]
 fn engine_switch_failure_rolls_back() {
     let mut m = AsrManager::with_spawner(switch_fail_spawn());
-    let good = cfg_engine("echo", "Echo");
+    let good = cfg_engine(WorkerEngine::Echo, "Echo");
     m.ensure_started(&good).expect("start");
 
-    // 切到 bad 引擎：加载失败 → 用旧配置恢复旧 worker，manager 仍可用
-    let bad = cfg_engine("bad", "Bad");
+    // 切到加载必败配置（fail_load 注入）→ 用旧配置恢复旧 worker，manager 仍可用
+    let bad = cfg_echo(
+        "Bad",
+        lt_asr::worker::EchoOptions {
+            fail_load: true,
+            ..Default::default()
+        },
+    );
     let err = m.ensure_started(&bad).expect_err("切换应失败");
     assert!(
         !err.unavailable(),
         "回滚成功后应仍可用（Failed 而非 Unavailable）: {err}"
     );
     assert!(m.is_ready());
-    assert_eq!(m.config().unwrap().engine, "echo");
+    assert_eq!(m.config().unwrap().engine, WorkerEngine::Echo);
     assert!(m.transcribe(&audio(), false, &eff()).is_ok());
     m.shutdown();
 }

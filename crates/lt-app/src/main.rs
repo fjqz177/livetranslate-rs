@@ -167,16 +167,20 @@ fn asr_worker_entry() -> anyhow::Result<()> {
     let mut cfg_line = String::new();
     std::io::BufRead::read_line(&mut stdin, &mut cfg_line)?;
     let config: lt_asr::WorkerConfig = serde_json::from_str(cfg_line.trim())?;
-    match config.engine.as_str() {
-        "sensevoice" => lt_asr::worker::run(stdin, std::io::stdout().lock(), config, move |cfg| {
-            let dir = match &cfg.options {
-                lt_asr::WorkerOptions::ModelDir(d) => d,
-                other => anyhow::bail!("sensevoice 应带 ModelDir，实际 {other:?}"),
-            };
-            lt_asr::sensevoice::SenseVoiceEngine::load(dir, cfg.pad_seconds, &cfg.language)
-                .map_err(|e| anyhow::anyhow!("{e}"))
-        }),
-        "nano" => {
+    // D-116：按 WorkerEngine 枚举穷尽匹配（单点分派豁免边界保持——新增变体
+    // 此处编译期强制表态，漏同步从注释义务变编译错误）
+    match config.engine {
+        lt_asr::WorkerEngine::SenseVoice => {
+            lt_asr::worker::run(stdin, std::io::stdout().lock(), config, move |cfg| {
+                let dir = match &cfg.options {
+                    lt_asr::WorkerOptions::ModelDir(d) => d,
+                    other => anyhow::bail!("sensevoice 应带 ModelDir，实际 {other:?}"),
+                };
+                lt_asr::sensevoice::SenseVoiceEngine::load(dir, cfg.pad_seconds, &cfg.language)
+                    .map_err(|e| anyhow::anyhow!("{e}"))
+            })
+        }
+        lt_asr::WorkerEngine::Nano => {
             lt_asr::worker::run(stdin, std::io::stdout().lock(), config, move |cfg| {
                 let dir = match &cfg.options {
                     lt_asr::WorkerOptions::ModelDir(d) => d,
@@ -186,7 +190,7 @@ fn asr_worker_entry() -> anyhow::Result<()> {
                 lt_asr::NanoEngine::load(dir, &cfg.language).map_err(|e| anyhow::anyhow!("{e}"))
             })
         }
-        "qwen3" => {
+        lt_asr::WorkerEngine::Qwen3 => {
             lt_asr::worker::run(stdin, std::io::stdout().lock(), config, move |cfg| {
                 let dir = match &cfg.options {
                     lt_asr::WorkerOptions::ModelDir(d) => d,
@@ -196,10 +200,13 @@ fn asr_worker_entry() -> anyhow::Result<()> {
                 lt_asr::Qwen3AsrEngine::load(dir).map_err(|e| anyhow::anyhow!("{e}"))
             })
         }
-        "whisper" => lt_asr::worker::run(stdin, std::io::stdout().lock(), config, move |cfg| {
-            lt_asr::WhisperEngine::from_config(cfg).map_err(|e| anyhow::anyhow!("{e}"))
-        }),
-        other => anyhow::bail!("未知 worker 引擎: {other}"),
+        lt_asr::WorkerEngine::Whisper => {
+            lt_asr::worker::run(stdin, std::io::stdout().lock(), config, move |cfg| {
+                lt_asr::WhisperEngine::from_config(cfg).map_err(|e| anyhow::anyhow!("{e}"))
+            })
+        }
+        // Echo 仅测试假 worker 身份，生产入口拒绝
+        lt_asr::WorkerEngine::Echo => anyhow::bail!("Echo 引擎仅用于测试假 worker"),
     }
 }
 
