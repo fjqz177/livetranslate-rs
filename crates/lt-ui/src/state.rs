@@ -2061,6 +2061,8 @@ pub struct PanelUi {
     pub auto_retry: DownloadAutoRetry,
     /// 翻译装置不可用原因（TranslatorUnavailable 事件；翻译页状态行红字显示）
     pub translator_error: Option<String>,
+    /// 请求形态偏离状态行（规则 5/D-109：TranslatorDeviation 事件；None=无偏离）
+    pub translator_deviation: Option<String>,
     /// 连接测试运行态（D-85：`Cmd::TestTranslator` 的 UI 侧；每行按钮共享一份）
     pub probe: ProbeUiState,
     /// 识别就绪镜像（WD-6 引导横幅；D-100 事件臂维护，见 [`AsrReadiness`]）
@@ -2215,6 +2217,7 @@ impl AppUi {
                 download: DownloadUiState::default(),
                 auto_retry: DownloadAutoRetry::default(),
                 translator_error: None,
+                translator_deviation: None,
                 probe: ProbeUiState::default(),
                 asr_readiness: AsrReadiness::default(),
             },

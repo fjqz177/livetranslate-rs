@@ -102,6 +102,28 @@ pub enum UiEvent {
     /// 面板「当前使用」状态行据此给"已切换生效"的确认；切换入口在悬浮窗下拉，
     /// 那里看不见面板，所以确认必须回流到面板
     TranslatorSwitched { name: String, model: String },
+    /// 运行期重建翻译装置失败（规则 4「回执闭环」/R2-12/D-109）：旧装置仍在
+    /// 服役，UI 须明示「仍在使用 <旧>：<原因>」——不再只给笼统的配置无效。
+    /// still_using=None = 失败前本无装置（无从"仍在使用"）。
+    /// 纯新增变体（冻结规则加法豁免，PROTO_VERSION 不递增）。
+    TranslatorRebuildFailed {
+        /// 失败时仍在服役的装置名（None = 此前无装置）
+        still_using: Option<String>,
+        /// 失败原因（构建错误原文；仅供日志与提示）
+        reason: String,
+    },
+    /// 请求形态偏离回执（规则 5「偏离可见」/R2-12/D-109）：阶梯收敛形态
+    /// **变化沿**发射——actual=Some(形态名) = 偏离用户配置（状态行「当前实际
+    /// 在用：X」），actual=None = 已回到配置形态（UI 清状态行）。与日志同源。
+    /// 纯新增变体（冻结规则加法豁免，PROTO_VERSION 不递增）。
+    TranslatorDeviation {
+        /// 模型显示名
+        name: String,
+        /// 用户配置的形态名（对照展示）
+        configured: String,
+        /// Some = 当前实际形态（偏离中）；None = 已回到配置形态
+        actual: Option<String>,
+    },
     /// 连接探测结果（`Cmd::TestTranslator` 的回执，D-85 改型）
     TestTranslatorResult {
         /// 回执归属（UI 只采纳与在途探测 id 相同者——迟到/被取代的回执据此丢弃）

@@ -1226,6 +1226,8 @@ impl MultiWindowApp {
             // 翻译装置切换生效（D-85/F2）：面板「当前使用」状态行给一次确认
             lt_proto::UiEvent::TranslatorSwitched { name, .. } => {
                 self.app_state.panel.state.active_model_note = Some((name, Instant::now()));
+                // 新装置 = 配置形态复位：偏离状态行随切换清除
+                self.app_state.panel.translator_deviation = None;
                 self.redraw(WinId::Panel);
             }
             // ASR 设备标签（悬浮窗 MonitorBar device 段）；终态覆写加载中标签
@@ -1261,6 +1263,39 @@ impl MultiWindowApp {
             // 翻译装置配置无效：状态行红字（翻译页）+ 日志已由 pipeline 落
             lt_proto::UiEvent::TranslatorUnavailable { reason } => {
                 self.app_state.panel.translator_error = Some(reason);
+                self.redraw(WinId::Panel);
+            }
+            // 规则 4「回执闭环」（R2-12/D-109）：运行期重建失败——旧装置仍在
+            // 服役须点名「仍在使用谁」，与日志同源（复用翻译页既有红字状态行）
+            lt_proto::UiEvent::TranslatorRebuildFailed {
+                still_using,
+                reason,
+            } => {
+                let line = match &still_using {
+                    Some(old) => lt_i18n::t("translator_still_using")
+                        .replace("{name}", old)
+                        .replace("{reason}", &reason),
+                    None => lt_i18n::t("translator_rebuild_failed").replace("{reason}", &reason),
+                };
+                self.app_state.panel.translator_error = Some(line.clone());
+                self.push_log_line(40, "translator", &line);
+                self.redraw(WinId::Panel);
+            }
+            // 规则 5「偏离可见」（R2-12/D-109）：状态行「当前实际在用：X」；
+            // actual=None = 已回到配置形态（清行）
+            lt_proto::UiEvent::TranslatorDeviation {
+                name,
+                configured,
+                actual,
+            } => {
+                self.app_state.panel.translator_deviation = actual.as_ref().map(|a| {
+                    lt_i18n::t("translator_deviation")
+                        .replace("{actual}", a)
+                        .replace("{configured}", &configured)
+                });
+                if let Some(line) = &self.app_state.panel.translator_deviation {
+                    self.push_log_line(30, "translator", &format!("{name}: {line}"));
+                }
                 self.redraw(WinId::Panel);
             }
             // 翻译装置运行期降级回执（2026-09-10 第二轮评审 item 5 / 用户裁决）：

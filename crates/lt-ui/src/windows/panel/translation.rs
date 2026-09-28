@@ -358,6 +358,17 @@ pub fn page(
             );
             ui.add_space(2.0);
         }
+        // 规则 5「偏离可见」（D-109）：实际请求形态 ≠ 配置时的常驻状态行
+        //（「当前实际在用：X」；回到配置即清）。琥珀色=提醒非错误，与
+        // WD-6 引导横幅同族
+        if let Some(dev) = &panel.translator_deviation {
+            ui.label(
+                RichText::new(dev.clone())
+                    .size(11.0)
+                    .color(super::BANNER_STROKE),
+            );
+            ui.add_space(2.0);
+        }
         // D-85/F2：只读「当前使用」状态行 + 使用说明（设置页不提供切换控件——
         // 切换入口唯一在悬浮窗「模型」下拉，见 docs §4.8）
         {

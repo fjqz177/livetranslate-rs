@@ -516,6 +516,27 @@ fn run_attempt(
 }
 
 /// 台阶 → 装置：普通台阶只换关闭形态（会话记忆共享），最小请求另清空全部可选参数
+/// 规则 5「偏离可见」的变化沿判定（R2-12/D-109）：收敛形态相对上次记忆变化时
+/// 返回要发的事件载荷——Some(Some(形态))=新偏离、Some(None)=偏离消除（UI 清行）、
+/// None=无变化不发。`last` 就地记忆本段收敛形态；配置形态自身从不记为偏离。
+fn deviation_transition<'a>(
+    last: &mut Option<String>,
+    configured: &'a str,
+    settled: &'a str,
+) -> Option<Option<&'a str>> {
+    if last.as_deref() == Some(settled) {
+        return None; // 与上一段同形态，无事
+    }
+    let was_deviated = matches!(last.as_deref(), Some(s) if s != configured);
+    let now_deviated = settled != configured;
+    *last = Some(settled.to_string());
+    match (was_deviated, now_deviated) {
+        (_, true) => Some(Some(settled)), // 新偏离（含从一偏离切到另一偏离）
+        (true, false) => Some(None),      // 回到配置 → UI 清行
+        (false, false) => None,           // 一直在配置形态
+    }
+}
+
 fn translator_for_step(base: &Translator, step: lt_translate::RequestStep) -> Translator {
     match step {
         lt_translate::RequestStep::Plan(p) => base.with_plan(p),
@@ -913,6 +934,8 @@ struct TlRig {
     model_key: (String, String),
     /// 模型显示名（降级回执带出，供 UI 定位条目）
     model_name: String,
+    /// 上一段收敛的请求形态名（规则 5 偏离可见的变化沿判据；None=尚未记忆）
+    last_settled: Arc<Mutex<Option<String>>>,
     /// 上下文提交序号（单调递增；id 是 UUID，不能当序号用）
     seq: Arc<AtomicU64>,
     /// 阶梯起点与"体检驱动的降级"许可（按用户配置算一次）
@@ -1049,6 +1072,7 @@ impl TlRig {
             model_key: (mc.api_base.clone(), mc.model.clone()),
             config_fp: config_fingerprint(mc),
             model_name: mc.name.clone(),
+            last_settled: Arc::new(Mutex::new(None)),
             seq: Arc::new(AtomicU64::new(0)),
             start_step,
             allow_verdict_advance,
@@ -1083,6 +1107,8 @@ impl TlRig {
         let degraded_notified = self.degraded_notified.clone();
         let model_key = (self.model_key.0.clone(), self.model_key.1.clone());
         let model_name = self.model_name.clone();
+        let last_settled = self.last_settled.clone();
+        let configured_step = lt_translate::step_name(self.start_step);
         let start_step = self.start_step;
         let allow_verdict_advance = self.allow_verdict_advance;
         let thinking_unavailable = self.thinking_unavailable;
@@ -1128,6 +1154,24 @@ impl TlRig {
                 true,
             );
             let used = outcome.usage;
+            // ── 规则 5「偏离可见」（R2-12/D-109）：收敛形态变化沿回执——
+            // Some(形态)=偏离配置、None=回到配置（UI 清状态行）；与日志同源
+            let settled = lt_translate::step_name(outcome.step);
+            if let Some(actual) = deviation_transition(
+                &mut last_settled.lock().unwrap_or_else(|p| p.into_inner()),
+                configured_step,
+                settled,
+            ) {
+                tracing::info!(
+                    "模型 {model_name} 请求形态变化：{}（配置 {configured_step}）",
+                    actual.unwrap_or(configured_step)
+                );
+                sink.push(UiEvent::TranslatorDeviation {
+                    name: model_name.clone(),
+                    configured: configured_step.to_string(),
+                    actual: actual.map(|s| s.to_string()),
+                });
+            }
             if !outcome.attempt.succeeded() {
                 // 整条阶梯都没打通过：记住退到底的台阶（下一段一步到位，不再重走）
                 learned
@@ -2151,9 +2195,20 @@ fn route_translator_switch(
                 }
                 Ok(None) => {
                     tracing::warn!("翻译器切换目标为空（models 空/越界），保持当前装置");
+                    // 规则 4「回执闭环」（R2-12/D-109）：静默失败禁令——空目标
+                    // 同样须回执（旧装置若在，点名"仍在使用谁"）
+                    sink.push(UiEvent::TranslatorRebuildFailed {
+                        still_using: tl.as_ref().map(|r| r.model_name.clone()),
+                        reason: "切换目标为空（模型清单空或索引越界）".to_string(),
+                    });
                 }
                 Err(reason) => {
-                    sink.push(UiEvent::TranslatorUnavailable { reason });
+                    // 规则 4（R2-12/D-109）：旧装置仍在服役，回执须点名「仍在
+                    // 使用谁」；笼统的 TranslatorUnavailable 保留给启动装配路径
+                    sink.push(UiEvent::TranslatorRebuildFailed {
+                        still_using: tl.as_ref().map(|r| r.model_name.clone()),
+                        reason,
+                    });
                 }
             }
             None
@@ -3343,6 +3398,25 @@ mod tests {
     /// 测试监督器（sink 丢弃；用后 join_all 回收 monitor）
     fn test_sup() -> Arc<Supervisor> {
         Supervisor::new(|_| {})
+    }
+
+    /// 排空事件动脉取 TranslatorRebuildFailed 载荷（规则 4 测试用）：
+    /// (still_using, reason)
+    fn drain_rebuild_failed(sink: &EventArtery) -> Option<(Option<String>, String)> {
+        let mut batch = Vec::new();
+        let mut got = None;
+        while sink.drain_batch(&mut batch, Duration::from_millis(20)) {
+            for ev in batch.iter() {
+                if let UiEvent::TranslatorRebuildFailed {
+                    still_using,
+                    reason,
+                } = ev
+                {
+                    got = Some((still_using.clone(), reason.clone()));
+                }
+            }
+        }
+        got
     }
 
     /// 测试转录句柄（临时目录；测试内不落盘启用——TranscriptWriter 仅记录语义）
@@ -4551,6 +4625,112 @@ mod tests {
             }
         }
         assert!(seen, "切换成功必须回执 TranslatorSwitched");
+        if let Some(rig) = tl.take() {
+            rig.pool.shutdown();
+        }
+        sup.join_all();
+    }
+
+    /// 规则 5 变化沿判定（D-109）：同形不发、新偏离发 Some、偏离消除发清行、
+    /// 配置形态自身从不记为偏离
+    #[test]
+    fn deviation_transition_reports_only_edges() {
+        let mut last = None;
+        // 首段即配置形态：无事件
+        assert_eq!(deviation_transition(&mut last, "auto", "auto"), None);
+        // 退到 minimal：发偏离
+        assert_eq!(
+            deviation_transition(&mut last, "auto", "minimal"),
+            Some(Some("minimal"))
+        );
+        // 停在 minimal：不发（无变化沿）
+        assert_eq!(deviation_transition(&mut last, "auto", "minimal"), None);
+        // 回到配置：发清行
+        assert_eq!(deviation_transition(&mut last, "auto", "auto"), Some(None));
+        // 此后无事件
+        assert_eq!(deviation_transition(&mut last, "auto", "auto"), None);
+    }
+
+    /// 规则 4（D-109）：运行期重建失败 → TranslatorRebuildFailed 回执；
+    /// 此前无装置时 still_using=None，且失败不得装上新装置
+    #[test]
+    fn replace_rig_failure_reports_rebuild_failed() {
+        let sup = test_sup();
+        let sink = EventArtery::new();
+        let bus = test_bus(lt_proto::Settings::default());
+        // 非法代理 URL → Translator::new 构建失败（probe 同款手法）
+        let mut bad = lt_proto::Settings::default().models[0].clone();
+        bad.proxy = "http://[::1".into();
+        let sw = TlSwitch::ReplaceRig {
+            config: Box::new(bad),
+        };
+        let mut tl: Option<Arc<TlRig>> = None;
+        let _ = route_translator_switch(
+            sw,
+            &mut tl,
+            &bus,
+            &sink,
+            &sup,
+            &test_transcript(),
+            &Msg::new(|k| k.to_string(), || "zh".into()),
+            &test_learned(),
+            &test_degraded_notified(),
+            &test_session_stats(),
+        );
+        assert!(tl.is_none(), "重建失败不得装上新装置");
+        let got = drain_rebuild_failed(&sink).expect("重建失败必须回执");
+        assert!(got.0.is_none(), "此前无装置，still_using 应为 None");
+        assert!(!got.1.is_empty(), "原因不得为空");
+        sup.join_all();
+    }
+
+    /// 规则 4（D-109）：旧装置在位时重建失败 → still_using 点名旧装置
+    ///（用户看到的是"仍在用谁"，不是笼统的配置无效）
+    #[test]
+    fn replace_rig_failure_names_still_using_rig() {
+        let sup = test_sup();
+        let sink = EventArtery::new();
+        let bus = test_bus(lt_proto::Settings::default());
+        let expected = lt_proto::Settings::default().models[0].name.clone();
+        // 先装上一个好装置
+        let ok = TlSwitch::ReplaceRig {
+            config: Box::new(lt_proto::Settings::default().models[0].clone()),
+        };
+        let mut tl: Option<Arc<TlRig>> = None;
+        let _ = route_translator_switch(
+            ok,
+            &mut tl,
+            &bus,
+            &sink,
+            &sup,
+            &test_transcript(),
+            &Msg::new(|k| k.to_string(), || "zh".into()),
+            &test_learned(),
+            &test_degraded_notified(),
+            &test_session_stats(),
+        );
+        assert!(tl.is_some(), "前置：好装置应装上");
+        // 再用坏配置替换 → 失败，旧装置原地保留
+        let mut bad = lt_proto::Settings::default().models[0].clone();
+        bad.proxy = "http://[::1".into();
+        let sw = TlSwitch::ReplaceRig {
+            config: Box::new(bad),
+        };
+        let _ = route_translator_switch(
+            sw,
+            &mut tl,
+            &bus,
+            &sink,
+            &sup,
+            &test_transcript(),
+            &Msg::new(|k| k.to_string(), || "zh".into()),
+            &test_learned(),
+            &test_degraded_notified(),
+            &test_session_stats(),
+        );
+        assert!(tl.is_some(), "重建失败旧装置必须保留（规则 4 前提）");
+        let got = drain_rebuild_failed(&sink).expect("重建失败必须回执");
+        assert_eq!(got.0.as_deref(), Some(expected.as_str()), "须点名旧装置");
         if let Some(rig) = tl.take() {
             rig.pool.shutdown();
         }
