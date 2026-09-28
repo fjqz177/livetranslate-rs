@@ -151,6 +151,13 @@ pub fn open_url(url: &str) {
 
 // ── 框架布局 ──
 
+// WD-6 引导横幅配色（D-105）：自含徽章式暖色，明暗主题下均可读；
+// 不取 pal.err——缺模型引导是行动指引不是错误
+const BANNER_FILL: Color32 = Color32::from_rgb(0xFF, 0xF4, 0xDE);
+const BANNER_FILL_HOVER: Color32 = Color32::from_rgb(0xFF, 0xE9, 0xC6);
+const BANNER_STROKE: Color32 = Color32::from_rgb(0xE6, 0xA2, 0x3C);
+const BANNER_TEXT: Color32 = Color32::from_rgb(0x6B, 0x43, 0x0A);
+
 /// 面板 UI 总入口（windows::dispatch 按 WinId::Panel 分派到这里；W5 起只拿
 /// 面板窗口域面：panel/session/settings/modal/log/bench/ctx——不含兄弟窗口域）
 #[allow(clippy::too_many_arguments)]
@@ -173,6 +180,47 @@ pub fn panel_ui(
     // Tab 条（原版 QTabWidget North 页签行）
     ui.add_space(4.0);
     tab_strip(ui, panel, &pal);
+
+    // WD-6 首启缺模型轻引导（D-105）：识别未就绪 → 顶部高亮横幅，点击去识别页；
+    // 就绪即隐、加载中不亮、识别页自身不亮（可见性判定见 PanelUi::model_banner_visible）
+    if panel.model_banner_visible() {
+        let label = lt_i18n::t("model_missing_banner");
+        let font = egui::FontId::proportional(12.5);
+        // 预测文本高定行高（与 tab_strip 同法）
+        let probe = ui
+            .painter()
+            .layout_no_wrap(label.clone(), font.clone(), BANNER_TEXT);
+        let (rect, resp) = ui.allocate_exact_size(
+            egui::vec2(
+                ui.available_rect_before_wrap().width(),
+                probe.rect.height() + 12.0,
+            ),
+            egui::Sense::click(),
+        );
+        let fill = if resp.hovered() {
+            BANNER_FILL_HOVER
+        } else {
+            BANNER_FILL
+        };
+        ui.painter().rect_filled(rect, 3.0, fill);
+        ui.painter().rect_stroke(
+            rect,
+            3.0,
+            egui::Stroke::new(1.0, BANNER_STROKE),
+            egui::StrokeKind::Outside,
+        );
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            label,
+            font,
+            BANNER_TEXT,
+        );
+        if resp.clicked() {
+            panel.state.page = PanelPage::VadAsr;
+        }
+        ui.add_space(4.0);
+    }
 
     // Tab 页内容区：白底 + 灰边框（pane），内容按需滚动（make_scroll_area）
     let pane = ui.available_rect_before_wrap();

@@ -1233,6 +1233,7 @@ impl MultiWindowApp {
             lt_proto::UiEvent::AsrDevice(label) => {
                 // D-83：装载成功 = 修复闭环的成功判据 → 自动重试计数清零
                 self.app_state.panel.auto_retry = crate::state::DownloadAutoRetry::default();
+                self.app_state.panel.asr_readiness = crate::state::AsrReadiness::Ready;
                 self.app_state.overlay.asr_label = Some(label);
                 if let Some(t) = &self.tray {
                     let status = if self.app_state.session.running {
@@ -1248,6 +1249,7 @@ impl MultiWindowApp {
             }
             // ASR 完全不可用（沿用原版字面文案）；终态覆写加载中标签 + 托盘错误图标
             lt_proto::UiEvent::AsrUnavailable => {
+                self.app_state.panel.asr_readiness = crate::state::AsrReadiness::Unavailable;
                 self.app_state.overlay.asr_label = Some(lt_i18n::t("asr_unavailable"));
                 if let Some(t) = &self.tray {
                     t.set_status(tray::IconStatus::Error);
@@ -1561,6 +1563,7 @@ impl MultiWindowApp {
             // less-is-more）——终态由 AsrDevice（真实标签）覆写收敛，失败由
             // AsrUnavailable 覆写为不可用文案；两者恒后于本事件到达 ──
             lt_proto::UiEvent::ModelLoadStart(label) => {
+                self.app_state.panel.asr_readiness = crate::state::AsrReadiness::Loading;
                 self.app_state.overlay.asr_label =
                     Some(lt_i18n::t("loading_model_short").replace("{name}", &label));
                 self.redraw(WinId::Overlay);

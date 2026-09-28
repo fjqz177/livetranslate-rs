@@ -1738,6 +1738,18 @@ pub enum DevicesState {
     Ready(lt_proto::DeviceList),
 }
 
+/// 识别就绪镜像（WD-6 引导横幅信号源；D-100 事件臂维护：ModelLoadStart=Loading、
+/// AsrDevice=Ready、AsrUnavailable=Unavailable）。Unknown = 启动后尚无任何事件——
+/// 横幅不亮，防「事件未到」被误报成缺模型；Loading 不亮（加载中 ≠ 缺模型）
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AsrReadiness {
+    #[default]
+    Unknown,
+    Loading,
+    Ready,
+    Unavailable,
+}
+
 /// 控制面板 UI 伴生状态（全部仅 UI 线程触达；对照 ControlPanel 的面板局部字段）
 #[derive(Default)]
 pub struct PanelUiState {
@@ -2051,6 +2063,16 @@ pub struct PanelUi {
     pub translator_error: Option<String>,
     /// 连接测试运行态（D-85：`Cmd::TestTranslator` 的 UI 侧；每行按钮共享一份）
     pub probe: ProbeUiState,
+    /// 识别就绪镜像（WD-6 引导横幅；D-100 事件臂维护，见 [`AsrReadiness`]）
+    pub asr_readiness: AsrReadiness,
+}
+
+impl PanelUi {
+    /// WD-6 首启缺模型轻引导横幅可见性（D-105）：识别未就绪且当前不在识别页——
+    /// 识别页下载卡就地可达，横幅在那里冗余
+    pub fn model_banner_visible(&self) -> bool {
+        self.asr_readiness == AsrReadiness::Unavailable && self.state.page != PanelPage::VadAsr
+    }
 }
 
 /// 下载自动重试上限（2026-09-10 用户裁决 2：自动重试 3 次，仍失败提醒用户）
@@ -2194,6 +2216,7 @@ impl AppUi {
                 auto_retry: DownloadAutoRetry::default(),
                 translator_error: None,
                 probe: ProbeUiState::default(),
+                asr_readiness: AsrReadiness::default(),
             },
             log: LogUi {
                 logwin: LogWindowState::default(),
@@ -3524,6 +3547,33 @@ mod tests {
         assert_eq!(st.panel.state.page, PanelPage::VadAsr);
         assert!(matches!(st.panel.state.devices, DevicesState::Idle));
         assert!(st.panel.state.apply_due_at.is_none());
+    }
+
+    /// WD-6/D-105：引导横幅只在「未就绪且不在识别页」亮——Unknown/Loading 防误报，
+    /// 识别页自身不亮（下载卡就地可达），就绪即隐
+    #[test]
+    fn model_banner_visible_only_when_unavailable_off_vadasr_page() {
+        let mut st = AppUi::new(Settings::default());
+        assert!(
+            !st.panel.model_banner_visible(),
+            "Unknown（事件未到）不得亮横幅"
+        );
+        assert_ne!(
+            lt_i18n::t("model_missing_banner"),
+            "model_missing_banner",
+            "横幅文案键应存在于 yaml"
+        );
+        st.panel.asr_readiness = AsrReadiness::Loading;
+        assert!(!st.panel.model_banner_visible(), "加载中不亮（≠缺模型）");
+        st.panel.asr_readiness = AsrReadiness::Unavailable;
+        assert!(
+            !st.panel.model_banner_visible(),
+            "缺省页即识别页，横幅冗余不亮"
+        );
+        st.panel.state.page = PanelPage::Translation;
+        assert!(st.panel.model_banner_visible(), "未就绪 + 非识别页 = 亮");
+        st.panel.asr_readiness = AsrReadiness::Ready;
+        assert!(!st.panel.model_banner_visible(), "就绪即隐（D-105）");
     }
 
     /// W5 收口（P1）：设备枚举首入守卫——Idle→Probe 只发一次命令；
