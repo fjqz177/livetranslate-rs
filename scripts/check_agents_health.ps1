@@ -54,13 +54,6 @@ $totalLines = ($content -split "`n").Count
 if ($content.EndsWith("`n")) { $totalLines-- }
 $totalBytes = (Get-Item -LiteralPath $agentsPath).Length
 
-# ── 断言 1：两档预算 ──
-$MainLineCap = 190                # 已退役（ADR-18，2026-09-17 用户裁决取消机械额度）——留名防旧引用误读，勿复用
-$MainByteCap = 19 * 1024          # 已退役（ADR-18）
-$TotalLineCap = 230               # 已退役（ADR-18）
-$TotalByteCap = 24 * 1024         # 已退役（ADR-18）
-$WaterLevel = 0.85                # 已退役（ADR-18）
-
 $marker = [regex]::Match($content, '(?m)^## 8\.')
 if ($marker.Success) {
     $head = $content.Substring(0, $marker.Index)
@@ -69,20 +62,20 @@ if ($marker.Success) {
 } else {
     $mainLines = $totalLines
     $mainBytes = $totalBytes
-    $violations += "状态与工单：找不到 '^## 8.' 分节标记，主体预算按全文件从严计算"
+    $violations += "状态与工单：找不到 '^## 8.' 分节标记，主体口径按全文件从严计算"
 }
 # ── 断言 2：引用路径存在 ──
 $refs = [regex]::Matches($content, '(?:docs|scripts|crates|assets|\.github|\.cargo|\.githooks)/[A-Za-z0-9_\-./]+') |
     ForEach-Object { $_.Value } | Sort-Object -Unique
 foreach ($p in $refs) {
-    if ($p.Contains('*')) { continue }                    # 通配符（如 docs/prompts/*）跳过
+    # 提法正则不匹配通配符（捕获面纯字母数字斜杠）；目录提法按目录 Test-Path
     if ($p -like 'docs/drafts/*') { continue }            # 草稿区 CI 上不存在
     if (-not (Test-Path -LiteralPath $p)) { $violations += "死引用：$p（AGENTS.md 引用但仓库无此路径）" }
 }
 
 # ── 断言 3：G-编号无死引用 + gotchas 连续 ──
 $gotchasPath = Join-Path $RepoRoot 'docs/gotchas.md'
-$defs = @()   # 提升作用域：断言 6（G 编号全仓）复用
+$defs = @()   # 提升作用域：断言 6（G 编号全仓）复用；空 = gotchas 缺失/无条目，断言 6 自短路
 if (-not (Test-Path -LiteralPath $gotchasPath)) {
     $violations += "docs/gotchas.md 不存在（坑册是 AGENTS §7 防呆行与 §4 坑册路由的真源）"
 } else {
@@ -96,7 +89,8 @@ if (-not (Test-Path -LiteralPath $gotchasPath)) {
         if ($missing.Count -gt 0) {
             $violations += "坑册编号不连续：缺 $($missing -join ', ')"
         }
-        $used = [regex]::Matches($content, 'G-(\d+)') |
+        # lookbehind 对齐断言 6：防把「AG-1」「SVG-12」之类局部串误当 G-编号
+        $used = [regex]::Matches($content, '(?<![A-Za-z0-9])G-(\d+)') |
             ForEach-Object { [int]$_.Groups[1].Value } | Sort-Object -Unique
         foreach ($g in $used) {
             if ($defs -notcontains $g) { $violations += "死引用：G-$g（AGENTS.md 引用但坑册无此条）" }
@@ -146,7 +140,6 @@ foreach ($f in $scanRel) {
     $t = [System.IO.File]::ReadAllText($f)
     foreach ($m in [regex]::Matches($t, '(?:docs|scripts|crates|assets|\.github|\.cargo|\.githooks)/[A-Za-z0-9_\-./]+')) {
         $p = $m.Value
-        if ($p.Contains('*')) { continue }
         if ($refExempt.ContainsKey("$rel|$p")) { continue }
         if ($p -eq 'docs/drafts/') { continue }   # 裸目录提法（无文件名）不算引用
         if ($p -like 'docs/drafts/*') {
@@ -162,16 +155,20 @@ foreach ($f in $scanRel) {
 }
 
 # ── 断言 6：G-编号全仓无死引用（D-93 DH-15；gotchas=定义源不扫，archive=史档不扫）──
-$gScan = @($scanRel | Where-Object { (([IO.Path]::GetRelativePath($RepoRoot, $_)) -replace '\\', '/') -ne 'docs/gotchas.md' })
-foreach ($f in $gScan) {
-    $t = [System.IO.File]::ReadAllText($f)
-    $fn = Split-Path -Leaf $f
-    foreach ($m in [regex]::Matches($t, '(?<![A-Za-z0-9])G-([A-Za-z0-9]+)')) {
-        $g = $m.Groups[1].Value
-        if ($g -match '^\d+$') {
-            if ($defs -notcontains [int]$g) { $violations += "死引用：G-$g（$fn 引用但坑册无此条）" }
-        } else {
-            $violations += "死引用：G-$g（$fn 非数字编号——坑册无此条，疑局部号残留未带路径）"
+# gotchas 缺失/无条目时短路（根因已由断言 3 报过，防全仓雪崩噪音，S3-3）
+if ($defs.Count -gt 0) {
+    $gScan = @($scanRel | Where-Object { (([IO.Path]::GetRelativePath($RepoRoot, $_)) -replace '\\', '/') -ne 'docs/gotchas.md' })
+    foreach ($f in $gScan) {
+        $t = [System.IO.File]::ReadAllText($f)
+        # 相对路径定位（S3-1）：根 README 与 docs/README 分得清
+        $fn = ([IO.Path]::GetRelativePath($RepoRoot, $f)) -replace '\\', '/'
+        foreach ($m in [regex]::Matches($t, '(?<![A-Za-z0-9])G-([A-Za-z0-9]+)')) {
+            $g = $m.Groups[1].Value
+            if ($g -match '^\d+$') {
+                if ($defs -notcontains [int]$g) { $violations += "死引用：G-$g（$fn 引用但坑册无此条）" }
+            } else {
+                $violations += "死引用：G-$g（$fn 非数字编号——坑册无此条，疑局部号残留未带路径）"
+            }
         }
     }
 }
@@ -186,8 +183,9 @@ if (-not (Test-Path -LiteralPath $archiveIndexPath)) {
     $violations += "归档索引（docs/archive-index.md）不存在（归档表真源缺失）"
 } else {
     $indexDocs = [System.IO.File]::ReadAllText($archiveIndexPath)
-    # 行首锚定（(?m)^）：正文散文里提到节标题字面量时不再抢匹配（G-30 同族自检互搏坑）
-    $secMatch = [regex]::Match($indexDocs, '(?m)^## 归档文档(?<sec>.*?)\r?\n## ', [System.Text.RegularExpressions.RegexOptions]::Singleline)
+    # 行首锚定（(?m)^）：正文散文里提到节标题字面量时不再抢匹配（G-30 同族自检互搏坑）；
+    # 尾锚双态（\r?\n## |\z，S3-5）：「归档文档」是最后一节时也能命中
+    $secMatch = [regex]::Match($indexDocs, '(?m)^## 归档文档(?<sec>.*?)(\r?\n## |\z)', [System.Text.RegularExpressions.RegexOptions]::Singleline)
     if ($secMatch.Success) {
         $indexParsed = $true
         foreach ($m in [regex]::Matches($secMatch.Groups['sec'].Value, '(?m)^\|\s*`([a-z0-9\-]+\.md)`')) {
@@ -204,7 +202,7 @@ $missingOnDisk  = @($indexNames | Where-Object { $dirNames -notcontains $_ })
 if ($missingInIndex.Count -gt 0) { $violations += "归档索引缺行：$($missingInIndex -join ', ')" }
 if ($missingOnDisk.Count -gt 0)  { $violations += "索引指向不存在的档案：$($missingOnDisk -join ', ')" }
 foreach ($n in $dirNames) {
-    $head = ([System.IO.File]::ReadAllLines((Join-Path $RepoRoot "docs/archive/$n")) | Select-Object -First 8) -join "`n"
+    $head = (Get-Content -LiteralPath (Join-Path $RepoRoot "docs/archive/$n") -TotalCount 8) -join "`n"
     if ($head -notmatch '已归档|归档注记') { $violations += "归档缺注记：docs/archive/$n（前 8 行无『已归档/归档注记』）" }
 }
 
@@ -212,10 +210,10 @@ foreach ($n in $dirNames) {
 # (a) 磁盘 → 册：scripts/ 下每个 .ps1/.py 须在目录页（docs 顶层 scripts.md）有节（### `scripts/<名>`）
 # (b) 册 → 磁盘：册上抽出的每个 scripts/… 路径须实存（孤儿条目）
 # 全部节强制含本守护自身，无豁免代码（对账读目录页与文件清单，不存在内容自触发；
-# 节数随脚本增删浮动——ADR-21 后现役 7 节）。
+# 节数随脚本增删浮动，以两侧对账为准）。
 # 枚举平铺非递归——scripts/ 出现子目录时须回改此处。正文出现节标题样式字面量会误报，禁。
-$scriptsMd = Join-Path $RepoRoot ('docs' + '/scripts.md')   # 拼接书写：本文件今日受断言5自豁免（:128）庇护，直写亦无碍；
-                                                            # 拼接防未来该豁免被改时自我字面量误伤（防御性冗余）
+$scriptsMd = Join-Path $RepoRoot ('docs' + '/scripts.md')   # 拼接书写：断言 5 对本文件有定义源自豁免，
+                                                            # 直写亦无碍；拼接防该豁免未来被改时自我字面量误伤（防御性冗余）
 if (-not (Test-Path -LiteralPath $scriptsMd)) {
     $violations += '脚本目录页（docs 顶层 scripts.md）不存在（新增脚本前先建册）'
 } else {
