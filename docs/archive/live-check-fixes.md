@@ -130,7 +130,7 @@
 - A1 推导色（退出/暂停/字幕开/确认窗/字幕窗各族 hover+pressed）首个落地版本已被实机接受，后续微调只动常量。
 - B2a 的字色弱化落实在 `panel::panel_btn`（面板 8 处禁用按钮已改走它）；施工期发现全局改灰会波及 40+ 处未着色标签，**未采用**全局方案——后续若再有人想动 `noninteractive.fg_stroke`，先读本档 §1.3。
 - 死 i18n 键 8 个（`theme_dark/light`、`btn_check_update`、`btn_open_repo/issues`、`hotkey_overlay/subtitle`、`changelog_title`）——
-  不单独立包，WD-8 落地时一并决定生死。
+  不单独立包，WD-8 落地时一并决定生死。（**2026-09-28 注记**：WD-8 已裁不做〔D-110〕，八键随解禁批③删除；另发现更新族 `update_*` 9 键与热键族 `hotkey_*` 5 键〔group_hotkeys/pause/clear/capture_hint/duplicate〕亦零代码引用，待同法核验后随 #5 清理。）
 
 ---
 
