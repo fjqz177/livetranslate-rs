@@ -301,7 +301,8 @@ impl AsrManager {
         }
         // ── padding：只取当前 worker 身份对应的生效条目 ──
         // D-116 单源化：原 engine_family 字符串表 + nano 特例折叠为一个穷尽
-        // match——家族/padding 知识只活在这一处，改名漏同步从注释义务变编译错误。
+        // match——「worker 身份 → padding 语义」只活在这一处（哪个模型映射为
+        // 哪个身份的判定在 build_worker_config），改名漏同步变编译错误。
         let Some(engine) = self.config.as_ref().map(|c| c.engine) else {
             return Ok(());
         };

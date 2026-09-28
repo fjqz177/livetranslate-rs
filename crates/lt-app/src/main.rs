@@ -154,6 +154,17 @@ fn fatal_early(msg: &str) {
     eprintln!("LiveTranslate 启动失败: {msg}");
 }
 
+/// ModelDir 提取公共尾巴（评审 dedup）：三引擎臂同形
+fn require_model_dir<'a>(
+    options: &'a lt_asr::WorkerOptions,
+    engine: &str,
+) -> anyhow::Result<&'a std::path::PathBuf> {
+    match options {
+        lt_asr::WorkerOptions::ModelDir(d) => Ok(d),
+        other => anyhow::bail!("{engine} 应带 ModelDir，实际 {other:?}"),
+    }
+}
+
 /// worker 子进程主循环：SenseVoice / Whisper（M5.1）/ Fun-ASR-Nano（WP-A）/ Qwen3-ASR（WP-B）
 fn asr_worker_entry() -> anyhow::Result<()> {
     // AH-7/H14：worker 分支在主进程 logging::init 之前 return，引擎里的
@@ -172,30 +183,21 @@ fn asr_worker_entry() -> anyhow::Result<()> {
     match config.engine {
         lt_asr::WorkerEngine::SenseVoice => {
             lt_asr::worker::run(stdin, std::io::stdout().lock(), config, move |cfg| {
-                let dir = match &cfg.options {
-                    lt_asr::WorkerOptions::ModelDir(d) => d,
-                    other => anyhow::bail!("sensevoice 应带 ModelDir，实际 {other:?}"),
-                };
+                let dir = require_model_dir(&cfg.options, "sensevoice")?;
                 lt_asr::sensevoice::SenseVoiceEngine::load(dir, cfg.pad_seconds, &cfg.language)
                     .map_err(|e| anyhow::anyhow!("{e}"))
             })
         }
         lt_asr::WorkerEngine::Nano => {
             lt_asr::worker::run(stdin, std::io::stdout().lock(), config, move |cfg| {
-                let dir = match &cfg.options {
-                    lt_asr::WorkerOptions::ModelDir(d) => d,
-                    other => anyhow::bail!("nano 应带 ModelDir，实际 {other:?}"),
-                };
+                let dir = require_model_dir(&cfg.options, "nano")?;
                 // nano 无 padding 语义（pad_seconds 恒 None），语言为创建期参数
                 lt_asr::NanoEngine::load(dir, &cfg.language).map_err(|e| anyhow::anyhow!("{e}"))
             })
         }
         lt_asr::WorkerEngine::Qwen3 => {
             lt_asr::worker::run(stdin, std::io::stdout().lock(), config, move |cfg| {
-                let dir = match &cfg.options {
-                    lt_asr::WorkerOptions::ModelDir(d) => d,
-                    other => anyhow::bail!("qwen3 应带 ModelDir，实际 {other:?}"),
-                };
+                let dir = require_model_dir(&cfg.options, "qwen3")?;
                 // qwen3 无 padding/语言参数（pad_seconds 恒 None，纯 auto-LID）
                 lt_asr::Qwen3AsrEngine::load(dir).map_err(|e| anyhow::anyhow!("{e}"))
             })

@@ -292,6 +292,23 @@ fn qwen3_ignores_pending_whisper_pad() {
     m.shutdown();
 }
 
+#[test]
+fn echo_identity_treated_as_whisper_family() {
+    // D-116 评审补：Echo（测试身份）沿旧 engine_family `_` 通配行为视同
+    // whisper 家族——whisper_pad 生效，与重构前逐臂保真
+    let mut m = AsrManager::with_spawner(fake_spawn());
+    m.ensure_started(&cfg_engine(WorkerEngine::Echo, "Echo"))
+        .expect("start");
+    m.transcribe(&audio(), false, &eff_with("auto", 0.5, 3.0))
+        .expect("transcribe");
+    assert_eq!(
+        m.config().unwrap().pad_seconds,
+        Some(3.0),
+        "echo 身份应吃 whisper 家族 pad"
+    );
+    m.shutdown();
+}
+
 /// worker 在 set_language 送达途中死亡：命令未送达 → 不提交（config 不变），
 /// 换正常 worker 后同快照再传 → 比对仍不等 → 重新应用（原版
 /// "worker-death exceptions propagate with the pending intact" —— W4 形态：

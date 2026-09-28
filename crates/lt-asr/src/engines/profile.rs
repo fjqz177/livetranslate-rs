@@ -33,10 +33,13 @@ mod tests {
 
     #[test]
     fn funasr_family_gets_fast_budget_from_settings_key() {
-        // C1 回归（D-116）：settings 键 "funasr" 经透镜来的 FunAsr 必须拿快档。
+        // C1 回归（D-116）：settings 键 "funasr" 经透镜必须拿快档——
         // 旧病灶：表键 worker 级、唯一调用方喂 settings 级 "funasr" 恒落 60s
-        // 兜底——fast 档自 R6 起从未生效。
-        assert_eq!(transcribe_timeout_profile(EngineKey::FunAsr), (5.0, 2.0));
+        // 兜底，fast 档自 R6 起从未生效。
+        assert_eq!(
+            transcribe_timeout_profile(EngineKey::from_settings_str("funasr")),
+            (5.0, 2.0)
+        );
     }
 
     #[test]

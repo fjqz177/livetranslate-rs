@@ -23,16 +23,16 @@
 ## 三、D-116 · C1 止血:超时档案对齐 EngineKey
 
 - **修法**:`transcribe_timeout_profile` 改收 `EngineKey`(lt-asr 公共 interface 变化,经 `lib.rs:16` 重导出同步 lt-orchestrator):`FunAsr → (5.0, 2.0)`、`Whisper → (5.0, 2.0)`、`Qwen3 → (10.0, 4.0)`;`settings_bus.rs:100` 改传 `raw.engine_key()`。
-- **语义澄清**:档案全表 sensevoice/nano/whisper 同值(5.0, 2.0),档案本就只需 settings 级粒度——原 `_` 回落臂随枚举化消失,未知字符串的防护由 `EngineKey::from_settings_str` 的 warn+回退承担(既有行为,`settings.rs:33-43`);原测试 `unknown_engine_falls_back_to_constant` 相应改写。
+- **语义澄清**:档案全表 sensevoice/nano/whisper 同值(5.0, 2.0),档案本就只需 settings 级粒度——原 `_` 回落臂随枚举化消失,未知字符串的防护由 `EngineKey::from_settings_str` 的 warn+回退承担(既有行为,`settings.rs:33-43`);原测试 `unknown_engine_falls_back_to_constant` 相应改写。**评审记档(方向反转)**:未知键后果由「60s 恒定(宁慢勿杀)」变为「FunAsr 快档(宁快勿挂)」——上游 settings sanitize 已钳制键值域,实际不可达,但语义方向变化如实记一笔。
 - **行为变化**(Q4 拍板):funasr 族超时预算 60s 恒定 → base 5s + 段长×2,失败感知回 ~9s 级;CHANGELOG 下一版提及。
 - **验收**:新增「从 settings 键出发」回归测试——`EngineKey::FunAsr` 得 (5.0, 2.0) 不落 60s;`cargo test --workspace` 全绿。
 
 ## 四、D-116 · C2 深化:lt-asr WorkerEngine 枚举
 
-- **新枚举**:`WorkerEngine { SenseVoice, Nano, Whisper, Qwen3 }`,放 **lt-asr**(worker 身份是它的域内概念;lt-proto 零改动)。
+- **新枚举**:`WorkerEngine { SenseVoice, Nano, Whisper, Qwen3, Echo }`,放 **lt-asr**(worker 身份是它的域内概念;lt-proto 零改动)。**Echo 为测试假 worker 专用身份**(fake_asr_worker 跨进程,`#[cfg(test)]` 变体不可行;先例 = `WorkerOptions::Echo`),生产入口显式拒绝;评审补记——书面规格原文只列四变体,Echo 系枚举化必要连带。
 - **唯一生产点**:`build_worker_config`(pipeline.rs:1855-1910)产出 WorkerEngine;`"funasr-nano-2512"→Nano` 判定保留在此(对照 `registry::funasr_entry`),该字符串字面量此后只存在于模型注册表词表(合法词汇,非引擎词表)。
 - **承重替换**:`WorkerConfig.engine: String → WorkerEngine`(serde 改型;同 exe 同构建 IPC,父子进程恒同版本,自洽);`engine_family`(manager.rs:66-73)变枚举方法,padding 分派语义不变;`lt-app/main.rs:170-203` 入口改 match 枚举——**单点分派豁免边界保持**(AGENTS §3),漏同步从注释义务变编译错误。
-- **验收**:`nano_family_and_padding_invariants`(manager.rs:501-511)改写为枚举形态;family 映射单测;现有 worker 生命周期测试链(fake_asr_worker 14 例)全绿。
+- **验收**:`nano_family_and_padding_invariants`(manager.rs:501-511)上移 manager_flow **行为级三件**(nano_gets_no_padding / qwen3_ignores_pending_whisper_pad / echo_identity_treated_as_whisper_family——第三件为评审补,钉 Echo 沿旧通配行为视同 whisper 家族);wire 稳定性测试钉 serde↔as_str 双编码;现有 worker 生命周期测试链(fake_asr_worker 14 例)全绿。
 
 ## 五、D-117 · C3:草稿写入面穷尽防线
 
