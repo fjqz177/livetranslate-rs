@@ -24,6 +24,10 @@ rust-version = "1.98.1"    # 声明式 MSRV（dev-config-audit C2）：与 rust-
 # 「自身代码零警告」从 precommit/CI 命令行钉进清单（dev-config-audit C3）：
 # 普通 cargo build/test 不带 -D flags 同样拦截；依赖编译不受 [lints] 影响
 warnings = "deny"
+# LNK4098/LIBCMT 链接噪音静音（D-103，2026-09-28 解禁批①落地）：实证无害（G-37），
+# 该 lint 带 ignore_deny_warnings，warnings="deny" 管不到；上游 1.99 linker_info
+# allow-by-default 后进度行自动消失，届时复核本行去留
+linker_messages = "allow"
 
 [workspace.dependencies]
 lt-proto = { path = "crates/lt-proto" }

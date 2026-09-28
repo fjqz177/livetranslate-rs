@@ -315,7 +315,7 @@
 - **触发**：`cargo build --release` 链接 lt-app（1.98.1 实测；rustc 1.97 起该 lint 默认 warn）。
 - **症状**：`linker stdout: LINK : warning LNK4098: defaultlib 'LIBCMT' conflicts with use of other libs`（中文 link.exe 另多一行「正在创建库 … .lib 和对象 … .exp」进度行；英文链 CI 只显 LNK4098——本地化进度行未被识别）。
 - **根因**：sherpa/whisper 静态库带 `/DEFAULTLIB:LIBCMT`（/MT）与 Rust 侧 /MD 冲突（G-5 双栈 CRT 的固有产物，链接器自动择一并警告）；`[workspace.lints.rust] warnings = "deny"` 管不到（lint 带 `ignore_deny_warnings`）。
-- **对策**：无害不修（无 LNK2005/2019，动态 CRT 胜出，与 data-lifecycle C3=A 一致）；噪音静音已裁 `[lints.rust] linker_messages = "allow"`（D-103）——施工随代码解禁，落地后更新本行。上游 1.99 起计划归 allow-by-default 的 `linker_info` 会让进度行自动消失（尚未发布，届时复核）。
+- **对策**：无害不修（无 LNK2005/2019，动态 CRT 胜出，与 data-lifecycle C3=A 一致）；噪音静音已裁 `[lints.rust] linker_messages = "allow"`（D-103）——**2026-09-28 已落地**（D-114 解禁批①，Cargo.toml `[workspace.lints.rust]`），release 链接输出已净。上游 1.99 起计划归 allow-by-default 的 `linker_info` 会让进度行自动消失（尚未发布，届时复核 Cargo.toml 注记的去留）。
 - **证据**：`dumpbin /directives`（静态库带 /DEFAULTLIB:LIBCMT）、`/dependents`（exe 导入 VCRUNTIME140.dll+UCRT）、v1.0.0 发布链 run 35381400025 与 09-18 ci run 35383389311 同警告且全绿。
 
 ---
