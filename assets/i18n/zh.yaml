@@ -503,15 +503,6 @@ diag_mem_none: "无"
 # 关于页
 about_version: "版本 {version}"
 about_desc: "实时字幕翻译：采集系统音频 → 语音识别 → LLM 翻译 → 悬浮双语字幕。面向观看视频、直播与 OBS 录制场景。"
-group_update: "更新"
-checking_update: "检查中…"
-update_available_title: "发现新版本"
-update_available_msg: "发现新版本 {version}。\n\n点击下方按钮前往 GitHub Releases 下载最新安装包；覆盖安装即可，所有用户数据都会保留。"
-update_uptodate: "已是最新版本（{version}）。"
-update_not_available: "尚未发布正式版本，当前开发版本 {version} 无需更新。"
-update_check_failed: "检查更新失败：{detail}"
-update_open_download: "前往下载"
-group_links: "项目链接"
 group_license: "许可与隐私"
 about_license_text: "本软件代码以 MIT 许可发布。识别模型（SenseVoice、Whisper 等）由第三方提供并遵循其各自许可证，详情见模型来源。设置与转录数据仅保存在本机；诊断打包已自动脱敏（不含密钥、路径与字幕内容）。"
 group_benchmark: "基准测试"
@@ -579,13 +570,6 @@ mem_long_run_hint: "已运行 {hours} 小时，内存占用偏高，方便时可
 single_instance_msg: "LiveTranslate 已在运行。已为你打开主窗口。"
 single_instance_blocked_title: "无法唤醒已运行的实例"
 single_instance_blocked_msg: "LiveTranslate 已在运行，但无法与其通信。请从系统托盘退出该实例后重试；如果托盘里没有，请重启电脑后再试。"
-
-# 热键（识别页 §3.2/§3.7）
-group_hotkeys: "全局热键"
-hotkey_pause: "暂停 / 继续"
-hotkey_clear: "清空字幕"
-hotkey_capture_hint: "按下新组合键…（Esc 取消）"
-hotkey_duplicate: "该组合已分配给「{action}」，请换一个组合。"
 
 # 错误横幅与诊断网络卡（§3.4/§3.5.6）
 banner_open_diagnostics: "查看诊断"

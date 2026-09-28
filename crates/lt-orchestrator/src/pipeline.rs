@@ -3400,6 +3400,30 @@ mod tests {
         Supervisor::new(|_| {})
     }
 
+    /// ASR 退出收尾接线守护（Q3/legacy §10-3；D-114 批⑦）：收尾序列需真引擎
+    /// 才能驱动（§5 覆盖说明在案），单测无法行为验证——退而以源锚钉住关键
+    /// 调用，收尾整段被删时此测红。源锚 = 最小守护的诚实形态，勿扩成全量比对。
+    #[test]
+    fn asr_exit_wiring_source_anchors_present() {
+        let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/pipeline.rs"))
+            .unwrap();
+        // 1b 停机收口：在队任务确定性丢弃（否则字幕永远停在「翻译中…」）
+        assert!(
+            src.contains("tl.discard_pending()"),
+            "停机序缺 discard_pending（ACR-1b）"
+        );
+        // 1a capture 退出冲刷的完成标志（VAD 残余收尾段入队后置位；本体在 lt-audio capture.rs）
+        let capture = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../crates/lt-audio/src/audio/capture.rs"
+        ))
+        .unwrap_or_default();
+        assert!(
+            capture.contains("capture_done"),
+            "capture 退出完成标志缺失（ACR-1a）"
+        );
+    }
+
     /// 排空事件动脉取 TranslatorRebuildFailed 载荷（规则 4 测试用）：
     /// (still_using, reason)
     fn drain_rebuild_failed(sink: &EventArtery) -> Option<(Option<String>, String)> {

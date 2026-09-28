@@ -500,15 +500,6 @@ diag_mem_none: "None"
 # About tab
 about_version: "Version {version}"
 about_desc: "Real-time subtitle translation: capture system audio → speech recognition → LLM translation → floating bilingual subtitles. Built for watching videos, live streams and OBS capture."
-group_update: "Updates"
-checking_update: "Checking…"
-update_available_title: "New version available"
-update_available_msg: "New version {version} is available.\n\nClick the button below to download the latest installer from GitHub Releases; install over the existing copy and all your data is kept."
-update_uptodate: "You are on the latest version ({version})."
-update_not_available: "No stable release published yet; development version {version} is current."
-update_check_failed: "Update check failed: {detail}"
-update_open_download: "Go to download"
-group_links: "Project links"
 group_license: "License & Privacy"
 about_license_text: "The app code is MIT-licensed. Recognition models (SenseVoice, Whisper, …) are third-party and follow their own licenses. Settings and transcripts stay on this machine; diagnostics archives are auto-redacted (no keys, paths or subtitle content)."
 group_benchmark: "Benchmark"
@@ -576,13 +567,6 @@ mem_long_run_hint: "Running for {hours} hours with high memory usage — restart
 single_instance_msg: "LiveTranslate is already running. Bringing its window to front."
 single_instance_blocked_title: "Cannot wake the running instance"
 single_instance_blocked_msg: "LiveTranslate is already running, but it did not respond. Quit it from the system tray and try again; if it is not there, restart your computer and retry."
-
-# Hotkeys (recognition page §3.2/§3.7)
-group_hotkeys: "Global hotkeys"
-hotkey_pause: "Pause / resume"
-hotkey_clear: "Clear subtitles"
-hotkey_capture_hint: "Press a new combination… (Esc to cancel)"
-hotkey_duplicate: "This combination is already assigned to {action}. Pick another one."
 
 # Error banner & diagnostics network card (§3.4/§3.5.6)
 banner_open_diagnostics: "Open diagnostics"

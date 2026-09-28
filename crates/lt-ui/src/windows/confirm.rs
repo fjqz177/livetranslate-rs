@@ -271,7 +271,9 @@ fn apply_confirm_kind(ui: &Ui, app: &mut AppUi, kind: &ConfirmKind) {
             app.modal.quit_requested = true;
         }
         ConfirmKind::Clear => {
-            app.overlay.messages.clear();
+            // 唯一落点（ACR-2/3）：曾实锤只清 messages 漏账本/流草稿——清空后
+            // 迟到的翻译会从账本捞出旧句上屏（Q3/legacy §10-2，接线守护测试钉死）
+            app.overlay.clear_messages();
         }
         ConfirmKind::ResetSubtitle => {
             app.settings.subtitle_mode = lt_proto::SubtitleMode::default();

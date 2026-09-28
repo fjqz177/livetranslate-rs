@@ -115,8 +115,7 @@ cargo build --release -p lt-app    # 出单 exe：target/release/livetranslate.e
 ```powershell
 $env:LIVETRANSLATE_CONFIG_DIR = "$env:TEMP\lt-smoke"
 New-Item -ItemType Directory -Force $env:LIVETRANSLATE_CONFIG_DIR | Out-Null
-'{ "models_dir": "C:/Users/<你的用户名>/.config/livetranslate/models" }' |
-  Set-Content -Encoding Ascii "$env:LIVETRANSLATE_CONFIG_DIR\settings.json"   # 必须 Ascii，UTF8 会写 BOM 导致配置解析失败
+Copy-Item scripts\settings.smoke.json "$env:LIVETRANSLATE_CONFIG_DIR\settings.json"   # 模板拷入（免手抄、免 BOM 雷）；把里面 <你的用户名> 改成实际值
 $env:LIVETRANSLATE_SHOW_PANEL = "1"   # 走查旗标：启动直开控制面板（不用可去掉）
 cargo run -p lt-app
 ```

@@ -3552,6 +3552,65 @@ mod tests {
         assert!(st.panel.state.apply_due_at.is_none());
     }
 
+    /// ACR-2/3 清空接线守护（Q3/legacy §10-2；D-114 批⑦）：字幕窗三缓冲的唯一
+    /// 清理落点 = OverlayUi::clear_messages。曾实锤确认窗 Clear 臂只清 messages
+    /// （漏账本/流草稿，清空后迟到翻译从账本捞旧句上屏）——此后任何绕过直清此测
+    /// 即红。定义处（state.rs）与各文件 tests 模块豁免。
+    #[test]
+    fn overlay_buffers_clear_only_via_clear_messages() {
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut offenders = Vec::new();
+        let mut stack = vec![src.clone()];
+        while let Some(dir) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                if path.extension().is_none_or(|e| e != "rs") {
+                    continue;
+                }
+                let rel = path
+                    .strip_prefix(&src)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                if rel == "state.rs" {
+                    continue; // 定义处豁免（clear_messages 本体在此）
+                }
+                let text = std::fs::read_to_string(&path).unwrap();
+                // 各文件的 tests 模块不扫（测试直清属夹具操作，非生产接线）
+                let prod = text.split("mod tests").next().unwrap_or("");
+                for (i, line) in prod.lines().enumerate() {
+                    if line.contains(".messages.clear()")
+                        || line.contains(".pending_streams.clear()")
+                        || line.contains(".subtitle_ledger.clear()")
+                    {
+                        offenders.push(format!("{rel}:{}", i + 1));
+                    }
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "字幕缓冲绕过 clear_messages 直清（唯一落点 = OverlayUi::clear_messages）：{offenders:?}"
+        );
+        // feed 侧同题守护（§10-2）：原文取自旁路账本（ledger_take），禁止改回查消息链
+        let app_src = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app.rs"),
+        )
+        .unwrap();
+        let app_prod = app_src.split("mod tests").next().unwrap_or("");
+        assert!(
+            app_prod.contains("ledger_take(id)"),
+            "feed_subtitle 必须经旁路账本取原文（ledger_take），不得回查消息链"
+        );
+    }
+
     /// WD-6/D-105：引导横幅只在「未就绪且不在识别页」亮——Unknown/Loading 防误报，
     /// 识别页自身不亮（下载卡就地可达），就绪即隐
     #[test]
