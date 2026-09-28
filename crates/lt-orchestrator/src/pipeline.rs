@@ -4059,6 +4059,19 @@ mod tests {
 
         assert!(pool.wait_idle(Duration::from_millis(10)), "空池应立即空闲");
 
+        // 生产语义：pop 返回与 in_flight 自增之间存在良性窄窗口（见 wait_idle 注），
+        // 断言前先等在跑任务登记可见，消除 CI 高负载下的墙钟竞态（#23）
+        let wait_in_flight_visible = |what: &str| {
+            let t0 = Instant::now();
+            while pool.in_flight.load(Ordering::Relaxed) == 0 {
+                assert!(
+                    t0.elapsed() < Duration::from_secs(2),
+                    "{what}: 2s 内未登记 in_flight"
+                );
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        };
+
         // 在跑任务：预算内等到它跑完（不是只看队列空）
         let ran = Arc::new(AtomicU64::new(0));
         let r = ran.clone();
@@ -4066,6 +4079,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(200));
             r.fetch_add(1, Ordering::Relaxed);
         });
+        wait_in_flight_visible("任务 1");
         let t0 = Instant::now();
         assert!(pool.wait_idle(Duration::from_secs(3)), "预算内应等到收敛");
         assert!(
@@ -4082,6 +4096,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(400));
             r3.fetch_add(1, Ordering::Relaxed);
         });
+        wait_in_flight_visible("任务 2");
         assert!(
             !pool.wait_idle(Duration::from_millis(80)),
             "预算耗尽应返回 false"
