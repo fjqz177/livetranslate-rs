@@ -7,4 +7,6 @@ disallowed-methods = [
     { path = "std::thread::scope",  reason = "同上——scope 出生同样逃出监督树（旧 PS 守护曾漏此项，本条为净增强）" },
     { path = "std::panic::set_hook", reason = "panic hook 仅限 lt-app：main.rs 安装 / panic_hook.rs 本体" },
     { path = "winit::event_loop::EventLoopProxy::send_event", reason = "事件发送唯一通道 = lt-app 动脉桥；例外就地 #[allow]" },
+    { path = "egui::Ui::selectable_label", reason = "弹层项必须走 style::selectable_stable（D-119/G-38：直调在悬停时长高 2×w_inactive 且绕过几何不变量）；唯一豁免 = 助手本体" },
+    { path = "egui::Ui::selectable_value", reason = "同上——选值版走 style::selectable_value_stable" },
 ]

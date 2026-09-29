@@ -190,8 +190,9 @@ pub fn stabilize_widget_strokes(v: &mut egui::Visuals) {
 /// 相等，悬停反馈只剩底色/描边色出现（D-119）。
 ///
 /// 只包弹层项；**禁**据此全局归零 `inactive.bg_stroke`——面板按钮 idle 灰边框
-/// 与 D-32 底限的半覆盖皮肤语义依赖该值。新增弹层项一律走本助手，别直调
-/// `ui.selectable_label`（G-38）。
+/// 与 D-32 底限的半覆盖皮肤语义依赖该值。新增弹层项一律走本助手（直调
+/// `ui.selectable_label` 已入 clippy disallowed-methods，唯一豁免 = 本助手）。
+#[allow(clippy::disallowed_methods)] // 助手本体 = G-38 禁令的唯一豁免出口（scope 内直调原生方法）
 pub fn selectable_stable<'a>(
     ui: &mut egui::Ui,
     selected: bool,
@@ -206,20 +207,20 @@ pub fn selectable_stable<'a>(
     .inner
 }
 
-/// [`selectable_stable`] 的选值版（对齐 `Ui::selectable_value` 语义：点击且
-/// 值不同才写回并 `mark_changed`）。
+/// [`selectable_stable`] 的选值版：scope 归零后**直调上游**
+/// `Ui::selectable_value`（写回语义单源于 egui，防上游演化漂移——评审 D-119）。
+#[allow(clippy::disallowed_methods)] // 同上：G-38 禁令唯一豁免出口
 pub fn selectable_value_stable<'a, Value: PartialEq>(
     ui: &mut egui::Ui,
     current_value: &mut Value,
     selected_value: Value,
     text: impl egui::IntoAtoms<'a>,
 ) -> egui::Response {
-    let mut response = selectable_stable(ui, *current_value == selected_value, text);
-    if response.clicked() && *current_value != selected_value {
-        *current_value = selected_value;
-        response.mark_changed();
-    }
-    response
+    ui.scope(|ui| {
+        ui.visuals_mut().widgets.inactive.bg_stroke.width = 0.0;
+        ui.selectable_value(current_value, selected_value, text)
+    })
+    .inner
 }
 
 // ── 按钮三态色（D-32 红线 + 2026-09-17 走查 A1 修复） ──
