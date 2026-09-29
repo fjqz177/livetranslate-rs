@@ -75,6 +75,6 @@
 
 ## 六、遗留
 
-- 悬浮窗（Overlay min 480 同病）→ [#27](https://github.com/fjqz177/livetranslate-rs/issues/27)。
+- 悬浮窗（Overlay min 480 同病）→ GitHub issue #27（repo_hygiene 拦 URL 内个人用户名，故留纯文字引用）。
 - 模型行按钮内长 URL 截断（按钮内 truncate，诚实降级）→ P3 不动。
 - egui::Window 模态（模型编辑器 default_width 600）→ 小屏 clamp 后可用宽足够，不在断言面。
