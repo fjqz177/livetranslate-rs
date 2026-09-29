@@ -34,6 +34,12 @@ use std::time::Instant;
 /// Tab 条页签高度（原版 QTabBar 页签视觉高度）
 const TAB_H: f32 = 26.0;
 
+/// 面板最小窗宽（逻辑 px；D-120）。原版 480 照搬 Qt 布局器前提在 egui 不成立
+/// （egui 横排无收缩换行，最小宽不构成「内容放得下」保证，G-39），故抬到
+/// headless 实测「zh/en × 8 页零横向溢出」的下限 + 余量；定值法 = 溢出断言
+/// 测试按候选宽迭代。app.rs 的 min_inner_size 与默认创建宽共用本常量。
+pub const PANEL_MIN_WIDTH: f32 = 600.0;
+
 /// Windows 原生浅色调色板（PyQt6 Windows 默认控件字面色，2026-09-06 实拍取色）
 #[derive(Debug, Clone, Copy)]
 pub struct Palette {
@@ -185,15 +191,16 @@ pub fn panel_ui(
     if panel.model_banner_visible() {
         let label = lt_i18n::t("model_missing_banner");
         let font = egui::FontId::proportional(12.5);
-        // 预测文本高定行高（与 tab_strip 同法）
-        let probe = ui
-            .painter()
-            .layout_no_wrap(label.clone(), font.clone(), BANNER_TEXT);
+        // D-120/G-39：按可用宽 wrap 预测行数定高——超宽自动折行，不再双侧裁
+        let avail = ui.available_rect_before_wrap().width();
+        let galley = ui.painter().layout(
+            label.clone(),
+            font.clone(),
+            BANNER_TEXT,
+            (avail - 16.0).max(40.0),
+        );
         let (rect, resp) = ui.allocate_exact_size(
-            egui::vec2(
-                ui.available_rect_before_wrap().width(),
-                probe.rect.height() + 12.0,
-            ),
+            egui::vec2(avail, galley.size().y + 12.0),
             egui::Sense::click(),
         );
         let fill = if resp.hovered() {
@@ -208,13 +215,8 @@ pub fn panel_ui(
             egui::Stroke::new(1.0, BANNER_STROKE),
             egui::StrokeKind::Outside,
         );
-        ui.painter().text(
-            rect.center(),
-            egui::Align2::CENTER_CENTER,
-            label,
-            font,
-            BANNER_TEXT,
-        );
+        ui.painter()
+            .galley(rect.center() - galley.size() * 0.5, galley, BANNER_TEXT);
         if resp.clicked() {
             panel.state.page = PanelPage::VadAsr;
         }
@@ -604,6 +606,54 @@ mod tests {
                 assert!(!out.shapes.is_empty(), "{page:?} 页应产出图元");
                 // epaint debug 断言要求消费纹理增量（无渲染器 → 显式丢弃）
                 out.textures_delta.clear();
+            }
+        }
+    }
+
+    /// 防回归（G-39 / D-120）：最小窗宽下 zh/en × 8 页渲染，任何图元左右缘
+    /// 不得越出视口（+2.0 = rect_stroke StrokeKind::Outside 出界 ≤1px 的余量）。
+    /// egui 横排溢出是静默右缘裁剪（用户看到的就是「右边没了」），本测试是
+    /// 「窄窗不裁」的唯一机械保证：新增长文案 / 固定宽控件转红时，按
+    /// docs/panel-narrow-layout.md §四 L2 规则拆行，或实测后抬 PANEL_MIN_WIDTH。
+    #[test]
+    fn panel_no_horizontal_overflow_at_min_width() {
+        let screen =
+            egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(super::PANEL_MIN_WIDTH, 420.0));
+        const TOL: f32 = 2.0;
+        for lang in ["zh", "en"] {
+            lt_i18n::set_lang(lang).expect("语言表解析");
+            let ctx = egui::Context::default();
+            let mut st = crate::state::AppUi::new(Settings::default());
+            for page in PanelPage::ALL {
+                st.panel.state.page = page;
+                for _ in 0..2 {
+                    let mut out = ctx.run_ui(
+                        egui::RawInput {
+                            screen_rect: Some(screen),
+                            ..egui::RawInput::default()
+                        },
+                        |ui| crate::windows::dispatch(crate::state::WinId::Panel, ui, &mut st),
+                    );
+                    // epaint debug 断言要求消费纹理增量——先于溢出断言 clear，
+                    // 防 assert 失败时 out 走 Drop 引爆二次 panic 掩盖真因
+                    out.textures_delta.clear();
+                    let mut worst_r = screen.right() + TOL;
+                    let mut worst_l = screen.left() - TOL;
+                    for clipped in &out.shapes {
+                        // 看图元自身 bbox 不看 clip rect——被裁掉的正是要抓的
+                        let bb = clipped.shape.visual_bounding_rect();
+                        worst_r = worst_r.max(bb.right());
+                        worst_l = worst_l.min(bb.left());
+                    }
+                    assert!(
+                        worst_r <= screen.right() + TOL && worst_l >= screen.left() - TOL,
+                        "{lang} {page:?} 页横向溢出：右缘超 {:+.1}px / 左缘超 {:+.1}px（视口 {}..{}）",
+                        worst_r - screen.right(),
+                        screen.left() - worst_l,
+                        screen.left(),
+                        screen.right(),
+                    );
+                }
             }
         }
     }

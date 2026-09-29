@@ -231,8 +231,9 @@ pub fn page(
             {
                 refresh_cache(panel, settings);
             }
-            hint_line(ui, pal, &lt_i18n::t("cache_select_hint"));
         });
+        // D-120/G-39：提示独立成行——原与两按钮同行横排，窄窗右缘静默裁剪
+        hint_line(ui, pal, &lt_i18n::t("cache_select_hint"));
         // C7：扫描范围诚实提示——仅注册表内模型，游离文件不在删除面
         hint_line(ui, pal, &lt_i18n::t("cache_scan_scope_hint"));
     });

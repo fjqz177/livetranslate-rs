@@ -840,8 +840,9 @@ fn editor_fields(ui: &mut Ui, ed: &mut ModelEditState, pal: &Palette) {
         if let Some(p) = picked {
             apply_preset(ed, p);
         }
-        hint_line(ui, pal, &lt_i18n::t("preset_hint"));
     });
+    // D-120/G-39：预设说明独立成行——原与下拉同行横排，窄窗必溢出右缘裁剪
+    hint_line(ui, pal, &lt_i18n::t("preset_hint"));
     ui.add_space(4.0);
 
     // ── Basic ──

@@ -135,7 +135,8 @@ impl MultiWindowApp {
         // 面板尺寸对齐原版实机 ≈535×781（Qt 布局 minimumSizeHint 把
         // resize(520,650) 顶开，2026-09-07 实测 524×775——7 页表单在 781 高
         // 下整页放下、不出滚动条）。小屏按工作区高度钳制（winit 无 work-area
-        // API，任务栏按 48 逻辑 px 估），下限 650（minimumSize 480×420 不变）
+        // API，任务栏按 48 逻辑 px 估），下限 650（minimumSize 高 420 不变，
+        // 宽见下方 PANEL_MIN_WIDTH，D-120）
         let panel_h = event_loop
             .primary_monitor()
             .or_else(|| event_loop.available_monitors().next())
@@ -146,7 +147,9 @@ impl MultiWindowApp {
             .map(|avail| 781.min(avail))
             .unwrap_or(781)
             .max(650);
-        self.create_window(event_loop, WinId::Panel, (535, panel_h))?;
+        // 默认宽对齐原版实机 535，但不低于 D-120 最小窗宽（egui 溢出安全宽）
+        let panel_w = 535u32.max(crate::windows::panel::PANEL_MIN_WIDTH as u32);
+        self.create_window(event_loop, WinId::Panel, (panel_w, panel_h))?;
         self.create_window(event_loop, WinId::Log, (900, 500))?;
         // 启动流对话框（原版 QDialog：常规装饰窗口；可见性 = 启动流进行中）
         self.create_window(event_loop, WinId::Setup, (560, 420))?;
@@ -249,8 +252,13 @@ impl MultiWindowApp {
             }
         }
         if id == WinId::Panel {
-            // 原版 setMinimumSize(480, 420)
-            attrs = attrs.with_min_inner_size(winit::dpi::LogicalSize::new(480.0, 420.0));
+            // D-120/G-39：原版 setMinimumSize(480, 420) 的 480 照搬 Qt 布局器前提
+            // 在 egui 不成立（横排无收缩换行），最小宽抬到溢出断言测试实测的
+            // zh/en × 8 页安全宽（常量单源 panel::PANEL_MIN_WIDTH）；高仍对齐原版
+            attrs = attrs.with_min_inner_size(winit::dpi::LogicalSize::new(
+                crate::windows::panel::PANEL_MIN_WIDTH,
+                420.0,
+            ));
         }
         if id == WinId::Subtitle {
             // 原版 setFixedWidth：宽度固定（高度自适应）→ 禁用户拖拽缩放

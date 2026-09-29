@@ -102,14 +102,16 @@ pub fn font_picker_row(
         {
             fonts.rescan();
         }
-
-        let resolved = fonts::resolve_family(&current, master);
-        ui.label(
-            RichText::new(t("label_resolved_font").replace("{family}", resolved))
-                .size(11.0)
-                .color(ui.visuals().weak_text_color()),
-        );
     });
+
+    // D-120/G-39：解析结果独立成行——原与选择器同行横排，窄窗右缘静默裁剪；
+    // 竖排上下文 label 超宽自动 wrap
+    let resolved = fonts::resolve_family(&current, master);
+    ui.label(
+        RichText::new(t("label_resolved_font").replace("{family}", resolved))
+            .size(11.0)
+            .color(ui.visuals().weak_text_color()),
+    );
 
     // 行内小样（截断）+ 缺字提示：即时反映当前解析结果（选中即所见）
     let resolved = fonts::resolve_family(&current, master).to_string();
