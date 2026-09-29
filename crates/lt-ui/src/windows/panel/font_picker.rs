@@ -113,9 +113,9 @@ pub fn font_picker_row(
             .color(ui.visuals().weak_text_color()),
     );
 
-    // 行内小样（截断）+ 缺字提示：即时反映当前解析结果（选中即所见）
-    let resolved = fonts::resolve_family(&current, master).to_string();
-    let fam = fonts::font_family_for(&resolved, fonts);
+    // 行内小样（截断）+ 缺字提示：即时反映当前解析结果（选中即所见）；
+    // resolved 复用上方行标签的解析（同值勿重算）
+    let fam = fonts::font_family_for(resolved, fonts);
     ui.add(
         egui::Label::new(
             RichText::new(fonts::SAMPLE_TEXT)

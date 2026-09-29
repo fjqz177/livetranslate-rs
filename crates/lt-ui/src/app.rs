@@ -147,8 +147,9 @@ impl MultiWindowApp {
             .map(|avail| 781.min(avail))
             .unwrap_or(781)
             .max(650);
-        // 默认宽对齐原版实机 535，但不低于 D-120 最小窗宽（egui 溢出安全宽）
-        let panel_w = 535u32.max(crate::windows::panel::PANEL_MIN_WIDTH as u32);
+        // 默认宽对齐原版实机 535，但不低于 D-120 最小窗宽（egui 溢出安全宽；
+        // 常量恒取整数 px，round 防 f32 分数宽被 as 静默截断与 min 失配）
+        let panel_w = 535u32.max(crate::windows::panel::PANEL_MIN_WIDTH.round() as u32);
         self.create_window(event_loop, WinId::Panel, (panel_w, panel_h))?;
         self.create_window(event_loop, WinId::Log, (900, 500))?;
         // 启动流对话框（原版 QDialog：常规装饰窗口；可见性 = 启动流进行中）

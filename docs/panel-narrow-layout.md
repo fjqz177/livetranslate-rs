@@ -45,7 +45,7 @@
 ### L1 窗口层——最小窗宽单源化
 
 - 新常量 `PANEL_MIN_WIDTH`（`crates/lt-ui/src/windows/panel/mod.rs`，pub）单源；`app.rs` 的 `min_inner_size` 与默认创建宽 `max(535, MIN)` 共用。
-- 实测法定值：L3 测试按候选宽迭代，取「zh/en × 8 页全干净」的最大下限 + 2px 余量；测试断言与常量同源，回归必红。
+- 实测记录（2026-09-30，内嵌思源字体 = 跨机确定）：595 绿 / 590 红——绑定约束 = **en tab 条自然宽 ≈591px**；取整定 600（下限 + 5px 余量），测试与常量同源，回归必红。
 
 ### L2 行布局纪律（成文规则 + 本批行清单）
 
@@ -64,8 +64,8 @@
 
 ### L3 机械防线——溢出断言测试
 
-- `panel_no_horizontal_overflow`（`crates/lt-ui/src/windows/panel/mod.rs` tests）：zh/en × 8 页，`RawInput.screen_rect = (PANEL_MIN_WIDTH, 420)`（真实最小高，滚动条出现即最严可用宽），渲染 2 帧后扫全部 `ClippedShape` 的 `visual_bbox()`，断言右缘 ≤ 视口右 +2.0（描边 Outside 余量）。
-- 语言切换：lt-ui 测试二进制内仅本测试调 `set_lang`，无并行竞争面（notifications 测试的 `t_for_lang` 顾虑不适用；跨 crate 测试各属独立进程）。
+- `panel_no_horizontal_overflow_at_min_width`（`crates/lt-ui/src/windows/panel/mod.rs` tests）：zh/en × 8 页，`RawInput.screen_rect = (PANEL_MIN_WIDTH, 420)`（真实最小高，滚动条出现即最严可用宽），渲染 2 帧后扫全部 `ClippedShape` 的 `visual_bounding_rect()`，断言**左右双缘**均不越视口（±2.0 = 描边 Outside 余量）。
+- 语言切换：全局语言表与同二进制其他测试共享（translation.rs 两个 i18n 测试与 debounce 冒烟也 `set_lang`，cargo 默认并行）——每帧渲染后 `get_lang` 复核，被并行翻走即整帧重渲染（8 次有界兜底，宁红不静默按错语言绿）。
 - 横幅可见性随本机缓存状态浮动不影响断言——两种态都须干净。
 
 ## 五、验收

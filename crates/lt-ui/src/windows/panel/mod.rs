@@ -191,7 +191,8 @@ pub fn panel_ui(
     if panel.model_banner_visible() {
         let label = lt_i18n::t("model_missing_banner");
         let font = egui::FontId::proportional(12.5);
-        // D-120/G-39：按可用宽 wrap 预测行数定高——超宽自动折行，不再双侧裁
+        // D-120/G-39：按可用宽 wrap 预测行数定高——超宽自动折行，不再双侧裁；
+        // 16.0 = 两侧各 8px 呼吸位，40.0 = 极窄兜底（wrap_width 须为正）
         let avail = ui.available_rect_before_wrap().width();
         let galley = ui.painter().layout(
             label.clone(),
@@ -621,22 +622,34 @@ mod tests {
             egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(super::PANEL_MIN_WIDTH, 420.0));
         const TOL: f32 = 2.0;
         for lang in ["zh", "en"] {
-            lt_i18n::set_lang(lang).expect("语言表解析");
             let ctx = egui::Context::default();
             let mut st = crate::state::AppUi::new(Settings::default());
             for page in PanelPage::ALL {
                 st.panel.state.page = page;
                 for _ in 0..2 {
-                    let mut out = ctx.run_ui(
-                        egui::RawInput {
-                            screen_rect: Some(screen),
-                            ..egui::RawInput::default()
-                        },
-                        |ui| crate::windows::dispatch(crate::state::WinId::Panel, ui, &mut st),
-                    );
-                    // epaint debug 断言要求消费纹理增量——先于溢出断言 clear，
-                    // 防 assert 失败时 out 走 Drop 引爆二次 panic 掩盖真因
-                    out.textures_delta.clear();
+                    // 全局语言表与同二进制其他测试共享（translation.rs 两个 i18n
+                    // 测试与 debounce 冒烟也 set_lang，cargo 默认并行）——渲染后
+                    // get_lang 复核，被并行翻走即整帧重渲染；8 次仍被翻走 = 环境
+                    // 异常，按现状扫描断言（宁可红不可静默按错语言绿，评审 D-120）
+                    let mut frame = None;
+                    for attempt in 0..8 {
+                        lt_i18n::set_lang(lang).expect("语言表解析");
+                        let mut out = ctx.run_ui(
+                            egui::RawInput {
+                                screen_rect: Some(screen),
+                                ..egui::RawInput::default()
+                            },
+                            |ui| crate::windows::dispatch(crate::state::WinId::Panel, ui, &mut st),
+                        );
+                        // epaint debug 断言要求消费纹理增量——先于溢出断言
+                        // clear，防 assert 失败时 out 走 Drop 引爆二次 panic 掩盖真因
+                        out.textures_delta.clear();
+                        frame = Some(out);
+                        if lt_i18n::get_lang() == lang || attempt == 7 {
+                            break;
+                        }
+                    }
+                    let out = frame.expect("重试环内必有产出");
                     let mut worst_r = screen.right() + TOL;
                     let mut worst_l = screen.left() - TOL;
                     for clipped in &out.shapes {
