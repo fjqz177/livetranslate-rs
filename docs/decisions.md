@@ -107,6 +107,7 @@
 | D-117 | 2026-09-29 | 草稿写入面穷尽防线（扫描批 C3）：lt-proto Cmd 加编译期穷尽分类方法（match 无通配臂，新增变体编译期强迫表态），lt-app 测试钉「判真集合 ⇔ apply_settings_side_effects 臂集合」双向穷尽——堵新变体漏登记被防抖重放静默回滚用户改动的口；纯新增方法 wire 零变化，PROTO_VERSION 不递增 | docs/architecture-deepening-batch.md §五 |
 | D-118 | 2026-09-29 | Cmd::SwitchEngine.hub 死契约字段删除（扫描批 C4）：两生产者都填、两消费者全忽略、switch_engine 签名不收，删除测试满分；PROTO_VERSION 7→8（D-81 先例）；engine 保持 String 不夹带类型化——settings 级词表消费端透镜现成，worker 级身份由 D-116 WorkerEngine 承载 | docs/architecture-deepening-batch.md §六 |
 | D-119 | 2026-09-29 | 下拉弹层悬停跳变修复（用户截图报案 + 全面排查）：egui 0.36 `Button::selectable(false)` 静止态走无帧分支但内边距仍按 `padding − inactive.bg_stroke.width` 预扣，悬停全帧回补 → 弹层项悬停瞬间长高 2×w_inactive；本仓两处把该宽抬到 1.0（面板显式灰边 + 暗色 stabilize 底限）是放大器。裁决 = 弹层项 scope 内归零静止描边宽（`selectable_stable`/`selectable_value_stable` 助手 + 29 处调用点替换），悬停蓝框观感不变、静止项回到自然高度；否决 Qt 对齐去框（乙，观感改动大）与追上游（丙，升级面大）；**禁全局归零** inactive.bg_stroke（剥按钮灰边框 + 破 D-32 底限语义）；弹层外全部控件像素不动 | docs/gotchas.md G-38 |
+| D-120 | 2026-09-30 | 面板窄窗布局塌陷修复（用户截图报案 + 全面排查）：egui `ui.horizontal` 不换行不收缩超宽即右缘静默裁剪 + min 480 照搬原版 Qt（egui 无布局器等价物，最小宽不构成「内容放得下」保证）+ headless 冒烟无 screen_rect 三条叠加 → tab 条「日志」裁半、字体行/管理行右缘控件整块消失。裁决 = 三层防线：L1 `PANEL_MIN_WIDTH` 实测抬底单源化（偏离原版 480 已知并接受）+ L2 行布局纪律（hint 禁串控件行、横幅换行自适应重画、直画文本 wrap 预测定高）+ L3 zh/en×8 页溢出断言测试（ClippedShape bbox 右缘扫描）；tab 条不做运行时保底（测试锁死，奥卡姆）；范围仅面板窗，悬浮窗同病另立 issue；否决只抬窗宽（隐患仍在）与全面响应式重排（工作量×3） | docs/panel-narrow-layout.md |
 
 ## ADR-x（架构决策）
 

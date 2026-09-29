@@ -327,6 +327,14 @@
 - **证据**：用户 2026-09-29 控制面板截图两帧（悬停「Fun-ASR-Nano」蓝框坠出弹层底边）；egui 0.36.1 源码行号见根因；本仓 `crates/lt-ui/src/windows/panel/mod.rs panel_visuals()`（inactive.bg_stroke 1.0 #ADADAD）+ `crates/lt-ui/src/style.rs stabilize_widget_strokes`（`max(1.0)` 底限）；headless 等高回归测试 = `crates/lt-ui/src/style.rs` tests（静止/悬停两帧 rect 等高）。
 - **版本**：egui 0.36.1。
 
+## G-39 面板窄窗右缘静默裁剪：egui 横排无收缩 + min 窗宽照搬 Qt 布局器前提
+
+- **触发**：egui 窗口（面板等可缩窗）拖窄到行自然宽以下；或 en 文案比 zh 更长的行只按 zh 估算放行；`ui.horizontal` 行内「控件 + 控件 + 长 hint」串联最易命中。
+- **症状**：右缘元素（页签 / 按钮 / 标签 / 下拉）整块或半块消失，无滚动条、无报错、无 panic——tab 条最右「日志」裁半（zh 480 窗即触发）；en 界面下横幅文案贴边双侧裁。
+- **根因**：egui `ui.horizontal` 子元素超出 clip rect 即静默裁剪（不换行不收缩不滚动）；tab 条 / 横幅是 painter 定宽直画连收缩机会都没有；`min_inner_size(480,420)` 照搬原版 Qt `setMinimumSize`——Qt 布局器有 stretch / 换行 / minimumSizeHint 联动，480 在 Qt 下成立，egui 无等价物，最小宽不构成「内容放得下」的保证；headless 冒烟一律 `RawInput::default()`（无 screen_rect ≈ 无限宽画布），溢出在测试里结构性不可见。G-31 是 ScrollArea::horizontal 场景的姊妹条目，普通 horizontal 此前无条目。
+- **对策**：三层防线（D-120）——L1 `PANEL_MIN_WIDTH` headless 实测抬底 + 单源化（lt-ui panel/mod.rs 常量，min_inner_size 与默认创建宽共用）；L2 行纪律 = hint_line 禁与控件同行串联（独立行自动 wrap）、painter 直画文本以 `layout(wrap_width)` 预测行数定高、新增固定宽控件须自证行自然宽 ≤ 最小窗宽可用宽；L3 = zh/en × 8 页 × min 宽的溢出断言测试（扫 `ClippedShape::visual_bbox` 右缘，全绿才有「窄窗不裁」的保证）。
+- **证据**：用户 2026-09-30 两帧截图（535/480 宽，「日志」tab 半裁，多页右缘控件消失）；溢出清单与定值法 = docs/panel-narrow-layout.md §二/§四；机械防线 = `crates/lt-ui/src/windows/panel/mod.rs` 溢出断言测试。
+
 ---
 
 ## 候选清单（尚未收编——能五段式实证表述才收编，不臆造）
