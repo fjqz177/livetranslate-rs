@@ -30,11 +30,12 @@
 
 ### 入口单源——`apply_ui_lang`（panel/vad.rs 附近助手）
 
-combo clicked 分支（现状直接写草稿处）改为调用唯一入口，三步：
+combo clicked 分支**先写 `settings.ui_lang` 草稿，再调唯一入口**（写入留调用方是借用边界下的设计决定——`page()` 的 `settings` 与 `session` 并列可变借用，入口再写草稿需二次分派，评审后维持此形；定稿初稿写「三步进入口」与实现不符，已如实修正为本节）。入口两步：
 
-1. `lt_i18n::set_lang(resolve(lang))`：`"system"` → `detect_system_lang()`，en/zh 直用；Err 时 `warn!` 保持现状（内嵌资产 boot 期已解析过同表，运行期失败几乎不可达）。
-2. 写 `settings.ui_lang` 草稿 + `mark_settings_dirty`（既有防抖落盘链路不变）。
-3. `enqueue_action(WinId::Panel, WinAction::ApplyUiLang)` → 宿主刷新标题与托盘。
+1. `lt_i18n::set_lang(lt_i18n::resolve_ui_lang(lang))`：resolve 收敛在 lt-i18n 单点（`"system"` 档案值 → 检测语言，boot 与热切换入口共用；D-121 评审后自内联 if 收敛下沉）；Err 时 `warn!` 保持现状（内嵌资产 boot 期已解析过同表，运行期失败几乎不可达）。
+2. `request_settings_apply`（既有防抖落盘链路不变）+ `enqueue_action(WinId::Panel, WinAction::ApplyUiLang)` → 宿主刷新标题与托盘。
+
+combo 选中态判定与选中写入共用 `UI_LANG_CHOICES: ["en", "zh"]` 候选表（映射不漂移）；选中索引经 resolve 判定——`"system"` 档案随检测语言高亮对应项（评审 C-1 修复）。
 
 ### 宿主臂——`WinAction::ApplyUiLang`（app.rs）
 
@@ -72,3 +73,10 @@ combo clicked 分支（现状直接写草稿处）改为调用唯一入口，三
 - 设置导入 UI 未实装；未来接线须调 `apply_ui_lang`（在 `import_settings_json` doc comment 留要求）。
 - 已生成快照不回改（裁决 #3）——确认窗打开中切换语言，正文保持旧语言。
 - 编排域已生成日志行的语言随生成时刻（`Msg` 只影响此后文案）。
+
+## 八、评审修复留痕（2026-09-30，两轴评审后用户拍板全修）
+
+- **P2**：`"system"` resolve 内联双份（本包 vad.rs + boot main.rs）→ 收敛为 `lt_i18n::resolve_ui_lang` 单点（lt-app / lt-ui 共用）；`settings.rs` 的 `ui_lang` 值域注释 `en | zh` 漂移 → 对齐 `en | zh | system`。
+- **C-1**：combo 选中索引未 resolve——`"system"` 档案恒高亮 en → 选中判定经 resolve（`ui_lang_combo_index`），候选表 `UI_LANG_CHOICES` 与选中写入同源。
+- **P3**：本文 §四「三步进入口」与实现不符 → 如实改为「写入留调用方 + 入口两步」（借用边界设计决定，见 §四）。
+- 记账不修：sync 双函数同形（可容忍）；时序耦合有 doc 缓解；commit 4121f26（D-120 遗留）按判据记范围外加码。

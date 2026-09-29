@@ -30,6 +30,18 @@ pub fn detect_system_lang() -> &'static str {
     }
 }
 
+/// 界面语言档案值解析（D-121）：`"system"` 为档案兼容值 → 系统语言；
+/// 其余原样透传（"en" / "zh"，未知值交给 yaml_for_lang 回退语义）。
+/// boot（lt-app）与热切换入口（lt-ui）共用的单点 resolve——原两处内联
+/// `== "system"` 判断的收敛点（评审 D-121·Standards #1）
+pub fn resolve_ui_lang(lang: &str) -> &str {
+    if lang == "system" {
+        detect_system_lang()
+    } else {
+        lang
+    }
+}
+
 /// 按语言码取内嵌表内容；没有对应内嵌表的语言码回退英文表
 /// （与原版"文件不存在回退 en.yaml"语义一致，语言码本身保留为所设值）
 fn yaml_for_lang(lang: &str) -> &'static str {
@@ -137,6 +149,17 @@ mod tests {
     #[test]
     fn t_missing_key_falls_back_to_key() {
         assert_eq!(t("__no_such_key__"), "__no_such_key__");
+    }
+
+    /// D-121：界面语言档案值解析——"system" 走系统检测，其余透传。
+    /// 与 detect_system_lang 同值断言（不依赖检测结果的绝对值）
+    #[test]
+    fn resolve_ui_lang_system_resolves_and_passes_through() {
+        assert_eq!(resolve_ui_lang("system"), detect_system_lang());
+        assert_eq!(resolve_ui_lang("zh"), "zh");
+        assert_eq!(resolve_ui_lang("en"), "en");
+        // 未知值透传（yaml_for_lang 回退语义在 set_lang 侧，不在此收窄）
+        assert_eq!(resolve_ui_lang("zh-CN"), "zh-CN");
     }
 
     /// zh/en 两表键集必须完全一致（R14 防线）：任何一侧增删键而不同步另一侧，

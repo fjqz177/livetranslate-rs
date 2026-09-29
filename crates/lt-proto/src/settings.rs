@@ -147,7 +147,7 @@ pub struct Settings {
     pub target_language: String,
     pub system_prompt: String,
     pub timeout: u32,    // 秒
-    pub ui_lang: String, // en | zh
+    pub ui_lang: String, // en | zh | system（system=档案兼容值，消费侧解析为检测语言）
     // ── 字体（D-17，Rust 版新增：默认内嵌思源，行级键空串=跟随主设置）──
     pub ui_font_family: String, // 界面字体族名（内嵌思源名或系统字体名）
     pub subtitle_font_family: String, // 字幕/悬浮窗显示文本主字体族名

@@ -44,15 +44,11 @@ fn main() -> anyhow::Result<()> {
         lt_audio::ensure_ort_dylib()?;
         // 无 settings 文件 → 全默认值（直进主界面；模型缺失走识别页按需下载）
         let initial_settings = lt_models::settings_io::load()?.unwrap_or_default();
-        // ui_lang="system" → 系统语言解析（新版 general_tab 的 resolve_ui_lang 语义）
-        let ui_lang = initial_settings.ui_lang.clone();
         // R14②：i18n 解析失败 = 内嵌资产损坏（构建期后）→ 硬错进 boot 呈现
-        lt_i18n::set_lang(if ui_lang == "system" {
-            lt_i18n::detect_system_lang()
-        } else {
-            &ui_lang
-        })
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+        // D-121：ui_lang 的 "system" 档案值解析收敛到 lt_i18n::resolve_ui_lang
+        //（与 lt-ui 热切换入口单源；原 boot 内联 `== "system"` 已删）
+        lt_i18n::set_lang(lt_i18n::resolve_ui_lang(&initial_settings.ui_lang))
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
         logging::init()?;
         Ok(initial_settings)
     })();

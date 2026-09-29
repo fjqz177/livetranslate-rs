@@ -288,19 +288,28 @@ pub fn format_size(size_bytes: u64) -> String {
 
 // ── UI ──
 
+/// 界面语言下拉候选（index 0=en 1=zh，与原版 addItem(["English","中文"]) 顺序
+/// 一致）；选中态判定与选中写入共用本表，防两侧映射漂移
+const UI_LANG_CHOICES: [&str; 2] = ["en", "zh"];
+
+/// combo 选中索引（D-121 评审 C-1 修复）：档案值经 `resolve_ui_lang` 解析后
+/// 判定——"system" 档案随系统语言高亮对应项，不再恒显示 en
+fn ui_lang_combo_index(ui_lang: &str) -> usize {
+    if lt_i18n::resolve_ui_lang(ui_lang) == "zh" {
+        1
+    } else {
+        0
+    }
+}
+
 /// 界面语言热切换唯一入口（D-121）：切全局语言表 + 防抖落盘登记 + 请求宿主
 /// 补刷原生层（面板/日志/基准窗标题 + 托盘五项）。egui 窗内文案经 t() 逐帧
 /// 查表在下一帧自动跟随，本函数不触碰任何控件。
-/// `lang` 值域 = en | zh | system（档案兼容值，运行期 resolve 为检测语言）；
+/// `lang` 值域 = en | zh | system（档案兼容值，经 `resolve_ui_lang` 解析）；
 /// 调用方负责先把值写进 settings.ui_lang 草稿（导入设置未来接线时同走本入口）。
 pub fn apply_ui_lang(session: &mut SessionView, lang: &str) {
-    let resolved = if lang == "system" {
-        lt_i18n::detect_system_lang().to_string()
-    } else {
-        lang.to_string()
-    };
     // 内嵌资产 boot 期已解析过同表，运行期失败几乎不可达；保底保持现状不炸帧
-    if let Err(e) = lt_i18n::set_lang(&resolved) {
+    if let Err(e) = lt_i18n::set_lang(lt_i18n::resolve_ui_lang(lang)) {
         tracing::warn!("界面语言表加载失败，保持现状: {e}");
     }
     session.request_settings_apply();
@@ -564,7 +573,7 @@ pub fn page(
             ui.label(RichText::new(format!("{} ", lt_i18n::t("label_ui_lang"))).color(pal.text));
             let zh = lt_i18n::t("lang_zh");
             let langs = ["English", zh.as_str()]; // 与原版 addItem(["English","中文"]) 顺序一致
-            let lang_idx = if settings.ui_lang == "zh" { 1 } else { 0 };
+            let lang_idx = ui_lang_combo_index(&settings.ui_lang);
             egui::ComboBox::from_id_salt("panel_ui_lang_vad")
                 .selected_text(langs[lang_idx].to_string())
                 .width(240.0)
@@ -573,7 +582,7 @@ pub fn page(
                         if selectable_stable(ui, lang_idx == i, (*label).to_string()).clicked()
                             && lang_idx != i
                         {
-                            settings.ui_lang = if i == 1 { "zh".into() } else { "en".into() };
+                            settings.ui_lang = UI_LANG_CHOICES[i].into();
                             apply_ui_lang(session, &settings.ui_lang);
                         }
                     }
@@ -1362,6 +1371,21 @@ mod tests {
     }
 
     // ── 引擎 / 模型 / 语言表 ──
+
+    /// D-121 评审：combo 选中索引判定——zh→1、其余→0；"system" 档案值经
+    /// resolve 随检测语言高亮（C-1 修复面）；候选表与选中写入同源
+    #[test]
+    fn ui_lang_combo_index_resolves_system() {
+        assert_eq!(ui_lang_combo_index("zh"), 1);
+        assert_eq!(ui_lang_combo_index("en"), 0);
+        // "system" 与「先 resolve 再判定」等价（不依赖检测结果的绝对值）
+        assert_eq!(
+            ui_lang_combo_index("system"),
+            ui_lang_combo_index(lt_i18n::detect_system_lang())
+        );
+        // 选中写入侧与判定侧共享候选表（映射漂移防线）
+        assert_eq!(UI_LANG_CHOICES, ["en", "zh"]);
+    }
 
     /// 引擎表：r8 双引擎 + WP-B qwen3、显示名可解析（whisper M5.1 起可选，无灰显特判）
     #[test]
