@@ -610,20 +610,7 @@ impl MultiWindowApp {
         match cmd {
             lt_proto::AppCommand::Pause => {
                 self.app_state.session.running = !self.app_state.session.running;
-                if let Some(t) = &self.tray {
-                    let text = if self.app_state.session.running {
-                        lt_i18n::t("tray_pause")
-                    } else {
-                        lt_i18n::t("tray_resume")
-                    };
-                    t.set_pause_label(text);
-                    let status = if self.app_state.session.running {
-                        tray::IconStatus::Run
-                    } else {
-                        tray::IconStatus::Pause
-                    };
-                    t.set_status(status);
-                }
+                self.sync_pause_label();
                 self.update_tray_status();
                 tracing::info!(
                     "管道 {}",
@@ -660,11 +647,6 @@ impl MultiWindowApp {
     /// 刷新托盘状态行（● 状态 · 引擎 · 模型 · 源 → 目标；原版 status_action）
     fn update_tray_status(&mut self) {
         let s = &self.app_state;
-        let state = if s.session.running {
-            "运行"
-        } else {
-            "暂停"
-        };
         let engine = s.overlay.asr_label.clone().unwrap_or_else(|| "--".into());
         let model = s
             .settings
@@ -672,14 +654,60 @@ impl MultiWindowApp {
             .get(s.settings.active_model)
             .map(|m| m.name.clone())
             .unwrap_or_else(|| "--".into());
-        let text = lt_i18n::t("tray_status_format")
-            .replace("{state}", state)
-            .replace("{engine}", &engine)
-            .replace("{model}", &model)
-            .replace("{src}", &s.settings.asr_language)
-            .replace("{tgt}", &s.settings.target_language);
+        let text = tray_status_line(
+            s.session.running,
+            &engine,
+            &model,
+            &s.settings.asr_language,
+            &s.settings.target_language,
+        );
         if let Some(t) = &self.tray {
             t.set_status_line(text);
+        }
+    }
+
+    /// 暂停/恢复菜单文字与状态图标随运行态重推（真相 = session.running；
+    /// D-121：Pause 命令臂与语言热切换共用，消灭双份内联）
+    fn sync_pause_label(&mut self) {
+        let Some(t) = &self.tray else { return };
+        let running = self.app_state.session.running;
+        let text = lt_i18n::t(if running { "tray_pause" } else { "tray_resume" });
+        t.set_pause_label(text);
+        let status = if running {
+            tray::IconStatus::Run
+        } else {
+            tray::IconStatus::Pause
+        };
+        t.set_status(status);
+    }
+
+    /// 悬浮窗显隐菜单文字随可见性重推（真相 = 宿主可见性表；D-121 同上。
+    /// 调用方须保证可见性已先写入——sync 读表不读参数）
+    fn sync_overlay_toggle_label(&mut self) {
+        let Some(t) = &self.tray else { return };
+        let text = lt_i18n::t(if self.is_visible(WinId::Overlay) {
+            "tray_hide_overlay"
+        } else {
+            "tray_show_overlay"
+        });
+        t.set_overlay_toggle_label(text);
+    }
+
+    /// 界面语言热切换后的原生层补刷（D-121）：三窗标题 + 托盘五项。
+    /// egui 窗内文案 t() 逐帧查表自动跟随，本函数只管创建时固化的
+    /// winit 标题与 muda 菜单文案
+    fn apply_ui_lang_native_refresh(&mut self) {
+        for id in [WinId::Panel, WinId::Log, WinId::Benchmark] {
+            if let Some(hw) = self.find_mut(id) {
+                let title = id.title();
+                hw.window.set_title(&title);
+            }
+        }
+        self.sync_pause_label();
+        self.sync_overlay_toggle_label();
+        self.update_tray_status();
+        if let Some(t) = &self.tray {
+            t.set_static_labels(lt_i18n::t("tray_show_panel"), lt_i18n::t("quit"));
         }
     }
 
@@ -862,15 +890,9 @@ impl MultiWindowApp {
     /// D-33/H-1：**先藏后提示**——原位 rfd 同步弹窗（先弹后藏 + 无 owner 非置顶
     /// 被裸置顶悬浮窗压住）已移除，首次隐藏改原生通知（非阻塞）。
     fn set_overlay_visible_with_hint(&mut self, vis: bool) {
-        if let Some(t) = &self.tray {
-            let text = if vis {
-                lt_i18n::t("tray_hide_overlay")
-            } else {
-                lt_i18n::t("tray_show_overlay")
-            };
-            t.set_overlay_toggle_label(text);
-        }
+        // D-121：文案重推收敛到 sync——先写可见性真相（sync 读表不读参数）
         self.set_visible(WinId::Overlay, vis);
+        self.sync_overlay_toggle_label();
         if !vis && !self.overlay_hide_notified {
             self.overlay_hide_notified = true;
             crate::notifications::show_hidden_hint();
@@ -1989,6 +2011,10 @@ impl MultiWindowApp {
                             self.app_state.settings.clone(),
                         )));
                 }
+                WinAction::ApplyUiLang => {
+                    // D-121：语言热切换——egui 文案自动跟随，宿主只补原生层
+                    self.apply_ui_lang_native_refresh();
+                }
             }
         }
         // 动画推进：结束帧落定终值并清除（进行中由 UI 帧投递 SetHeight）
@@ -2775,6 +2801,23 @@ impl ApplicationHandler<UiMsg> for MultiWindowApp {
     }
 }
 
+/// 托盘状态行构造（纯函数，D-121 单测锚点）：状态词读 yaml 现成键
+/// `tray_state_running`/`tray_state_paused`——原硬编码中文「运行/暂停」，
+/// en 界面下状态行恒中文，为本次热切换顺带修复面
+fn tray_status_line(running: bool, engine: &str, model: &str, src: &str, tgt: &str) -> String {
+    let state = lt_i18n::t(if running {
+        "tray_state_running"
+    } else {
+        "tray_state_paused"
+    });
+    lt_i18n::t("tray_status_format")
+        .replace("{state}", &state)
+        .replace("{engine}", engine)
+        .replace("{model}", model)
+        .replace("{src}", src)
+        .replace("{tgt}", tgt)
+}
+
 /// 下载进度的人读行（W2：与旧 backend format_event 人读段同格式——
 /// `[{repo}] {file} {done} / {total}`，人性化单位含 B/KB/MB/GB）
 fn format_download_line(ev: &lt_proto::DownloadEvent) -> String {
@@ -2953,5 +2996,24 @@ mod tests {
         assert_eq!(format_size(2048), "2.0 KB");
         assert_eq!(format_size(250_000_000), "238.4 MB");
         assert_eq!(format_size(3_100_000_000), "2.89 GB");
+    }
+
+    /// D-121：托盘状态行状态词读 yaml 键——原硬编码中文「运行/暂停」，
+    /// en 界面下状态行恒中文的回归面。键值断言走 t_for_lang 不触全局
+    /// （并行测试共享语言表，见 notifications.rs 同款纪律）；行内容断言
+    /// 只测占位符替换逻辑（语言无关）
+    #[test]
+    fn tray_status_line_reads_state_keys() {
+        assert_eq!(lt_i18n::t_for_lang("en", "tray_state_running"), "Running");
+        assert_eq!(lt_i18n::t_for_lang("en", "tray_state_paused"), "Paused");
+        let zh_run = lt_i18n::t_for_lang("zh", "tray_state_running");
+        assert_ne!(zh_run, "Running");
+        assert_ne!(zh_run, "tray_state_running", "zh 表缺键会回退裸键名");
+        let line = tray_status_line(true, "FunASR", "sensevoice", "auto", "zh");
+        assert!(line.contains("FunASR"), "{line}");
+        assert!(line.contains("sensevoice"), "{line}");
+        assert!(line.contains("auto"), "{line}");
+        assert!(line.contains("zh"), "{line}");
+        assert!(!line.contains('{'), "占位符残留: {line}");
     }
 }

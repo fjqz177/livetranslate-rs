@@ -261,6 +261,10 @@ pub enum WinAction {
     /// 打开面板并切换到指定页（W5：字幕窗"打开设置"的跨域写意图化——
     /// 原 subtitle.rs 直写 panel.page 的借用边界破坏改由宿主根消费）
     OpenPanelPage(PanelPage),
+    /// 界面语言已切换（D-121）：宿主重取原生层固化文案——面板/日志/基准窗
+    /// set_title + 托盘五项重推。egui 窗内文案经 t() 逐帧查表自动跟随，
+    /// 无需本动作；仅 winit/muda 侧建时固化的文案需要宿主补刷
+    ApplyUiLang,
 }
 
 /// 悬浮窗模式（原版 DragHandle._mode："full"/"compact"）

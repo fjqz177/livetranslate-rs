@@ -45,6 +45,12 @@ enum TrayCmd {
     SetStatusLine(String),
     SetPauseLabel(String),
     SetOverlayToggleLabel(String),
+    /// 静态两项文案重设（显示面板/退出；D-121 语言热切换——主线程把
+    /// t() 译文算好发过来，托盘线程只 set_text）
+    SetStaticLabels {
+        panel: String,
+        quit: String,
+    },
     Quit,
 }
 
@@ -92,6 +98,14 @@ impl Tray {
     /// 悬浮窗 显示/隐藏 菜单文字（随可见性切换）
     pub fn set_overlay_toggle_label(&self, text: impl Into<String>) {
         self.send(TrayCmd::SetOverlayToggleLabel(text.into()));
+    }
+
+    /// 显示面板/退出 两项静态文案重设（D-121：语言热切换后随新语言刷新）
+    pub fn set_static_labels(&self, panel: impl Into<String>, quit: impl Into<String>) {
+        self.send(TrayCmd::SetStaticLabels {
+            panel: panel.into(),
+            quit: quit.into(),
+        });
     }
 }
 
@@ -211,6 +225,10 @@ fn apply_cmd(inner: &TrayInner, cmd: TrayCmd) -> bool {
         TrayCmd::SetOverlayToggleLabel(text) => {
             inner.overlay_toggle.set_text(text);
         }
+        TrayCmd::SetStaticLabels { panel, quit } => {
+            inner.panel_item.set_text(panel);
+            inner.quit.set_text(quit);
+        }
         TrayCmd::Quit => return true,
     }
     false
@@ -266,6 +284,10 @@ struct TrayInner {
     pause: MenuItem,
     /// 悬浮窗 显示/隐藏（文字随可见性切换）
     overlay_toggle: MenuItem,
+    /// 显示面板（文字随语言切换，D-121）
+    panel_item: MenuItem,
+    /// 退出（文字随语言切换，D-121）
+    quit: MenuItem,
 }
 
 /// 构建菜单 + 图标（在托盘线程执行；失败仅记日志，托盘不阻断应用）
@@ -343,6 +365,8 @@ fn build_inner(proxy: &std::sync::Arc<dyn Fn(UiMsg) + Send + Sync>) -> anyhow::R
         status,
         pause,
         overlay_toggle,
+        panel_item: panel,
+        quit,
     })
 }
 

@@ -57,9 +57,10 @@ combo clicked 分支（现状直接写草稿处）改为调用唯一入口，三
 
 ## 五、测试（一红一绿）
 
-1. **热切换渲染断言**（headless，panel tests）：渲染通用页 → 调 `apply_ui_lang` 切语言 → 下一帧断言页面标签（如 `label_ui_lang` 译文）已按新语言渲染 + `get_lang()` 一致（并行测试竞争按 D-120 模式：逐帧 `get_lang` 复核重试环）。
-2. **托盘文案跟随**：状态行构造改读 yaml 键后，en/zh 双语断言（`t_for_lang`，不触碰全局）。
+1. **热切换渲染断言**（headless，vad.rs tests）：渲染通用页 → 调 `apply_ui_lang` 切语言 → 下一帧断言页面标签（`label_ui_lang` 译文）已按新语言渲染（zh/en 锚文本两表互斥）；渲染前不重设全局语言——锚的正是入口已切表这一事实。
+2. **托盘文案跟随**：状态行构造抽纯函数 `tray_status_line`，en/zh 键值断言（`t_for_lang`，不触碰全局）。
 3. 既有防线自动覆盖：`zh_en_key_sets_identical`（键删除同步性）+ D-120 zh/en×8 页溢出断言（双语言布局安全）。
+4. **施工中途补裁决（登记 D-121）**：语言敏感 headless 测试并行互打（本包新测试全量跑实证）→ 引入 crate 级互斥锁 `lang_test_guard`（lib.rs），5 处语言敏感测试持锁串行化——D-120「复核重试」保留为纵深防线，锁为根修。
 
 ## 六、验收
 

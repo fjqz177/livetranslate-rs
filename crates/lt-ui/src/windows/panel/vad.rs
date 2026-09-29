@@ -12,7 +12,7 @@
 //! - "性能基准"按钮在页头（mod.rs），点击仅记日志（窗口随 M4.4 接入）。
 
 use super::{group_card, hint_line, mark_settings_dirty, send_switch_engine, Palette};
-use crate::state::{DownloadUiState, PanelUi, SessionView, Settings};
+use crate::state::{DownloadUiState, PanelUi, SessionView, Settings, WinAction, WinId};
 use crate::style::selectable_stable;
 use egui::{RichText, Ui};
 use lt_proto::{AudioDeviceChoice, MicDeviceChoice};
@@ -288,6 +288,25 @@ pub fn format_size(size_bytes: u64) -> String {
 
 // ── UI ──
 
+/// 界面语言热切换唯一入口（D-121）：切全局语言表 + 防抖落盘登记 + 请求宿主
+/// 补刷原生层（面板/日志/基准窗标题 + 托盘五项）。egui 窗内文案经 t() 逐帧
+/// 查表在下一帧自动跟随，本函数不触碰任何控件。
+/// `lang` 值域 = en | zh | system（档案兼容值，运行期 resolve 为检测语言）；
+/// 调用方负责先把值写进 settings.ui_lang 草稿（导入设置未来接线时同走本入口）。
+pub fn apply_ui_lang(session: &mut SessionView, lang: &str) {
+    let resolved = if lang == "system" {
+        lt_i18n::detect_system_lang().to_string()
+    } else {
+        lang.to_string()
+    };
+    // 内嵌资产 boot 期已解析过同表，运行期失败几乎不可达；保底保持现状不炸帧
+    if let Err(e) = lt_i18n::set_lang(&resolved) {
+        tracing::warn!("界面语言表加载失败，保持现状: {e}");
+    }
+    session.request_settings_apply();
+    session.enqueue_action(WinId::Panel, WinAction::ApplyUiLang);
+}
+
 /// 识别页 UI 总入口
 pub fn page(
     ui: &mut Ui,
@@ -540,7 +559,7 @@ pub fn page(
         }
 
         // ── 界面语言（原版 _ui_lang_combo：["English","中文"]，index 0=en 1=zh；
-        //     写 settings.ui_lang 防抖落盘，重启生效）──
+        //     D-121：选中即热切换——切语言表 + 防抖落盘 + 宿主补刷原生层）──
         ui.horizontal(|ui| {
             ui.label(RichText::new(format!("{} ", lt_i18n::t("label_ui_lang"))).color(pal.text));
             let zh = lt_i18n::t("lang_zh");
@@ -555,12 +574,11 @@ pub fn page(
                             && lang_idx != i
                         {
                             settings.ui_lang = if i == 1 { "zh".into() } else { "en".into() };
-                            mark_settings_dirty(session);
+                            apply_ui_lang(session, &settings.ui_lang);
                         }
                     }
                 });
         });
-        hint_line(ui, pal, &lt_i18n::t("ui_lang_restart_hint"));
     });
 
     // ── 设备组（原版 asr_group 的 audio/mic 行 + 刷新按钮；Rust 版独立成卡）──
@@ -1278,6 +1296,69 @@ mod tests {
 
     fn dev(names: &[&str]) -> Vec<String> {
         names.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// D-121：渲染一帧并汇出全部文本图元。渲染前**不**重设全局语言——
+    /// 本测试锚的正是 apply_ui_lang 已切表这一事实；调用方须持
+    /// `lang_test_guard`（临界区串行化），渲染后 get_lang 复核为纵深防线
+    /// （8 次有界兜底，宁红不静默按错语言绿，D-120 评审同款）
+    fn render_texts_join(
+        ctx: &egui::Context,
+        app: &mut crate::state::AppUi,
+        expect: &str,
+    ) -> String {
+        let mut last = String::new();
+        for attempt in 0..8 {
+            let mut frame = ctx.run_ui(egui::RawInput::default(), |ui| {
+                crate::windows::dispatch(crate::state::WinId::Panel, ui, app)
+            });
+            let settled = lt_i18n::get_lang() == expect || attempt == 7;
+            // epaint debug 断言要求消费纹理增量（无渲染器 → 显式丢弃）
+            frame.textures_delta.clear();
+            last = frame
+                .shapes
+                .iter()
+                .filter_map(|cs| match &cs.shape {
+                    egui::Shape::Text(t) => Some(t.galley.text().to_owned()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            if settled {
+                break;
+            }
+        }
+        last
+    }
+
+    /// D-121：语言热切换——apply_ui_lang 后下一帧页面文案即按新语言渲染
+    /// （无重启）。锚文本 = label_ui_lang 两表值（zh 表无 "Language:" 字样、
+    /// en 表无「界面语言」，互斥成立）
+    #[test]
+    fn ui_lang_hot_switch_rewrites_page_text() {
+        let _lang_guard = crate::lang_test_guard();
+        let ctx = egui::Context::default();
+        let mut app = crate::state::AppUi::new(lt_proto::Settings::default());
+        app.panel.state.page = crate::state::PanelPage::VadAsr;
+        // 起点尽力设 en（持锁后即为本测试的临界区，起点确定）
+        let _ = lt_i18n::set_lang("en");
+
+        // combo 分支同款两步：写草稿 → 调唯一入口
+        app.settings.ui_lang = "zh".into();
+        apply_ui_lang(&mut app.session, "zh");
+        let zh_frame = render_texts_join(&ctx, &mut app, "zh");
+        assert!(zh_frame.contains("界面语言"), "zh 帧应含 zh 表界面语言标签");
+        assert!(!zh_frame.contains("Language:"), "zh 帧残留 en 文案");
+
+        // 切回 en：同帧生效（无重启）
+        app.settings.ui_lang = "en".into();
+        apply_ui_lang(&mut app.session, "en");
+        let en_frame = render_texts_join(&ctx, &mut app, "en");
+        assert!(
+            en_frame.contains("Language:"),
+            "en 帧应含 en 表界面语言标签"
+        );
+        assert!(!en_frame.contains("界面语言"), "en 帧残留 zh 文案");
     }
 
     // ── 引擎 / 模型 / 语言表 ──

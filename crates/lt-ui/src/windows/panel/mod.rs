@@ -466,6 +466,8 @@ pub fn export_settings_json(s: &Settings) -> String {
 
 /// 设置导入解析（原版 _import_settings：JSON object → 兼容加载 + sanitize）。
 /// 非 object / 解析失败 → Err（原版 raise ValueError → import_invalid 文案）。
+/// 导入结果接线进草稿时（UI 触发点尚未实装，D-121），若 `ui_lang` 与当前
+/// 语言不同须调 [`crate::windows::panel::vad::apply_ui_lang`] 同步全局语言表。
 pub fn import_settings_json(text: &str) -> Result<Settings, String> {
     let v: serde_json::Value = serde_json::from_str(text).map_err(|e| format!("JSON: {e}"))?;
     if !v.is_object() {
@@ -618,6 +620,7 @@ mod tests {
     /// docs/panel-narrow-layout.md §四 L2 规则拆行，或实测后抬 PANEL_MIN_WIDTH。
     #[test]
     fn panel_no_horizontal_overflow_at_min_width() {
+        let _lang_guard = crate::lang_test_guard();
         let screen =
             egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(super::PANEL_MIN_WIDTH, 420.0));
         const TOL: f32 = 2.0;
@@ -674,6 +677,7 @@ mod tests {
     /// 设置防抖登记 → 节拍消费闭环（UI 外）
     #[test]
     fn panel_apply_debounce_tick_roundtrip() {
+        let _lang_guard = crate::lang_test_guard();
         let mut st = crate::state::AppUi::new(Settings::default());
         lt_i18n::set_lang("zh").expect("zh 表解析");
         crate::state::register_panel_apply(

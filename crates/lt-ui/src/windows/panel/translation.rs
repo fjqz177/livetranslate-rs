@@ -1540,6 +1540,7 @@ mod tests {
     /// 错挂在「网络配置」组下（本页看得见说明、找不到控件）。
     #[test]
     fn context_hint_sits_in_model_group_not_network_group() {
+        let _lang_guard = crate::lang_test_guard();
         let _ = lt_i18n::set_lang("zh");
         let ctx = egui::Context::default();
         let mut st = crate::state::AppUi::new(Settings::default());
@@ -1594,6 +1595,7 @@ mod tests {
     /// （clip rect 命中）会失败、拖拽无反应，本用例同时钉住"入口真实可用"。
     #[test]
     fn panel_context_drag_writes_active_model_and_schedules_rebuild() {
+        let _lang_guard = crate::lang_test_guard();
         let _ = lt_i18n::set_lang("zh");
         let ctx = egui::Context::default();
         let mut st = crate::state::AppUi::new(Settings::default());
