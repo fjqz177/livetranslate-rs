@@ -7,6 +7,7 @@
 
 use crate::fonts::{self, FontsState, SystemFont};
 use crate::state::{Settings, UiContext};
+use crate::style::selectable_stable;
 use egui::{ComboBox, FontId, RichText, ScrollArea, TextEdit, Ui};
 use lt_i18n::t;
 
@@ -86,10 +87,7 @@ pub fn font_picker_row(
                             ),
                             PickerEntry::System(name) => (name.clone(), name),
                         };
-                        if ui
-                            .selectable_label(current.trim() == value, label)
-                            .clicked()
-                        {
+                        if selectable_stable(ui, current.trim() == value, label).clicked() {
                             result = Some(value);
                         }
                     }

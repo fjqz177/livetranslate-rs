@@ -180,6 +180,48 @@ pub fn stabilize_widget_strokes(v: &mut egui::Visuals) {
     v.widgets.active.corner_radius = radius;
 }
 
+// ── 弹层可选项稳定（D-119 / G-38） ──
+
+/// ComboBox 弹层可选项稳定包装。egui 0.36 `Button::selectable(false)` 静止态
+/// 走无帧分支（`Frame::new()`，描边不画），内边距却仍按
+/// `button_padding − inactive.bg_stroke.width` 预扣；悬停切全帧时描边回补 →
+/// 项目瞬间长高 2×w_inactive、下方内容整体下移（本仓 w_inactive=1.0 → 2px）。
+/// 这里在 scope 内把 inactive 描边宽归零再调原生方法：静止/悬停几何像素级
+/// 相等，悬停反馈只剩底色/描边色出现（D-119）。
+///
+/// 只包弹层项；**禁**据此全局归零 `inactive.bg_stroke`——面板按钮 idle 灰边框
+/// 与 D-32 底限的半覆盖皮肤语义依赖该值。新增弹层项一律走本助手，别直调
+/// `ui.selectable_label`（G-38）。
+pub fn selectable_stable<'a>(
+    ui: &mut egui::Ui,
+    selected: bool,
+    text: impl egui::IntoAtoms<'a>,
+) -> egui::Response {
+    ui.scope(|ui| {
+        // G-38：静止态无帧分支不画描边，但内边距公式仍按 w_inactive 预扣 →
+        // 归零该宽让静止/悬停几何全等（悬停反馈只剩底色/描边色出现）。
+        ui.visuals_mut().widgets.inactive.bg_stroke.width = 0.0;
+        ui.selectable_label(selected, text)
+    })
+    .inner
+}
+
+/// [`selectable_stable`] 的选值版（对齐 `Ui::selectable_value` 语义：点击且
+/// 值不同才写回并 `mark_changed`）。
+pub fn selectable_value_stable<'a, Value: PartialEq>(
+    ui: &mut egui::Ui,
+    current_value: &mut Value,
+    selected_value: Value,
+    text: impl egui::IntoAtoms<'a>,
+) -> egui::Response {
+    let mut response = selectable_stable(ui, *current_value == selected_value, text);
+    if response.clicked() && *current_value != selected_value {
+        *current_value = selected_value;
+        response.mark_changed();
+    }
+    response
+}
+
 // ── 按钮三态色（D-32 红线 + 2026-09-17 走查 A1 修复） ──
 
 /// 按钮三态色族。几何（描边宽/圆角/内边距）三态全等是硬约束（D-32：文字
@@ -392,5 +434,64 @@ mod tests {
         assert_eq!(s.original_font_size, 9);
         assert_eq!(s.translation_font_size, 11);
         assert_eq!(s.bg_color, "#000000");
+    }
+
+    /// D-119/G-38 回归钉：弹层可选项静止/悬停两态几何必须全等。
+    /// headless 两轮：先无指针取静止 rect，再把指针钉在项上跑三帧
+    /// （widget_state 读上一帧 response，首帧悬停不生效），比较 rect。
+    /// 文本用 20px 大字：默认 12.5px 下 galley+边距被 interact_size.y=18
+    /// 钳制，高度轴测不出病灶（真实弹层 CJK 行高不触钳制，见截图实测
+    /// 弹层底边 +3px）——加大字号即复现真实弹层的非钳制状态。
+    fn popup_item_rect(pointer: Option<egui::Pos2>, selected: bool) -> egui::Rect {
+        use crate::windows::panel::panel_visuals;
+        let ctx = egui::Context::default();
+        ctx.set_visuals(panel_visuals()); // w_inactive = 1.0（病灶配置）
+        let mut rect = None;
+        for frame in 0..4u32 {
+            let mut input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(400.0, 300.0),
+                )),
+                ..Default::default()
+            };
+            input.time = Some(f64::from(frame) * 0.016);
+            if let Some(p) = pointer {
+                input.events.push(egui::Event::PointerMoved(p));
+            }
+            let mut out = ctx.run_ui(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let resp = selectable_stable(
+                        ui,
+                        selected,
+                        egui::RichText::new("Fun-ASR-Nano").size(20.0),
+                    );
+                    rect = Some(resp.rect);
+                });
+            });
+            out.textures_delta.clear(); // headless 无渲染器，防 drop panic
+        }
+        rect.expect("至少跑一帧 UI")
+    }
+
+    #[test]
+    fn selectable_stable_idle_and_hovered_geometry_equal() {
+        let idle = popup_item_rect(None, false);
+        let hovered = popup_item_rect(Some(idle.center()), false);
+        assert_eq!(
+            idle.height(),
+            hovered.height(),
+            "悬停不得改变弹层项高度（G-38 跳变回归）"
+        );
+        assert_eq!(
+            idle.width(),
+            hovered.width(),
+            "悬停不得改变弹层项宽度（G-38 跳变回归）"
+        );
+        // 选中项恒全帧本就稳定，一并钉死防未来回归
+        let sel_idle = popup_item_rect(None, true);
+        let sel_hovered = popup_item_rect(Some(sel_idle.center()), true);
+        assert_eq!(sel_idle.height(), sel_hovered.height());
+        assert_eq!(sel_idle.width(), sel_hovered.width());
     }
 }

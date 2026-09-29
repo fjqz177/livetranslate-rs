@@ -79,7 +79,9 @@ fn combo_box_text_does_not_shift_on_hover() {
             .width(120.0)
             .selected_text("hunyuan-mt-chimera-7b")
             .show_ui(ui, |ui| {
-                let _ = ui.selectable_label(false, "hunyuan-mt-chimera-7b");
+                // 生产同源（D-119/G-38）：弹层项走 selectable_stable，
+                // 本探针弹层未开、此行不渲染，仅保持内容与调用面一致
+                let _ = lt_ui::style::selectable_stable(ui, false, "hunyuan-mt-chimera-7b");
             });
     };
     let t0 = text_bbox(&ctx, egui::pos2(10.0, 10.0), &draw);

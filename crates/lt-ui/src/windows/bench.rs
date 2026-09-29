@@ -10,6 +10,7 @@
 //! 不借道日志总线，无完成哨兵；event_tx 后台旁路随本波删除）。
 
 use crate::state::{BenchUi, SessionView, Settings};
+use crate::style::selectable_stable;
 use egui::{Color32, RichText, ScrollArea, Ui};
 use lt_proto::{Cmd, ModelConfig};
 
@@ -146,7 +147,7 @@ fn lang_combo(ui: &mut Ui, id: &str, index: &mut usize, langs: &[&str]) {
         .width(76.0)
         .show_ui(ui, |ui| {
             for (i, code) in langs.iter().enumerate() {
-                if ui.selectable_label(*index == i, code.to_string()).clicked() && *index != i {
+                if selectable_stable(ui, *index == i, code.to_string()).clicked() && *index != i {
                     *index = i;
                 }
             }

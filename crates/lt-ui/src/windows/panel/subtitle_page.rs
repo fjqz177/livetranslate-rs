@@ -16,6 +16,7 @@ use crate::state::{
     move_line_down, move_line_up, LineEditState, ModalUi, PanelUi, SessionView, Settings,
     UiContext, ANIM_VALUES,
 };
+use crate::style::selectable_stable;
 use egui::{RichText, Ui};
 use lt_proto::SubtitleLine;
 
@@ -98,7 +99,7 @@ pub fn combo_index(
         .width(width)
         .show_ui(ui, |ui| {
             for (i, label) in labels.iter().enumerate() {
-                if ui.selectable_label(current == i, label.clone()).clicked() && current != i {
+                if selectable_stable(ui, current == i, label.clone()).clicked() && current != i {
                     next = i;
                 }
             }

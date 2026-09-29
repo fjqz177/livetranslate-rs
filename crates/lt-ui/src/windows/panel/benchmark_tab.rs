@@ -8,6 +8,7 @@
 
 use super::{group_card, Palette};
 use crate::state::{BenchUi, SessionView, Settings};
+use crate::style::selectable_stable;
 use crate::windows::bench::{self, BENCH_SRC_LANGS, BENCH_TGT_LANGS, LOG_BG, LOG_FG};
 use egui::{Color32, RichText, ScrollArea, Ui};
 
@@ -89,7 +90,7 @@ fn lang_combo(ui: &mut Ui, id: &str, idx: &mut usize, items: &[&str], pal: &Pale
         .width(80.0)
         .show_ui(ui, |ui| {
             for (j, code) in items.iter().enumerate() {
-                if ui.selectable_label(i == j, (*code).to_string()).clicked() && i != j {
+                if selectable_stable(ui, i == j, (*code).to_string()).clicked() && i != j {
                     *idx = j;
                 }
             }

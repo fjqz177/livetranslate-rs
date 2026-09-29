@@ -15,6 +15,7 @@
 
 use super::{group_card, hint_line, mark_settings_dirty, schedule_prompt_apply, Palette};
 use crate::state::{ModalUi, ModelEditState, PanelUi, SessionView, Settings, TickKind, WinId};
+use crate::style::selectable_stable;
 use egui::{RichText, Ui};
 use lt_proto::ModelConfig;
 use std::time::{Duration, Instant};
@@ -657,7 +658,7 @@ pub fn page(
                 .width(220.0)
                 .show_ui(ui, |ui| {
                     for (i, key) in PROMPT_PRESET_KEYS.iter().enumerate() {
-                        if ui.selectable_label(cur == i, lt_i18n::t(key)).clicked() && cur != i {
+                        if selectable_stable(ui, cur == i, lt_i18n::t(key)).clicked() && cur != i {
                             next = i;
                         }
                     }
@@ -829,8 +830,7 @@ fn editor_fields(ui: &mut Ui, ed: &mut ModelEditState, pal: &Palette) {
             .width(220.0)
             .show_ui(ui, |ui| {
                 for p in lt_proto::PROVIDER_PRESETS.iter() {
-                    if ui
-                        .selectable_label(ed.preset_key == Some(p.key), preset_label(p))
+                    if selectable_stable(ui, ed.preset_key == Some(p.key), preset_label(p))
                         .clicked()
                     {
                         picked = Some(p);
@@ -868,9 +868,7 @@ fn editor_fields(ui: &mut Ui, ed: &mut ModelEditState, pal: &Palette) {
                 .width(240.0)
                 .show_ui(ui, |ui| {
                     for (i, label) in modes.iter().enumerate() {
-                        if ui
-                            .selectable_label(ed.proxy_index == i, label.clone())
-                            .clicked()
+                        if selectable_stable(ui, ed.proxy_index == i, label.clone()).clicked()
                             && ed.proxy_index != i
                         {
                             ed.proxy_index = i; // 原版 _on_proxy_mode_changed：URL 仅 custom 可编辑
@@ -948,30 +946,30 @@ fn editor_fields(ui: &mut Ui, ed: &mut ModelEditState, pal: &Palette) {
                     .selected_text(selected)
                     .width(120.0)
                     .show_ui(ui, |ui| {
-                        if ui
-                            .selectable_label(
-                                ed.currency.is_none(),
-                                lt_i18n::t("currency_follow_lang"),
-                            )
-                            .clicked()
+                        if selectable_stable(
+                            ui,
+                            ed.currency.is_none(),
+                            lt_i18n::t("currency_follow_lang"),
+                        )
+                        .clicked()
                         {
                             ed.currency = None;
                         }
-                        if ui
-                            .selectable_label(
-                                ed.currency.as_deref() == Some("cny"),
-                                lt_i18n::t("currency_cny"),
-                            )
-                            .clicked()
+                        if selectable_stable(
+                            ui,
+                            ed.currency.as_deref() == Some("cny"),
+                            lt_i18n::t("currency_cny"),
+                        )
+                        .clicked()
                         {
                             ed.currency = Some("cny".into());
                         }
-                        if ui
-                            .selectable_label(
-                                ed.currency.as_deref() == Some("usd"),
-                                lt_i18n::t("currency_usd"),
-                            )
-                            .clicked()
+                        if selectable_stable(
+                            ui,
+                            ed.currency.as_deref() == Some("usd"),
+                            lt_i18n::t("currency_usd"),
+                        )
+                        .clicked()
                         {
                             ed.currency = Some("usd".into());
                         }
@@ -1033,7 +1031,7 @@ fn editor_fields(ui: &mut Ui, ed: &mut ModelEditState, pal: &Palette) {
                     .width(240.0)
                     .show_ui(ui, |ui| {
                         for (i, label) in styles.iter().enumerate() {
-                            if ui.selectable_label(idx == i, label.clone()).clicked()
+                            if selectable_stable(ui, idx == i, label.clone()).clicked()
                                 && ed.thinking_index != i
                             {
                                 ed.thinking_index = i;

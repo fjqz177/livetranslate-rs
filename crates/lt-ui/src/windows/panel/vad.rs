@@ -13,6 +13,7 @@
 
 use super::{group_card, hint_line, mark_settings_dirty, send_switch_engine, Palette};
 use crate::state::{DownloadUiState, PanelUi, SessionView, Settings};
+use crate::style::selectable_stable;
 use egui::{RichText, Ui};
 use lt_proto::{AudioDeviceChoice, MicDeviceChoice};
 
@@ -335,7 +336,7 @@ pub fn page(
                     for (i, (id, _, _)) in ENGINES.iter().enumerate() {
                         let selected = i == eng_idx;
                         let label = engine_display(id);
-                        if ui.selectable_label(selected, label).clicked() && !selected {
+                        if selectable_stable(ui, selected, label).clicked() && !selected {
                             settings.asr_engine = (*id).to_string();
                             send_switch_engine(settings, session);
                         }
@@ -360,7 +361,7 @@ pub fn page(
                 .width(240.0)
                 .show_ui(ui, |ui| {
                     for (i, (code, label)) in langs.iter().enumerate() {
-                        if ui.selectable_label(lang_idx == i, label.clone()).clicked()
+                        if selectable_stable(ui, lang_idx == i, label.clone()).clicked()
                             && lang_idx != i
                         {
                             // 即时命令：shell 写 settings.asr_language + 持久化
@@ -389,9 +390,7 @@ pub fn page(
                     .width(240.0)
                     .show_ui(ui, |ui| {
                         for (i, item) in items.iter().enumerate() {
-                            if ui
-                                .selectable_label(m_idx == i, item.display.clone())
-                                .clicked()
+                            if selectable_stable(ui, m_idx == i, item.display.clone()).clicked()
                                 && m_idx != i
                             {
                                 settings.funasr_model = item.key.to_string();
@@ -419,8 +418,7 @@ pub fn page(
                     .width(240.0)
                     .show_ui(ui, |ui| {
                         for (i, item) in tiers.iter().enumerate() {
-                            if ui
-                                .selectable_label(sel_idx == Some(i), item.display.clone())
+                            if selectable_stable(ui, sel_idx == Some(i), item.display.clone())
                                 .clicked()
                                 && sel_idx != Some(i)
                             {
@@ -508,7 +506,7 @@ pub fn page(
                 .width(240.0)
                 .show_ui(ui, |ui| {
                     for (i, label) in hubs.iter().enumerate() {
-                        if ui.selectable_label(hub_idx == i, label.clone()).clicked()
+                        if selectable_stable(ui, hub_idx == i, label.clone()).clicked()
                             && hub_idx != i
                         {
                             // 写回持久层经枚举 as_settings_str（值域单点）
@@ -553,9 +551,7 @@ pub fn page(
                 .width(240.0)
                 .show_ui(ui, |ui| {
                     for (i, label) in langs.iter().enumerate() {
-                        if ui
-                            .selectable_label(lang_idx == i, (*label).to_string())
-                            .clicked()
+                        if selectable_stable(ui, lang_idx == i, (*label).to_string()).clicked()
                             && lang_idx != i
                         {
                             settings.ui_lang = if i == 1 { "zh".into() } else { "en".into() };
@@ -586,23 +582,20 @@ pub fn page(
                 .selected_text(device_label(a_idx, &outputs, lt_i18n::t("audio_disabled")))
                 .width(300.0)
                 .show_ui(ui, |ui| {
-                    if ui
-                        .selectable_label(a_idx == 0, lt_i18n::t("audio_disabled"))
-                        .clicked()
+                    if selectable_stable(ui, a_idx == 0, lt_i18n::t("audio_disabled")).clicked()
                         && a_idx != 0
                     {
                         apply_audio_setting(settings, session, audio_setting_for(0, &outputs));
                     }
-                    if ui
-                        .selectable_label(a_idx == 1, lt_i18n::t("system_default"))
-                        .clicked()
+                    if selectable_stable(ui, a_idx == 1, lt_i18n::t("system_default")).clicked()
                         && a_idx != 1
                     {
                         apply_audio_setting(settings, session, audio_setting_for(1, &outputs));
                     }
                     for (i, name) in outputs.iter().enumerate() {
                         let idx = i + 2;
-                        if ui.selectable_label(a_idx == idx, name.clone()).clicked() && a_idx != idx
+                        if selectable_stable(ui, a_idx == idx, name.clone()).clicked()
+                            && a_idx != idx
                         {
                             apply_audio_setting(settings, session, Some(name.clone()));
                         }
@@ -647,16 +640,15 @@ pub fn page(
                 .width(300.0);
             ui.add_enabled_ui(m_enabled, |ui| {
                 combo.show_ui(ui, |ui| {
-                    if ui
-                        .selectable_label(m_idx == 1, lt_i18n::t("system_default"))
-                        .clicked()
+                    if selectable_stable(ui, m_idx == 1, lt_i18n::t("system_default")).clicked()
                         && m_idx != 1
                     {
                         apply_mic_setting(settings, session, mic_setting_for(1, &inputs));
                     }
                     for (i, name) in inputs.iter().enumerate() {
                         let idx = i + 2;
-                        if ui.selectable_label(m_idx == idx, name.clone()).clicked() && m_idx != idx
+                        if selectable_stable(ui, m_idx == idx, name.clone()).clicked()
+                            && m_idx != idx
                         {
                             apply_mic_setting(settings, session, Some(name.clone()));
                         }
@@ -690,7 +682,8 @@ pub fn page(
             .width(240.0)
             .show_ui(ui, |ui| {
                 for (i, label) in labels.iter().enumerate() {
-                    if ui.selectable_label(mode_idx == i, label.clone()).clicked() && mode_idx != i
+                    if selectable_stable(ui, mode_idx == i, label.clone()).clicked()
+                        && mode_idx != i
                     {
                         next = i;
                     }
@@ -778,7 +771,8 @@ pub fn page(
                 .width(160.0)
                 .show_ui(ui, |ui| {
                     for (i, label) in mode_labels.iter().enumerate() {
-                        if ui.selectable_label(sm_idx == i, label.clone()).clicked() && sm_idx != i
+                        if selectable_stable(ui, sm_idx == i, label.clone()).clicked()
+                            && sm_idx != i
                         {
                             sm_next = i;
                         }

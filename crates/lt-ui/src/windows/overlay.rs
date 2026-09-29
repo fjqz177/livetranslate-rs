@@ -17,7 +17,7 @@ use crate::state::{
     failure_text, ConfirmKind, ModalUi, OverlayMessage, OverlayMode, OverlayUi, SessionView,
     Settings, TranslationView, UiContext, WinAction, WinId,
 };
-use crate::style::{self, parse_color, BtnSkin};
+use crate::style::{self, parse_color, selectable_stable, BtnSkin};
 use egui::{
     Align2, Color32, ComboBox, CornerRadius, FontId, RichText, ScrollArea, Sense, Stroke, Ui, Vec2,
 };
@@ -408,9 +408,7 @@ fn row2_combos(ui: &mut Ui, session: &mut SessionView, settings: &mut Settings) 
             )
             .show_ui(ui, |ui| {
                 for (i, m) in settings.models.iter().enumerate() {
-                    if ui
-                        .selectable_label(settings.active_model == i, m.name.clone())
-                        .clicked()
+                    if selectable_stable(ui, settings.active_model == i, m.name.clone()).clicked()
                         && settings.active_model != i
                     {
                         new_active = Some(i);
@@ -434,7 +432,7 @@ fn row2_combos(ui: &mut Ui, session: &mut SessionView, settings: &mut Settings) 
             .show_ui(ui, |ui| {
                 for (code, _native) in lt_i18n::LANGUAGES {
                     let v = settings.asr_language == *code;
-                    if ui.selectable_label(v, lang_label(true, code)).clicked() {
+                    if selectable_stable(ui, v, lang_label(true, code)).clicked() {
                         settings.asr_language = code.to_string();
                         session.send_cmd(lt_proto::Cmd::SetAsrLanguage(code.to_string()));
                     }
@@ -451,7 +449,7 @@ fn row2_combos(ui: &mut Ui, session: &mut SessionView, settings: &mut Settings) 
                         continue;
                     }
                     let v = settings.target_language == *code;
-                    if ui.selectable_label(v, lang_label(false, code)).clicked() {
+                    if selectable_stable(ui, v, lang_label(false, code)).clicked() {
                         settings.target_language = code.to_string();
                         session.send_cmd(lt_proto::Cmd::SetTargetLanguage(code.to_string()));
                     }

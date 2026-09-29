@@ -18,6 +18,7 @@
 //! `Cmd::Stop`（向导关闭→退出）因本保留裁决而合法存续，勿删。
 
 use crate::state::{ModalUi, SessionView, StartupFlow, StartupUi, WizardPhase};
+use crate::style::selectable_value_stable;
 use egui::{Color32, RichText, Ui};
 
 /// 日志区底色（原版 QTextEdit 样式 background: #1e1e2e）
@@ -78,9 +79,7 @@ fn wizard_ui(ui: &mut Ui, startup: &mut StartupUi, session: &mut SessionView) {
                 .show_ui(ui, |ui| {
                     // 任一控件变更重置倒计时（原版 currentIndexChanged → _reset_countdown）
                     for (i, item) in hub_items.iter().enumerate() {
-                        if ui
-                            .selectable_value(&mut w.hub_index, i, item.clone())
-                            .changed()
+                        if selectable_value_stable(ui, &mut w.hub_index, i, item.clone()).changed()
                         {
                             w.countdown = 15;
                         }
@@ -109,8 +108,7 @@ fn wizard_ui(ui: &mut Ui, startup: &mut StartupUi, session: &mut SessionView) {
                         .selected_text(mode_items[w.proxy_index].clone())
                         .show_ui(ui, |ui| {
                             for (i, item) in mode_items.iter().enumerate() {
-                                if ui
-                                    .selectable_value(&mut w.proxy_index, i, item.clone())
+                                if selectable_value_stable(ui, &mut w.proxy_index, i, item.clone())
                                     .changed()
                                 {
                                     // 原版 _on_proxy_mode_changed → _reset_countdown
