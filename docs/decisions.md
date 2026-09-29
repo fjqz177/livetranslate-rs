@@ -106,6 +106,7 @@
 | D-116 | 2026-09-29 | 引擎身份单源化（扫描批 C1+C2）：超时档案改收 EngineKey 透镜——funasr 族 fast 档（base 5s+段长×2）自 R6 起因 settings/worker 两套词表错位从未生效、恒落 60s 兜底，就此修复（用户拍板让宣称行为生效）；lt-asr 新建 WorkerEngine 枚举（生产四变体+测试 Echo 身份）承载 worker 级身份，build_worker_config 唯一生产点、WorkerConfig.engine 改枚举（同 exe IPC 自洽）、engine_family 字符串表折叠进 padding 穷尽 match、lt-app 入口 match 枚举且单点分派豁免边界保持；lt-proto 零改动 | docs/architecture-deepening-batch.md §三/§四 |
 | D-117 | 2026-09-29 | 草稿写入面穷尽防线（扫描批 C3）：lt-proto Cmd 加编译期穷尽分类方法（match 无通配臂，新增变体编译期强迫表态），lt-app 测试钉「判真集合 ⇔ apply_settings_side_effects 臂集合」双向穷尽——堵新变体漏登记被防抖重放静默回滚用户改动的口；纯新增方法 wire 零变化，PROTO_VERSION 不递增 | docs/architecture-deepening-batch.md §五 |
 | D-118 | 2026-09-29 | Cmd::SwitchEngine.hub 死契约字段删除（扫描批 C4）：两生产者都填、两消费者全忽略、switch_engine 签名不收，删除测试满分；PROTO_VERSION 7→8（D-81 先例）；engine 保持 String 不夹带类型化——settings 级词表消费端透镜现成，worker 级身份由 D-116 WorkerEngine 承载 | docs/architecture-deepening-batch.md §六 |
+| D-119 | 2026-09-29 | 下拉弹层悬停跳变修复（用户截图报案 + 全面排查）：egui 0.36 `Button::selectable(false)` 静止态走无帧分支但内边距仍按 `padding − inactive.bg_stroke.width` 预扣，悬停全帧回补 → 弹层项悬停瞬间长高 2×w_inactive；本仓两处把该宽抬到 1.0（面板显式灰边 + 暗色 stabilize 底限）是放大器。裁决 = 弹层项 scope 内归零静止描边宽（`selectable_stable`/`selectable_value_stable` 助手 + 29 处调用点替换），悬停蓝框观感不变、静止项回到自然高度；否决 Qt 对齐去框（乙，观感改动大）与追上游（丙，升级面大）；**禁全局归零** inactive.bg_stroke（剥按钮灰边框 + 破 D-32 底限语义）；弹层外全部控件像素不动 | docs/gotchas.md G-38 |
 
 ## ADR-x（架构决策）
 

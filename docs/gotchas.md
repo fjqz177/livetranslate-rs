@@ -318,6 +318,15 @@
 - **对策**：无害不修（无 LNK2005/2019，动态 CRT 胜出，与 data-lifecycle C3=A 一致）；噪音静音已裁 `[lints.rust] linker_messages = "allow"`（D-103）——**2026-09-28 已落地**（D-114 解禁批①，Cargo.toml `[workspace.lints.rust]`），release 链接输出已净。上游 1.99 起计划归 allow-by-default 的 `linker_info` 会让进度行自动消失（尚未发布，届时复核 Cargo.toml 注记的去留）。
 - **证据**：`dumpbin /directives`（静态库带 /DEFAULTLIB:LIBCMT）、`/dependents`（exe 导入 VCRUNTIME140.dll+UCRT）、v1.0.0 发布链 run 35381400025 与 09-18 ci run 35383389311 同警告且全绿。
 
+## G-38 下拉弹层悬停跳变：egui selectable 静止态无帧分支与描边抵消公式不对称
+
+- **触发**：给任何 ComboBox 弹层写非选中项（`ui.selectable_label` / `ui.selectable_value` / `Button::selectable(false, …)`），且 visuals 的 `widgets.inactive.bg_stroke.width > 0`——面板浅色（`panel_visuals` 显式 1.0 灰边）与暗色窗（`stabilize_widget_strokes` 底限 `max(1.0)`，D-32）双双命中；stock egui 两主题该宽均为 0，不触发。
+- **症状**：鼠标悬停弹层项的瞬间，该项长高 2×w_inactive px（本仓 = 2px）且变宽同量、框内文字向右下挪 1px、下方所有项与弹层底边被往下顶 2px；移开又缩回。普通按钮 / DragValue / Checkbox / 页签 / 下拉收起态本体均不跳（前者恒全帧、后四者不走该路径）。
+- **根因**：egui 0.36 Frame 总尺寸 = content + inner_margin + 2×stroke.width（`containers/frame.rs:13`），`Style::button_style` 以 `inner_margin = button_padding + expansion − bg_stroke.width` 让描边与内边距互相抵消（`src/widget_style.rs:163-165`）——**前提是描边真被画出来**。但 `Button::selectable(false)` = `frame_when_inactive(false)`（`src/widgets/button.rs:77-83`），静止态走 `Button::atom_ui` 的 Retrocompatibility else 分支换 `Frame::new()`（描边 NONE 不画，`button.rs:363-367`），预扣的 w_inactive 无人回补 → 静止项比悬停态矮 2×w_inactive。选中项（SELECTED class）恒全帧，两态对称故恒稳。
+- **对策**：用 `style::selectable_stable` / `selectable_value_stable`（lt-ui）替换弹层内 selectable 调用——scope 内归零 `inactive.bg_stroke.width` 再调原生方法，静止/悬停几何像素级相等，悬停蓝框观感不变（D-119）；**禁全局归零** inactive.bg_stroke（会剥掉面板按钮 idle 灰边框、破坏 D-32 底限的半覆盖皮肤语义）；新增弹层项一律走助手，别直调 `ui.selectable_label`。egui 上游若对称化该分支，助手可退役。
+- **证据**：用户 2026-09-29 控制面板截图两帧（悬停「Fun-ASR-Nano」蓝框坠出弹层底边）；egui 0.36.1 源码行号见根因；本仓 `crates/lt-ui/src/windows/panel/mod.rs panel_visuals()`（inactive.bg_stroke 1.0 #ADADAD）+ `crates/lt-ui/src/style.rs stabilize_widget_strokes`（`max(1.0)` 底限）；headless 等高回归测试 = `crates/lt-ui/src/style.rs` tests（静止/悬停两帧 rect 等高）。
+- **版本**：egui 0.36.1。
+
 ---
 
 ## 候选清单（尚未收编——能五段式实证表述才收编，不臆造）
