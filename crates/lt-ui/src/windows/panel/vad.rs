@@ -291,15 +291,14 @@ pub fn format_size(size_bytes: u64) -> String {
 /// 界面语言下拉候选（index 0=en 1=zh，与原版 addItem(["English","中文"]) 顺序
 /// 一致）；选中态判定与选中写入共用本表，防两侧映射漂移
 const UI_LANG_CHOICES: [&str; 2] = ["en", "zh"];
-
 /// combo 选中索引（D-121 评审 C-1 修复）：档案值经 `resolve_ui_lang` 解析后
-/// 判定——"system" 档案随系统语言高亮对应项，不再恒显示 en
+/// 在候选表中定位——"system" 档案随系统语言高亮对应项，不再恒显示 en；
+/// 判定与写入同走一张表（未命中回退 en 档 = index 0）
 fn ui_lang_combo_index(ui_lang: &str) -> usize {
-    if lt_i18n::resolve_ui_lang(ui_lang) == "zh" {
-        1
-    } else {
-        0
-    }
+    UI_LANG_CHOICES
+        .iter()
+        .position(|&c| c == lt_i18n::resolve_ui_lang(ui_lang))
+        .unwrap_or(0)
 }
 
 /// 界面语言热切换唯一入口（D-121）：切全局语言表 + 防抖落盘登记 + 请求宿主
