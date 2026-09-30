@@ -20,3 +20,5 @@ Thumbs.db
 .vscode/
 # ZCode 工具本地配置（.zcodeignore 与本文件同步生成 + ZCode 默认排除，机器本地副产物，不入库）
 .zcodeignore
+
+.archify/
