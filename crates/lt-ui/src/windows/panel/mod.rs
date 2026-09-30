@@ -26,7 +26,7 @@ pub mod vad;
 
 use crate::state::TickKind;
 use crate::state::{
-    BenchUi, LogUi, ModalUi, PanelPage, PanelUi, SessionView, Settings, UiContext, WinId,
+    BenchUi, LogUi, ModalUi, PanelPage, PanelUi, SessionView, Settings, UiContext, WinAction, WinId,
 };
 use egui::{Color32, Frame, RichText, ScrollArea, Stroke, Ui};
 use std::time::Instant;
@@ -49,11 +49,12 @@ const PANEL_MIN_SLACK: f32 = 8.0;
 /// 页面 Frame 四边边距的单源，灰框到窗缘距离恒等于它
 pub const PANEL_PAGE_MARGIN: f32 = 12.0;
 
-/// 面板最小窗宽（逻辑 px；D-120）。原版 480 照搬 Qt 布局器前提在 egui 不成立
-/// （egui 横排无收缩换行，最小宽不构成「内容放得下」保证，G-39），故抬到
-/// headless 实测「zh/en × 8 页零横向溢出」的下限 + 余量；定值法 = 溢出断言
-/// 测试按候选宽迭代。app.rs 的 min_inner_size 与默认创建宽共用本常量。
-pub const PANEL_MIN_WIDTH: f32 = 600.0;
+/// 面板**首启观感下限**（逻辑 px；D-122）：仅作默认创建宽与创建期 min_inner_size
+/// 垫底值，**不参与最小宽正确性**——正确最小宽 = [`derived_panel_min_width`]
+/// 运行时派生（语言/字体实测），宿主经 WinAction 首帧即校正。
+/// 沿革：D-120 的 PANEL_MIN_WIDTH=600 曾是「溢出安全宽」断言，被实机证伪
+/// （egui 默认字体度量 ≠ 实机字体链）；本常数只保观感，不再作任何正确性声明。
+pub const PANEL_DEFAULT_WIDTH: f32 = 600.0;
 
 /// Windows 原生浅色调色板（PyQt6 Windows 默认控件字面色，2026-09-06 实拍取色）
 #[derive(Debug, Clone, Copy)]
@@ -200,6 +201,14 @@ pub fn panel_ui(
     // Tab 条（原版 QTabWidget North 页签行）
     ui.add_space(4.0);
     tab_strip(ui, panel, &pal);
+
+    // D-122：派生最小窗宽差值发送（须先于各页分支——Log 页提前 return）。
+    // 语言热切换 / 界面字体更换 → 页签实测宽变 → 派生值变 → 宿主同帧后校正
+    let derived_min = derived_panel_min_width(ui.ctx());
+    if panel.state.last_emitted_min != Some(derived_min) {
+        panel.state.last_emitted_min = Some(derived_min);
+        session.enqueue_action(WinId::Panel, WinAction::SetPanelMinWidth(derived_min));
+    }
 
     // WD-6 首启缺模型轻引导（D-105）：识别未就绪 → 顶部高亮横幅，点击去识别页；
     // 就绪即隐、加载中不亮、识别页自身不亮（可见性判定见 PanelUi::model_banner_visible）
@@ -777,7 +786,7 @@ mod tests {
                 // 更宽 UI 字体时派生值更大（运行时实测自动跟随）。首跑曾得
                 // 「en=509.7」的假象，根因 = 派生先于 set_lang（语言污染）。
                 assert!(
-                    min_w > super::PANEL_MIN_WIDTH,
+                    min_w > super::PANEL_DEFAULT_WIDTH,
                     "en 派生 min {min_w} 须 > 旧常数 600（内嵌思源链下旧常数必裁                      tab 条——本 bug 的定量锚）；若不成立须复核字体链/语言时序"
                 );
             }
@@ -852,6 +861,65 @@ mod tests {
             }
             _ => false,
         }
+    }
+
+    /// D-122：派生最小宽差值发送——首帧发一次后稳态静默；语言热切换派生值
+    /// 变化后再发一次（宿主臂据此 set_min_inner_size，桌面端无冗余动作流）
+    #[test]
+    fn panel_emits_derived_min_once_then_on_change() {
+        let _lang_guard = crate::lang_test_guard();
+        let ctx = egui::Context::default();
+        let mut st = crate::state::AppUi::new(Settings::default());
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 600.0));
+        let render = |st: &mut crate::state::AppUi| {
+            let mut out = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(screen),
+                    ..egui::RawInput::default()
+                },
+                |ui| crate::windows::dispatch(crate::state::WinId::Panel, ui, st),
+            );
+            out.textures_delta.clear();
+        };
+        let mins = |st: &mut crate::state::AppUi| -> Vec<f32> {
+            st.session
+                .drain_actions()
+                .into_iter()
+                .filter_map(|(w, a)| match (w, a) {
+                    (WinId::Panel, WinAction::SetPanelMinWidth(v)) => Some(v),
+                    _ => None,
+                })
+                .collect()
+        };
+
+        lt_i18n::set_lang("zh").expect("zh 表解析");
+        render(&mut st);
+        render(&mut st);
+        render(&mut st);
+        let first = mins(&mut st);
+        assert_eq!(first.len(), 1, "首帧应恰好发一次派生 min，实际 {first:?}");
+        assert!(
+            first[0] > 400.0 && first[0] < 1200.0,
+            "派生值离谱：{:?}",
+            first
+        );
+
+        // 语言热切换 → 页签实测宽变 → 派生值变 → 恰好再发一次且更大
+        lt_i18n::set_lang("en").expect("en 表解析");
+        render(&mut st);
+        let second = mins(&mut st);
+        assert_eq!(second.len(), 1, "语言切换后应恰再发一次，实际 {second:?}");
+        assert!(
+            second[0] > first[0],
+            "en 派生值应大于 zh：{:?} vs {:?}",
+            second,
+            first
+        );
+        render(&mut st);
+        assert!(
+            mins(&mut st).is_empty(),
+            "稳态（语言/字体不变）不应再发——差值发送失效会刷爆宿主臂"
+        );
     }
 
     /// D-122 四件套④：灰框离窗边恒为常数（裁决 3）——分组框（card_stroke 描边、

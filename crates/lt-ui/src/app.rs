@@ -136,7 +136,7 @@ impl MultiWindowApp {
         // resize(520,650) 顶开，2026-09-07 实测 524×775——7 页表单在 781 高
         // 下整页放下、不出滚动条）。小屏按工作区高度钳制（winit 无 work-area
         // API，任务栏按 48 逻辑 px 估），下限 650（minimumSize 高 420 不变，
-        // 宽见下方 PANEL_MIN_WIDTH，D-120）
+        // 宽见下方 PANEL_DEFAULT_WIDTH，D-122）
         let panel_h = event_loop
             .primary_monitor()
             .or_else(|| event_loop.available_monitors().next())
@@ -147,9 +147,10 @@ impl MultiWindowApp {
             .map(|avail| 781.min(avail))
             .unwrap_or(781)
             .max(650);
-        // 默认宽对齐原版实机 535，但不低于 D-120 最小窗宽（egui 溢出安全宽；
-        // 常量恒取整数 px，round 防 f32 分数宽被 as 静默截断与 min 失配）
-        let panel_w = 535u32.max(crate::windows::panel::PANEL_MIN_WIDTH.round() as u32);
+        // 默认宽对齐原版实机 535，但不低于首启观感下限（D-122：PANEL_DEFAULT_WIDTH
+        // 只保观感；真正确的最小宽 = UI 首帧派生值经 WinAction::SetPanelMinWidth
+        // 校正。常量恒取整数 px，round 防 f32 分数宽被 as 静默截断与 min 失配）
+        let panel_w = 535u32.max(crate::windows::panel::PANEL_DEFAULT_WIDTH.round() as u32);
         self.create_window(event_loop, WinId::Panel, (panel_w, panel_h))?;
         self.create_window(event_loop, WinId::Log, (900, 500))?;
         // 启动流对话框（原版 QDialog：常规装饰窗口；可见性 = 启动流进行中）
@@ -253,11 +254,11 @@ impl MultiWindowApp {
             }
         }
         if id == WinId::Panel {
-            // D-120/G-39：原版 setMinimumSize(480, 420) 的 480 照搬 Qt 布局器前提
-            // 在 egui 不成立（横排无收缩换行），最小宽抬到溢出断言测试实测的
-            // zh/en × 8 页安全宽（常量单源 panel::PANEL_MIN_WIDTH）；高仍对齐原版
+            // D-122：创建期仅以 PANEL_DEFAULT_WIDTH 垫底（egui Fonts 惰性初始化，
+            // 窗口创建前不可排版）；首帧 UI 实测「tab 条+镶边」派生真值，经
+            // WinAction::SetPanelMinWidth 到本臂校正——语言/字体变化自动跟随
             attrs = attrs.with_min_inner_size(winit::dpi::LogicalSize::new(
-                crate::windows::panel::PANEL_MIN_WIDTH,
+                crate::windows::panel::PANEL_DEFAULT_WIDTH,
                 420.0,
             ));
         }
@@ -2010,6 +2011,23 @@ impl MultiWindowApp {
                         .send_cmd(lt_proto::Cmd::PersistSettings(Box::new(
                             self.app_state.settings.clone(),
                         )));
+                }
+                WinAction::SetPanelMinWidth(w) => {
+                    // D-122：面板最小宽运行时派生（UI 实测 tab 条自然宽+镶边，
+                    // 差值发送）。抬高 min 后若当前客户区不足则立即抬窗（裁决 4，
+                    // 瞬跳已裁决接受）；逻辑 px 记账与 enqueue_height 同法
+                    let Some(hw) = self.find_mut(WinId::Panel) else {
+                        return;
+                    };
+                    let scale = hw.window.scale_factor();
+                    let logical = hw.window.inner_size().to_logical::<f32>(scale);
+                    hw.window
+                        .set_min_inner_size(Some(winit::dpi::LogicalSize::new(w, 420.0)));
+                    if logical.width < w {
+                        let _ = hw
+                            .window
+                            .request_inner_size(winit::dpi::LogicalSize::new(w, logical.height));
+                    }
                 }
                 WinAction::ApplyUiLang => {
                     // D-121：语言热切换——egui 文案自动跟随，宿主只补原生层

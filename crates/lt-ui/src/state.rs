@@ -261,6 +261,10 @@ pub enum WinAction {
     /// 打开面板并切换到指定页（W5：字幕窗"打开设置"的跨域写意图化——
     /// 原 subtitle.rs 直写 panel.page 的借用边界破坏改由宿主根消费）
     OpenPanelPage(PanelPage),
+    /// 面板最小窗宽已变化（D-122）：UI 运行时实测「tab 条自然宽＋镶边」派生，
+    /// 差值发送（变化才发）；宿主 set_min_inner_size 并在当前宽不足时立即抬窗。
+    /// 创建期仅有 PANEL_DEFAULT_WIDTH 垫底——egui Fonts 惰性初始化，首帧才可排版
+    SetPanelMinWidth(f32),
     /// 界面语言已切换（D-121）：宿主重取原生层固化文案——面板/日志/基准窗
     /// set_title + 托盘五项重推。egui 窗内文案经 t() 逐帧查表自动跟随，
     /// 无需本动作；仅 winit/muda 侧建时固化的文案需要宿主补刷
@@ -1786,6 +1790,8 @@ pub struct PanelUiState {
     pub apply_due_at: Option<Instant>,
     /// 翻译页 system_prompt 防抖到期时刻（原版 _prompt_debounce 600ms；
     /// 到期由 PromptApply 节拍消费 → SwitchTranslator 重建翻译器）
+    /// 已发出的派生最小窗宽（D-122 差值发送记忆：None = 尚未发过首帧值）
+    pub last_emitted_min: Option<f32>,
     pub prompt_apply_due: Option<Instant>,
     /// ModelEditDialog 打开中（None=关闭；翻译页模态区渲染）
     pub model_editor: Option<ModelEditState>,
