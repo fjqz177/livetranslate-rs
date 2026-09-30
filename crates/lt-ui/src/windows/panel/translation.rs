@@ -13,7 +13,10 @@
 //! - 删除模型时若被删行在活动模型之前，active_model 前移一位
 //!   （原版仅做越界钳制，行前移会错位指向别的模型——有意修正）。
 
-use super::{group_card, hint_line, mark_settings_dirty, schedule_prompt_apply, Palette};
+use super::{
+    group_card, hint_line, mark_settings_changed, mark_settings_dirty, schedule_prompt_apply,
+    Palette,
+};
 use crate::state::{ModalUi, ModelEditState, PanelUi, SessionView, Settings, TickKind, WinId};
 use crate::style::selectable_stable;
 use egui::{RichText, Ui};
@@ -398,7 +401,9 @@ pub fn page(
 
         let active = settings.active_model;
         let count = settings.models.len();
-        let mut select: Option<usize> = None;
+        // D-123 C1 三态写回：None 兼作「本帧无点击」哨兵会吞掉「点击取消」
+        // （缓存页死写回同源教训）——pick 显式区分 无点击/选中(i)/取消
+        let mut pick: Option<Option<usize>> = None;
         let mut edit_row: Option<usize> = None;
         // D-85：本页每行右侧的「测试 / 中断」按钮
         let mut probe_click: Option<usize> = None;
@@ -433,7 +438,15 @@ pub fn page(
                     })
                     .inner;
                 if resp.clicked() {
-                    select = Some(i);
+                    // 再点已选行 = 取消选中（D-123 C1）；双击的第二击不翻转——
+                    // 净效果恒为「选中 + 开编辑」（已选态双击同样保持选中）
+                    pick = Some(
+                        if resp.double_clicked() || panel.state.model_selected != Some(i) {
+                            Some(i)
+                        } else {
+                            None
+                        },
+                    );
                 }
                 // 双击行 = 直接进入编辑（原版 itemDoubleClicked →
                 // _on_model_double_clicked 打开对话框）。2026-09-11 评审修复：
@@ -510,8 +523,8 @@ pub fn page(
         }
 
         // 行选中只改"选中"（D-85 裁决 E：设置页只管配置，不切换运行中的模型）
-        if let Some(i) = select {
-            panel.state.model_selected = Some(i);
+        if let Some(s) = pick {
+            panel.state.model_selected = s;
         }
 
         // 「测试」：发号 + 置在途 + 排节拍 + 发命令（目标就是这一行，无静默回落）
@@ -637,7 +650,8 @@ pub fn page(
                 if resp.changed() {
                     settings.models[idx].context_turns = turns.clamp(0, 20) as u32;
                     schedule_prompt_apply(panel, session, std::time::Instant::now());
-                    mark_settings_dirty(session);
+                    // D-123 C4：非列表控件变更走 funnel（清三处列表选中 + 防抖）
+                    mark_settings_changed(panel, session);
                 }
             });
             hint_line(ui, pal, &lt_i18n::t("context_turns_hint"));
@@ -668,7 +682,7 @@ pub fn page(
             // 原版 _on_prompt_preset_changed：写入预设文本并立即应用
             settings.system_prompt = lt_proto::PROMPT_PRESETS[next].1.to_string();
             schedule_prompt_apply(panel, session, std::time::Instant::now());
-            mark_settings_dirty(session);
+            mark_settings_changed(panel, session);
         }
         ui.add_space(2.0);
         // 多行编辑（Consolas 等宽；变更 → 600ms 防抖 SwitchTranslator + 300ms 落盘）
@@ -681,7 +695,7 @@ pub fn page(
         );
         if resp.changed() {
             schedule_prompt_apply(panel, session, std::time::Instant::now());
-            mark_settings_dirty(session);
+            mark_settings_changed(panel, session);
         }
     });
 
@@ -698,7 +712,7 @@ pub fn page(
             );
             if resp.changed() {
                 settings.timeout = v.round() as u32;
-                mark_settings_dirty(session);
+                mark_settings_changed(panel, session);
             }
         });
     });
@@ -2245,6 +2259,89 @@ mod tests {
                 .iter()
                 .any(|w| w.contains(&lt_i18n::t_for_lang("zh", "cfg_warn_api_base_v1"))),
             "自建地址应保留提示：{warns:?}"
+        );
+    }
+
+    // ── D-123 列表选中态（headless 点击取证，共用件 = click_testing）──
+
+    /// T1/T2：模型行再点已选行 = 取消选中（C1，写回守卫不得吞掉取消）；点另一行 = 换选
+    #[test]
+    fn model_list_reclick_toggles_off_and_click_switches() {
+        let _lang_guard = crate::lang_test_guard();
+        lt_i18n::set_lang("zh").expect("zh 表解析");
+        let mut st = crate::state::AppUi::new(Settings::default());
+        st.panel.state.page = crate::state::PanelPage::Translation;
+        // 造第二行（名字不同 → 摘要 galley 可精确定位）
+        let mut second = st.settings.models[0].clone();
+        second.name = "second-model".into();
+        st.settings.models.push(second);
+        use crate::windows::panel::click_testing as ct;
+        let mut h = ct::PanelHarness::new(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(700.0, 1400.0),
+        ));
+
+        let needle0 = model_row_text(0, st.settings.active_model, &st.settings.models[0]);
+        let needle1 = model_row_text(1, st.settings.active_model, &st.settings.models[1]);
+        let out = h.render(&mut st, vec![]);
+        let pos0 = ct::text_center(&out.shapes, &needle0).expect("模型行 0 摘要应上屏");
+        let pos1 = ct::text_center(&out.shapes, &needle1).expect("模型行 1 摘要应上屏");
+
+        h.click(&mut st, pos0);
+        assert_eq!(st.panel.state.model_selected, Some(0), "点行应选中");
+        // 快进拉出双击窗口（同点连点两次会被 egui 判成双击，双击帧不翻转）
+        h.idle(&mut st, 25);
+        h.click(&mut st, pos0);
+        assert_eq!(
+            st.panel.state.model_selected, None,
+            "再点已选行应取消选中（C1）——写回守卫吞掉取消即此处红"
+        );
+        h.idle(&mut st, 25);
+        h.click(&mut st, pos1);
+        assert_eq!(st.panel.state.model_selected, Some(1), "点另一行应换选");
+    }
+
+    /// T5：同 tab 改其他设置（prompt 预设下拉）→ 模型选中被清（C4 funnel）
+    #[test]
+    fn translation_control_change_clears_model_selection() {
+        let _lang_guard = crate::lang_test_guard();
+        lt_i18n::set_lang("zh").expect("zh 表解析");
+        let mut st = crate::state::AppUi::new(Settings::default());
+        st.panel.state.page = crate::state::PanelPage::Translation;
+        use crate::windows::panel::click_testing as ct;
+        let mut h = ct::PanelHarness::new(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(700.0, 1400.0),
+        ));
+
+        // 选中模型行 0
+        let out = h.render(&mut st, vec![]);
+        let needle0 = model_row_text(0, st.settings.active_model, &st.settings.models[0]);
+        let pos0 = ct::text_center(&out.shapes, &needle0).expect("模型行摘要应上屏");
+        h.click(&mut st, pos0);
+        assert_eq!(st.panel.state.model_selected, Some(0));
+
+        // 打开 prompt 预设下拉（纯点击：点当前项开弹层 → 下一帧点备选项）
+        let cur = prompt_preset_index(&st.settings.system_prompt);
+        let next = (cur + 1) % PROMPT_PRESET_KEYS.len();
+        let combo_label = lt_i18n::t(PROMPT_PRESET_KEYS[cur]);
+        let out = h.render(&mut st, vec![]);
+        let pos_combo = ct::text_center(&out.shapes, &combo_label).expect("预设下拉当前项应上屏");
+        h.idle(&mut st, 25);
+        h.click(&mut st, pos_combo);
+        let item_label = lt_i18n::t(PROMPT_PRESET_KEYS[next]);
+        let out = h.render(&mut st, vec![]);
+        let pos_item = ct::text_center(&out.shapes, &item_label).expect("预设弹层项应上屏");
+        h.click(&mut st, pos_item);
+
+        assert_eq!(
+            st.settings.system_prompt,
+            lt_proto::PROMPT_PRESETS[next].1,
+            "预设应已切换（清选中断言的 sanity 前置）"
+        );
+        assert_eq!(
+            st.panel.state.model_selected, None,
+            "改同 tab 其他设置应清模型选中（C4）"
         );
     }
 }

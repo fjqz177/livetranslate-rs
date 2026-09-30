@@ -2080,6 +2080,15 @@ pub struct PanelUi {
 }
 
 impl PanelUi {
+    /// D-123：清空三处列表选中态（「列表选中 = 页内临时操作焦点」语义的统一
+    /// 出口）——C2 空白点击 / C3 切 tab / C4 改其他设置共用；列表自身操作不走
+    /// 这里（豁免，见 docs/panel-list-selection.md §3.2）
+    pub fn clear_list_selections(&mut self) {
+        self.state.model_selected = None;
+        self.state.cache_selected = None;
+        self.state.line_selected = None;
+    }
+
     /// WD-6 首启缺模型轻引导横幅可见性（D-105）：识别未就绪且当前不在识别页——
     /// 识别页下载卡就地可达，横幅在那里冗余
     pub fn model_banner_visible(&self) -> bool {

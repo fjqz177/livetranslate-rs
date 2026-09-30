@@ -121,6 +121,16 @@ pub fn mark_settings_dirty(session: &mut SessionView) {
     session.request_settings_apply();
 }
 
+/// D-123 C4：**非列表**设置控件变更统一出口——清三处列表选中 + 300ms 防抖落盘。
+/// 「列表选中 = 页内临时操作焦点」（docs/panel-list-selection.md §2）：同 tab
+/// 改其他设置即焦点离开，选中失效。三列表所在页的非列表控件写回点一律走本
+/// 入口；列表自身操作（增删改移/行编辑确认）**豁免**——它们继续走
+/// [`mark_settings_dirty`] 并自行维护选中（§3.2），走错入口会吞掉选中跟随。
+pub fn mark_settings_changed(panel: &mut PanelUi, session: &mut SessionView) {
+    panel.clear_list_selections();
+    mark_settings_dirty(session);
+}
+
 /// 翻译页 prompt 600ms 防抖登记（原版 _prompt_debounce.start()：重启单发定时；
 /// 面板域内部——prompt_apply_due 在面板状态、节拍在会话协调面）
 pub fn schedule_prompt_apply(panel: &mut PanelUi, session: &mut SessionView, now: Instant) {
@@ -249,6 +259,8 @@ pub fn panel_ui(
             .galley(rect.center() - galley.size() * 0.5, galley, BANNER_TEXT);
         if resp.clicked() {
             panel.state.page = PanelPage::VadAsr;
+            // D-123 C3：横幅点击 = 跳识别页（横幅仅在非识别页可见，必为换页）
+            panel.clear_list_selections();
         }
         ui.add_space(4.0);
     }
@@ -275,6 +287,9 @@ pub fn panel_ui(
     }
     ScrollArea::vertical()
         .auto_shrink([false, false])
+        // D-123 C2 共存面：egui 0.36 的 ScrollArea 本就没有拖拽滚动（仅滚轮 +
+        // 滚动条），空白 catcher（Sense::click）与滚轮/滚动条互不抢占——
+        // 滚轮通道 headless 验证见 wheel_scroll_still_works_with_blank_catcher
         .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded)
         .show(ui, |ui| {
             Frame::NONE
@@ -293,6 +308,22 @@ pub fn panel_ui(
                     PanelPage::Changelog => changelog_tab::page(ui, &pal),
                     PanelPage::Log => unreachable!("日志页已在上方特判，不进入页面级滚动区"),
                 });
+            // D-123 C2：内容下方空白区点击 = 取消列表选中（主空白面；行间缝/
+            // 卡片间衬是布局消费的窄条不在覆盖面）。catcher 注册于内容之后
+            // （egui 后注册者优先），真实控件天然压住它；Sense::click 不含
+            // drag——滚动区拖拽仍归 ScrollArea 手势（T3 headless 验证共存）。
+            let rest = ui.available_rect_before_wrap();
+            if rest.height() > 1.0
+                && ui
+                    .interact(
+                        rest,
+                        egui::Id::new("panel_blank_click_d123"),
+                        egui::Sense::click(),
+                    )
+                    .clicked()
+            {
+                panel.clear_list_selections();
+            }
             ui.add_space(PANEL_PAGE_MARGIN as f32);
         });
 }
@@ -368,8 +399,11 @@ fn tab_strip(ui: &mut Ui, panel: &mut PanelUi, pal: &Palette) {
                 tab_font(),
                 pal.text,
             );
-            if resp.clicked() {
+            if resp.clicked() && panel.state.page != *page {
+                // D-123 C3：实际换页即清三处列表选中（点击当前页签不算切换，
+                // 不清）；横幅跳识别页同语义，见 panel_ui 内 Banner 点击臂
                 panel.state.page = *page;
+                panel.clear_list_selections();
             }
             if i != last {
                 ui.add_space(TAB_GAP);
@@ -587,6 +621,115 @@ pub fn panel_visuals() -> egui::Visuals {
     v.menu_corner_radius = egui::CornerRadius::same(0);
     v.text_cursor.stroke = Stroke::new(2.0, Palette::NATIVE.accent);
     v
+}
+
+/// D-123 headless 点击取证共用件（仅测试构建）：显式单调时钟 + galley 文本
+/// 精确定位 + 指针单击帧序列（subtitle.rs drag_frames 同源模式）。
+/// **时钟为何显式**：egui `RawInput.time=None` 时每帧仅推进 predicted_dt
+/// （1/60s），两次连发 click 相距 3 帧 ≈ 50ms < max_double_click_delay 0.3s
+/// 会被判成双击——`idle()` 用真实时间步进拉开间隔。
+#[cfg(test)]
+pub(crate) mod click_testing {
+    /// 面板 headless 测试台：单调时钟 + dispatch WinId::Panel 全真路径渲染
+    pub(crate) struct PanelHarness {
+        ctx: egui::Context,
+        screen: egui::Rect,
+        t: f64,
+    }
+
+    impl PanelHarness {
+        pub(crate) fn new(screen: egui::Rect) -> Self {
+            Self {
+                ctx: egui::Context::default(),
+                screen,
+                t: 0.0,
+            }
+        }
+
+        /// 渲染一帧（时间步进 1/60s）
+        pub(crate) fn render(
+            &mut self,
+            st: &mut crate::state::AppUi,
+            events: Vec<egui::Event>,
+        ) -> egui::FullOutput {
+            self.t += 1.0 / 60.0;
+            let mut out = self.ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(self.screen),
+                    events,
+                    time: Some(self.t),
+                    ..Default::default()
+                },
+                |ui| crate::windows::dispatch(crate::state::WinId::Panel, ui, st),
+            );
+            out.textures_delta.clear();
+            out
+        }
+
+        /// 连续喂多帧事件
+        pub(crate) fn feed(
+            &mut self,
+            st: &mut crate::state::AppUi,
+            frames: Vec<Vec<egui::Event>>,
+        ) -> egui::FullOutput {
+            let mut last = None;
+            for events in frames {
+                last = Some(self.render(st, events));
+            }
+            last.expect("至少一帧")
+        }
+
+        /// 单击 = 悬停到位 → 按下 → 释放（释放帧登记 click）
+        pub(crate) fn click(
+            &mut self,
+            st: &mut crate::state::AppUi,
+            pos: egui::Pos2,
+        ) -> egui::FullOutput {
+            self.feed(
+                st,
+                vec![
+                    vec![egui::Event::PointerMoved(pos)],
+                    vec![egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: true,
+                        modifiers: egui::Modifiers::default(),
+                    }],
+                    vec![egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: false,
+                        modifiers: egui::Modifiers::default(),
+                    }],
+                ],
+            )
+        }
+
+        /// 快进 n 帧无事件（≈n/60s）：把与上次点击的间隔拉出双击窗口
+        ///（max_double_click_delay = 0.3s ⇒ n ≥ 19 即安全）
+        pub(crate) fn idle(&mut self, st: &mut crate::state::AppUi, n: usize) -> egui::FullOutput {
+            let mut last = None;
+            for _ in 0..n {
+                last = Some(self.render(st, vec![]));
+            }
+            last.expect("至少一帧")
+        }
+    }
+
+    /// 在已渲染帧图元中找文本恰为 `needle` 的图元，返回其中心点
+    ///（文本必在所在按钮矩形内 → 即可点击位；rect 取 galley 尺寸 + pos，
+    /// galley.rect 相对 pos——translation.rs 既有取证同款）
+    pub(crate) fn text_center(
+        shapes: &[egui::epaint::ClippedShape],
+        needle: &str,
+    ) -> Option<egui::Pos2> {
+        shapes.iter().find_map(|clipped| match &clipped.shape {
+            egui::Shape::Text(t) if t.galley.text() == needle => {
+                Some(t.pos + t.galley.size() * 0.5)
+            }
+            _ => None,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -984,5 +1127,184 @@ mod tests {
         );
         let due = st.panel.state.apply_due_at.expect("登记后应有到期时刻");
         assert!(st.take_due_panel_apply(due).is_some());
+    }
+
+    // ── D-123 列表选中态：面板根级行为（C2/C3）──
+
+    /// C3：切 tab 清三处列表选中（切回仍清）；点击当前页签不算切换
+    #[test]
+    fn tab_switch_clears_all_list_selections() {
+        let _lang_guard = crate::lang_test_guard();
+        lt_i18n::set_lang("zh").expect("zh 表解析");
+        let mut st = crate::state::AppUi::new(Settings::default());
+        st.panel.state.page = PanelPage::Translation;
+        use click_testing as ct;
+        let mut h = ct::PanelHarness::new(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(700.0, 1400.0),
+        ));
+
+        // 预置三处选中（选中路径本身已有专测，这里直接置位隔离验证 C3）
+        st.panel.state.model_selected = Some(0);
+        st.panel.state.cache_selected = Some(0);
+        st.panel.state.line_selected = Some(0);
+
+        // 点「字幕」页签 → 换页 + 三处全清
+        let out = h.render(&mut st, vec![]);
+        let pos =
+            ct::text_center(&out.shapes, &lt_i18n::t("tab_subtitle")).expect("字幕页签应上屏");
+        h.idle(&mut st, 25);
+        h.click(&mut st, pos);
+        assert_eq!(st.panel.state.page, PanelPage::Subtitle, "应换到字幕页");
+        assert_eq!(st.panel.state.model_selected, None, "切 tab 应清模型选中");
+        assert_eq!(st.panel.state.cache_selected, None, "切 tab 应清缓存选中");
+        assert_eq!(st.panel.state.line_selected, None, "切 tab 应清文字行选中");
+
+        // 点「翻译」切回 → 仍清（选中不跨 tab 存活）
+        let out = h.render(&mut st, vec![]);
+        let pos =
+            ct::text_center(&out.shapes, &lt_i18n::t("tab_translation")).expect("翻译页签应上屏");
+        h.idle(&mut st, 25);
+        h.click(&mut st, pos);
+        assert_eq!(st.panel.state.page, PanelPage::Translation);
+        assert_eq!(st.panel.state.model_selected, None, "切回应仍清");
+        assert_eq!(st.panel.state.line_selected, None, "切回应仍清");
+
+        // 点击当前页签（翻译）→ 不是切换，页不变（无选中可断言，仅验证不 panic）
+        let out = h.render(&mut st, vec![]);
+        let pos =
+            ct::text_center(&out.shapes, &lt_i18n::t("tab_translation")).expect("翻译页签应上屏");
+        h.idle(&mut st, 25);
+        h.click(&mut st, pos);
+        assert_eq!(st.panel.state.page, PanelPage::Translation, "页应不变");
+    }
+
+    /// C2：内容下方空白区单击 = 取消列表选中；空白处拖拽不构成点击（不得误清）
+    #[test]
+    fn blank_click_deselects_but_drag_does_not() {
+        let _lang_guard = crate::lang_test_guard();
+        lt_i18n::set_lang("zh").expect("zh 表解析");
+        let mut st = crate::state::AppUi::new(Settings::default());
+        st.panel.state.page = PanelPage::Subtitle;
+        use click_testing as ct;
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(700.0, 1400.0));
+        let mut h = ct::PanelHarness::new(screen);
+
+        // 选中文字行 0（点击路径真跑，不预置）
+        let out = h.render(&mut st, vec![]);
+        let needle = crate::windows::panel::subtitle_page::line_row_text(
+            &st.settings.subtitle_mode.lines[0],
+        );
+        let pos = ct::text_center(&out.shapes, &needle).expect("文字行摘要应上屏");
+        h.click(&mut st, pos);
+        assert_eq!(st.panel.state.line_selected, Some(0));
+
+        // 空白位 = 最低文本图元下方 150px（钳在视口内）——必须落进 catcher
+        // 矩形（页 Frame 内缘之外、余留区内），贴 Frame 边会点空
+        let out = h.render(&mut st, vec![]);
+        let bottom = out
+            .shapes
+            .iter()
+            .filter_map(|c| match &c.shape {
+                egui::Shape::Text(t) => Some(t.pos.y + t.galley.size().y),
+                _ => None,
+            })
+            .fold(0.0_f32, f32::max);
+        let blank = egui::pos2(350.0, (bottom + 150.0).min(screen.bottom() - 40.0));
+
+        // 空白处拖拽（按下-移动-释放）不是点击，不得触发取消
+        let moved = blank - egui::vec2(0.0, 60.0);
+        h.feed(
+            &mut st,
+            vec![
+                vec![egui::Event::PointerMoved(blank)],
+                vec![egui::Event::PointerButton {
+                    pos: blank,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::default(),
+                }],
+                vec![egui::Event::PointerMoved(moved)],
+                vec![egui::Event::PointerButton {
+                    pos: moved,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::default(),
+                }],
+            ],
+        );
+        assert_eq!(
+            st.panel.state.line_selected,
+            Some(0),
+            "空白处拖拽不是点击，不得误清选中"
+        );
+
+        // 快进后同空白区单击 → 取消（C2）
+        h.idle(&mut st, 25);
+        h.click(&mut st, blank);
+        assert_eq!(st.panel.state.line_selected, None, "点空白应取消选中（C2）");
+    }
+
+    /// T3 共存验证：滚轮滚动不受空白 catcher 影响（面板滚动主通道。
+    /// egui 0.36 ScrollArea 本无拖拽滚动，滚轮+滚动条是唯二通道，catcher 的
+    /// Sense::click 与两者互不抢占——本测试锁滚轮，滚动条在 catcher 矩形外）
+    #[test]
+    fn wheel_scroll_still_works_with_blank_catcher() {
+        let _lang_guard = crate::lang_test_guard();
+        lt_i18n::set_lang("zh").expect("zh 表解析");
+        let mut st = crate::state::AppUi::new(Settings::default());
+        st.panel.state.page = PanelPage::Subtitle;
+        use click_testing as ct;
+        // 420 高视口（溢出断言测试同款）：内容自然高必超视口 → max_offset > 0
+        //（800 高视口内容放得下，滚轮无路可滚，catcher 无关）
+        let mut h = ct::PanelHarness::new(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(700.0, 420.0),
+        ));
+
+        let label = lt_i18n::t("subwin_show");
+        // 滚轮需先有指针位置（egui 按 pointer 下所属区域投递滚轮）
+        h.render(
+            &mut st,
+            vec![egui::Event::PointerMoved(egui::pos2(350.0, 400.0))],
+        );
+        let out = h.render(&mut st, vec![]);
+        let before: std::collections::HashSet<String> = out
+            .shapes
+            .iter()
+            .filter_map(|c| match &c.shape {
+                egui::Shape::Text(t) => Some(t.galley.text().to_owned()),
+                _ => None,
+            })
+            .collect();
+        assert!(before.contains(&label), "字幕窗口标签应上屏");
+        // 滚轮向下（delta 负 = 内容上移）；egui 把离散滚轮量低通分帧（未消费量
+        // 逐帧转 smooth_scroll_delta）→ 补 idle 帧走完
+        h.feed(
+            &mut st,
+            vec![vec![egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(0.0, -120.0),
+                phase: egui::TouchPhase::Move,
+                modifiers: egui::Modifiers::default(),
+            }]],
+        );
+        h.idle(&mut st, 30);
+        let out = h.render(&mut st, vec![]);
+        // 滚动 120px 足以把起始标签完全滚出裁剪区（滚前图元被剔除正是滚动发生
+        // 的证据）；改用集合差断言：滚后必须露出滚前不可见的下方内容
+        let revealed: Vec<String> = out
+            .shapes
+            .iter()
+            .filter_map(|c| match &c.shape {
+                egui::Shape::Text(t) => Some(t.galley.text().to_owned()),
+                _ => None,
+            })
+            .filter(|txt| !before.contains(txt))
+            .collect();
+        assert!(
+            !revealed.is_empty(),
+            "滚轮后应露出滚前不可见的下方内容（catcher 截胡滚轮则空集）"
+        );
     }
 }

@@ -10,7 +10,7 @@
 //! - "删除全部并退出"：确认后删除全部缓存并提示重启生效，**不退出应用**
 //!   （Rust 版窗口即应用，退出语义过重；原版 QApplication.quit() 为已知偏差）。
 
-use super::{group_card, hint_line, mark_settings_dirty, Palette};
+use super::{group_card, hint_line, Palette};
 use crate::state::{CacheEntry, ModalUi, PanelUi, SessionView, Settings};
 use egui::{RichText, Ui};
 
@@ -119,7 +119,8 @@ pub fn page(
             {
                 settings.auto_save_transcript = auto_save;
                 // 300ms 防抖 ApplySettings → shell → pipeline.set_transcript_enabled（W3）
-                mark_settings_dirty(session);
+                // D-123 C4：非列表控件变更走 funnel（清三处列表选中 + 防抖落盘）
+                super::mark_settings_changed(panel, session);
             }
             if ui
                 .add(
@@ -177,8 +178,11 @@ pub fn page(
         });
 
         ui.add_space(4.0);
-        // 缓存列表（Consolas 摘要；点击空行/再次点击取消选中由 select 语义承担）
-        let mut select: Option<usize> = None;
+        // 缓存列表（Consolas 摘要；再点已选行/点空白取消选中）
+        // D-123 C1 三态写回：本函数曾有 toggle 分支却被 `if select.is_some()`
+        // 写回守卫吞成死代码（注释承诺「再次点击取消」从未生效）——pick 显式
+        // 区分 无点击/选中(i)/取消，守卫问题就此根除
+        let mut pick: Option<Option<usize>> = None;
         for (i, e) in entries.iter().enumerate() {
             let text = format!("{}  —  {}", e.name, super::vad::format_size(e.size));
             let resp = ui
@@ -194,18 +198,18 @@ pub fn page(
                 })
                 .inner;
             if resp.clicked() {
-                select = if panel.state.cache_selected == Some(i) {
+                pick = Some(if panel.state.cache_selected == Some(i) {
                     None
                 } else {
                     Some(i)
-                };
+                });
             }
         }
         if entries.is_empty() {
             hint_line(ui, pal, &lt_i18n::t("no_cached_models"));
         }
-        if select.is_some() {
-            panel.state.cache_selected = select;
+        if let Some(s) = pick {
+            panel.state.cache_selected = s;
         }
 
         ui.add_space(4.0);
@@ -243,10 +247,25 @@ pub fn page(
 
 /// 重新扫描缓存（UI 线程同步；扫描前重置选中）
 fn refresh_cache(panel: &mut PanelUi, settings: &Settings) {
-    panel.state.cache_selected = None;
     let dir = lt_models::paths::models_dir(settings.models_dir.as_deref())
         .unwrap_or_else(|_| std::env::temp_dir());
-    panel.state.cache_entries = Some(scan_cache_entries(&dir));
+    let fresh = scan_cache_entries(&dir);
+    // D-123 T7：条目身份（名称+路径逐项）不变则保留选中——重复刷新不惩罚，
+    // 列表变了必清（防下标漂移让蓝框指错行；承 D-87 path 身份键精神）
+    let unchanged = panel
+        .state
+        .cache_entries
+        .as_ref()
+        .is_some_and(|old| old.len() == fresh.len())
+        && panel.state.cache_entries.as_ref().is_some_and(|old| {
+            old.iter()
+                .zip(fresh.iter())
+                .all(|(a, b)| a.name == b.name && a.path == b.path)
+        });
+    if !unchanged {
+        panel.state.cache_selected = None;
+    }
+    panel.state.cache_entries = Some(fresh);
 }
 
 /// 打开转录目录（原版 _open_transcripts_folder：mkdir 兜底 + open_path）
@@ -468,5 +487,154 @@ mod tests {
         let dir = tmpdir("empty");
         assert!(scan_cache_entries(&dir).is_empty());
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    // ── D-123 列表选中态（headless 点击取证，共用件 = click_testing）──
+
+    /// 组装已渲染好的缓存页测试环境（zh + Cache 页 + 注入条目）
+    fn d123_env(
+        entries: Vec<CacheEntry>,
+    ) -> (
+        crate::windows::panel::click_testing::PanelHarness,
+        crate::state::AppUi,
+    ) {
+        let _ = lt_i18n::set_lang("zh");
+        let mut st = crate::state::AppUi::new(Settings::default());
+        st.panel.state.page = crate::state::PanelPage::Cache;
+        // 进页扫描只在 None 时触发 → 注入 Some 即稳定复现，不依赖磁盘布局
+        st.panel.state.cache_entries = Some(entries);
+        let h = crate::windows::panel::click_testing::PanelHarness::new(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(700.0, 1400.0),
+        ));
+        (h, st)
+    }
+
+    fn d123_row_text(e: &CacheEntry) -> String {
+        format!(
+            "{}  —  {}",
+            e.name,
+            crate::windows::panel::vad::format_size(e.size)
+        )
+    }
+
+    /// T1：缓存行再点已选行 = 取消选中——本页 toggle 曾被 `if select.is_some()`
+    /// 写回守卫吞成死代码（注释承诺「再次点击取消」从未生效），本测试即
+    /// 死写回回归主断言
+    #[test]
+    fn cache_list_reclick_toggles_selection_off() {
+        let _lang_guard = crate::lang_test_guard();
+        let _ = lt_i18n::set_lang("zh");
+        let entries = vec![
+            CacheEntry {
+                name: "Model A".into(),
+                path: PathBuf::from("a"),
+                size: 1,
+            },
+            CacheEntry {
+                name: "Model B".into(),
+                path: PathBuf::from("b"),
+                size: 2,
+            },
+        ];
+        let (mut h, mut st) = d123_env(entries);
+        use crate::windows::panel::click_testing as ct;
+
+        let out = h.render(&mut st, vec![]);
+        let needle = d123_row_text(&st.panel.state.cache_entries.as_ref().unwrap()[0]);
+        let pos = ct::text_center(&out.shapes, &needle).expect("缓存行摘要应上屏");
+
+        h.click(&mut st, pos);
+        assert_eq!(st.panel.state.cache_selected, Some(0), "点行应选中");
+        h.idle(&mut st, 25);
+        h.click(&mut st, pos);
+        assert_eq!(
+            st.panel.state.cache_selected, None,
+            "再点已选行应取消选中——写回守卫吞取消即此处红（死写回回归）"
+        );
+    }
+
+    /// T7：刷新条目身份不变保选中、变更清（防下标漂移指错行；承 D-87 path 身份键精神）
+    #[test]
+    fn cache_refresh_keeps_selection_only_when_identity_unchanged() {
+        let _lang_guard = crate::lang_test_guard();
+        let _ = lt_i18n::set_lang("zh");
+        let dir = tmpdir("d123_identity");
+        // MS 侧 SenseVoice（scan 既有测试同款布局）
+        let ms = ms_cache_root(&dir)
+            .join("models")
+            .join("pengzhendong--sherpa-onnx-sense-voice-zh-en-ja-ko-yue")
+            .join("snapshots")
+            .join("rev");
+        fs::create_dir_all(&ms).unwrap();
+        fs::write(ms.join("model.int8.onnx"), vec![0u8; 8]).unwrap();
+        let settings = Settings {
+            models_dir: Some(dir.clone()),
+            ..Settings::default()
+        };
+        let mut st = crate::state::AppUi::new(settings);
+        super::refresh_cache(&mut st.panel, &st.settings);
+        assert_eq!(
+            st.panel.state.cache_entries.as_ref().unwrap().len(),
+            1,
+            "应扫到注入的 SenseVoice 条目"
+        );
+        st.panel.state.cache_selected = Some(0);
+
+        // 身份不变 → 保留（重复刷新不惩罚）
+        super::refresh_cache(&mut st.panel, &st.settings);
+        assert_eq!(
+            st.panel.state.cache_selected,
+            Some(0),
+            "条目身份不变，刷新不应清选中"
+        );
+
+        // 变更（条目消失）→ 清
+        fs::remove_dir_all(ms_cache_root(&dir)).unwrap();
+        super::refresh_cache(&mut st.panel, &st.settings);
+        assert_eq!(
+            st.panel.state.cache_selected, None,
+            "条目变更必须清选中（防下标漂移指错行）"
+        );
+        assert!(
+            st.panel.state.cache_entries.as_ref().unwrap().is_empty(),
+            "删除后重扫应为空"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// T5：同 tab 改其他设置（转录自动保存复选框）→ 缓存选中被清（C4 funnel）
+    #[test]
+    fn cache_page_control_change_clears_cache_selection() {
+        let _lang_guard = crate::lang_test_guard();
+        let _ = lt_i18n::set_lang("zh");
+        let entries = vec![CacheEntry {
+            name: "Model A".into(),
+            path: PathBuf::from("a"),
+            size: 1,
+        }];
+        let (mut h, mut st) = d123_env(entries);
+        use crate::windows::panel::click_testing as ct;
+
+        let out = h.render(&mut st, vec![]);
+        let needle = d123_row_text(&st.panel.state.cache_entries.as_ref().unwrap()[0]);
+        let pos = ct::text_center(&out.shapes, &needle).expect("缓存行摘要应上屏");
+        h.click(&mut st, pos);
+        assert_eq!(st.panel.state.cache_selected, Some(0));
+
+        let before = st.settings.auto_save_transcript;
+        let out = h.render(&mut st, vec![]);
+        let checkbox = ct::text_center(&out.shapes, &lt_i18n::t("label_auto_save_transcript"))
+            .expect("自动保存复选框应上屏");
+        h.idle(&mut st, 25);
+        h.click(&mut st, checkbox);
+        assert_ne!(
+            st.settings.auto_save_transcript, before,
+            "复选框应已翻转（清选中断言的 sanity 前置）"
+        );
+        assert_eq!(
+            st.panel.state.cache_selected, None,
+            "改同 tab 其他设置应清缓存选中（C4）"
+        );
     }
 }

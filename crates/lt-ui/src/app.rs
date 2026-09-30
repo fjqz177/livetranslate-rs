@@ -1656,6 +1656,8 @@ impl MultiWindowApp {
             lt_proto::UiEvent::BgImagePicked { path } => {
                 if let Some(path) = path {
                     self.app_state.settings.subtitle_mode.bg_image = path;
+                    // D-123 C4：对话框回执写回 = 同 tab 控件变更，清列表选中
+                    self.app_state.panel.clear_list_selections();
                     crate::windows::panel::mark_settings_dirty(&mut self.app_state.session);
                     self.redraw(WinId::Panel);
                 }
@@ -1789,6 +1791,10 @@ impl MultiWindowApp {
                 }
                 // W5：跨域"打开面板某页"意图（字幕窗"打开设置"）——根消费
                 WinAction::OpenPanelPage(page) => {
+                    if self.app_state.panel.state.page != page {
+                        // D-123 C3：实际换页即清列表选中（同 tab_strip 点击语义）
+                        self.app_state.panel.clear_list_selections();
+                    }
                     self.app_state.panel.state.page = page;
                     self.set_visible(WinId::Panel, true);
                 }

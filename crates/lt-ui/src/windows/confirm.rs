@@ -277,6 +277,8 @@ fn apply_confirm_kind(ui: &Ui, app: &mut AppUi, kind: &ConfirmKind) {
         }
         ConfirmKind::ResetSubtitle => {
             app.settings.subtitle_mode = lt_proto::SubtitleMode::default();
+            // D-123 C4：恢复本页默认 = 批量设置变更，清列表选中
+            app.panel.clear_list_selections();
             // 行级字体跟随（空串）解析自注册表 → 重装字体链
             crate::fonts::apply_fonts(ui.ctx(), &app.settings, &mut app.ctx.fonts);
             app.session

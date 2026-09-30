@@ -11,7 +11,7 @@
 //! 已知偏差：行级字体走系统字体选择器（D-17 内嵌思源置顶 + 注册表扫描，
 //! 空串=跟随字幕主字体）；颜色为 "#rrggbb" 文本 + 色块预览（rfd 无颜色对话框）。
 
-use super::{color_field, group_card, mark_settings_dirty, Palette};
+use super::{color_field, group_card, mark_settings_changed, mark_settings_dirty, Palette};
 use crate::state::{
     move_line_down, move_line_up, LineEditState, ModalUi, PanelUi, SessionView, Settings,
     UiContext, ANIM_VALUES,
@@ -160,7 +160,9 @@ pub fn page(
                 crate::state::WinId::Panel,
                 crate::state::WinAction::ToggleSubtitle,
             );
-            mark_settings_dirty(session);
+            // D-123 C4：非列表控件变更走 funnel——清三处列表选中 + 防抖落盘
+            //（本页各控件写回点同此，列表自身操作除外）
+            mark_settings_changed(panel, session);
         }
         // 显示句数 1..=10（原版 _sentences_spin）
         let mut v = settings.subtitle_mode.sentences.clamp(1, 10) as i32;
@@ -173,7 +175,7 @@ pub fn page(
             "",
         ) {
             settings.subtitle_mode.sentences = v as u32;
-            mark_settings_dirty(session);
+            mark_settings_changed(panel, session);
         }
         // 窗口宽度 200..=3840 px（原版 _width_spin）
         let mut v = settings.subtitle_mode.window_width.clamp(200, 3840) as i32;
@@ -186,7 +188,7 @@ pub fn page(
             " px",
         ) {
             settings.subtitle_mode.window_width = v as u32;
-            mark_settings_dirty(session);
+            mark_settings_changed(panel, session);
         }
         // 行间距 0..=40 px
         let mut v = settings.subtitle_mode.line_spacing.min(40) as i32;
@@ -199,7 +201,7 @@ pub fn page(
             " px",
         ) {
             settings.subtitle_mode.line_spacing = v as u32;
-            mark_settings_dirty(session);
+            mark_settings_changed(panel, session);
         }
         // 圆角 0..=30 px
         let mut v = settings.subtitle_mode.border_radius.min(30) as i32;
@@ -212,7 +214,7 @@ pub fn page(
             " px",
         ) {
             settings.subtitle_mode.border_radius = v as u32;
-            mark_settings_dirty(session);
+            mark_settings_changed(panel, session);
         }
         // 位置复位（D-36：仅复位字幕窗回 (100,100)；样式页"重置窗口位置"仍复位两窗）
         ui.horizontal(|ui| {
@@ -239,7 +241,7 @@ pub fn page(
             let mut color = settings.subtitle_mode.bg_color.clone();
             if color_field(ui, "sub_bg_color", &mut color) {
                 settings.subtitle_mode.bg_color = color;
-                mark_settings_dirty(session);
+                mark_settings_changed(panel, session);
             }
         });
         ui.horizontal(|ui| {
@@ -257,10 +259,10 @@ pub fn page(
             if resp.changed() {
                 settings.subtitle_mode.bg_opacity =
                     (f64::from(pct.clamp(0, 100)) / 100.0 * 255.0).round() as u32;
-                mark_settings_dirty(session);
+                mark_settings_changed(panel, session);
             }
         });
-        bg_image_row(ui, settings, session);
+        bg_image_row(ui, panel, settings, session);
     });
 
     // ── 自动隐藏与穿透（原版 auto_hide_timeout/hide_animation/hide_duration +
@@ -277,7 +279,7 @@ pub fn page(
             &format!(" {}", lt_i18n::t("subwin_auto_hide_sec")),
         ) {
             settings.subtitle_mode.auto_hide_timeout = v.max(0) as u32;
-            mark_settings_dirty(session);
+            mark_settings_changed(panel, session);
         }
         // 隐藏动画（none/fade/slide_down 三项）
         let hide_anims = ["none", "fade", "slide_down"];
@@ -291,7 +293,7 @@ pub fn page(
             .unwrap_or(1);
         if let Some(next) = combo_index(ui, "sub_hide_anim", idx, &labels, 160.0) {
             settings.subtitle_mode.auto_hide_animation = hide_anims[next].to_string();
-            mark_settings_dirty(session);
+            mark_settings_changed(panel, session);
         }
         // 时长 50..=3000 ms
         let mut v = settings.subtitle_mode.auto_hide_duration.clamp(50, 3000) as i32;
@@ -304,7 +306,7 @@ pub fn page(
             " ms",
         ) {
             settings.subtitle_mode.auto_hide_duration = v as u32;
-            mark_settings_dirty(session);
+            mark_settings_changed(panel, session);
         }
         // 鼠标穿透（宿主 500ms 断言轮询按此开关续拍）
         let mut ct = settings.subtitle_mode.click_through;
@@ -331,14 +333,16 @@ pub fn page(
                         + std::time::Duration::from_millis(crate::state::SUBTITLE_POLL_MS),
                 );
             }
-            mark_settings_dirty(session);
+            mark_settings_changed(panel, session);
         }
     });
 
     // ── 文字行（原版 lines_group：列表 + 五按钮 + 双击编辑）──
     group_card(ui, pal, &lt_i18n::t("subwin_text_lines"), |ui| {
         let count = settings.subtitle_mode.lines.len();
-        let mut select: Option<usize> = None;
+        // D-123 C1 三态写回：pick 显式区分 无点击/选中(i)/取消（None 兼作
+        // 哨兵会吞掉「再点已选行取消」——缓存页死写回同源教训）
+        let mut pick: Option<Option<usize>> = None;
         let mut edit_row: Option<usize> = None;
         for i in 0..count {
             let text = line_row_text(&settings.subtitle_mode.lines[i]);
@@ -355,14 +359,28 @@ pub fn page(
                 })
                 .inner;
             if resp.clicked() {
-                select = Some(i);
+                // D-123 C1：再点已选行 = 取消选中；双击的第二击不翻转——
+                // 净效果恒为「选中 + 开编辑」（已选态双击同样保持选中）
+                pick = Some(
+                    if resp.double_clicked() || panel.state.line_selected != Some(i) {
+                        Some(i)
+                    } else {
+                        None
+                    },
+                );
             }
             if resp.double_clicked() {
+                // 双击行 = 直接进入编辑（对齐 translation 页 2026-09-11 修复；
+                // 旧实现只武装「编辑」按钮，与模块头「双击行编辑」承诺不符）
                 edit_row = Some(i);
+                if i < count {
+                    let line = settings.subtitle_mode.lines[i].clone();
+                    panel.state.line_editor = Some(LineEditState::new_edit(i, &line));
+                }
             }
         }
-        if select.is_some() {
-            panel.state.line_selected = select;
+        if let Some(s) = pick {
+            panel.state.line_selected = s;
         }
 
         ui.add_space(4.0);
@@ -426,7 +444,12 @@ pub fn page(
 }
 
 /// 背景图片行（原版 _make_image_rows：路径 + 选择/清除）
-fn bg_image_row(ui: &mut Ui, settings: &mut Settings, session: &mut SessionView) {
+fn bg_image_row(
+    ui: &mut Ui,
+    panel: &mut PanelUi,
+    settings: &mut Settings,
+    session: &mut SessionView,
+) {
     ui.horizontal(|ui| {
         ui.label(
             RichText::new(format!("{} ", lt_i18n::t("subwin_bg_image")))
@@ -442,7 +465,7 @@ fn bg_image_row(ui: &mut Ui, settings: &mut Settings, session: &mut SessionView)
             .changed()
         {
             settings.subtitle_mode.bg_image = img.trim().to_string();
-            mark_settings_dirty(session);
+            mark_settings_changed(panel, session);
         }
         if ui
             .add(
@@ -465,7 +488,7 @@ fn bg_image_row(ui: &mut Ui, settings: &mut Settings, session: &mut SessionView)
             .clicked()
         {
             settings.subtitle_mode.bg_image.clear();
-            mark_settings_dirty(session);
+            mark_settings_changed(panel, session);
         }
     });
 }
@@ -825,6 +848,189 @@ mod tests {
         assert!(
             st.panel.state.line_editor.is_some(),
             "编辑器保持打开（状态未被意外消费）"
+        );
+    }
+
+    // ── D-123 列表选中态（headless 点击取证，共用件 = click_testing）──
+
+    /// 组装已渲染好的字幕页测试环境（zh + Subtitle 页 + 700×1400 视口）
+    fn d123_env() -> (
+        crate::windows::panel::click_testing::PanelHarness,
+        crate::state::AppUi,
+    ) {
+        let _ = lt_i18n::set_lang("zh");
+        let mut st = crate::state::AppUi::new(Settings::default());
+        st.panel.state.page = crate::state::PanelPage::Subtitle;
+        let h = crate::windows::panel::click_testing::PanelHarness::new(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(700.0, 1400.0),
+        ));
+        (h, st)
+    }
+
+    /// T1：文字行再点已选行 = 取消选中（C1）
+    #[test]
+    fn line_list_reclick_toggles_selection_off() {
+        let _lang_guard = crate::lang_test_guard();
+        let _ = lt_i18n::set_lang("zh");
+        let (mut h, mut st) = d123_env();
+        use crate::windows::panel::click_testing as ct;
+
+        let needle = line_row_text(&st.settings.subtitle_mode.lines[0]);
+        let out = h.render(&mut st, vec![]);
+        let pos = ct::text_center(&out.shapes, &needle).expect("文字行摘要应上屏");
+
+        h.click(&mut st, pos);
+        assert_eq!(st.panel.state.line_selected, Some(0), "点行应选中");
+        // 快进拉出双击窗口（同点连点两次会被 egui 判成双击，双击帧不翻转）
+        h.idle(&mut st, 25);
+        h.click(&mut st, pos);
+        assert_eq!(
+            st.panel.state.line_selected, None,
+            "再点已选行应取消选中（C1）"
+        );
+    }
+
+    /// T6a：上移后选中跟随（列表自身操作豁免 C4，不得被 funnel 误清）
+    #[test]
+    fn line_move_up_keeps_selection_following() {
+        let _lang_guard = crate::lang_test_guard();
+        let _ = lt_i18n::set_lang("zh");
+        let (mut h, mut st) = d123_env();
+        use crate::windows::panel::click_testing as ct;
+
+        let needle1 = line_row_text(&st.settings.subtitle_mode.lines[1]);
+        let out = h.render(&mut st, vec![]);
+        let pos1 = ct::text_center(&out.shapes, &needle1).expect("文字行 1 摘要应上屏");
+        h.click(&mut st, pos1);
+        assert_eq!(st.panel.state.line_selected, Some(1));
+
+        let out = h.render(&mut st, vec![]);
+        let up =
+            ct::text_center(&out.shapes, &lt_i18n::t("subwin_move_up")).expect("上移按钮应上屏");
+        h.click(&mut st, up);
+        assert_eq!(
+            st.panel.state.line_selected,
+            Some(0),
+            "上移后选中应跟随行（豁免 funnel）"
+        );
+        assert_eq!(st.settings.subtitle_mode.lines[0].line_type, "translation");
+    }
+
+    /// T6b：删除所选后选中清除（现语义保持，count>1 守卫内）
+    #[test]
+    fn line_delete_clears_selection() {
+        let _lang_guard = crate::lang_test_guard();
+        let _ = lt_i18n::set_lang("zh");
+        let (mut h, mut st) = d123_env();
+        use crate::windows::panel::click_testing as ct;
+
+        let needle1 = line_row_text(&st.settings.subtitle_mode.lines[1]);
+        let out = h.render(&mut st, vec![]);
+        let pos1 = ct::text_center(&out.shapes, &needle1).expect("文字行 1 摘要应上屏");
+        h.click(&mut st, pos1);
+
+        let out = h.render(&mut st, vec![]);
+        let del = ct::text_center(&out.shapes, &lt_i18n::t("btn_remove")).expect("删除按钮应上屏");
+        h.click(&mut st, del);
+        assert_eq!(st.settings.subtitle_mode.lines.len(), 1, "应删至一行");
+        assert_eq!(st.panel.state.line_selected, None, "删除后选中应清除");
+    }
+
+    /// T6c：选中 → 编辑按钮开模态 → 确认后选中落回该行（豁免 funnel）
+    #[test]
+    fn line_edit_accept_reasserts_selection() {
+        let _lang_guard = crate::lang_test_guard();
+        let _ = lt_i18n::set_lang("zh");
+        let (mut h, mut st) = d123_env();
+        use crate::windows::panel::click_testing as ct;
+
+        let needle = line_row_text(&st.settings.subtitle_mode.lines[0]);
+        let out = h.render(&mut st, vec![]);
+        let pos = ct::text_center(&out.shapes, &needle).expect("文字行 0 摘要应上屏");
+        h.click(&mut st, pos);
+
+        let out = h.render(&mut st, vec![]);
+        let edit = ct::text_center(&out.shapes, &lt_i18n::t("btn_edit")).expect("编辑按钮应上屏");
+        h.idle(&mut st, 25);
+        h.click(&mut st, edit);
+        assert!(st.panel.state.line_editor.is_some(), "编辑应打开行编辑模态");
+
+        // egui Window 开窗首两帧 sizing 未含底部按钮行（内嵌 ScrollArea
+        // auto_shrink(false) 与窗口尺寸收敛的瞬时态，真实应用连续帧不可见）
+        // ——有界 settle：至多 3 帧内「确定」必须上屏
+        let mut ok = None;
+        for _ in 0..3 {
+            let out = h.render(&mut st, vec![]);
+            ok = ct::text_center(&out.shapes, &lt_i18n::t("common_ok"));
+            if ok.is_some() {
+                break;
+            }
+        }
+        let ok = ok.expect("模态「确定」应上屏（3 帧内）");
+        h.idle(&mut st, 25);
+        h.click(&mut st, ok);
+        assert!(st.panel.state.line_editor.is_none(), "确认后模态应关闭");
+        assert_eq!(
+            st.panel.state.line_selected,
+            Some(0),
+            "编辑确认后选中应落回该行"
+        );
+    }
+
+    /// T8：双击行 = 直接打开行编辑模态且行保持选中（背靠背两次 click 间隔
+    /// ≈2 帧 < 双击窗口，恰好构成 double_clicked）
+    #[test]
+    fn line_double_click_opens_editor_and_keeps_selection() {
+        let _lang_guard = crate::lang_test_guard();
+        let _ = lt_i18n::set_lang("zh");
+        let (mut h, mut st) = d123_env();
+        use crate::windows::panel::click_testing as ct;
+
+        let needle = line_row_text(&st.settings.subtitle_mode.lines[0]);
+        let out = h.render(&mut st, vec![]);
+        let pos = ct::text_center(&out.shapes, &needle).expect("文字行 0 摘要应上屏");
+
+        h.click(&mut st, pos);
+        h.click(&mut st, pos);
+        assert!(
+            st.panel.state.line_editor.is_some(),
+            "双击应直接打开行编辑模态"
+        );
+        assert_eq!(
+            st.panel.state.line_selected,
+            Some(0),
+            "双击净效果 = 选中保持（双击帧不翻转 toggle）"
+        );
+    }
+
+    /// T5：同 tab 改其他设置（字幕窗口开关）→ 文字行选中被清（C4 funnel）
+    #[test]
+    fn subtitle_control_change_clears_line_selection() {
+        let _lang_guard = crate::lang_test_guard();
+        let _ = lt_i18n::set_lang("zh");
+        let (mut h, mut st) = d123_env();
+        use crate::windows::panel::click_testing as ct;
+
+        let needle = line_row_text(&st.settings.subtitle_mode.lines[0]);
+        let out = h.render(&mut st, vec![]);
+        let pos = ct::text_center(&out.shapes, &needle).expect("文字行 0 摘要应上屏");
+        h.click(&mut st, pos);
+        assert_eq!(st.panel.state.line_selected, Some(0));
+
+        let enabled_before = st.settings.subtitle_mode.enabled;
+        let out = h.render(&mut st, vec![]);
+        let checkbox =
+            ct::text_center(&out.shapes, &lt_i18n::t("subwin_show")).expect("字幕窗口复选框应上屏");
+        h.idle(&mut st, 25);
+        h.click(&mut st, checkbox);
+        assert_ne!(
+            st.settings.subtitle_mode.enabled, enabled_before,
+            "复选框应已翻转（清选中断言的 sanity 前置）"
+        );
+        assert_eq!(
+            st.panel.state.line_selected, None,
+            "改同 tab 其他设置应清文字行选中（C4）"
         );
     }
 }
