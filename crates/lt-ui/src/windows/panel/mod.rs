@@ -213,6 +213,25 @@ pub fn panel_ui(
     let full = ui.available_rect_before_wrap();
     ui.painter().rect_filled(full, 0.0, pal.window_bg);
 
+    // D-123 C2：整窗空白捕获（主案成立）——本 catcher **先于一切内容注册**
+    //（egui 后注册者 hit-test 优先，所有真实控件天然压住它；label 等非点击
+    // 控件不拦点击），点任意非控件空白——tab 条缝、卡片间衬、行间缝、内容
+    // 下方余区——即取消三处列表选中。滚轮/滚动条与 Sense::click 互不抢占
+    //（egui 0.36 ScrollArea 无拖拽滚动；headless 验证 =
+    // wheel_scroll_still_works_with_blank_catcher）。光标显式回默认，
+    // 防 Sense::click 把整片空白染成手型
+    if ui
+        .interact(
+            full,
+            egui::Id::new("panel_blank_click_d123"),
+            egui::Sense::click(),
+        )
+        .on_hover_cursor(egui::CursorIcon::Default)
+        .clicked()
+    {
+        panel.clear_list_selections();
+    }
+
     // Tab 条（原版 QTabWidget North 页签行）
     ui.add_space(4.0);
     tab_strip(ui, panel, &pal);
@@ -258,9 +277,8 @@ pub fn panel_ui(
         ui.painter()
             .galley(rect.center() - galley.size() * 0.5, galley, BANNER_TEXT);
         if resp.clicked() {
-            panel.state.page = PanelPage::VadAsr;
             // D-123 C3：横幅点击 = 跳识别页（横幅仅在非识别页可见，必为换页）
-            panel.clear_list_selections();
+            panel.set_page(PanelPage::VadAsr);
         }
         ui.add_space(4.0);
     }
@@ -287,9 +305,6 @@ pub fn panel_ui(
     }
     ScrollArea::vertical()
         .auto_shrink([false, false])
-        // D-123 C2 共存面：egui 0.36 的 ScrollArea 本就没有拖拽滚动（仅滚轮 +
-        // 滚动条），空白 catcher（Sense::click）与滚轮/滚动条互不抢占——
-        // 滚轮通道 headless 验证见 wheel_scroll_still_works_with_blank_catcher
         .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded)
         .show(ui, |ui| {
             Frame::NONE
@@ -308,22 +323,6 @@ pub fn panel_ui(
                     PanelPage::Changelog => changelog_tab::page(ui, &pal),
                     PanelPage::Log => unreachable!("日志页已在上方特判，不进入页面级滚动区"),
                 });
-            // D-123 C2：内容下方空白区点击 = 取消列表选中（主空白面；行间缝/
-            // 卡片间衬是布局消费的窄条不在覆盖面）。catcher 注册于内容之后
-            // （egui 后注册者优先），真实控件天然压住它；Sense::click 不含
-            // drag——滚动区拖拽仍归 ScrollArea 手势（T3 headless 验证共存）。
-            let rest = ui.available_rect_before_wrap();
-            if rest.height() > 1.0
-                && ui
-                    .interact(
-                        rest,
-                        egui::Id::new("panel_blank_click_d123"),
-                        egui::Sense::click(),
-                    )
-                    .clicked()
-            {
-                panel.clear_list_selections();
-            }
             ui.add_space(PANEL_PAGE_MARGIN as f32);
         });
 }
@@ -399,11 +398,10 @@ fn tab_strip(ui: &mut Ui, panel: &mut PanelUi, pal: &Palette) {
                 tab_font(),
                 pal.text,
             );
-            if resp.clicked() && panel.state.page != *page {
-                // D-123 C3：实际换页即清三处列表选中（点击当前页签不算切换，
-                // 不清）；横幅跳识别页同语义，见 panel_ui 内 Banner 点击臂
-                panel.state.page = *page;
-                panel.clear_list_selections();
+            if resp.clicked() {
+                // D-123 C3：唯一换页口 set_page——实际换页即清三处列表选中
+                //（点击当前页签不算切换，不清）
+                panel.set_page(*page);
             }
             if i != last {
                 ui.add_space(TAB_GAP);
@@ -1179,7 +1177,8 @@ mod tests {
         assert_eq!(st.panel.state.page, PanelPage::Translation, "页应不变");
     }
 
-    /// C2：内容下方空白区单击 = 取消列表选中；空白处拖拽不构成点击（不得误清）
+    /// C2：空白区单击 = 取消列表选中（整窗 catcher：内容下方余区 + 页边距衬条
+    /// 都算）；空白处拖拽不构成点击（不得误清）
     #[test]
     fn blank_click_deselects_but_drag_does_not() {
         let _lang_guard = crate::lang_test_guard();
@@ -1199,8 +1198,7 @@ mod tests {
         h.click(&mut st, pos);
         assert_eq!(st.panel.state.line_selected, Some(0));
 
-        // 空白位 = 最低文本图元下方 150px（钳在视口内）——必须落进 catcher
-        // 矩形（页 Frame 内缘之外、余留区内），贴 Frame 边会点空
+        // 空白位 = 最低文本图元下方 150px（钳在视口内）：内容下方余区
         let out = h.render(&mut st, vec![]);
         let bottom = out
             .shapes
@@ -1243,6 +1241,18 @@ mod tests {
         h.idle(&mut st, 25);
         h.click(&mut st, blank);
         assert_eq!(st.panel.state.line_selected, None, "点空白应取消选中（C2）");
+
+        // 边距衬条（页 Frame 左侧 12px 边距带，卡片间衬同面）也算空白：重选中
+        // → 点 x=6 → 再清（锁「整窗捕获」而非仅内容下方余区）
+        h.idle(&mut st, 25);
+        h.click(&mut st, pos);
+        assert_eq!(st.panel.state.line_selected, Some(0));
+        h.idle(&mut st, 25);
+        h.click(&mut st, egui::pos2(6.0, blank.y));
+        assert_eq!(
+            st.panel.state.line_selected, None,
+            "页边距衬条点击应取消选中（整窗 catcher 覆盖卡片间衬）"
+        );
     }
 
     /// T3 共存验证：滚轮滚动不受空白 catcher 影响（面板滚动主通道。

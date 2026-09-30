@@ -10,7 +10,7 @@
 //! - "删除全部并退出"：确认后删除全部缓存并提示重启生效，**不退出应用**
 //!   （Rust 版窗口即应用，退出语义过重；原版 QApplication.quit() 为已知偏差）。
 
-use super::{group_card, hint_line, Palette};
+use super::{group_card, hint_line, mark_settings_changed, Palette};
 use crate::state::{CacheEntry, ModalUi, PanelUi, SessionView, Settings};
 use egui::{RichText, Ui};
 
@@ -120,7 +120,7 @@ pub fn page(
                 settings.auto_save_transcript = auto_save;
                 // 300ms 防抖 ApplySettings → shell → pipeline.set_transcript_enabled（W3）
                 // D-123 C4：非列表控件变更走 funnel（清三处列表选中 + 防抖落盘）
-                super::mark_settings_changed(panel, session);
+                mark_settings_changed(panel, session);
             }
             if ui
                 .add(
@@ -179,12 +179,11 @@ pub fn page(
 
         ui.add_space(4.0);
         // 缓存列表（Consolas 摘要；再点已选行/点空白取消选中）
-        // D-123 C1 三态写回：本函数曾有 toggle 分支却被 `if select.is_some()`
-        // 写回守卫吞成死代码（注释承诺「再次点击取消」从未生效）——pick 显式
-        // 区分 无点击/选中(i)/取消，守卫问题就此根除
-        let mut pick: Option<Option<usize>> = None;
+        // D-123 C1 三态裁决（state::row_pick_clicked）：本函数曾有 toggle 分支
+        // 却被 `if select.is_some()` 写回守卫吞成死代码——枚举裁决根除该形态
+        let mut pick = crate::state::RowPick::Idle;
         for (i, e) in entries.iter().enumerate() {
-            let text = format!("{}  —  {}", e.name, super::vad::format_size(e.size));
+            let text = cache_row_text(e);
             let resp = ui
                 .push_id(i, |ui| {
                     ui.add(
@@ -198,18 +197,20 @@ pub fn page(
                 })
                 .inner;
             if resp.clicked() {
-                pick = Some(if panel.state.cache_selected == Some(i) {
-                    None
-                } else {
-                    Some(i)
-                });
+                pick = crate::state::row_pick_clicked(
+                    panel.state.cache_selected,
+                    i,
+                    resp.double_clicked(),
+                );
             }
         }
         if entries.is_empty() {
             hint_line(ui, pal, &lt_i18n::t("no_cached_models"));
         }
-        if let Some(s) = pick {
-            panel.state.cache_selected = s;
+        match pick {
+            crate::state::RowPick::Select(i) => panel.state.cache_selected = Some(i),
+            crate::state::RowPick::Deselect => panel.state.cache_selected = None,
+            crate::state::RowPick::Idle => {}
         }
 
         ui.add_space(4.0);
@@ -245,6 +246,15 @@ pub fn page(
     ui.add_space(8.0);
 }
 
+/// 缓存行摘要文本（页面渲染与测试共用同一格式——禁测试侧复刻生产 format）
+fn cache_row_text(e: &CacheEntry) -> String {
+    format!(
+        "{}  —  {}",
+        e.name,
+        crate::windows::panel::vad::format_size(e.size)
+    )
+}
+
 /// 重新扫描缓存（UI 线程同步；扫描前重置选中）
 fn refresh_cache(panel: &mut PanelUi, settings: &Settings) {
     let dir = lt_models::paths::models_dir(settings.models_dir.as_deref())
@@ -252,16 +262,13 @@ fn refresh_cache(panel: &mut PanelUi, settings: &Settings) {
     let fresh = scan_cache_entries(&dir);
     // D-123 T7：条目身份（名称+路径逐项）不变则保留选中——重复刷新不惩罚，
     // 列表变了必清（防下标漂移让蓝框指错行；承 D-87 path 身份键精神）
-    let unchanged = panel
-        .state
-        .cache_entries
-        .as_ref()
-        .is_some_and(|old| old.len() == fresh.len())
-        && panel.state.cache_entries.as_ref().is_some_and(|old| {
-            old.iter()
+    let unchanged = panel.state.cache_entries.as_ref().is_some_and(|old| {
+        old.len() == fresh.len()
+            && old
+                .iter()
                 .zip(fresh.iter())
                 .all(|(a, b)| a.name == b.name && a.path == b.path)
-        });
+    });
     if !unchanged {
         panel.state.cache_selected = None;
     }
@@ -492,7 +499,7 @@ mod tests {
     // ── D-123 列表选中态（headless 点击取证，共用件 = click_testing）──
 
     /// 组装已渲染好的缓存页测试环境（zh + Cache 页 + 注入条目）
-    fn d123_env(
+    fn selection_env(
         entries: Vec<CacheEntry>,
     ) -> (
         crate::windows::panel::click_testing::PanelHarness,
@@ -508,14 +515,6 @@ mod tests {
             egui::vec2(700.0, 1400.0),
         ));
         (h, st)
-    }
-
-    fn d123_row_text(e: &CacheEntry) -> String {
-        format!(
-            "{}  —  {}",
-            e.name,
-            crate::windows::panel::vad::format_size(e.size)
-        )
     }
 
     /// T1：缓存行再点已选行 = 取消选中——本页 toggle 曾被 `if select.is_some()`
@@ -537,11 +536,11 @@ mod tests {
                 size: 2,
             },
         ];
-        let (mut h, mut st) = d123_env(entries);
+        let (mut h, mut st) = selection_env(entries);
         use crate::windows::panel::click_testing as ct;
 
         let out = h.render(&mut st, vec![]);
-        let needle = d123_row_text(&st.panel.state.cache_entries.as_ref().unwrap()[0]);
+        let needle = cache_row_text(&st.panel.state.cache_entries.as_ref().unwrap()[0]);
         let pos = ct::text_center(&out.shapes, &needle).expect("缓存行摘要应上屏");
 
         h.click(&mut st, pos);
@@ -613,11 +612,11 @@ mod tests {
             path: PathBuf::from("a"),
             size: 1,
         }];
-        let (mut h, mut st) = d123_env(entries);
+        let (mut h, mut st) = selection_env(entries);
         use crate::windows::panel::click_testing as ct;
 
         let out = h.render(&mut st, vec![]);
-        let needle = d123_row_text(&st.panel.state.cache_entries.as_ref().unwrap()[0]);
+        let needle = cache_row_text(&st.panel.state.cache_entries.as_ref().unwrap()[0]);
         let pos = ct::text_center(&out.shapes, &needle).expect("缓存行摘要应上屏");
         h.click(&mut st, pos);
         assert_eq!(st.panel.state.cache_selected, Some(0));

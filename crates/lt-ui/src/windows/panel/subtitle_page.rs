@@ -340,9 +340,9 @@ pub fn page(
     // ── 文字行（原版 lines_group：列表 + 五按钮 + 双击编辑）──
     group_card(ui, pal, &lt_i18n::t("subwin_text_lines"), |ui| {
         let count = settings.subtitle_mode.lines.len();
-        // D-123 C1 三态写回：pick 显式区分 无点击/选中(i)/取消（None 兼作
-        // 哨兵会吞掉「再点已选行取消」——缓存页死写回同源教训）
-        let mut pick: Option<Option<usize>> = None;
+        // D-123 C1 三态裁决（state::row_pick_clicked）：再点已选行 = 取消；
+        // 双击帧不翻转——净效果恒为「选中 + 开编辑」
+        let mut pick = crate::state::RowPick::Idle;
         let mut edit_row: Option<usize> = None;
         for i in 0..count {
             let text = line_row_text(&settings.subtitle_mode.lines[i]);
@@ -359,14 +359,10 @@ pub fn page(
                 })
                 .inner;
             if resp.clicked() {
-                // D-123 C1：再点已选行 = 取消选中；双击的第二击不翻转——
-                // 净效果恒为「选中 + 开编辑」（已选态双击同样保持选中）
-                pick = Some(
-                    if resp.double_clicked() || panel.state.line_selected != Some(i) {
-                        Some(i)
-                    } else {
-                        None
-                    },
+                pick = crate::state::row_pick_clicked(
+                    panel.state.line_selected,
+                    i,
+                    resp.double_clicked(),
                 );
             }
             if resp.double_clicked() {
@@ -379,8 +375,10 @@ pub fn page(
                 }
             }
         }
-        if let Some(s) = pick {
-            panel.state.line_selected = s;
+        match pick {
+            crate::state::RowPick::Select(i) => panel.state.line_selected = Some(i),
+            crate::state::RowPick::Deselect => panel.state.line_selected = None,
+            crate::state::RowPick::Idle => {}
         }
 
         ui.add_space(4.0);
@@ -854,7 +852,7 @@ mod tests {
     // ── D-123 列表选中态（headless 点击取证，共用件 = click_testing）──
 
     /// 组装已渲染好的字幕页测试环境（zh + Subtitle 页 + 700×1400 视口）
-    fn d123_env() -> (
+    fn selection_env() -> (
         crate::windows::panel::click_testing::PanelHarness,
         crate::state::AppUi,
     ) {
@@ -873,7 +871,7 @@ mod tests {
     fn line_list_reclick_toggles_selection_off() {
         let _lang_guard = crate::lang_test_guard();
         let _ = lt_i18n::set_lang("zh");
-        let (mut h, mut st) = d123_env();
+        let (mut h, mut st) = selection_env();
         use crate::windows::panel::click_testing as ct;
 
         let needle = line_row_text(&st.settings.subtitle_mode.lines[0]);
@@ -896,7 +894,7 @@ mod tests {
     fn line_move_up_keeps_selection_following() {
         let _lang_guard = crate::lang_test_guard();
         let _ = lt_i18n::set_lang("zh");
-        let (mut h, mut st) = d123_env();
+        let (mut h, mut st) = selection_env();
         use crate::windows::panel::click_testing as ct;
 
         let needle1 = line_row_text(&st.settings.subtitle_mode.lines[1]);
@@ -922,7 +920,7 @@ mod tests {
     fn line_delete_clears_selection() {
         let _lang_guard = crate::lang_test_guard();
         let _ = lt_i18n::set_lang("zh");
-        let (mut h, mut st) = d123_env();
+        let (mut h, mut st) = selection_env();
         use crate::windows::panel::click_testing as ct;
 
         let needle1 = line_row_text(&st.settings.subtitle_mode.lines[1]);
@@ -937,12 +935,47 @@ mod tests {
         assert_eq!(st.panel.state.line_selected, None, "删除后选中应清除");
     }
 
+    /// T6d：新增 → 确认后选中落在新行（豁免 funnel；§5 T6「新增」分支）
+    #[test]
+    fn line_add_accept_selects_new_row() {
+        let _lang_guard = crate::lang_test_guard();
+        let _ = lt_i18n::set_lang("zh");
+        let (mut h, mut st) = selection_env();
+        use crate::windows::panel::click_testing as ct;
+        assert_eq!(st.settings.subtitle_mode.lines.len(), 2);
+
+        let out = h.render(&mut st, vec![]);
+        let add = ct::text_center(&out.shapes, &lt_i18n::t("btn_add")).expect("添加按钮应上屏");
+        h.click(&mut st, add);
+        assert!(st.panel.state.line_editor.is_some(), "添加应打开行编辑模态");
+
+        // 窗口 sizing 瞬时态：至多 3 帧内「确定」必须上屏（同 T6c 注）
+        let mut ok = None;
+        for _ in 0..3 {
+            let out = h.render(&mut st, vec![]);
+            ok = ct::text_center(&out.shapes, &lt_i18n::t("common_ok"));
+            if ok.is_some() {
+                break;
+            }
+        }
+        let ok = ok.expect("模态「确定」应上屏（3 帧内）");
+        h.idle(&mut st, 25);
+        h.click(&mut st, ok);
+        assert!(st.panel.state.line_editor.is_none(), "确认后模态应关闭");
+        assert_eq!(st.settings.subtitle_mode.lines.len(), 3, "应新增一行");
+        assert_eq!(
+            st.panel.state.line_selected,
+            Some(2),
+            "新增确认后选中应落在新行"
+        );
+    }
+
     /// T6c：选中 → 编辑按钮开模态 → 确认后选中落回该行（豁免 funnel）
     #[test]
     fn line_edit_accept_reasserts_selection() {
         let _lang_guard = crate::lang_test_guard();
         let _ = lt_i18n::set_lang("zh");
-        let (mut h, mut st) = d123_env();
+        let (mut h, mut st) = selection_env();
         use crate::windows::panel::click_testing as ct;
 
         let needle = line_row_text(&st.settings.subtitle_mode.lines[0]);
@@ -984,7 +1017,7 @@ mod tests {
     fn line_double_click_opens_editor_and_keeps_selection() {
         let _lang_guard = crate::lang_test_guard();
         let _ = lt_i18n::set_lang("zh");
-        let (mut h, mut st) = d123_env();
+        let (mut h, mut st) = selection_env();
         use crate::windows::panel::click_testing as ct;
 
         let needle = line_row_text(&st.settings.subtitle_mode.lines[0]);
@@ -1009,7 +1042,7 @@ mod tests {
     fn subtitle_control_change_clears_line_selection() {
         let _lang_guard = crate::lang_test_guard();
         let _ = lt_i18n::set_lang("zh");
-        let (mut h, mut st) = d123_env();
+        let (mut h, mut st) = selection_env();
         use crate::windows::panel::click_testing as ct;
 
         let needle = line_row_text(&st.settings.subtitle_mode.lines[0]);

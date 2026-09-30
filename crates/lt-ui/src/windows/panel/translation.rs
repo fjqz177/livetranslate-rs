@@ -200,7 +200,9 @@ pub(crate) fn restore_translation_page(
     settings.active_model = 0;
     settings.system_prompt = def.system_prompt.clone();
     settings.timeout = def.timeout;
-    panel.state.model_selected = None;
+    // D-123 C4：「恢复本页默认」= 批量设置变更走 funnel（三处选中全清，
+    // 与 grep 审计口径一致；行编辑器一并关）
+    panel.clear_list_selections();
     panel.state.model_editor = None;
     if let Some(cfg) = super::active_model_config(settings) {
         session.send_cmd(lt_proto::Cmd::SwitchTranslator(Box::new(cfg)));
@@ -401,9 +403,9 @@ pub fn page(
 
         let active = settings.active_model;
         let count = settings.models.len();
-        // D-123 C1 三态写回：None 兼作「本帧无点击」哨兵会吞掉「点击取消」
-        // （缓存页死写回同源教训）——pick 显式区分 无点击/选中(i)/取消
-        let mut pick: Option<Option<usize>> = None;
+        // D-123 C1 三态裁决（state::row_pick_clicked）：再点已选行 = 取消；
+        // 双击帧不翻转——净效果恒为「选中 + 开编辑」
+        let mut pick = crate::state::RowPick::Idle;
         let mut edit_row: Option<usize> = None;
         // D-85：本页每行右侧的「测试 / 中断」按钮
         let mut probe_click: Option<usize> = None;
@@ -438,14 +440,10 @@ pub fn page(
                     })
                     .inner;
                 if resp.clicked() {
-                    // 再点已选行 = 取消选中（D-123 C1）；双击的第二击不翻转——
-                    // 净效果恒为「选中 + 开编辑」（已选态双击同样保持选中）
-                    pick = Some(
-                        if resp.double_clicked() || panel.state.model_selected != Some(i) {
-                            Some(i)
-                        } else {
-                            None
-                        },
+                    pick = crate::state::row_pick_clicked(
+                        panel.state.model_selected,
+                        i,
+                        resp.double_clicked(),
                     );
                 }
                 // 双击行 = 直接进入编辑（原版 itemDoubleClicked →
@@ -523,8 +521,10 @@ pub fn page(
         }
 
         // 行选中只改"选中"（D-85 裁决 E：设置页只管配置，不切换运行中的模型）
-        if let Some(s) = pick {
-            panel.state.model_selected = s;
+        match pick {
+            crate::state::RowPick::Select(i) => panel.state.model_selected = Some(i),
+            crate::state::RowPick::Deselect => panel.state.model_selected = None,
+            crate::state::RowPick::Idle => {}
         }
 
         // 「测试」：发号 + 置在途 + 排节拍 + 发命令（目标就是这一行，无静默回落）

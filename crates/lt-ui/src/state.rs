@@ -2089,10 +2089,42 @@ impl PanelUi {
         self.state.line_selected = None;
     }
 
+    /// D-123 C3 唯一换页口：实际换页（目标 ≠ 当前）即清三处列表选中——
+    /// 页签点击 / 引导横幅 / WinAction::OpenPanelPage 三入口共用，禁散写
+    /// `state.page = …`（漏配 clear 即选中跨 tab 存活）
+    pub fn set_page(&mut self, page: PanelPage) {
+        if self.state.page != page {
+            self.state.page = page;
+            self.clear_list_selections();
+        }
+    }
+
     /// WD-6 首启缺模型轻引导横幅可见性（D-105）：识别未就绪且当前不在识别页——
     /// 识别页下载卡就地可达，横幅在那里冗余
     pub fn model_banner_visible(&self) -> bool {
         self.asr_readiness == AsrReadiness::Unavailable && self.state.page != PanelPage::VadAsr
+    }
+}
+
+/// 列表行点击裁决（D-123 C1 三态：根治「None 兼作本帧无点击哨兵 → 写回守卫
+/// 吞掉取消」的死写回——缓存页 toggle 语义曾就此失效）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RowPick {
+    /// 本帧无行点击
+    Idle,
+    /// 选中第 i 行（换选 / 双击帧强制保持）
+    Select(usize),
+    /// 再点已选行 → 取消选中
+    Deselect,
+}
+
+/// 列表行点击 → 三态裁决（三列表共用；`double_clicked` 优先——双击帧不翻转，
+/// 净效果恒为「选中 + 开编辑」）
+pub fn row_pick_clicked(current: Option<usize>, i: usize, double_clicked: bool) -> RowPick {
+    if double_clicked || current != Some(i) {
+        RowPick::Select(i)
+    } else {
+        RowPick::Deselect
     }
 }
 
@@ -2727,6 +2759,55 @@ pub fn initial_visibility(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// D-123 C1 三态裁决表：换选/再点取消/双击帧强制选中——三列表共用语义的
+    /// 单点单测（页面级 headless 测试在其上做集成验证）
+    #[test]
+    fn row_pick_clicked_three_states() {
+        let cur = Some(1);
+        assert_eq!(
+            row_pick_clicked(cur, 2, false),
+            RowPick::Select(2),
+            "点别行=换选"
+        );
+        assert_eq!(
+            row_pick_clicked(cur, 1, false),
+            RowPick::Deselect,
+            "再点已选=取消"
+        );
+        assert_eq!(
+            row_pick_clicked(cur, 1, true),
+            RowPick::Select(1),
+            "双击帧不翻转"
+        );
+        assert_eq!(
+            row_pick_clicked(None, 0, false),
+            RowPick::Select(0),
+            "无选中=选中"
+        );
+        assert_eq!(row_pick_clicked(None, 0, true), RowPick::Select(0));
+    }
+
+    /// D-123 C3 唯一换页口：实际换页清三处选中；同页重复 set 不清
+    #[test]
+    fn set_page_clears_selections_only_on_real_change() {
+        let mut st = AppUi::new(Settings::default());
+        st.panel.state.page = PanelPage::Translation;
+        st.panel.state.model_selected = Some(0);
+        st.panel.state.cache_selected = Some(0);
+        st.panel.state.line_selected = Some(0);
+        st.panel.set_page(PanelPage::Translation);
+        assert_eq!(
+            st.panel.state.model_selected,
+            Some(0),
+            "同页 set 不构成切换"
+        );
+        st.panel.set_page(PanelPage::Subtitle);
+        assert_eq!(st.panel.state.page, PanelPage::Subtitle);
+        assert_eq!(st.panel.state.model_selected, None, "换页应清");
+        assert_eq!(st.panel.state.cache_selected, None, "换页应清");
+        assert_eq!(st.panel.state.line_selected, None, "换页应清");
+    }
 
     /// WP-1：字幕窗拖动提示会话内一次性（原版 _subwin_notified 语义）
     #[test]
