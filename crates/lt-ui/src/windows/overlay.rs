@@ -376,6 +376,40 @@ fn row2_checks(ui: &mut Ui, overlay: &mut OverlayUi, session: &mut SessionView) 
     });
 }
 
+/// 下拉份额帽（D-125 / G-39 第三形态）：egui `ComboBox::width` 只是**下限**
+/// （`actual_width = 选中文本 galley + 图标 at_least width`，egui 0.36
+/// combo_box.rs:360，默认 Extend 排版），选中文本变宽下拉跟着长——en 默认
+/// 「auto - Auto Detect」即把 row2_combos 撑到 +37.1、长模型名 +145.1（Qt
+/// QComboBox 在 stretch 布局里天然 elide，语义差未对齐）。子 ui 钳到份额宽
+/// （max_rect = 份额）+ `truncate()`（排版宽 = 子 ui 可用宽，超份额截断加
+/// 原生省略号）→ 下拉外宽恒 = 份额；宽窗下份额随 available_width 放大，
+/// 文本完整显示。desired 高 = `interact_size.y`（标准控件位，内容可长出、
+/// 实际推进按 min_rect）：**禁传 0**——0 高 + Align::Center 会把内容在整段
+/// 剩余高度里垂直居中，纵向全线塌位（下方行被挤进零高 ScrollArea，译文行
+/// 直接不产出图元，superseded 测试实证；溢出测试活性断言已机械锁）。
+/// 前置契约：`share_w ≥ 0`——480 min 窗下三份额恒正；负值不可达，真传入时
+/// egui `allocate_ui_with_layout` 的 debug_assert 当场炸响（响的失败好过
+/// 静默错位）。禁手测文本宽自截（两套标尺，D-122 单源精神）。
+fn capped_combo(
+    ui: &mut Ui,
+    share_w: f32,
+    id_salt: &str,
+    selected_text: String,
+    items: impl FnOnce(&mut Ui),
+) {
+    ui.allocate_ui_with_layout(
+        Vec2::new(share_w, ui.spacing().interact_size.y),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ComboBox::from_id_salt(id_salt)
+                .width(share_w)
+                .truncate()
+                .selected_text(selected_text)
+                .show_ui(ui, items);
+        },
+    );
+}
+
 /// 行2b：模型 / 源语言 / 目标语言 下拉（拉伸宽度 3:2:2）
 fn row2_combos(ui: &mut Ui, session: &mut SessionView, settings: &mut Settings) {
     ui.horizontal(|ui| {
@@ -388,6 +422,7 @@ fn row2_combos(ui: &mut Ui, session: &mut SessionView, settings: &mut Settings) 
             );
         };
         let total = ui.available_width();
+        // 份额公式不动（Qt 3:2:2 stretch 遗产）；增长面由 capped_combo 钳死（D-125）
         let w_model = total * 0.44;
         let w_src = total * 0.24;
         let w_tgt = total * 0.24;
@@ -397,16 +432,16 @@ fn row2_combos(ui: &mut Ui, session: &mut SessionView, settings: &mut Settings) 
             .active_model
             .min(settings.models.len().saturating_sub(1));
         let mut new_active: Option<usize> = None;
-        ComboBox::from_id_salt("ov_model")
-            .width(w_model - 60.0)
-            .selected_text(
-                settings
-                    .models
-                    .get(active)
-                    .map(|m| m.name.clone())
-                    .unwrap_or_else(|| "?".into()),
-            )
-            .show_ui(ui, |ui| {
+        capped_combo(
+            ui,
+            w_model - 60.0,
+            "ov_model",
+            settings
+                .models
+                .get(active)
+                .map(|m| m.name.clone())
+                .unwrap_or_else(|| "?".into()),
+            |ui| {
                 for (i, m) in settings.models.iter().enumerate() {
                     if selectable_stable(ui, settings.active_model == i, m.name.clone()).clicked()
                         && settings.active_model != i
@@ -414,7 +449,8 @@ fn row2_combos(ui: &mut Ui, session: &mut SessionView, settings: &mut Settings) 
                         new_active = Some(i);
                     }
                 }
-            });
+            },
+        );
         // W1/方案 §2.5 规则 3（悬浮窗与翻译页一比一）：换活动模型 = 改生效字段 →
         // 立即重建翻译装置 + 登记落盘（此前只改内存，标题换了而装置没换）
         if let Some(i) = new_active {
@@ -426,10 +462,12 @@ fn row2_combos(ui: &mut Ui, session: &mut SessionView, settings: &mut Settings) 
         }
 
         lbl(ui, lt_i18n::t("source_label"));
-        ComboBox::from_id_salt("ov_src_lang")
-            .width(w_src - 50.0)
-            .selected_text(lang_label(true, &settings.asr_language))
-            .show_ui(ui, |ui| {
+        capped_combo(
+            ui,
+            w_src - 50.0,
+            "ov_src_lang",
+            lang_label(true, &settings.asr_language),
+            |ui| {
                 for (code, _native) in lt_i18n::LANGUAGES {
                     let v = settings.asr_language == *code;
                     if selectable_stable(ui, v, lang_label(true, code)).clicked() {
@@ -437,13 +475,16 @@ fn row2_combos(ui: &mut Ui, session: &mut SessionView, settings: &mut Settings) 
                         session.send_cmd(lt_proto::Cmd::SetAsrLanguage(code.to_string()));
                     }
                 }
-            });
+            },
+        );
 
         lbl(ui, lt_i18n::t("target_label"));
-        ComboBox::from_id_salt("ov_tgt_lang")
-            .width(w_tgt - 50.0)
-            .selected_text(lang_label(false, &settings.target_language))
-            .show_ui(ui, |ui| {
+        capped_combo(
+            ui,
+            w_tgt - 50.0,
+            "ov_tgt_lang",
+            lang_label(false, &settings.target_language),
+            |ui| {
                 for (code, _native) in lt_i18n::LANGUAGES {
                     if *code == "auto" {
                         continue;
@@ -454,7 +495,8 @@ fn row2_combos(ui: &mut Ui, session: &mut SessionView, settings: &mut Settings) 
                         session.send_cmd(lt_proto::Cmd::SetTargetLanguage(code.to_string()));
                     }
                 }
-            });
+            },
+        );
     });
 }
 
@@ -1480,5 +1522,174 @@ mod tests {
         });
         let texts = render_overlay_stats(&ctx, &mut st);
         assert!(texts.iter().any(|t| t == &dash), "纯未知应显示 \"—\"");
+    }
+
+    /// 防回归（G-39 同族第三形态 / D-125）：悬浮窗最小窗宽 480 下 zh/en ×
+    /// 精简/完整 × 三场景（默认 / 长模型名 / 长消息）渲染，任何可见图元
+    /// 左右缘不得越出视口（±2.0 = rect_stroke StrokeKind::Outside 出界 ≤1px
+    /// 余量，面板侧同款）。egui 横排溢出是静默右缘裁剪；row2_combos 曾因
+    /// `ComboBox::width` 只是下限（选中文本 galley 变宽下拉跟着长）在 en
+    /// 默认 +37.1、长模型名 +145.1，且上游行溢出会把下游 ScrollArea 可用宽
+    /// 一并撑歪（en 消息折行标尺 442→500.7，看似没折行实为标尺被改写）。
+    /// 新增长文案 / 下拉项转红时按 D-125 行纪律处理（份额帽内 truncate）——
+    /// 禁回灌抬最小宽（480 = 原版 Qt minimumSize，D-122 裁决 5 同源）。
+    #[test]
+    fn overlay_no_horizontal_overflow_at_min_width() {
+        let _lang_guard = crate::lang_test_guard();
+        const TOL: f32 = 2.0;
+        const MIN_W: f32 = 480.0;
+        for lang in ["zh", "en"] {
+            for (mode_name, compact) in [("compact", true), ("full", false)] {
+                for scen in ["default", "longmodel", "longmsg"] {
+                    // 先设语再渲染（下拉/复选文案宽度是语言的函数；全局语言表
+                    // 与同二进制其他测试共享，渲染后复核、被翻走整帧重试——
+                    // D-120 评审同款重试环）
+                    lt_i18n::set_lang(lang).expect("语言表解析");
+                    // ① 真实内嵌思源链 = 实机同源标尺（D-122 教训：egui 默认
+                    //    字体度量是假标尺）；块内含垫帧（Fonts 惰性初始化）
+                    let ctx = {
+                        let ctx = egui::Context::default();
+                        crate::fonts::apply_fonts(
+                            &ctx,
+                            &Settings::default(),
+                            &mut crate::fonts::FontsState::default(),
+                        );
+                        let mut prime = ctx.run_ui(egui::RawInput::default(), |ui| {
+                            ui.label("prime");
+                        });
+                        prime.textures_delta.clear();
+                        ctx
+                    };
+                    let screen =
+                        egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(MIN_W, 200.0));
+                    let mut st = crate::state::AppUi::new(Settings::default());
+                    st.overlay.state.mode = if compact {
+                        OverlayMode::Compact
+                    } else {
+                        OverlayMode::Full
+                    };
+                    if scen == "longmodel" {
+                        st.settings.models = vec![lt_proto::ModelConfig {
+                            name: "SenseVoice-Small-int8-2026-03-25".into(),
+                            ..Default::default()
+                        }];
+                        st.settings.active_model = 0;
+                    }
+                    if scen == "longmsg" {
+                        st.overlay.push_message(OverlayMessage {
+                            id: 1,
+                            timestamp: "12:34:56".into(),
+                            original: "这是一段比较长的中文原文用于测试字幕区在最小宽度下的折行行为测测测测测测".into(),
+                            lang: "zh".into(),
+                            asr_ms: 123.0,
+                            translation: TranslationView::Ready(
+                                "this is a fairly long english translation used to probe the                                  messages area wrapping behaviour at minimum overlay width"
+                                    .into(),
+                            ),
+                            tl_ms: 45.0,
+                        });
+                    }
+                    let mut frame = None;
+                    for _ in 0..3 {
+                        let mut inner = None;
+                        for attempt in 0..8 {
+                            lt_i18n::set_lang(lang).expect("语言表解析");
+                            let mut out = ctx.run_ui(
+                                egui::RawInput {
+                                    screen_rect: Some(screen),
+                                    ..Default::default()
+                                },
+                                |ui| {
+                                    crate::windows::dispatch(
+                                        crate::state::WinId::Overlay,
+                                        ui,
+                                        &mut st,
+                                    )
+                                },
+                            );
+                            // epaint debug 断言要求消费纹理增量——先于溢出断言
+                            // clear，防 assert 失败时 out 走 Drop 引爆二次 panic
+                            out.textures_delta.clear();
+                            inner = Some(out);
+                            if lt_i18n::get_lang() == lang || attempt == 7 {
+                                break;
+                            }
+                        }
+                        frame = inner;
+                    }
+                    let out = frame.expect("重试环内必有产出");
+                    let mut worst_r = screen.right() + TOL;
+                    let mut worst_l = screen.left() - TOL;
+                    let mut visible = 0usize;
+                    for clipped in &out.shapes {
+                        // 不可见图元不计溢出（ScrollArea extent 记账与 clip 缘
+                        // ~2px 微差会发全透明滚动条几何残影，面板侧同款豁免）
+                        if shape_paints_nothing(&clipped.shape) {
+                            continue;
+                        }
+                        visible += 1;
+                        // 看图元自身 bbox 不看 clip rect——被裁掉的正是要抓的
+                        let bb = clipped.shape.visual_bounding_rect();
+                        worst_r = worst_r.max(bb.right());
+                        worst_l = worst_l.min(bb.left());
+                    }
+                    // 活性防线（评审 P2）：横向扫描对「零图元 / 塌位不产出」
+                    // 结构性假绿——每帧至少须有真图元，长消息场景还须原文/译文
+                    // 两行 galley 实际产出。注：capped_combo desired 高塌位形态
+                    // （0 高在本视口 200 高下不达病阈值，实测横向+活性均绿）由
+                    // 既有 superseded_overlay_line_is_neutral（420×140 视口，
+                    // 塌位把译文挤进零高 ScrollArea）机械锁——两锁互补不互替。
+                    assert!(
+                        visible >= 5,
+                        "{lang} {mode_name} {scen} 帧内非豁免图元仅 {visible} 个——渲染塌零时横向断言恒真"
+                    );
+                    if scen == "longmsg" {
+                        let texts: Vec<&str> = out
+                            .shapes
+                            .iter()
+                            .filter_map(|cl| match &cl.shape {
+                                egui::Shape::Text(t) => Some(t.galley.text()),
+                                _ => None,
+                            })
+                            .collect();
+                        assert!(
+                            texts.iter().any(|t| t.starts_with("这是一段比较长")),
+                            "{lang} {mode_name} longmsg 原文行未产出（消息区活性防线）"
+                        );
+                        assert!(
+                            texts
+                                .iter()
+                                .any(|t| t.starts_with("> this is a fairly long")),
+                            "{lang} {mode_name} longmsg 译文行未产出（消息区活性防线）"
+                        );
+                    }
+                    assert!(
+                        worst_r <= screen.right() + TOL && worst_l >= screen.left() - TOL,
+                        "{lang} {mode_name} {scen} 横向溢出：右缘超 {:+.1}px / 左缘超 {:+.1}px（视口 {}..{}）",
+                        worst_r - screen.right(),
+                        screen.left() - worst_l,
+                        screen.left(),
+                        screen.right(),
+                    );
+                }
+            }
+        }
+    }
+
+    /// 图元是否完全不上屏（全透明）——不可见即不构成可见裁剪（面板侧同款）
+    fn shape_paints_nothing(shape: &egui::Shape) -> bool {
+        match shape {
+            egui::Shape::Noop => true,
+            egui::Shape::Vec(v) => v.iter().all(shape_paints_nothing),
+            egui::Shape::Mesh(m) => m
+                .vertices
+                .iter()
+                .all(|v| v.color == egui::Color32::TRANSPARENT),
+            egui::Shape::Rect(r) => {
+                r.fill == egui::Color32::TRANSPARENT
+                    && (r.stroke.color == egui::Color32::TRANSPARENT || r.stroke.width <= 0.0)
+            }
+            _ => false,
+        }
     }
 }

@@ -53,12 +53,15 @@ issue #27 预授权菜单 =「有病灶则同款三层防线（抬最小宽 / �
 
 ## 四、设计
 
-- `row2_combos`：三只下拉各套 `allocate_ui_with_layout(Vec2::new(份额, 0.0),
-  left_to_right(Center))` 子 ui（份额帽 = 份额宽即子 ui max_rect）+
-  `ComboBox::truncate()`——truncate 的排版宽 = 子 ui 可用宽，galley 超份额即截断加
-  省略号，下拉外宽恒 = 份额。份额公式不动（0.44T−60 / 0.24T−50 / 0.24T−50，
-  Qt 3:2:2 stretch 遗产）；desired 高 0 = 按 egui「内容溢出按实际 min_rect 分配」
-  语义随 combo 自然高度走。
+- `row2_combos`：三只下拉各套 `allocate_ui_with_layout(Vec2::new(份额,
+  interact_size.y), left_to_right(Center))` 子 ui（份额帽 = 份额宽即子 ui
+  max_rect）+ `ComboBox::truncate()`——truncate 的排版宽 = 子 ui 可用宽，galley
+  超份额即截断加省略号，下拉外宽恒 = 份额。份额公式不动（0.44T−60 / 0.24T−50 /
+  0.24T−50，Qt 3:2:2 stretch 遗产）。desired 高 = `interact_size.y`（标准控件位，
+  实际推进按内容 min_rect）——**禁传 0**：0 高 + Align::Center 会把内容在整段
+  剩余高度里垂直居中、纵向全线塌位（施工实证：420×140 视口下译文行被挤进零高
+  ScrollArea 不产出图元；机械锁 = 既有 superseded_overlay_line_is_neutral 测试，
+  见 §六）。
 - 复选行 / 按钮行 / monitor / 统计行 / 消息区零改动。
 - 新测试 `overlay_no_horizontal_overflow_at_min_width`（overlay.rs tests）：真实字体链
   （D-122 教训：默认字体度量是假标尺）+ §三 12 组矩阵 + bbox ±2.0 扫描（全透明图元
@@ -72,3 +75,22 @@ issue #27 预授权菜单 =「有病灶则同款三层防线（抬最小宽 / �
   - [ ] 翻译页换长名模型（或手动改名）后，悬浮窗模型下拉不撑行、名字截断
   - [ ] 长消息（长原文 + 长译文）在 480 窗宽折行正常、右缘不裁
   - [ ] zh 默认 / 精简形态观感回归不动（下拉宽度、间距无可见变化）
+
+## 六、评审留痕与残余（2026-09-30 收口评审）
+
+已收编：①**文档对齐**——本节 §四与 G-39 第三形态句的 desired 高由初稿的 0 更正为
+`interact_size.y`（施工实证 0 高 + Align::Center 纵向塌位，`capped_combo` 注留痕）；
+②**活性断言**——溢出测试补「每帧非豁免图元 ≥5 + longmsg 原文/译文行必产出」，堵
+「零图元时横向断言恒真假绿」盲区。对抗式复核修正评审一处误判：把 desired 高改回
+0 时本测试（480×200 视口）确实不红——塌位不达本视口病阈值；h=0 塌位的机械锁 =
+既有 `superseded_overlay_line_is_neutral`（420×140 视口下译文被挤进零高
+ScrollArea，实测即红），两锁互补不互替，测试注释已如实分账。
+
+残余（评审 P3，裁决内接受、实机走查兜底）：
+
+- 下拉**展开态弹层**不在锁面：egui 弹层内容强制 Extend 排版，长模型名弹层可超窗缘
+  被窗体裁剪（Qt 弹层为独立窗口可出窗，观感有差；egui 全应用既有行为，非本病灶）。
+- 三枚行标签随**用户自定义字体**变宽不在锁面（测试锁默认字体链）：份额随窗宽线性
+  放大，极端字体下 480 或再溢出——悬浮窗不做面板式派生 min 是裁决 #1 的有意取舍。
+- 子 ui desired 高 18 与旧自然高的纵向节奏可能 ±1~2px，走查项 4（zh/精简观感回归）
+  覆盖。
