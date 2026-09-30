@@ -730,19 +730,58 @@ mod tests {
         }
     }
 
-    /// 防回归（G-39 / D-120）：最小窗宽下 zh/en × 8 页渲染，任何图元左右缘
-    /// 不得越出视口（+2.0 = rect_stroke StrokeKind::Outside 出界 ≤1px 的余量）。
+    /// 防回归（G-39 / D-120 / D-122）：最小窗宽下 zh/en × 8 页渲染，任何图元
+    /// 左右缘不得越出视口（+2.0 = rect_stroke StrokeKind::Outside 出界 ≤1px 的余量）。
     /// egui 横排溢出是静默右缘裁剪（用户看到的就是「右边没了」），本测试是
     /// 「窄窗不裁」的唯一机械保证：新增长文案 / 固定宽控件转红时，按
-    /// docs/panel-narrow-layout.md §四 L2 规则拆行，或实测后抬 PANEL_MIN_WIDTH。
+    /// docs/panel-narrow-layout.md §四 L2 规则拆行——禁回灌抬最小宽（D-122 裁决 5）。
+    ///
+    /// D-122 换标尺（四件套①②③）：① ctx 装**真实内嵌思源链**——D-120 盲区
+    /// 根修，旧测试用 egui 默认字体度量、600 定值在实机思源链下失守；② 断言
+    /// 视口 = [`derived_panel_min_width`] 派生公式输出（公式错即红）；③ en 事实
+    /// 锚：内嵌链下派生 min < 旧常数 600（定量证明 D-120 的定值标尺不是思源链）。
     #[test]
     fn panel_no_horizontal_overflow_at_min_width() {
         let _lang_guard = crate::lang_test_guard();
-        let screen =
-            egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(super::PANEL_MIN_WIDTH, 420.0));
         const TOL: f32 = 2.0;
         for lang in ["zh", "en"] {
+            // 先设语再派生——页签宽度是语言的函数（并行残留语言会污染派生值，
+            // 首跑曾致 zh/en 同值的假象）
+            lt_i18n::set_lang(lang).expect("语言表解析");
             let ctx = egui::Context::default();
+            // ① 真实内嵌思源链，与实机同源（Fonts 惰性初始化须先垫一帧）
+            crate::fonts::apply_fonts(
+                &ctx,
+                &Settings::default(),
+                &mut crate::fonts::FontsState::default(),
+            );
+            let mut prime = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1200.0, 420.0),
+                    )),
+                    ..egui::RawInput::default()
+                },
+                |ui| {
+                    ui.label("prime");
+                },
+            );
+            prime.textures_delta.clear();
+            // ② 断言视口 = 派生公式输出
+            let min_w = super::derived_panel_min_width(&ctx);
+            if lang == "en" {
+                // ③ 事实锚：**内嵌思源链**下 en 派生 > 旧常数 600（实测 strip
+                // 609.3，600 客户区正好裁掉 ~9px「Logs」——与用户实机截图量级
+                // 一致）。D-120 的「591」是 egui 默认字体度量的假标尺；用户换
+                // 更宽 UI 字体时派生值更大（运行时实测自动跟随）。首跑曾得
+                // 「en=509.7」的假象，根因 = 派生先于 set_lang（语言污染）。
+                assert!(
+                    min_w > super::PANEL_MIN_WIDTH,
+                    "en 派生 min {min_w} 须 > 旧常数 600（内嵌思源链下旧常数必裁                      tab 条——本 bug 的定量锚）；若不成立须复核字体链/语言时序"
+                );
+            }
+            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(min_w, 420.0));
             let mut st = crate::state::AppUi::new(Settings::default());
             for page in PanelPage::ALL {
                 st.panel.state.page = page;
@@ -773,6 +812,13 @@ mod tests {
                     let mut worst_r = screen.right() + TOL;
                     let mut worst_l = screen.left() - TOL;
                     for clipped in &out.shapes {
+                        // 不可见图元不计溢出（透明 = 肉眼无「右边没了」）：egui
+                        // ScrollArea 的内容 extent 记账与 clip 缘存在 ~2px 微差
+                        // （changelog_tab set_max_width −10 安全量同源），横向
+                        // extent 超缘时会发出全透明的滚动条几何残影
+                        if shape_paints_nothing(&clipped.shape) {
+                            continue;
+                        }
                         // 看图元自身 bbox 不看 clip rect——被裁掉的正是要抓的
                         let bb = clipped.shape.visual_bounding_rect();
                         worst_r = worst_r.max(bb.right());
@@ -789,6 +835,93 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// 图元是否完全不上屏（全透明）——不可见即不构成可见裁剪
+    fn shape_paints_nothing(shape: &egui::Shape) -> bool {
+        match shape {
+            egui::Shape::Noop => true,
+            egui::Shape::Vec(v) => v.iter().all(shape_paints_nothing),
+            egui::Shape::Mesh(m) => m
+                .vertices
+                .iter()
+                .all(|v| v.color == egui::Color32::TRANSPARENT),
+            egui::Shape::Rect(r) => {
+                r.fill == egui::Color32::TRANSPARENT
+                    && (r.stroke.color == egui::Color32::TRANSPARENT || r.stroke.width <= 0.0)
+            }
+            _ => false,
+        }
+    }
+
+    /// D-122 四件套④：灰框离窗边恒为常数（裁决 3）——分组框（card_stroke 描边、
+    /// 非全宽）左右缘 = 视口缘 ∓ [`PANEL_PAGE_MARGIN`]（±2.0）。视口拉高到无纵向
+    /// 滚动条，排除滚动条宽度对水平记账的干扰（溢出测试的 420 高视口已含最严
+    /// 滚动态；两组视口互补覆盖）。
+    #[test]
+    fn panel_group_frames_keep_constant_window_margin() {
+        let _lang_guard = crate::lang_test_guard();
+        let _ = lt_i18n::set_lang("zh");
+        let ctx = egui::Context::default();
+        crate::fonts::apply_fonts(
+            &ctx,
+            &Settings::default(),
+            &mut crate::fonts::FontsState::default(),
+        );
+        let mut prime = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1200.0, 2000.0),
+                )),
+                ..egui::RawInput::default()
+            },
+            |ui| {
+                ui.label("prime");
+            },
+        );
+        prime.textures_delta.clear();
+        let min_w = super::derived_panel_min_width(&ctx);
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(min_w, 2000.0));
+        let mut st = crate::state::AppUi::new(Settings::default());
+        st.panel.state.page = PanelPage::Translation;
+        let mut out = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(screen),
+                ..egui::RawInput::default()
+            },
+            |ui| crate::windows::dispatch(crate::state::WinId::Panel, ui, &mut st),
+        );
+        out.textures_delta.clear();
+        // 分组框识别：card_stroke 色描边矩形（无填充），排除全宽 pane 描边与
+        // tab 条区选中页签描边；横幅描边为橙色非 card_stroke 天然排除
+        let mut frame_r = f32::MIN;
+        let mut frame_l = f32::MAX;
+        for clipped in &out.shapes {
+            if let egui::Shape::Rect(rs) = &clipped.shape {
+                if rs.fill != egui::Color32::TRANSPARENT
+                    || rs.stroke.color != super::Palette::NATIVE.card_stroke
+                    || rs.rect.width() > screen.width() - 1.0
+                    || rs.rect.top() < 50.0
+                {
+                    continue;
+                }
+                frame_r = frame_r.max(rs.rect.right());
+                frame_l = frame_l.min(rs.rect.left());
+            }
+        }
+        let m = super::PANEL_PAGE_MARGIN;
+        assert!(
+            frame_r.is_finite() && (frame_r - (screen.right() - m)).abs() <= 2.0,
+            "分组框右缘 {frame_r:.1} 应 = 视口右缘 − 边距 token（{:.1}）——\
+             灰框离窗边常数被破坏（D-122 裁决 3）",
+            screen.right() - m
+        );
+        assert!(
+            frame_l.is_finite() && (frame_l - (screen.left() + m)).abs() <= 2.0,
+            "分组框左缘 {frame_l:.1} 应 = 视口左缘 + 边距 token（{:.1}）",
+            screen.left() + m
+        );
     }
 
     /// 设置防抖登记 → 节拍消费闭环（UI 外）
