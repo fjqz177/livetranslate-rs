@@ -1686,6 +1686,10 @@ mod tests {
     /// （渲染层据分类选中性灰，见 `page` 的 fill 分支）
     #[test]
     fn superseded_subtitle_line_is_neutral() {
+        // 渲染走全局语言表、断言按 zh 期望值——持锁 + 显式设语（D-121 纪律，
+        // D-122 批暴露的既有竞态根修，同 translation.rs 两用例）
+        let _lang_guard = crate::lang_test_guard();
+        let _ = lt_i18n::set_lang("zh");
         let mut sub = SubtitleUiState {
             sentences: vec![
                 sentence("识别到的原句", &[("zh", "译文")]),

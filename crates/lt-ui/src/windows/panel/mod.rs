@@ -34,6 +34,21 @@ use std::time::Instant;
 /// Tab 条页签高度（原版 QTabBar 页签视觉高度）
 const TAB_H: f32 = 26.0;
 
+// ── D-122 tab 条记账常量：绘制（tab_strip）与派生（tab_strip_natural_width）
+// 共用同一套——布局实现若与公式脱节，单源直断测试必红 ──
+/// Tab 条左 inset（面板根左缘到首页签）
+const TAB_STRIP_LEFT_INSET: f32 = 4.0;
+/// 页签间距（tab_strip 内 item_spacing 归零，间隙全走本常量，防 egui 二次插空）
+const TAB_GAP: f32 = 8.0;
+/// 页签文字左右 padding 之和（页签宽 = 文字自然宽 + 本值）
+const TAB_LABEL_PAD: f32 = 20.0;
+/// 派生最小宽的右缘余量（D-122 裁决 1）
+const PANEL_MIN_SLACK: f32 = 8.0;
+
+/// 页套边距 token（D-122 裁决 3「灰框离窗边恒为常数」的唯一值）：
+/// 页面 Frame 四边边距的单源，灰框到窗缘距离恒等于它
+pub const PANEL_PAGE_MARGIN: f32 = 12.0;
+
 /// 面板最小窗宽（逻辑 px；D-120）。原版 480 照搬 Qt 布局器前提在 egui 不成立
 /// （egui 横排无收缩换行，最小宽不构成「内容放得下」保证，G-39），故抬到
 /// headless 实测「zh/en × 8 页零横向溢出」的下限 + 余量；定值法 = 溢出断言
@@ -240,7 +255,7 @@ pub fn panel_ui(
         // 一旦内容（底部提示行等）超出 pane 高度会出现第二根滚动条（LT-1，
         // 见 docs/archive/log-tab-redesign.md）。
         Frame::NONE
-            .inner_margin(egui::Margin::same(12))
+            .inner_margin(egui::Margin::same(PANEL_PAGE_MARGIN as i8))
             .show(ui, |ui| log_tab::page(ui, log, &pal));
         return;
     }
@@ -249,7 +264,7 @@ pub fn panel_ui(
         .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded)
         .show(ui, |ui| {
             Frame::NONE
-                .inner_margin(egui::Margin::same(12))
+                .inner_margin(egui::Margin::same(PANEL_PAGE_MARGIN as i8))
                 .show(ui, |ui| match page {
                     PanelPage::VadAsr => vad::page(ui, panel, session, settings, &pal),
                     PanelPage::Translation => {
@@ -264,24 +279,56 @@ pub fn panel_ui(
                     PanelPage::Changelog => changelog_tab::page(ui, &pal),
                     PanelPage::Log => unreachable!("日志页已在上方特判，不进入页面级滚动区"),
                 });
-            ui.add_space(12.0);
+            ui.add_space(PANEL_PAGE_MARGIN);
         });
+}
+
+/// Tab 条页签字体（绘制与测宽共用同一 FontId——D-122 禁两套标尺）
+fn tab_font() -> egui::FontId {
+    egui::FontId::proportional(12.5)
+}
+
+/// 单个页签的排版宽度（文字自然宽 + 左右 padding）——tab_strip 绘制与
+/// [`derived_panel_min_width`] 共用的唯一测宽点（D-122 单源）
+fn tab_label_width(ctx: &egui::Context, label: &str) -> f32 {
+    // 与 egui Painter::layout_no_wrap 同一代码路径（fonts_mut + layout INFINITY）
+    let galley =
+        ctx.fonts_mut(|f| f.layout(label.to_owned(), tab_font(), Color32::WHITE, f32::INFINITY));
+    galley.rect.width() + TAB_LABEL_PAD
+}
+
+/// Tab 条自然宽 = 左 inset + Σ页签宽 + 页签间距×(n−1)。
+/// tab_strip 的逐项摆放与本公式用同一常量集（D-122）：两者脱节即单源直断测试红。
+pub fn tab_strip_natural_width(ctx: &egui::Context) -> f32 {
+    let tabs: f32 = PanelPage::ALL
+        .iter()
+        .map(|p| tab_label_width(ctx, &lt_i18n::t(p.tab_key())))
+        .sum();
+    TAB_STRIP_LEFT_INSET + tabs + TAB_GAP * (PanelPage::ALL.len() - 1) as f32
+}
+
+/// 面板最小窗宽（D-122 运行时派生单源）= tab 条自然宽 + 右缘余量。
+/// 取代旧 `PANEL_MIN_WIDTH=600` 常数（egui 默认字体度量，实机思源链更宽即失守）：
+/// 语言热切换 / 界面字体更换 / 字体度量变化全部自动跟随。
+pub fn derived_panel_min_width(ctx: &egui::Context) -> f32 {
+    tab_strip_natural_width(ctx) + PANEL_MIN_SLACK
 }
 
 /// 顶部 Tab 条（原版 QTabBar：选中=白底带边框且与下方内容区相连；
 /// 未选中=#E9E9E9 灰底；hover 淡蓝）
 fn tab_strip(ui: &mut Ui, panel: &mut PanelUi, pal: &Palette) {
     ui.horizontal(|ui| {
-        ui.add_space(4.0);
-        for page in PanelPage::ALL {
-            let selected = panel.state.page == page;
+        // 间距记账全部走 D-122 公式常量（TAB_STRIP_LEFT_INSET / TAB_GAP）：
+        // egui item_spacing 归零防二次插空，保证实摆右缘 = tab_strip_natural_width
+        ui.spacing_mut().item_spacing.x = 0.0;
+        ui.add_space(TAB_STRIP_LEFT_INSET);
+        let last = PanelPage::ALL.len() - 1;
+        for (i, page) in PanelPage::ALL.iter().enumerate() {
+            let selected = panel.state.page == *page;
             let label = lt_i18n::t(page.tab_key());
-            let font = egui::FontId::proportional(12.5);
-            // 预测文本宽定页签宽（Qt 页签 = 文字 + 左右 padding）
-            let probe = ui
-                .painter()
-                .layout_no_wrap(label.clone(), font.clone(), Color32::WHITE);
-            let w = probe.rect.width() + 20.0;
+            // 预测文本宽定页签宽（Qt 页签 = 文字 + 左右 padding）——测宽与
+            // derived_panel_min_width 同一函数（D-122 单源）
+            let w = tab_label_width(ui.ctx(), &label);
             let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, TAB_H), egui::Sense::click());
             let fill = if selected {
                 pal.page_bg
@@ -304,11 +351,14 @@ fn tab_strip(ui: &mut Ui, panel: &mut PanelUi, pal: &Palette) {
                 rect.center(),
                 egui::Align2::CENTER_CENTER,
                 label,
-                font,
+                tab_font(),
                 pal.text,
             );
             if resp.clicked() {
-                panel.state.page = page;
+                panel.state.page = *page;
+            }
+            if i != last {
+                ui.add_space(TAB_GAP);
             }
         }
     });
@@ -589,6 +639,73 @@ mod tests {
                 "tab_changelog",
                 "tab_log",
             ]
+        );
+    }
+
+    /// D-122 单源直断：①派生公式随语言变（en > zh）②随字体链变（装真实内嵌
+    /// 思源链后值变——实机标尺 ≠ egui 默认字体标尺，正是 D-120 失守的根）③
+    /// tab 条实摆右缘 = 公式预测（绘制与公式同一常量集，脱节即红）。
+    #[test]
+    fn derived_panel_min_width_tracks_lang_and_fonts_and_matches_layout() {
+        let _lang_guard = crate::lang_test_guard();
+        // egui Fonts 惰性初始化：Context::run 之前无字体可排版（context.rs 硬断言
+        // 「No fonts available until first call to Context::run()」）——先垫一帧。
+        // 同理宿主创建期也拿不到派生值（用默认宽垫底、首帧动作校正，见 T4）。
+        let prime = |ctx: &egui::Context| {
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                ui.label("prime");
+            });
+            out.textures_delta.clear();
+        };
+
+        // ① 默认字体链下 en > zh
+        let ctx = egui::Context::default();
+        prime(&ctx);
+        lt_i18n::set_lang("zh").expect("zh 表解析");
+        let zh_default = super::derived_panel_min_width(&ctx);
+        lt_i18n::set_lang("en").expect("en 表解析");
+        let en_default = super::derived_panel_min_width(&ctx);
+        assert!(
+            en_default > zh_default,
+            "en tab 行须宽于 zh：{en_default} vs {zh_default}"
+        );
+
+        // ② 真实内嵌思源链（实机同源标尺）度量 ≠ egui 默认字体度量
+        let ctx_real = egui::Context::default();
+        crate::fonts::apply_fonts(
+            &ctx_real,
+            &Settings::default(),
+            &mut crate::fonts::FontsState::default(),
+        );
+        prime(&ctx_real);
+        let en_real = super::derived_panel_min_width(&ctx_real);
+        assert!(
+            en_real != en_default,
+            "真实思源链 en 度量须异于默认字体：{en_real} vs {en_default}"
+        );
+
+        // ③ tab 条实摆右缘 = 公式（真实字体链下验证，逐项对账）
+        let mut st = crate::state::AppUi::new(Settings::default());
+        let mut out = ctx_real.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(en_real + 400.0, 400.0),
+                )),
+                ..egui::RawInput::default()
+            },
+            |ui| tab_strip(ui, &mut st.panel, &Palette::NATIVE),
+        );
+        out.textures_delta.clear();
+        let natural = super::tab_strip_natural_width(&ctx_real);
+        let mut max_r = f32::MIN;
+        for clipped in &out.shapes {
+            max_r = max_r.max(clipped.shape.visual_bounding_rect().right());
+        }
+        assert!(
+            (max_r - natural).abs() <= 1.0,
+            "tab 条实摆右缘 {max_r:.1} 应等于公式预测 {natural:.1}（±1.0 = 选中页签 \
+             Outside 描边余量）——绘制与派生公式脱节（D-122 单源被破坏）"
         );
     }
 

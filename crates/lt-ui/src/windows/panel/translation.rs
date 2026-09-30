@@ -1796,6 +1796,10 @@ mod tests {
     /// 在途时该行按钮变「中断」、其他行按钮禁用；点中断 → 发取消命令 + 本地立即落"已中断"
     #[test]
     fn probe_cancel_settles_locally_and_other_rows_disabled() {
+        // 渲染走全局语言表、断言按 zh 期望值——持锁 + 显式设语（D-121 纪律；
+        // 2026-09-30 D-122 单源直断测试拉长 en 窗口后暴露的既有竞态，根修于此）
+        let _lang_guard = crate::lang_test_guard();
+        let _ = lt_i18n::set_lang("zh");
         let ctx = egui::Context::default();
         let (tx, rx) = std::sync::mpsc::channel();
         let mut settings = Settings::default();
@@ -2028,6 +2032,10 @@ mod tests {
     /// 短暂追加「已切换生效」；**区域内不含任何切换控件**（裁决 E）
     #[test]
     fn active_model_status_line_renders_name_and_has_no_control() {
+        // 渲染走全局语言表、断言按 zh 期望值——持锁 + 显式设语（D-121 纪律，
+        // D-122 批暴露的既有竞态根修，同 probe_cancel 用例）
+        let _lang_guard = crate::lang_test_guard();
+        let _ = lt_i18n::set_lang("zh");
         let ctx = egui::Context::default();
         let mut st = crate::state::AppUi::new(Settings::default());
         st.panel.state.page = crate::state::PanelPage::Translation;
@@ -2216,6 +2224,10 @@ mod tests {
     /// 官方形态地址豁免"缺 /v1"软提示；自建地址仍提示（回归）
     #[test]
     fn preset_api_base_skips_v1_warning() {
+        // config_warnings 产出走全局语言表、断言按 zh 期望值——持锁 + 显式设语
+        // （D-121 纪律，D-122 批暴露的既有竞态根修，同 probe_cancel 用例）
+        let _lang_guard = crate::lang_test_guard();
+        let _ = lt_i18n::set_lang("zh");
         let mut ed = ModelEditState::new_add();
         apply_preset(&mut ed, lt_proto::preset_by_key("deepseek").unwrap());
         let warns = config_warnings(&ed);
