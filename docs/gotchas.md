@@ -332,8 +332,8 @@
 - **触发**：egui 窗口（面板等可缩窗）拖窄到行自然宽以下；或 en 文案比 zh 更长的行只按 zh 估算放行；`ui.horizontal` 行内「控件 + 控件 + 长 hint」串联最易命中。
 - **症状**：右缘元素（页签 / 按钮 / 标签 / 下拉）整块或半块消失，无滚动条、无报错、无 panic——tab 条最右「日志」裁半（zh 480 窗即触发）；en 界面下横幅文案贴边双侧裁。
 - **根因**：egui `ui.horizontal` 子元素超出 clip rect 即静默裁剪（不换行不收缩不滚动）；tab 条 / 横幅是 painter 定宽直画连收缩机会都没有；`min_inner_size(480,420)` 照搬原版 Qt `setMinimumSize`——Qt 布局器有 stretch / 换行 / minimumSizeHint 联动，480 在 Qt 下成立，egui 无等价物，最小宽不构成「内容放得下」的保证；headless 冒烟一律 `RawInput::default()`（无 screen_rect ≈ 无限宽画布），溢出在测试里结构性不可见。G-31 是 ScrollArea::horizontal 场景的姊妹条目，普通 horizontal 此前无条目。
-- **对策**：三层防线（D-120）——L1 `PANEL_MIN_WIDTH` headless 实测抬底 + 单源化（lt-ui panel/mod.rs 常量，min_inner_size 与默认创建宽共用）；L2 行纪律 = hint_line 禁与控件同行串联（独立行自动 wrap）、painter 直画文本以 `layout(wrap_width)` 预测行数定高、新增固定宽控件须自证行自然宽 ≤ 最小窗宽可用宽；L3 = zh/en × 8 页 × min 宽的溢出断言测试（扫 `ClippedShape::visual_bbox` 右缘，全绿才有「窄窗不裁」的保证）。
-- **证据**：用户 2026-09-30 两帧截图（535/480 宽，「日志」tab 半裁，多页右缘控件消失）；溢出清单与定值法 = docs/panel-narrow-layout.md §二/§四；机械防线 = `crates/lt-ui/src/windows/panel/mod.rs` 溢出断言测试。
+- **对策**：三层防线（D-120 立法，D-122 修订 L1/L3）——L1 最小宽**运行时派生**（D-122 推翻 D-120 常数定值：常数追不上字体×语言×DPI 乘积，D-120 的 600 实为 egui 默认字体度量）＝ UI 逐帧实测「tab 条自然宽＋镶边」经 `WinAction::SetPanelMinWidth` 差值发送，宿主动态 `set_min_inner_size`，当前宽不足即抬窗；创建期仅 `PANEL_DEFAULT_WIDTH` 垫底（egui Fonts 惰性初始化，`Context::run` 前不可排版，首帧才拿得到派生值）；L2 行纪律不变 = hint_line 禁与控件同行串联（独立行自动 wrap）、painter 直画文本以 `layout(wrap_width)` 预测行数定高、新增固定宽控件须自证行自然宽 ≤ 派生最小宽可用宽（测试红了拆行，禁回灌抬 min）；L3 溢出断言测试标尺随 D-122 升级 = ctx 装**真实内嵌思源链**（旧测试用默认字体度量即 D-120 失守之根）＋断言视口＝派生公式输出＋分组框边距恒定断言。
+- **证据**：用户 2026-09-30 两帧截图（535/480 宽，「日志」tab 半裁，多页右缘控件消失）；en 复现（D-122）：最小窗 600 客户区裁「Logs」~9px——定量锚 = 内嵌思源链 en 派生 617.3 > 600、zh 509.7（用户实机 ui_font=系统 Noto Sans CJK SC 更宽，派生值自动跟随）；溢出清单 = docs/panel-narrow-layout.md §二；定值→派生的裁决史 = docs/panel-adaptive-min-width.md；机械防线 = `crates/lt-ui/src/windows/panel/mod.rs` 溢出断言测试 + 边距恒定断言 + 差值发送节奏测试。
 
 ---
 
