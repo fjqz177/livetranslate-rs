@@ -9,4 +9,5 @@ disallowed-methods = [
     { path = "winit::event_loop::EventLoopProxy::send_event", reason = "事件发送唯一通道 = lt-app 动脉桥；例外就地 #[allow]" },
     { path = "egui::Ui::selectable_label", reason = "弹层项必须走 style::selectable_stable（D-119/G-38：直调在悬停时长高 2×w_inactive 且绕过几何不变量）；唯一豁免 = 助手本体" },
     { path = "egui::Ui::selectable_value", reason = "同上——选值版走 style::selectable_value_stable" },
+    { path = "egui::Button::selectable", reason = "面板列表行必须走 style::selectable_button_stable（D-124：非选中行静止无帧/悬停全帧分支占位差 2×w_inactive，悬停跳变 +2px 挤下方内容）；唯一豁免 = 助手本体与 Noninteractive 灰显占位（无悬停分支，病不达）" },
 ]

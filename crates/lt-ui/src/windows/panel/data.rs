@@ -184,15 +184,16 @@ pub fn page(
         let mut pick = crate::state::RowPick::Idle;
         for (i, e) in entries.iter().enumerate() {
             let text = cache_row_text(e);
+            let row_selected = panel.state.cache_selected == Some(i);
             let resp = ui
                 .push_id(i, |ui| {
-                    ui.add(
-                        egui::Button::selectable(
-                            panel.state.cache_selected == Some(i),
-                            RichText::new(&text).monospace().size(12.0),
-                        )
-                        .corner_radius(4.0)
-                        .min_size(egui::vec2(ui.available_width(), 0.0)),
+                    // D-124：列表行走 selectable_button_stable——裸
+                    // Button::selectable 悬停跳变 +2px（已入 clippy 禁令）
+                    crate::style::selectable_button_stable(
+                        ui,
+                        row_selected,
+                        RichText::new(&text).monospace().size(12.0),
+                        egui::vec2(ui.available_width(), 0.0),
                     )
                 })
                 .inner;

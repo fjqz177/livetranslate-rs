@@ -651,6 +651,15 @@ pub(crate) mod click_testing {
             events: Vec<egui::Event>,
         ) -> egui::FullOutput {
             self.t += 1.0 / 60.0;
+            // D-124：注入真机 visuals 三件套（对齐 app.rs run_frame 的面板臂）。
+            // 此前跑 egui 默认 visuals（w_inactive=0），selectable 静止/悬停
+            // 两态占位恰好相等——悬停跳变类病对本测试台整体失明（与 G-40
+            // 时钟盲区并列的测试台教训：headless 台必须逐项对齐真机注入面）。
+            let mut visuals = crate::windows::panel::panel_visuals();
+            crate::style::stabilize_widget_strokes(&mut visuals);
+            self.ctx.set_visuals(visuals);
+            let scroll = crate::style::panel_scroll_style();
+            self.ctx.all_styles_mut(move |s| s.spacing.scroll = scroll);
             let mut out = self.ctx.run_ui(
                 egui::RawInput {
                     screen_rect: Some(self.screen),

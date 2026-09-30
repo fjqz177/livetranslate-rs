@@ -223,6 +223,42 @@ pub fn selectable_value_stable<'a, Value: PartialEq>(
     .inner
 }
 
+/// 列表行 `Button::selectable` 稳定包装（D-124）：非选中行静止态走无帧分支
+/// （stroke 不画）但内边距仍按 `button_padding − inactive.bg_stroke.width`
+/// 预扣，悬停切全帧时描边回补 → 行高瞬间 +2×w_inactive、框内文字 +1px、
+/// 下方内容整体下移（G-38 同族；本仓 panel 与 stabilized-dark 两族 visuals
+/// 的 w_inactive 均 =1.0 → 2px）。这里仅对**未选中**行在 scope 内把
+/// inactive 描边宽归零再 add：静止/悬停/按压占位与选中行全等（悬停反馈
+/// 只剩底色与描边色出现）；选中行恒全帧分支本就稳定，保持 `w_inactive`
+/// 原值——**顺带保留其静止灰边框**（归零会抹掉它）。
+///
+/// 文本入、按钮本助手内部构造（`Button::selectable` 已入 clippy
+/// disallowed-methods，调用方不得 touch 被禁构造器——D-119 同款口径），
+/// 圆角统一 4.0（三列表行现状同值）；**禁**据此全局归零
+/// `inactive.bg_stroke`——面板按钮 idle 灰边框与 D-32 底限的半覆盖皮肤
+/// 语义依赖该值（与 D-119 豁免边界同款）。
+#[allow(clippy::disallowed_methods)] // 助手本体 = D-124 禁令的唯一豁免出口
+pub fn selectable_button_stable<'a>(
+    ui: &mut egui::Ui,
+    selected: bool,
+    text: impl egui::IntoAtoms<'a>,
+    min_size: egui::Vec2,
+) -> egui::Response {
+    ui.scope(|ui| {
+        // 恒进 scope（选中与否同一条 Id 链）：分支化会让按钮 Id 随选中态
+        // 翻转变层，egui 双击判定认 Id——点选后立刻双击会丢（T8 实测拦下）。
+        if !selected {
+            ui.visuals_mut().widgets.inactive.bg_stroke.width = 0.0;
+        }
+        ui.add(
+            egui::Button::selectable(selected, text)
+                .corner_radius(4.0)
+                .min_size(min_size),
+        )
+    })
+    .inner
+}
+
 // ── 按钮三态色（D-32 红线 + 2026-09-17 走查 A1 修复） ──
 
 /// 按钮三态色族。几何（描边宽/圆角/内边距）三态全等是硬约束（D-32：文字
@@ -494,5 +530,61 @@ mod tests {
         let sel_hovered = popup_item_rect(Some(sel_idle.center()), true);
         assert_eq!(sel_idle.height(), sel_hovered.height());
         assert_eq!(sel_idle.width(), sel_hovered.width());
+    }
+
+    /// D-124 回归钉：助手包出的列表行在 panel visuals（真机注入面）下
+    /// 静止/悬停 rect 全等；选中行同样全等且与未选中行**等高**（点选
+    /// 瞬间零跳动）。行几何 = 两行 12px 等宽文本 + min_size，不会被
+    /// interact_size 钳制，高度轴测得出病灶。探针法 = popup_item_rect
+    /// 同款（widget_state 读上一帧 response，指针须喂满帧数）。
+    fn list_row_rect(selected: bool, pointer: Option<egui::Pos2>) -> egui::Rect {
+        let ctx = egui::Context::default();
+        let mut visuals = crate::windows::panel::panel_visuals();
+        stabilize_widget_strokes(&mut visuals); // 真机注入面（app.rs run_frame 同款）
+        ctx.set_visuals(visuals);
+        let mut rect = None;
+        for frame in 0..4u32 {
+            let mut input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(400.0, 300.0),
+                )),
+                ..Default::default()
+            };
+            input.time = Some(f64::from(frame) * 0.016);
+            if let Some(p) = pointer {
+                input.events.push(egui::Event::PointerMoved(p));
+            }
+            let mut out = ctx.run_ui(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let resp = selectable_button_stable(
+                        ui,
+                        selected,
+                        egui::RichText::new(">>> DeepSeek\n     https://api.deepseek.com")
+                            .monospace()
+                            .size(12.0),
+                        egui::vec2(320.0, 0.0),
+                    );
+                    rect = Some(resp.rect);
+                });
+            });
+            out.textures_delta.clear(); // headless 无渲染器，防 drop panic
+        }
+        rect.expect("至少跑一帧 UI")
+    }
+
+    #[test]
+    fn selectable_button_stable_row_geometry_stable_across_states() {
+        let idle = list_row_rect(false, None);
+        let hovered = list_row_rect(false, Some(idle.center()));
+        assert_eq!(idle, hovered, "未选中行悬停不得改变占位（D-124 跳变回归）");
+        let sel_idle = list_row_rect(true, None);
+        let sel_hovered = list_row_rect(true, Some(sel_idle.center()));
+        assert_eq!(sel_idle, sel_hovered, "选中行悬停不得改变占位（D-124）");
+        assert_eq!(
+            idle.height(),
+            sel_idle.height(),
+            "选中/未选中行必须等高（D-124 点选零跳动）"
+        );
     }
 }

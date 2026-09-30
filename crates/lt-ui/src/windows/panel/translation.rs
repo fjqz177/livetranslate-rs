@@ -426,16 +426,20 @@ pub fn page(
                 .running
                 .as_ref()
                 .is_some_and(|r| r.row == i && r.cfg_key == this_key);
+            let row_selected = panel.state.model_selected == Some(i);
             ui.horizontal(|ui| {
                 let probe_w = 72.0;
                 let spacing = ui.spacing().item_spacing.x;
                 let row_w = (ui.available_width() - probe_w - spacing).max(120.0);
                 let resp = ui
                     .push_id(i, |ui| {
-                        ui.add(
-                            egui::Button::selectable(panel.state.model_selected == Some(i), rich)
-                                .corner_radius(4.0)
-                                .min_size(egui::vec2(row_w, 0.0)),
+                        // D-124：列表行走 selectable_button_stable——裸
+                        // Button::selectable 悬停跳变 +2px（已入 clippy 禁令）
+                        crate::style::selectable_button_stable(
+                            ui,
+                            row_selected,
+                            rich,
+                            egui::vec2(row_w, 0.0),
                         )
                     })
                     .inner;
@@ -2342,6 +2346,57 @@ mod tests {
         assert_eq!(
             st.panel.state.model_selected, None,
             "改同 tab 其他设置应清模型选中（C4）"
+        );
+    }
+
+    /// D-124：悬停模型行前后，行内文字与下方「添加」按钮坐标必须全等
+    /// （用户报案症状 1:1 回归：悬停蓝框曾使行高 +2px、框内文字 +1px）。
+    /// 红的凭据依赖 PanelHarness 注入真机 visuals（D-124 同包修复的测试台
+    /// 盲区）；悬停须喂满 3 帧——egui 按钮态读上一帧 read_response。
+    #[test]
+    fn model_row_hover_does_not_shift_geometry() {
+        let _lang_guard = crate::lang_test_guard();
+        lt_i18n::set_lang("zh").expect("zh 表解析");
+        let mut st = crate::state::AppUi::new(Settings::default());
+        st.panel.state.page = crate::state::PanelPage::Translation;
+        use crate::windows::panel::click_testing as ct;
+        let mut h = ct::PanelHarness::new(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(700.0, 1400.0),
+        ));
+
+        let needle = model_row_text(0, st.settings.active_model, &st.settings.models[0]);
+        let add_label = lt_i18n::t("btn_add");
+        let text_pos = |shapes: &[egui::epaint::ClippedShape], n: &str| -> Option<egui::Pos2> {
+            shapes.iter().find_map(|c| match &c.shape {
+                egui::Shape::Text(t) if t.galley.text() == n => Some(t.pos),
+                _ => None,
+            })
+        };
+
+        let out = h.idle(&mut st, 2);
+        let row_idle = text_pos(&out.shapes, &needle).expect("模型行应上屏");
+        let add_idle = text_pos(&out.shapes, &add_label).expect("添加按钮应上屏");
+        let center = ct::text_center(&out.shapes, &needle).expect("模型行中心");
+
+        let out = h.feed(
+            &mut st,
+            vec![
+                vec![egui::Event::PointerMoved(center)],
+                vec![egui::Event::PointerMoved(center)],
+                vec![egui::Event::PointerMoved(center)],
+            ],
+        );
+        let row_hover = text_pos(&out.shapes, &needle).expect("悬停帧模型行应上屏");
+        let add_hover = text_pos(&out.shapes, &add_label).expect("悬停帧添加按钮应上屏");
+
+        assert_eq!(
+            row_idle, row_hover,
+            "悬停不得移动行内文字（D-124 跳变回归）"
+        );
+        assert_eq!(
+            add_idle, add_hover,
+            "悬停不得挤压下方内容（D-124 跳变回归）"
         );
     }
 }
