@@ -533,11 +533,12 @@ mod tests {
     }
 
     /// D-124 回归钉：助手包出的列表行在 panel visuals（真机注入面）下
-    /// 静止/悬停 rect 全等；选中行同样全等且与未选中行**等高**（点选
-    /// 瞬间零跳动）。行几何 = 两行 12px 等宽文本 + min_size，不会被
-    /// interact_size 钳制，高度轴测得出病灶。探针法 = popup_item_rect
-    /// 同款（widget_state 读上一帧 response，指针须喂满帧数）。
-    fn list_row_rect(selected: bool, pointer: Option<egui::Pos2>) -> egui::Rect {
+    /// 静止/悬停/按下三态 rect 全等；选中行同样全等且与未选中行**整
+    /// rect 相等**（点选瞬间零跳动）。行几何 = 两行 12px 等宽文本 +
+    /// min_size，不会被 interact_size 钳制，高度轴测得出病灶。探针法 =
+    /// popup_item_rect 同款（widget_state 读上一帧 response，指针须喂
+    /// 满帧数；按下态喂 PointerButton 按住帧）。
+    fn list_row_rect(selected: bool, pointer: Option<egui::Pos2>, pressed: bool) -> egui::Rect {
         let ctx = egui::Context::default();
         let mut visuals = crate::windows::panel::panel_visuals();
         stabilize_widget_strokes(&mut visuals); // 真机注入面（app.rs run_frame 同款）
@@ -554,6 +555,14 @@ mod tests {
             input.time = Some(f64::from(frame) * 0.016);
             if let Some(p) = pointer {
                 input.events.push(egui::Event::PointerMoved(p));
+                if pressed {
+                    input.events.push(egui::Event::PointerButton {
+                        pos: p,
+                        button: egui::PointerButton::Primary,
+                        pressed: true,
+                        modifiers: egui::Modifiers::default(),
+                    });
+                }
             }
             let mut out = ctx.run_ui(input, |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
@@ -575,16 +584,19 @@ mod tests {
 
     #[test]
     fn selectable_button_stable_row_geometry_stable_across_states() {
-        let idle = list_row_rect(false, None);
-        let hovered = list_row_rect(false, Some(idle.center()));
+        let idle = list_row_rect(false, None, false);
+        let hovered = list_row_rect(false, Some(idle.center()), false);
+        let pressed = list_row_rect(false, Some(idle.center()), true);
         assert_eq!(idle, hovered, "未选中行悬停不得改变占位（D-124 跳变回归）");
-        let sel_idle = list_row_rect(true, None);
-        let sel_hovered = list_row_rect(true, Some(sel_idle.center()));
+        assert_eq!(idle, pressed, "未选中行按下不得改变占位（D-124 三态全等）");
+        let sel_idle = list_row_rect(true, None, false);
+        let sel_hovered = list_row_rect(true, Some(sel_idle.center()), false);
+        let sel_pressed = list_row_rect(true, Some(sel_idle.center()), true);
         assert_eq!(sel_idle, sel_hovered, "选中行悬停不得改变占位（D-124）");
+        assert_eq!(sel_idle, sel_pressed, "选中行按下不得改变占位（D-124）");
         assert_eq!(
-            idle.height(),
-            sel_idle.height(),
-            "选中/未选中行必须等高（D-124 点选零跳动）"
+            idle, sel_idle,
+            "选中/未选中行必须整 rect 相等（D-124 点选零跳动）"
         );
     }
 }

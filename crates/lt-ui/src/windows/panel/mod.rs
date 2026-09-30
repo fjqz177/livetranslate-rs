@@ -626,9 +626,13 @@ pub fn panel_visuals() -> egui::Visuals {
 /// **时钟为何显式**：egui `RawInput.time=None` 时每帧仅推进 predicted_dt
 /// （1/60s），两次连发 click 相距 3 帧 ≈ 50ms < max_double_click_delay 0.3s
 /// 会被判成双击——`idle()` 用真实时间步进拉开间隔。
+/// **visuals 为何注入**（D-124）：headless 台必须逐项对齐真机注入面
+/// （app.rs run_frame）——此前跑 egui 默认 visuals（w_inactive=0），
+/// selectable 静止/悬停两态占位恰好相等，悬停跳变类病对本台整体失明。
 #[cfg(test)]
 pub(crate) mod click_testing {
-    /// 面板 headless 测试台：单调时钟 + dispatch WinId::Panel 全真路径渲染
+    /// 面板 headless 测试台：单调时钟 + 真机 visuals/滚动条注入 +
+    /// dispatch WinId::Panel 全真路径渲染
     pub(crate) struct PanelHarness {
         ctx: egui::Context,
         screen: egui::Rect,

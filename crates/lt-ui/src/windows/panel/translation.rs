@@ -2398,5 +2398,21 @@ mod tests {
             add_idle, add_hover,
             "悬停不得挤压下方内容（D-124 跳变回归）"
         );
+
+        // 正向对照（评审 D-124）：悬停反馈必须真的出现——行区有 accent 蓝
+        // 描边矩形（定稿 §3.2 视觉契约）。没有它，若悬停反馈整体消失，
+        // 上面两条几何断言会恒真空过。
+        let row_area = egui::Rect::from_min_size(row_hover, egui::vec2(620.0, 44.0));
+        let accent = crate::windows::panel::Palette::NATIVE.accent;
+        let blue_frame = out.shapes.iter().any(|c| match &c.shape {
+            egui::Shape::Rect(r) => {
+                r.stroke.width > 0.0 && r.stroke.color == accent && r.rect.intersects(row_area)
+            }
+            _ => false,
+        });
+        assert!(
+            blue_frame,
+            "悬停须在行区画出 accent 描边框（D-124 视觉契约）"
+        );
     }
 }
