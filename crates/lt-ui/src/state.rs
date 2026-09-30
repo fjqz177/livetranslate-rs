@@ -1790,9 +1790,9 @@ pub struct PanelUiState {
     pub apply_due_at: Option<Instant>,
     /// 翻译页 system_prompt 防抖到期时刻（原版 _prompt_debounce 600ms；
     /// 到期由 PromptApply 节拍消费 → SwitchTranslator 重建翻译器）
+    pub prompt_apply_due: Option<Instant>,
     /// 已发出的派生最小窗宽（D-122 差值发送记忆：None = 尚未发过首帧值）
     pub last_emitted_min: Option<f32>,
-    pub prompt_apply_due: Option<Instant>,
     /// ModelEditDialog 打开中（None=关闭；翻译页模态区渲染）
     pub model_editor: Option<ModelEditState>,
     /// 字幕行编辑对话框打开中（None=关闭；字幕页模态区渲染）

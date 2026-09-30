@@ -46,8 +46,9 @@ const TAB_LABEL_PAD: f32 = 20.0;
 const PANEL_MIN_SLACK: f32 = 8.0;
 
 /// 页套边距 token（D-122 裁决 3「灰框离窗边恒为常数」的唯一值）：
-/// 页面 Frame 四边边距的单源，灰框到窗缘距离恒等于它
-pub const PANEL_PAGE_MARGIN: f32 = 12.0;
+/// 页面 Frame 四边边距的单源，灰框到窗缘距离恒等于它（i8 = Margin::same
+/// 原生形态，转型单点发生在派生公式）
+pub const PANEL_PAGE_MARGIN: i8 = 12;
 
 /// 面板**首启观感下限**（逻辑 px；D-122）：仅作默认创建宽与创建期 min_inner_size
 /// 垫底值，**不参与最小宽正确性**——正确最小宽 = [`derived_panel_min_width`]
@@ -55,6 +56,10 @@ pub const PANEL_PAGE_MARGIN: f32 = 12.0;
 /// 沿革：D-120 的 PANEL_MIN_WIDTH=600 曾是「溢出安全宽」断言，被实机证伪
 /// （egui 默认字体度量 ≠ 实机字体链）；本常数只保观感，不再作任何正确性声明。
 pub const PANEL_DEFAULT_WIDTH: f32 = 600.0;
+
+/// 面板最小高（原版 setMinimumSize(480, 420) 的高度项；创建期与
+/// WinAction::SetPanelMinWidth 宿主臂共用，防双写漂移）
+pub const PANEL_MIN_HEIGHT: f32 = 420.0;
 
 /// Windows 原生浅色调色板（PyQt6 Windows 默认控件字面色，2026-09-06 实拍取色）
 #[derive(Debug, Clone, Copy)]
@@ -264,7 +269,7 @@ pub fn panel_ui(
         // 一旦内容（底部提示行等）超出 pane 高度会出现第二根滚动条（LT-1，
         // 见 docs/archive/log-tab-redesign.md）。
         Frame::NONE
-            .inner_margin(egui::Margin::same(PANEL_PAGE_MARGIN as i8))
+            .inner_margin(egui::Margin::same(PANEL_PAGE_MARGIN))
             .show(ui, |ui| log_tab::page(ui, log, &pal));
         return;
     }
@@ -273,7 +278,7 @@ pub fn panel_ui(
         .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded)
         .show(ui, |ui| {
             Frame::NONE
-                .inner_margin(egui::Margin::same(PANEL_PAGE_MARGIN as i8))
+                .inner_margin(egui::Margin::same(PANEL_PAGE_MARGIN))
                 .show(ui, |ui| match page {
                     PanelPage::VadAsr => vad::page(ui, panel, session, settings, &pal),
                     PanelPage::Translation => {
@@ -288,7 +293,7 @@ pub fn panel_ui(
                     PanelPage::Changelog => changelog_tab::page(ui, &pal),
                     PanelPage::Log => unreachable!("日志页已在上方特判，不进入页面级滚动区"),
                 });
-            ui.add_space(PANEL_PAGE_MARGIN);
+            ui.add_space(PANEL_PAGE_MARGIN as f32);
         });
 }
 
@@ -680,13 +685,7 @@ mod tests {
         );
 
         // ② 真实内嵌思源链（实机同源标尺）度量 ≠ egui 默认字体度量
-        let ctx_real = egui::Context::default();
-        crate::fonts::apply_fonts(
-            &ctx_real,
-            &Settings::default(),
-            &mut crate::fonts::FontsState::default(),
-        );
-        prime(&ctx_real);
+        let ctx_real = real_fonts_ctx();
         let en_real = super::derived_panel_min_width(&ctx_real);
         assert!(
             en_real != en_default,
@@ -757,26 +756,8 @@ mod tests {
             // 先设语再派生——页签宽度是语言的函数（并行残留语言会污染派生值，
             // 首跑曾致 zh/en 同值的假象）
             lt_i18n::set_lang(lang).expect("语言表解析");
-            let ctx = egui::Context::default();
-            // ① 真实内嵌思源链，与实机同源（Fonts 惰性初始化须先垫一帧）
-            crate::fonts::apply_fonts(
-                &ctx,
-                &Settings::default(),
-                &mut crate::fonts::FontsState::default(),
-            );
-            let mut prime = ctx.run_ui(
-                egui::RawInput {
-                    screen_rect: Some(egui::Rect::from_min_size(
-                        egui::Pos2::ZERO,
-                        egui::vec2(1200.0, 420.0),
-                    )),
-                    ..egui::RawInput::default()
-                },
-                |ui| {
-                    ui.label("prime");
-                },
-            );
-            prime.textures_delta.clear();
+            // ① 真实内嵌思源链，与实机同源（helper 内含垫帧）
+            let ctx = real_fonts_ctx();
             // ② 断言视口 = 派生公式输出
             let min_w = super::derived_panel_min_width(&ctx);
             if lang == "en" {
@@ -844,6 +825,22 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// 测试脚手架：装真实内嵌思源链（实机同源标尺）+ 垫一帧——egui Fonts
+    /// 惰性初始化，`Context::run` 之前无字体可排版
+    fn real_fonts_ctx() -> egui::Context {
+        let ctx = egui::Context::default();
+        crate::fonts::apply_fonts(
+            &ctx,
+            &Settings::default(),
+            &mut crate::fonts::FontsState::default(),
+        );
+        let mut prime = ctx.run_ui(egui::RawInput::default(), |ui| {
+            ui.label("prime");
+        });
+        prime.textures_delta.clear();
+        ctx
     }
 
     /// 图元是否完全不上屏（全透明）——不可见即不构成可见裁剪
@@ -930,25 +927,7 @@ mod tests {
     fn panel_group_frames_keep_constant_window_margin() {
         let _lang_guard = crate::lang_test_guard();
         let _ = lt_i18n::set_lang("zh");
-        let ctx = egui::Context::default();
-        crate::fonts::apply_fonts(
-            &ctx,
-            &Settings::default(),
-            &mut crate::fonts::FontsState::default(),
-        );
-        let mut prime = ctx.run_ui(
-            egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(1200.0, 2000.0),
-                )),
-                ..egui::RawInput::default()
-            },
-            |ui| {
-                ui.label("prime");
-            },
-        );
-        prime.textures_delta.clear();
+        let ctx = real_fonts_ctx();
         let min_w = super::derived_panel_min_width(&ctx);
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(min_w, 2000.0));
         let mut st = crate::state::AppUi::new(Settings::default());
@@ -978,7 +957,7 @@ mod tests {
                 frame_l = frame_l.min(rs.rect.left());
             }
         }
-        let m = super::PANEL_PAGE_MARGIN;
+        let m = super::PANEL_PAGE_MARGIN as f32;
         assert!(
             frame_r.is_finite() && (frame_r - (screen.right() - m)).abs() <= 2.0,
             "分组框右缘 {frame_r:.1} 应 = 视口右缘 − 边距 token（{:.1}）——\

@@ -259,7 +259,7 @@ impl MultiWindowApp {
             // WinAction::SetPanelMinWidth 到本臂校正——语言/字体变化自动跟随
             attrs = attrs.with_min_inner_size(winit::dpi::LogicalSize::new(
                 crate::windows::panel::PANEL_DEFAULT_WIDTH,
-                420.0,
+                crate::windows::panel::PANEL_MIN_HEIGHT,
             ));
         }
         if id == WinId::Subtitle {
@@ -2022,7 +2022,10 @@ impl MultiWindowApp {
                     let scale = hw.window.scale_factor();
                     let logical = hw.window.inner_size().to_logical::<f32>(scale);
                     hw.window
-                        .set_min_inner_size(Some(winit::dpi::LogicalSize::new(w, 420.0)));
+                        .set_min_inner_size(Some(winit::dpi::LogicalSize::new(
+                            w,
+                            crate::windows::panel::PANEL_MIN_HEIGHT,
+                        )));
                     if logical.width < w {
                         let _ = hw
                             .window
