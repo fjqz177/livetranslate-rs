@@ -335,6 +335,14 @@
 - **对策**：三层防线（D-120 立法，D-122 修订 L1/L3）——L1 最小宽**运行时派生**（D-122 推翻 D-120 常数定值：常数追不上字体×语言×DPI 乘积，D-120 的 600 实为 egui 默认字体度量）＝ UI 逐帧实测「tab 条自然宽＋镶边」经 `WinAction::SetPanelMinWidth` 差值发送，宿主动态 `set_min_inner_size`，当前宽不足即抬窗；创建期仅 `PANEL_DEFAULT_WIDTH` 垫底（egui Fonts 惰性初始化，`Context::run` 前不可排版，首帧才拿得到派生值）；L2 行纪律不变 = hint_line 禁与控件同行串联（独立行自动 wrap）、painter 直画文本以 `layout(wrap_width)` 预测行数定高、新增固定宽控件须自证行自然宽 ≤ 派生最小宽可用宽（测试红了拆行，禁回灌抬 min）；L3 溢出断言测试标尺随 D-122 升级 = ctx 装**真实内嵌思源链**（旧测试用默认字体度量即 D-120 失守之根）＋断言视口＝派生公式输出＋分组框边距恒定断言。
 - **证据**：用户 2026-09-30 两帧截图（535/480 宽，「日志」tab 半裁，多页右缘控件消失）；en 复现（D-122）：最小窗 600 客户区裁「Logs」~9px——定量锚 = 内嵌思源链 en 派生 617.3 > 600、zh 509.7（用户实机 ui_font=系统 Noto Sans CJK SC 更宽，派生值自动跟随）；溢出清单 = docs/panel-narrow-layout.md §二；定值→派生的裁决史 = docs/panel-adaptive-min-width.md；机械防线 = `crates/lt-ui/src/windows/panel/mod.rs` 溢出断言测试 + 边距恒定断言 + 差值发送节奏测试。
 
+## G-40 headless 点击连发被判双击：RawInput.time=None 时 egui 按 predicted_dt 推进时钟
+
+- **触发**：headless UI 交互测试（`Context::run_ui` + `RawInput.events` 手工喂 `PointerButton` 帧）里连续两次 click 序列——「再点已选行取消选中」「连点开模态」类用例必经此路；`RawInput::default()` 不带 `time` 字段时命中。
+- **症状**：第二次 click 失效或行为诡变——本仓 D-123 首跑即「再点已选行断言取消却仍选中」+ 模态测试「确定按钮不在图元里」双红；单跑每个 click 单独看都成功，连发才坏，极像「写回守卫吞取消」复发（实际是另一回事，易误诊回死代码方向）。
+- **根因**：`RawInput.time = None` 时 egui 每帧仅推进 `predicted_dt`（1/60s）——两次 click 序列相距 3 帧 ≈ 50ms < `max_double_click_delay` 0.3s（InputOptions 默认），第二次 click 被判成 `double_clicked`；而本仓行点击语义「双击帧不翻转 toggle」（D-123 §4.3）恰好吞掉第二次点击的取消效果。姊妹坑：egui::Window 开窗首两帧 sizing 收敛未含底部按钮行（内嵌 ScrollArea auto_shrink 与窗口尺寸博弈的瞬时态），断言其按钮上屏须有界 settle（至多 3 帧内出现）；滚轮为离散量低通（未消费量逐帧转 smooth_scroll_delta），喂一帧 MouseWheel 后须补 idle 帧才见滚动；ScrollArea 内容放得下时滚轮无路可滚（max_offset=0），滚动类测试视口必须矮于内容自然高。
+- **对策**：测试台显式单调时钟——harness 每帧 `time: Some(t)`、t 步进 1/60s；两次独立 click 之间 `idle(≥25 帧)`（≈0.42s > 0.3s 双击窗）；**要测双击就背靠背连发两次 click**（间隔 2 帧 < 窗口，恰好构成 double_clicked——D-123 的 T8 即此法）。参照实现 = `crates/lt-ui/src/windows/panel/mod.rs` `click_testing::PanelHarness`（含 idle/click/text_center 共用件）。
+- **证据**：D-123 首跑失败输出（lt-ui 5 败：三列表再点取消 + 空白点击 + 拖拽滚动全红，根因非写回守卫）；egui 0.36.1 `input_state/mod.rs:376`（`time.unwrap_or(self.time + predicted_dt)`）与 `:117`（max_double_click_delay 0.3）；修复后 PanelHarness 15 测全绿（2026-09-30，全仓 671+0）。
+
 ---
 
 ## 候选清单（尚未收编——能五段式实证表述才收编，不臆造）

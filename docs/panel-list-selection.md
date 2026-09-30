@@ -69,21 +69,25 @@
 
 ### 4.1 三态写回（修死写回的根本法）
 
-现写法 `let mut select: Option<usize> = None;` 用 `None` 兼作「本帧无点击」哨兵与「取消」值，导致写回守卫必须吞 `None`——这就是缓存页死写回的根源。改为三态：`无点击 / 选中(i) / 取消` 分离表达，写回仅在「本帧确有点击」时执行。三列表统一此写法。
+现写法 `let mut select: Option<usize> = None;` 用 `None` 兼作「本帧无点击」哨兵与「取消」值，导致写回守卫必须吞 `None`——这就是缓存页死写回的根源。改为三态枚举 `RowPick { Idle / Select(i) / Deselect }`，三列表共用裁决函数 `row_pick_clicked`（双击帧优先：`double_clicked || 已选态不同 → Select`），写回仅在帧内确有点击时执行。三列表统一此写法。
 
 ### 4.2 空白区捕获（C2）
 
-主案：面板根在内容之前分配整窗 rect（`Sense::click()`）作背景捕获——egui 后注册者 hit-test 优先，所有真实控件天然压住它，点空白才落网；行间缝、卡片衬、内容下方全部覆盖。**风险**：与 ScrollArea 拖拽滚动的兼容性（背景捕获可能截胡拖拽）须 headless 测试验证；若截胡，回退方案 = 仅捕获内容下方剩余 rect + 卡片间衬（放弃 5px 级行间缝，实际难点是内容下方大块空白，主案回退都覆盖）。
+主案成立：面板根在**一切内容之前**注册整窗 catcher（`Sense::click()`）——egui 后注册者 hit-test 优先，所有真实控件天然压住它，label 等非点击控件不拦点击；tab 条缝、行间缝、卡片衬、页边距带、内容下方全部覆盖。原风险条款「ScrollArea 拖拽滚动被截胡」**不成立**：egui 0.36 的 ScrollArea 本无拖拽滚动（仅滚轮 + 滚动条，均与 `Sense::click` 互不抢占），headless 验证 = 滚轮测试 + 页边距衬条点击测试；catcher 显式 `on_hover_cursor(Default)` 防 Sense::click 把空白染成手型。回退方案未启用（留档备查：仅捕内容下方余区 + 卡片衬）。
 
 ### 4.3 双击与 toggle 的次序
 
-行响应若本帧 `double_clicked()` 则跳过 toggle（保持选中）直接走编辑分支——避免「第一帧取消、第二帧重选」的中间闪烁，净效果与 §3.2 一致。
+行响应若本帧 `double_clicked()` 则跳过 toggle（保持选中）直接走编辑分支——避免「第一帧取消、第二帧重选」的中间闪烁，净效果与 §3.2 一致。**施工如实化**：字幕页双击的旧实现只「武装」底部编辑按钮、并不直开编辑器（与模块头「双击行编辑」承诺不符，翻译页 2026-09-11 已修同款）；本包按矩阵 T8 顺带把字幕页补成直开（补齐而非改变裁决语义）。
 
 ### 4.4 C4 的 funnel：清选中 + 防抖落盘合流
 
-三列表所在页的**非列表控件**写回点，统一从 `mark_settings_dirty(session)` 换到「清三处选中 + 防抖落盘」变体（一个 funnel，机械替换，可 grep 审计）；列表自身操作与行编辑确认保留原通道（§3.2 豁免）。`mark_settings_dirty` 本体签名不动（其余 tab 65 处调用面不受牵连）。其他 tab（样式 / VAD / 日志等）无列表选中，不需要换——能改到那些控件必然先经 C3 清过。
+三列表所在页的**非列表控件**写回点，统一从 `mark_settings_dirty(session)` 换到「清三处选中 + 防抖落盘」变体 `mark_settings_changed(panel, session)`（一个 funnel，机械替换，可 grep 审计）；列表自身操作与行编辑确认保留原通道（§3.2 豁免）。`mark_settings_dirty` 本体签名不动（其余 tab 65 处调用面不受牵连）。其他 tab（样式 / VAD / 日志等）无列表选中，不需要换——能改到那些控件必然先经 C3 清过。**grep 审计口径**：三页 `mark_settings_dirty` 残留调用点必须全部落在 §3.2 豁免操作上；跨域入口（字幕背景图回执、恢复本页默认确认臂）同样走 funnel 或 `clear_list_selections` 显式清。
 
-### 4.5 边界
+### 4.5 C3 的唯一换页口
+
+换页只许走 `PanelUi::set_page`（实际换页即清三处选中），三入口共用：页签点击 / 引导横幅 / `WinAction::OpenPanelPage`。禁散写 `state.page = …`——漏配 clear 即选中跨 tab 存活（测试锁 `tab_switch_clears_all_list_selections` + 纯逻辑 `set_page_clears_selections_only_on_real_change`）。
+
+### 4.6 边界
 
 - C1 与 C4 同帧冲突（点了行又拖了滑块）：C4 的清在后渲染分支执行即幂等，终态一致。
 - 行编辑模态打开中点空白：模态窗在顶层不受影响，选中照清；模态 OK 确认后按 §3.2 重选中，自洽。
@@ -119,3 +123,9 @@
 - **Q2 切 tab 是否清空**（本席推荐不清空、以 C1 兜底）：**用户推翻推荐，拍板切 tab 清**——选中是临时焦点，不是该跨页保留的状态。本档按用户裁决执行，非偏离。
 - **Q3 范围**：三个列表全修。
 - **Q4 流程**：按 Matt Pocock 流程逐步走——grilling（已闭合）→ 本定稿（docs 提交 + D-123 登记）→ `/to-spec` 规格 issue（ready-for-agent）→ 单会话活**不拆单**（workflow §1「多会话大活才拆」）→ 等用户明示开工令 → `/implement`。
+
+## 8. 施工与评审留痕（2026-09-30 收口）
+
+- **实现提交** 6b3267b（C1~C4 + 三态写回 + funnel + 身份规则 + headless 测试台 12 测）；**评审修复提交**（本提交）：`/code-review` 两轴（Standards + Spec 对 issue #35 / 本档）收编——C1 裁决收敛 `RowPick` + `row_pick_clicked` 单点（三处重复表达式与裸 `Option<Option<usize>>` 消灭）；C3 聚拢 `PanelUi::set_page` 唯一换页口（三入口共用）；C2 从「内容下方余区」升格整窗 catcher（§4.2，连回退面「卡片间衬」一并覆盖，页边距衬条点击有测试）；`restore_translation_page` / `ResetSubtitle` 确认臂 / `BgImagePicked` 回执臂统一 funnel 口径（grep 审计干净）；T6「新增」分支补测（`line_add_accept_selects_new_row`）；测试 env 去工单号命名 + 缓存行文本提取生产单源。
+- **未收编**（评审已列、裁决不做）：C4 funnel 的 grep 机械守护脚本——豁免操作与漏用点无法用 grep 区分（同一函数名两种合法语义），靠 §4.4 审计口径 + 评审把关；测试 env 四页组装差异下沉 click_testing——各页注入面不同，抽象收益低于直白。
+- **实机走查**（等用户，issue #35 保持 open）：①三列表各点行→再点取消；②选中后点空白/切 tab/改同页设置逐项验清；③缓存刷新保选中；④双击行直开编辑器；⑤空白滚轮滚动正常。
