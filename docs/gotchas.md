@@ -321,9 +321,9 @@
 ## G-38 下拉弹层悬停跳变：egui selectable 静止态无帧分支与描边抵消公式不对称
 
 - **触发**：给任何 ComboBox 弹层写非选中项（`ui.selectable_label` / `ui.selectable_value` / `Button::selectable(false, …)`），且 visuals 的 `widgets.inactive.bg_stroke.width > 0`——面板浅色（`panel_visuals` 显式 1.0 灰边）与暗色窗（`stabilize_widget_strokes` 底限 `max(1.0)`，D-32）双双命中；stock egui 两主题该宽均为 0，不触发。
-- **症状**：鼠标悬停弹层项的瞬间，该项长高 2×w_inactive px（本仓 = 2px）且变宽同量、框内文字向右下挪 1px、下方所有项与弹层底边被往下顶 2px；移开又缩回。普通按钮 / DragValue / Checkbox / 页签 / 下拉收起态本体均不跳（前者恒全帧、后四者不走该路径）。**盲区注记（评审 D-119 补）**：弹层外的内联可选列表行（`egui::Button::selectable` 直调，现存 4 处：panel/data.rs:187、panel/subtitle_page.rs:348/610、panel/translation.rs:429）同病灶仍在——D-119 拍板范围限弹层项（承诺弹层外像素不动）故未迁移，收敛时套同款 scope 归零即可。
+- **症状**：鼠标悬停弹层项的瞬间，该项长高 2×w_inactive px（本仓 = 2px）且变宽同量、框内文字向右下挪 1px、下方所有项与弹层底边被往下顶 2px；移开又缩回。普通按钮 / DragValue / Checkbox / 页签 / 下拉收起态本体均不跳（前者恒全帧、后四者不走该路径）。**盲区注记（评审 D-119 补；2026-09-30 已收编）**：弹层外的内联可选列表行（`egui::Button::selectable` 直调，彼时 4 处）同病灶——D-124 已套同款 scope 归零收编（`style::selectable_button_stable` + `Button::selectable` 入 clippy 禁令），行级细节与 headless 台盲区见 G-41。
 - **根因**：egui 0.36 Frame 总尺寸 = content + inner_margin + 2×stroke.width（`containers/frame.rs:13`），`Style::button_style` 以 `inner_margin = button_padding + expansion − bg_stroke.width` 让描边与内边距互相抵消（`src/widget_style.rs:163-165`）——**前提是描边真被画出来**。但 `Button::selectable(false)` = `frame_when_inactive(false)`（`src/widgets/button.rs:77-83`），静止态走 `Button::atom_ui` 的 Retrocompatibility else 分支换 `Frame::new()`（描边 NONE 不画，`button.rs:363-367`），预扣的 w_inactive 无人回补 → 静止项比悬停态矮 2×w_inactive。选中项（SELECTED class）恒全帧，两态对称故恒稳。
-- **对策**：用 `style::selectable_stable` / `selectable_value_stable`（lt-ui）替换弹层内 selectable 调用——scope 内归零 `inactive.bg_stroke.width` 再调原生方法（选值版直调上游 `Ui::selectable_value` 单源写回语义），静止/悬停几何像素级相等，悬停蓝框观感不变（D-119）；**禁全局归零** inactive.bg_stroke（会剥掉面板按钮 idle 灰边框、破坏 D-32 底限的半覆盖皮肤语义）；机械防线 = `ui.selectable_label`/`ui.selectable_value` 已入 clippy disallowed-methods（唯一豁免 = 助手本体就地 `#[allow]`），新增弹层项想绕过禁令只能显式豁免留痕。egui 上游若对称化该分支，助手与禁令可退役。
+- **对策**：用 `style::selectable_stable` / `selectable_value_stable`（lt-ui）替换弹层内 selectable 调用——scope 内归零 `inactive.bg_stroke.width` 再调原生方法（选值版直调上游 `Ui::selectable_value` 单源写回语义），静止/悬停几何像素级相等，悬停蓝框观感不变（D-119）；**禁全局归零** inactive.bg_stroke（会剥掉面板按钮 idle 灰边框、破坏 D-32 底限的半覆盖皮肤语义）；机械防线 = `ui.selectable_label`/`ui.selectable_value` 已入 clippy disallowed-methods（唯一豁免 = 助手本体就地 `#[allow]`），新增弹层项想绕过禁令只能显式豁免留痕。egui 上游若对称化该分支，助手与禁令可退役。内联列表行同族病灶走 `style::selectable_button_stable`（D-124/G-41）。
 - **证据**：用户 2026-09-29 控制面板截图两帧（悬停「Fun-ASR-Nano」蓝框坠出弹层底边）；egui 0.36.1 源码行号见根因；本仓 `crates/lt-ui/src/windows/panel/mod.rs panel_visuals()`（inactive.bg_stroke 1.0 #ADADAD）+ `crates/lt-ui/src/style.rs stabilize_widget_strokes`（`max(1.0)` 底限）；headless 等高回归测试 = `crates/lt-ui/src/style.rs` tests（静止/悬停两帧 rect 等高）。
 - **版本**：egui 0.36.1。
 
@@ -342,6 +342,15 @@
 - **根因**：`RawInput.time = None` 时 egui 每帧仅推进 `predicted_dt`（1/60s）——两次 click 序列相距 3 帧 ≈ 50ms < `max_double_click_delay` 0.3s（InputOptions 默认），第二次 click 被判成 `double_clicked`；而本仓行点击语义「双击帧不翻转 toggle」（D-123 §4.3）恰好吞掉第二次点击的取消效果。姊妹坑：egui::Window 开窗首两帧 sizing 收敛未含底部按钮行（内嵌 ScrollArea auto_shrink 与窗口尺寸博弈的瞬时态），断言其按钮上屏须有界 settle（至多 3 帧内出现）；滚轮为离散量低通（未消费量逐帧转 smooth_scroll_delta），喂一帧 MouseWheel 后须补 idle 帧才见滚动；ScrollArea 内容放得下时滚轮无路可滚（max_offset=0），滚动类测试视口必须矮于内容自然高。
 - **对策**：测试台显式单调时钟——harness 每帧 `time: Some(t)`、t 步进 1/60s；两次独立 click 之间 `idle(≥25 帧)`（≈0.42s > 0.3s 双击窗）；**要测双击就背靠背连发两次 click**（间隔 2 帧 < 窗口，恰好构成 double_clicked——D-123 的 T8 即此法）。参照实现 = `crates/lt-ui/src/windows/panel/mod.rs` `click_testing::PanelHarness`（含 idle/click/text_center 共用件）。
 - **证据**：D-123 首跑失败输出（lt-ui 5 败：三列表再点取消 + 空白点击 + 拖拽滚动全红，根因非写回守卫）；egui 0.36.1 `input_state/mod.rs:376`（`time.unwrap_or(self.time + predicted_dt)`）与 `:117`（max_double_click_delay 0.3）；修复后 PanelHarness 15 测全绿（2026-09-30，全仓 671+0）。
+
+
+## G-41 面板列表行悬停跳变：G-38 同族行级形态 + headless 台 visuals 盲区
+
+- **触发**：鼠标悬停面板三处可选列表行（翻译模型行 / 字幕页文字行 / 缓存页行）——`egui::Button::selectable(false, …)` 直调的非选中行，且 visuals 的 `inactive.bg_stroke.width > 0`（`panel_visuals` 显式 1.0 / `stabilize_widget_strokes` 底限 1.0，同 G-38 命中面）。
+- **症状**：悬停出蓝框瞬间该行 +2px 高、框内文字下移 1px，行下所有内容整体下移 2px（用户截图报案：翻译页 DeepSeek 行，「框以下的所有内容都往下挤了一点」）；点选/取消选中瞬间同跳（选中行恒全帧 vs 未选中静止无帧）。同族三形态：弹层项（G-38，D-119 修）/ **内联列表行（本条，D-124 修）** / 普通按钮（恒全帧，WP-B 已稳，无此病）。
+- **根因**：与 G-38 同一公式（`inner_margin = button_padding + expansion − bg_stroke.width`、`Frame::total_margin` 含 stroke），行级路径静止态恒走无帧分支（`frame_when_inactive=false` → `Frame::new()`）——非选中行静止占位 `padding − w_inactive`（预扣无人回补），悬停/按下/选中全帧分支 = `padding`；两态描边宽同 1.0 → 差 2×w_inactive。**姊妹坑（测试台）**：`click_testing::PanelHarness` 此前不注入真机 visuals，跑 egui 默认（w_inactive=0）下两态恰好相等——状态相关几何病对 headless 台整体失明，D-123 全套测试无一能红；headless 台必须逐项对齐真机注入面（`app.rs run_frame` 的 visuals 三件套），与 G-40 时钟盲区并列。
+- **对策**：三列表行走 `style::selectable_button_stable`（未选中行 scope 归零 `w_inactive`，**恒进 scope 保 Id 链**——分支化 scope 会让按钮 Id 随选中翻转变层、egui 双击判定认 Id 而丢双击，T8 实测拦下）；`egui::Button::selectable` 入 clippy disallowed-methods（唯一豁免 = 助手本体与 Noninteractive 灰显占位）；`PanelHarness::render` 注入 `panel_visuals` + stabilize + 面板滚动条三件套；禁全局归零 `inactive.bg_stroke`（同 G-38 边界）。
+- **证据**：headless 探针先红：行文字 y 116.0→117.0（Δ+1.0）、下方「添加」按钮 y 153.0→155.0（Δ+2.0），与用户截图逐像素吻合；egui 0.36.1 `widget_style.rs:158-165`（逐态内边距公式）与 `containers/frame.rs:327`（total_margin 含 stroke）；修复后 `model_row_hover_does_not_shift_geometry` + `selectable_button_stable_row_geometry_stable_across_states` 绿（2026-09-30，全仓 673+0）。定稿 = `docs/panel-selectable-hover-jump.md`。
 
 ---
 
