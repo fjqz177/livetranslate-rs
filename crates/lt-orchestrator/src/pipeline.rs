@@ -152,10 +152,12 @@ impl Drop for TlJob {
                 } else {
                     FailureKind::Dropped
                 },
+                // D-130/K5 延伸：两条 detail 同为 en 界面可见的硬编码中文，
+                // 经任务携带的 Msg 取键（档案 K5 行「与既有中文 detail 一并迁移」）
                 if superseded {
-                    "已切换模型，本段未翻译".into()
+                    self.msg.t("tl_dropped_switched")
                 } else {
-                    "队列积压，保留最新（本段已放弃）".into()
+                    self.msg.t("tl_dropped_queue_kept")
                 },
             );
         }
@@ -4630,7 +4632,19 @@ mod tests {
     fn retired_pool_marks_superseded_not_dropped() {
         let sup = test_sup();
         let sink = EventArtery::new();
-        let pool = JobPool::new(0, &sup, sink.clone(), test_transcript(), test_msg());
+        // D-85/F3 措辞锁：本测试锁「detail 说明真因」，Msg 须给真实译文
+        // （test_msg 是键名回显，过不了 contains("切换模型")）
+        let zh_msg = Msg::new(
+            |k| {
+                if k == "tl_dropped_switched" {
+                    "已切换模型，本段未翻译".into()
+                } else {
+                    k.to_string()
+                }
+            },
+            || "zh".into(),
+        );
+        let pool = JobPool::new(0, &sup, sink.clone(), test_transcript(), zh_msg);
         for id in 0..2u64 {
             pool.submit(id, || {});
         }
