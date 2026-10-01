@@ -752,15 +752,26 @@ fn render_model_editor(
             lt_i18n::t("dialog_edit_model")
         };
         let extra_valid = ed.parse_extra_body().is_ok();
+        // G-42 模态形态（D-126；G-39 同族）：egui::Window 尺寸随内容自然宽走、
+        // Area constrain 只摆位不缩窗——面板拉到最小宽时窗体整块越出宿主双缘
+        // 被裁（用户截图 1）。max_width 钳到视口内，行级适配见 editor_fields。
+        // 显式 Id：默认 Id = Id::new(标题文本)（window.rs:104），语言热切换改
+        // 标题即丢窗状态（D-121 遗留），换恒定 Id 隔离。
+        let scr = ui.ctx().viewport_rect();
         egui::Window::new(RichText::new(title).strong())
+            .id(egui::Id::new("panel_model_edit_dialog"))
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .default_width(600.0)
+            .max_width((scr.width() - 16.0).max(300.0))
             .show(ui.ctx(), |ui| {
                 egui::ScrollArea::vertical()
-                    .max_height(480.0)
+                    // 硬顶 480 + 标题/按钮行 chrome ≈ 90 > 面板最小高 420——
+                    // 纵向随视口收缩（110 = 标题+按钮行+镶边的 chrome 预算，
+                    // 机械锁 = panel_modals_no_horizontal_overflow_at_min_width）
+                    .max_height((scr.height() - 110.0).clamp(120.0, 480.0))
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         editor_fields(ui, ed, pal);
@@ -946,7 +957,10 @@ fn editor_fields(ui: &mut Ui, ed: &mut ModelEditState, pal: &Palette) {
             });
             ui.end_row();
 
-            // 价格（原版 price_row：输入/输出 $/1M，0 显示 "—"）
+            // 价格（原版 price_row：输入/输出 $/1M，0 显示 "—"）。
+            // D-126：拆两行——原单行串联 7 控件（币种+单位+输入+输出）自然宽
+            // zh ~518 / en ~592，窄窗右缘裁掉单位文本（用户截图 2「元/1M to…」）。
+            // 币种与单位同行（单位语义随币种），输入/输出独立成行
             ui.label(lt_i18n::t("label_pricing"));
             ui.horizontal(|ui| {
                 // D-85：币种下拉（跟随界面语言 / 人民币 / 美元）——价格单位与
@@ -993,16 +1007,20 @@ fn editor_fields(ui: &mut Ui, ed: &mut ModelEditState, pal: &Palette) {
                             ed.currency = Some("usd".into());
                         }
                     });
-                ui.label(lt_i18n::t("label_input_price"));
-                price_drag(ui, "model_edit_ip", &mut ed.input_price);
-                ui.label(lt_i18n::t("label_output_price"));
-                price_drag(ui, "model_edit_op", &mut ed.output_price);
                 // 单位随生效币种（不再无单位）
                 ui.label(
                     RichText::new(lt_i18n::t(cur.unit_key()))
                         .size(11.0)
                         .color(pal.weak),
                 );
+            });
+            ui.end_row();
+            ui.label("");
+            ui.horizontal(|ui| {
+                ui.label(lt_i18n::t("label_input_price"));
+                price_drag(ui, "model_edit_ip", &mut ed.input_price);
+                ui.label(lt_i18n::t("label_output_price"));
+                price_drag(ui, "model_edit_op", &mut ed.output_price);
             });
             ui.end_row();
         });

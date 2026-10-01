@@ -981,6 +981,137 @@ mod tests {
         }
     }
 
+    /// 防回归（G-42 面板内二级模态形态 / D-126；G-39 同族）：面板拉到最小宽时打开
+    /// 编辑模型 / 编辑字幕行两个 egui::Window 内部模态，任何图元不得越出视口
+    /// 左右缘（用户 2026-10-01 截图：模态整块超出宿主窗宽、左右双缘被裁）。
+    /// 技术同 [`panel_no_horizontal_overflow_at_min_width`]（真实思源链 +
+    /// 派生视口 + 图元 bbox 扫描）；模态场景 ≥3 帧再取末帧（egui::Window
+    /// 开窗 sizing 收敛，G-40 姊妹坑）。
+    #[test]
+    fn panel_modals_no_horizontal_overflow_at_min_width() {
+        let _lang_guard = crate::lang_test_guard();
+        const TOL: f32 = 2.0;
+        let mut fails: Vec<String> = Vec::new(); // 全场景失败收集，末尾一次断言
+        type Open = fn(&mut crate::state::AppUi);
+        let scenarios: [(&str, &str, PanelPage, Open); 2] = [
+            (
+                "ModelEditDialog",
+                "panel_model_edit_dialog",
+                PanelPage::Translation,
+                |st: &mut crate::state::AppUi| {
+                    st.panel.state.model_editor = Some(crate::state::ModelEditState::new_edit(
+                        0,
+                        &st.settings.models[0],
+                    ));
+                },
+            ),
+            (
+                "LineEditDialog",
+                "panel_line_edit_dialog",
+                PanelPage::Subtitle,
+                |st: &mut crate::state::AppUi| {
+                    st.panel.state.line_editor = Some(crate::state::LineEditState::new_add(0));
+                },
+            ),
+        ];
+        for lang in ["zh", "en"] {
+            lt_i18n::set_lang(lang).expect("语言表解析");
+            let ctx = real_fonts_ctx();
+            let min_w = super::derived_panel_min_width(&ctx);
+            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(min_w, 420.0));
+            for (name, win_id_salt, page, open) in scenarios {
+                let mut st = crate::state::AppUi::new(Settings::default());
+                st.panel.state.page = page;
+                open(&mut st);
+                let mut frame = None;
+                for attempt in 0..8 {
+                    lt_i18n::set_lang(lang).expect("语言表解析");
+                    let mut out = ctx.run_ui(
+                        egui::RawInput {
+                            screen_rect: Some(screen),
+                            ..egui::RawInput::default()
+                        },
+                        |ui| crate::windows::dispatch(crate::state::WinId::Panel, ui, &mut st),
+                    );
+                    // epaint debug 断言要求消费纹理增量——先于溢出断言 clear，
+                    // 防 assert 失败时 out 走 Drop 引爆二次 panic 掩盖真因
+                    out.textures_delta.clear();
+                    frame = Some(out);
+                    if lt_i18n::get_lang() == lang && attempt >= 2 {
+                        break;
+                    }
+                }
+                let out = frame.expect("重试环内必有产出");
+                // ① 模态窗体矩形 ⊆ 视口（横纵双轴）——egui::Window 尺寸随内容
+                // 自然宽/高走、Area constrain 只摆位不缩窗，窗体越视口即整块
+                // 双缘被裁（用户截图 1）；窗体合围 ⇒ 标题/底部按钮行必然可达。
+                // 矩形取自 egui memory（生产侧显式 Id，与语言无关），不做图元
+                // 考古。滚动区内容的纵向越缘不在此列——那是有滚动条可达的
+                // 正常溢出
+                let win_id = egui::Id::new(win_id_salt);
+                match ctx.memory(|m| m.area_rect(win_id)) {
+                    Some(wr) if wr.is_finite() => {
+                        if wr.right() > screen.right() + TOL
+                            || wr.left() < screen.left() - TOL
+                            || wr.bottom() > screen.bottom() + TOL
+                            || wr.top() < screen.top() - TOL
+                        {
+                            fails.push(format!(
+                                "{lang} {name} 窗体矩形越视口：窗 {wr:?} vs 视口 {screen:?}"
+                            ));
+                        }
+                    }
+                    _ => fails.push(format!(
+                        "{lang} {name} 模态窗体未在 memory 留下矩形（Id 不匹配？）"
+                    )),
+                }
+                // ② 横向逐图元 bbox ⊆ 自身 clip_rect——clip = 窗体∩视口（校准
+                // 实证），抓「行越窗内容宽」的窗内裁（用户截图 2 的 元/1M to…
+                // 半字消失）；纵向不查（ScrollArea 内容纵向越缘 = 可滚动到达）
+                for clipped in &out.shapes {
+                    if shape_paints_nothing(&clipped.shape) {
+                        continue;
+                    }
+                    let mut leafs: Vec<&egui::Shape> = Vec::new();
+                    fn push_leafs<'a>(shape: &'a egui::Shape, out: &mut Vec<&'a egui::Shape>) {
+                        match shape {
+                            egui::Shape::Vec(v) => v.iter().for_each(|s| push_leafs(s, out)),
+                            s => out.push(s),
+                        }
+                    }
+                    push_leafs(&clipped.shape, &mut leafs);
+                    for leaf in leafs {
+                        if shape_paints_nothing(leaf) {
+                            continue;
+                        }
+                        // blur>0 = 窗阴影（设计上外溢 15px，越缘属正常装饰）
+                        if let egui::Shape::Rect(r) = leaf {
+                            if r.blur_width > 0.0 {
+                                continue;
+                            }
+                        }
+                        let bb = leaf.visual_bounding_rect();
+                        let cr = clipped.clip_rect;
+                        let over_r = bb.right() - cr.right();
+                        let over_l = cr.left() - bb.left();
+                        if over_r > TOL || over_l > TOL {
+                            let txt = match leaf {
+                                egui::Shape::Text(t) => t.galley.text().to_owned(),
+                                other => format!("{other:?}"),
+                            };
+                            fails.push(format!(
+                                "{lang} {name} 图元横向越自身裁剪缘：右 {over_r:+.1} / \
+                                 左 {over_l:+.1}（clip {cr:?}）bbox {bb:?} | {txt}"
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        // 末尾一次性断言：诊断期全矩阵可见（修复期与未来回归都一次看全）
+        assert!(fails.is_empty(), "{}", fails.join("\n"));
+    }
+
     /// 测试脚手架：装真实内嵌思源链（实机同源标尺）+ 垫一帧——egui Fonts
     /// 惰性初始化，`Context::run` 之前无字体可排版
     fn real_fonts_ctx() -> egui::Context {

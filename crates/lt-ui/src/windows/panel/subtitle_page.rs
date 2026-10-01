@@ -543,15 +543,20 @@ fn render_line_editor(
         let Some(ed) = p.line_editor.as_mut() else {
             return;
         };
+        // G-42 模态形态（D-126）：同 ModelEditDialog——窗体钳视口 + 显式 Id
+        // （默认 Id 随标题文本变，语言热切换丢窗状态）；纵向随视口收缩
+        let scr = ui.ctx().viewport_rect();
         egui::Window::new(RichText::new(lt_i18n::t("subwin_edit_line")).strong())
+            .id(egui::Id::new("panel_line_edit_dialog"))
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .default_width(460.0)
+            .max_width((scr.width() - 16.0).max(300.0))
             .show(ui.ctx(), |ui| {
                 egui::ScrollArea::vertical()
-                    .max_height(440.0)
+                    .max_height((scr.height() - 110.0).clamp(120.0, 440.0))
                     .auto_shrink([false, false])
                     .show(ui, |ui| line_editor_fields(ui, ed, fonts, &master));
                 ui.add_space(6.0);
@@ -591,6 +596,12 @@ fn line_editor_fields(
     fonts: &mut crate::fonts::FontsState,
     master: &str,
 ) {
+    // D-126：字体行不进 Grid——font_picker_row 是整行复合控件（小样 truncate
+    // 需真实视口宽），Grid 列宽 sizing pass 以 INFINITY 排版单元格（egui
+    // grid.rs max_cell_size 默认无穷），小样/滑条按整行自然宽把列撑到 ~620、
+    // 窗体随之超出宿主视口（zh 实测窗宽 ~750 vs 视口 509）；任何「随
+    // available_width 派生的列帽」都与「窗随内容走」构成正反馈（窗只涨不缩，
+    // 实测 697→985 失控），唯一稳态解 = 让最宽的复合控件不进 Grid。
     egui::Grid::new("line_edit_grid")
         .num_columns(2)
         .spacing([8.0, 5.0])
@@ -633,22 +644,6 @@ fn line_editor_fields(
                     false,
                     egui::Button::selectable(false, labels[idx].clone()).corner_radius(4.0),
                 );
-            }
-            ui.end_row();
-
-            // 字体（D-17：行级空串=跟随主设置；选择器含小样与缺字提示）
-            ui.label(lt_i18n::t("subwin_font"));
-            let cur_family = ed.font_family.clone();
-            if let Some(next) = super::font_picker::font_picker_row(
-                ui,
-                fonts,
-                "line_edit_font",
-                "",
-                cur_family,
-                master,
-                true,
-            ) {
-                ed.font_family = next;
             }
             ui.end_row();
 
@@ -751,6 +746,21 @@ fn line_editor_fields(
             );
             ui.end_row();
         });
+
+    // 字体（D-17：行级空串=跟随主设置；选择器含小样与缺字提示）——
+    // 整行复合控件在 Grid 外页级渲染（同样式页用法，见上方 D-126 注）
+    let cur_family = ed.font_family.clone();
+    if let Some(next) = super::font_picker::font_picker_row(
+        ui,
+        fonts,
+        "line_edit_font",
+        &lt_i18n::t("subwin_font"),
+        cur_family,
+        master,
+        true,
+    ) {
+        ed.font_family = next;
+    }
 }
 
 #[cfg(test)]
