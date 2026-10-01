@@ -6,11 +6,13 @@
 //! - 内嵌 Noto Sans Mono（拉丁/数字等宽，OFL）为 chrome 的保证回退：
 //!   系统有 Consolas 时保持原版 1:1（Consolas 为微软字体不可重分发/不内嵌）；
 //! - UI 符号（✓ ✗ ● ▲ ▼ 等）由思源 + Noto Sans Symbols 2 覆盖，不再依赖系统 seguisym；
+//! - 语言脚本补字（D-127，G-43）：思源所缺的阿拉伯/泰/天城文/希伯来由四个
+//!   Noto Sans <Script> VF 在链尾兜底，三条链全挂——语言下拉/转写/译文/日志不豆腐；
 //! - 行级字体键空串 = 跟随主设置（D-17 级联模型，见 [`resolve_family`]）；
 //! - 系统字体经注册表枚举 + 懒加载字节（只读选中/注册的族；Windows 专属，
 //!   其他平台为空列表——仓库内仍可完整渲染）。
 //!
-//! 体积策略（W-7）：资产以 brotli 压缩入库（~12.7MB 代替 ~34MB），运行时一次性
+//! 体积策略（W-7）：资产以 brotli 压缩入库（~13.5MB 代替 ~21.2MB），运行时一次性
 //! 解压进内存（'static 泄漏，与 include_bytes 同生命周期；启动 +~100ms，字形零损失）。
 //!
 //! 渲染侧约定：`FontFamily::Name(族名)` 只出现在 [`FontsState::resolved`]（已注册者）
@@ -31,6 +33,12 @@ static SANS_BR: &[u8] = include_bytes!("../../../assets/fonts/NotoSansCJKsc-Regu
 static MONO_BR: &[u8] = include_bytes!("../../../assets/fonts/NotoSansMono-VF.ttf.br");
 /// 内嵌符号字体（brotli 压缩资产；经 [`embedded_symbols`] 运行时解压）。
 static SYMBOLS_BR: &[u8] = include_bytes!("../../../assets/fonts/NotoSansSymbols2-Regular.ttf.br");
+/// 内嵌四脚本补字（brotli 压缩资产；经 [`embedded_scripts`] 运行时解压）——
+/// 思源所缺的阿拉伯/泰/天城文/希伯来（D-127，G-43：egui 无系统回退，缺字即豆腐）。
+static ARABIC_BR: &[u8] = include_bytes!("../../../assets/fonts/NotoSansArabic-VF.ttf.br");
+static THAI_BR: &[u8] = include_bytes!("../../../assets/fonts/NotoSansThai-VF.ttf.br");
+static DEVANAGARI_BR: &[u8] = include_bytes!("../../../assets/fonts/NotoSansDevanagari-VF.ttf.br");
+static HEBREW_BR: &[u8] = include_bytes!("../../../assets/fonts/NotoSansHebrew-VF.ttf.br");
 /// 内嵌字体「展示族名」：设置键默认值 + 选择器首项显示。
 pub const EMBEDDED_FAMILY: &str = "Noto Sans CJK SC";
 /// 内嵌思源在 `FontDefinitions.font_data` 中的注册名（链尾兜底 + 命名族链尾部）。
@@ -39,6 +47,14 @@ pub const EMBEDDED_KEY: &str = "sans-cjk-sc";
 pub const MONO_KEY: &str = "sans-mono";
 /// 内嵌符号字体的注册名（各链尾部；✓ ✗ 等）。
 pub const SYMBOLS_KEY: &str = "sans-symbols";
+/// 四脚本补字的注册名（各链尾部；D-127）。
+pub const ARABIC_KEY: &str = "sans-arabic";
+/// 四脚本补字的注册名（各链尾部；D-127）。
+pub const THAI_KEY: &str = "sans-thai";
+/// 四脚本补字的注册名（各链尾部；D-127）。
+pub const DEVANAGARI_KEY: &str = "sans-devanagari";
+/// 四脚本补字的注册名（各链尾部；D-127）。
+pub const HEBREW_KEY: &str = "sans-hebrew";
 /// 中英韩样例：UI 预览卡与字形覆盖测试共用（防漂移）。
 pub const SAMPLE_TEXT: &str = "天地玄黄 宇宙洪荒 The quick brown fox 한국어 어둠 0123456789";
 /// 字形覆盖检查样例（选择器缺字提示与覆盖测试用）。
@@ -74,6 +90,25 @@ pub fn embedded_mono() -> &'static [u8] {
 pub fn embedded_symbols() -> &'static [u8] {
     static S: std::sync::OnceLock<&'static [u8]> = std::sync::OnceLock::new();
     S.get_or_init(|| inflate_embedded(SYMBOLS_BR, "Noto Sans Symbols 2"))
+}
+
+/// 四脚本补字表：(注册键, brotli 资产, 解压展示名)——注册与覆盖测试共用。
+const SCRIPT_FONTS: [(&str, &[u8], &str); 4] = [
+    (ARABIC_KEY, ARABIC_BR, "Noto Sans Arabic"),
+    (THAI_KEY, THAI_BR, "Noto Sans Thai"),
+    (DEVANAGARI_KEY, DEVANAGARI_BR, "Noto Sans Devanagari"),
+    (HEBREW_KEY, HEBREW_BR, "Noto Sans Hebrew"),
+];
+
+/// 解压后的四脚本补字字节（键 → 字节；链装配与覆盖测试共用）。
+pub fn embedded_scripts() -> &'static [(&'static str, &'static [u8])] {
+    static S: std::sync::OnceLock<Vec<(&'static str, &'static [u8])>> = std::sync::OnceLock::new();
+    S.get_or_init(|| {
+        SCRIPT_FONTS
+            .iter()
+            .map(|(key, br, name)| (*key, inflate_embedded(br, name)))
+            .collect()
+    })
 }
 
 /// 系统字体条目：注册表值清洗后的展示族名 + 字体文件路径（字节懒加载）。
@@ -336,9 +371,9 @@ fn wish_family<'a>(wanted: &mut Vec<&'a str>, seen: &mut HashSet<String>, fam: &
 }
 
 /// 按 Settings 重建 FontDefinitions（纯构建；调用方 set_fonts）。链装配（仓库自洽）：
-/// - Proportional：[界面字体] → [内嵌思源] → [内嵌符号] → [egui 默认族尾]
-/// - Monospace：[Consolas(系统，锦上添花)] → [内嵌等宽 MonoCJK] → [界面字体] → [内嵌思源] → [内嵌符号] → [默认族尾]
-/// - Name(族名)（行级/字幕字体）：[该字体] → [内嵌思源] → [内嵌符号]
+/// - Proportional：[界面字体] → [内嵌思源] → [内嵌符号] → [四脚本补字] → [egui 默认族尾]
+/// - Monospace：[Consolas(系统，锦上添花)] → [内嵌等宽] → [界面字体] → [内嵌思源] → [内嵌符号] → [四脚本补字] → [默认族尾]
+/// - Name(族名)（行级/字幕字体）：[该字体] → [内嵌思源] → [内嵌符号] → [四脚本补字]
 ///
 /// 找不到的族名不注册（Name 不出现），渲染经 resolved 回落 Proportional（全局链，内嵌兜底）。
 /// **不读取任何系统符号字体**：✓ ✗ ● ▲ ▼ 等由内嵌思源 + Noto Sans Symbols 2 覆盖
@@ -346,7 +381,7 @@ fn wish_family<'a>(wanted: &mut Vec<&'a str>, seen: &mut HashSet<String>, fam: &
 pub fn build_definitions(settings: &Settings, fonts: &mut FontsState) -> FontDefinitions {
     let mut defs = FontDefinitions::default();
 
-    // 内嵌三字体恒注册：思源（链尾兜底）+ 等宽 MonoCJK（chrome 保证回退）+ 符号
+    // 内嵌主三字体恒注册：思源（链尾兜底）+ 等宽 MonoCJK（chrome 保证回退）+ 符号
     defs.font_data.insert(
         EMBEDDED_KEY.into(),
         FontData::from_static(embedded_sans()).into(),
@@ -359,6 +394,11 @@ pub fn build_definitions(settings: &Settings, fonts: &mut FontsState) -> FontDef
         SYMBOLS_KEY.into(),
         FontData::from_static(embedded_symbols()).into(),
     );
+    // D-127 四脚本补字恒注册：阿拉伯/泰/天城文/希伯来（思源所缺，G-43）
+    for (key, bytes) in embedded_scripts() {
+        defs.font_data
+            .insert((*key).into(), FontData::from_static(bytes).into());
+    }
 
     // 系统锦上添花：Consolas（等宽 chrome，原版 QFont Consolas；缺省回落内嵌等宽）
     let consolas_key = "consolas";
@@ -402,8 +442,7 @@ pub fn build_definitions(settings: &Settings, fonts: &mut FontsState) -> FontDef
         };
         defs.font_data.insert(key.clone(), data);
         let mut chain = vec![key.clone()];
-        push_unique(&mut chain, EMBEDDED_KEY.into());
-        push_unique(&mut chain, SYMBOLS_KEY.into());
+        push_embedded_tail(&mut chain);
         defs.families
             .insert(FontFamily::Name(Arc::from(*family)), chain);
         fonts
@@ -422,8 +461,7 @@ pub fn build_definitions(settings: &Settings, fonts: &mut FontsState) -> FontDef
     if let Some(k) = &ui_key {
         push_unique(&mut prop, k.clone());
     }
-    push_unique(&mut prop, EMBEDDED_KEY.into());
-    push_unique(&mut prop, SYMBOLS_KEY.into());
+    push_embedded_tail(&mut prop);
     prop.extend(default_prop);
     defs.families.insert(FontFamily::Proportional, prop);
 
@@ -435,12 +473,20 @@ pub fn build_definitions(settings: &Settings, fonts: &mut FontsState) -> FontDef
     if let Some(k) = &ui_key {
         push_unique(&mut mono, k.clone());
     }
-    push_unique(&mut mono, EMBEDDED_KEY.into());
-    push_unique(&mut mono, SYMBOLS_KEY.into());
+    push_embedded_tail(&mut mono);
     mono.extend(default_mono);
     defs.families.insert(FontFamily::Monospace, mono);
 
     defs
+}
+
+/// 内嵌兜底链尾（三条链共用）：思源 → 符号 → 四脚本补字（D-127，G-43）。
+fn push_embedded_tail(chain: &mut Vec<String>) {
+    push_unique(chain, EMBEDDED_KEY.into());
+    push_unique(chain, SYMBOLS_KEY.into());
+    for (key, _) in embedded_scripts() {
+        push_unique(chain, (*key).into());
+    }
 }
 
 /// 族名 → 字体数据（注册键名 + Arc<FontData>）。命中内嵌或系统扫描表；
@@ -605,24 +651,33 @@ mod tests {
             .collect()
     }
 
-    /// 仓库自洽字形覆盖（机器无关，解析级）：三内嵌字体联合覆盖全部 UI
-    /// 字符集；且链装配必须包含三字体——任何系统字体缺失都不影响渲染。
+    /// 全部内嵌字体字节（联合覆盖判定的底表）：三主字体 + 四脚本补字（D-127）。
+    fn embedded_all() -> Vec<&'static [u8]> {
+        [embedded_sans(), embedded_mono(), embedded_symbols()]
+            .into_iter()
+            .chain(embedded_scripts().iter().map(|(_, b)| *b))
+            .collect()
+    }
+
+    /// 仓库自洽字形覆盖（机器无关，解析级）：全部内嵌字体联合覆盖全部 UI
+    /// 字符集；且链装配必须包含内嵌字体——任何系统字体缺失都不影响渲染。
     #[test]
     fn embedded_fonts_cover_all_ui_glyphs() {
         const ALL: &str =
             "天地玄黄宇宙洪荒한국어日本語 ABZdef0123456789✓✗●▲▼◆→←◎▪LiveTranslate%,:.⚠—";
-        // 联合覆盖（= 渲染链覆盖）：任一字符不被三字体之一包含即失败
+        // 联合覆盖（= 渲染链覆盖）：任一字符不被任一内嵌字体包含即失败
+        let embedded = embedded_all();
         let mut missing: Vec<char> = ALL
             .chars()
             .filter(|c| {
-                ![embedded_sans(), embedded_mono(), embedded_symbols()]
+                !embedded
                     .iter()
                     .any(|b| font_missing(b, &c.to_string()).is_empty())
             })
             .collect();
         assert!(
             missing.is_empty(),
-            "三内嵌字体联合覆盖缺失: {}",
+            "内嵌字体联合覆盖缺失: {}",
             missing.drain(..).collect::<String>()
         );
         // 语义职责：思源=中/英/韩；等宽=chrome 拉丁/数字/中文；符号=✗（思源所缺）
@@ -642,6 +697,20 @@ mod tests {
             font_missing(embedded_symbols(), "✓✗●").is_empty(),
             "符号应覆盖 ✓✗●（旧实现依赖系统 seguisym.ttf 的理由）"
         );
+        // 语义职责（D-127）：四脚本补字各覆盖自己的语言本文名
+        for (key, bytes) in embedded_scripts() {
+            let own = match *key {
+                ARABIC_KEY => "العربية",
+                THAI_KEY => "ไทย",
+                DEVANAGARI_KEY => "हिन्दी",
+                HEBREW_KEY => "עברית",
+                _ => unreachable!("SCRIPT_FONTS 表外注册键"),
+            };
+            assert!(
+                font_missing(bytes, own).is_empty(),
+                "{key} 应覆盖本文名 {own}"
+            );
+        }
         // 链装配：三条链必须各自包含对应内嵌字体（结构保证）
         let settings = Settings::default();
         let mut fonts = FontsState::default();
@@ -652,6 +721,19 @@ mod tests {
         let mono = &defs.families[&FontFamily::Monospace];
         assert!(mono.iter().any(|k| k == MONO_KEY));
         assert!(mono.iter().any(|k| k == EMBEDDED_KEY));
+        // D-127：四脚本补字三链全挂（Proportional / Monospace / 命名族尾部）
+        let named = &defs.families[&FontFamily::Name(Arc::from(EMBEDDED_FAMILY))];
+        for (key, _) in embedded_scripts() {
+            assert!(
+                prop.iter().any(|k| k == key),
+                "Proportional 链应含脚本补字 {key}"
+            );
+            assert!(
+                mono.iter().any(|k| k == key),
+                "Monospace 链应含脚本补字 {key}"
+            );
+            assert!(named.iter().any(|k| k == key), "命名族链应含脚本补字 {key}");
+        }
     }
 
     /// 等宽 chrome 覆盖测试（机器无关）：无 Consolas 的系统也须由内嵌
@@ -719,5 +801,29 @@ mod tests {
             font_family_for(resolve_family("", &settings.subtitle_font_family), &fonts),
             FontFamily::Name(Arc::from(EMBEDDED_FAMILY))
         );
+    }
+
+    /// D-127 红线（G-43）：语言下拉（ASR 页 / 悬浮窗源目标 / 字幕行编辑）的
+    /// 本文名必须被内嵌链联合覆盖——机械枚举 `lt_i18n::LANGUAGES` 全表原生名，
+    /// 新语言进表即自动受检（旧手抄字符集红线漏掉 ar/th/hi/he 的缝就在这）。
+    #[test]
+    fn embedded_chain_covers_language_native_names() {
+        let embedded = embedded_all();
+        let mut bad: Vec<String> = Vec::new();
+        for (code, native) in lt_i18n::LANGUAGES {
+            let Some(name) = native else { continue };
+            let missing: String = name
+                .chars()
+                .filter(|c| {
+                    !embedded
+                        .iter()
+                        .any(|b| font_missing(b, &c.to_string()).is_empty())
+                })
+                .collect();
+            if !missing.is_empty() {
+                bad.push(format!("{code} - {name} 缺字形: {missing}"));
+            }
+        }
+        assert!(bad.is_empty(), "内嵌链缺字形:\n{}", bad.join("\n"));
     }
 }

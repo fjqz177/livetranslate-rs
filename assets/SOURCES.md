@@ -84,6 +84,10 @@
 | `NotoSansCJKsc-Regular.otf.br` | 11,457,451 B | `d35b738332ab714af2511b8b3cd73f3bc164cb1b519406738dfce4ee0020cd02` |
 | `NotoSansMono-VF.ttf.br` | 761,491 B | 118384f344fdc8f3d664a3c5fcf49424bdb9793e2c3b60af43270a13420aeec8 |
 | `NotoSansSymbols2-Regular.ttf.br` | 435,506 B | 7ab1b92eae75a194d8ba653e06ab0e60af902d1a6154a082673f87e4c14e5b27 |
+| `NotoSansArabic-VF.ttf.br` | 368,819 B | 311340b84de7170f63af6dd1e127a0748dee80c1a4715e1776621234c86d5dc1 |
+| `NotoSansThai-VF.ttf.br` | 111,668 B | b90b71e4abeae0ee481cfe75b75ef4e0df5e7f245c2587ddf912018b9bac5829 |
+| `NotoSansDevanagari-VF.ttf.br` | 271,833 B | 4ac4207bd705aa2cb4b269088d63cc49ef6da12c4de8740af4acc8708fd3e8d5 |
+| `NotoSansHebrew-VF.ttf.br` | 61,973 B | 2d1c7382661c651a8b1345c6c3ae84172c33fc6c854953ea6eb704d132876caf |
 | `OFL.txt` | 4,388 B | 1c05c68c34f9708415aada51f17e1b0092d2cea709bf4a94cd38114f9e73d7d9 |
 
 复现配方（任意机器可验证）：
@@ -106,8 +110,16 @@ python -c "import brotli;open('x.br','wb').write(brotli.compress(open('x','rb').
 - `NotoSansSymbols2-Regular.ttf`（解压后 1,233,128 B）sha256 `7d5fb73b7ca67a6798101741f5d280a3d016a56a197afcd4199dbb57b4b82a21`
   - Noto Sans Symbols 2 Regular（补 ✗ 等思源缺失符号；segui_sym 微软字体已移出）
   - google/fonts 仓 `ofl/notosanssymbols2/`（镜像 jsDelivr 同目录）
-- 许可：三者均 SIL Open Font License 1.1（OFL.txt 随附）
+- `NotoSansArabic-VF.ttf`（解压后 844,676 B）sha256 `63111b5b2e074dd48cc67692e0a2726d86ee94c1c37fe8598257b7b4e87e869e`
+- `NotoSansThai-VF.ttf`（解压后 218,652 B）sha256 `5a1c559bb539583c8a1fd99d1c5b9491e5e14478c9cd2bd0970d5c3096cc9ef8`
+- `NotoSansDevanagari-VF.ttf`（解压后 641,944 B）sha256 `14ec4af41f27482216d1c2229f417ff9b1425e1babb014e57d1d40d03229853e`
+- `NotoSansHebrew-VF.ttf`（解压后 112,640 B）sha256 `7ef36a2c3593758cdb622e1bdef4f84523e92fbc3ccc667438dd80ff54c2de88`
+  - 以上四件 = D-127 脚本补字（语言下拉 ar/th/hi/he 本文名 + 该四语言转写/译文/日志渲染；阿拉伯/泰/天城文/希伯来，默认实例 Regular）
+  - google/fonts 仓 `ofl/notosansarabic|notosansthai|notosansdevanagari|notosanshebrew/`
+    （镜像 jsDelivr 同目录，文件名 `NotoSans<Script>%5Bwdth%2Cwght%5D.ttf`）
+- 许可：七者均 SIL Open Font License 1.1（OFL.txt 随附）
 - 裁剪记录（2026-09-07）：NotoSansMonoCJKsc 已移除——等宽 chrome 的中文回落思源（与有 Consolas 机器现状一致）；区域子集（NotoSansSC 8.3MB）经实测缺失韩文音节，否决不采纳。
+- 补字记录（2026-10-01，D-127）：内嵌三字体联合缺阿拉伯/泰/天城文/希伯来四脚本（egui 无系统回退 → 语言下拉豆腐块）；红线 = 覆盖测试机械枚举 `lt_i18n::LANGUAGES` 全表（`embedded_chain_covers_language_native_names`）。
 
 ## .cache/sherpa-onnx/（构建期预取，gitignored 不入库）
 
