@@ -37,6 +37,36 @@ fn is_text_file(rel: &str) -> bool {
     }
 }
 
+/// Tier1 用户名轴判定器（D-132 仓 ID 形态豁免；构造一次、逐行复用）：
+/// `<用户名>/sherpa-onnx-…` 仓 ID 形态（registry 登记的 MS 镜像下载源，刻意公开
+/// 非泄漏）豁免——同行兼含仓 ID 与其余裸用户名泄漏时仍命中（段级剥除后评估）；
+/// 目录路径形态不含仓 ID 前缀、不受此豁免影响（Users 路径由扫描处 users_re
+/// 独立拦截）。用户名从环境现取传入，本文件不落字面量（写了会被自家 Tier1 命中）。
+struct Tier1UserChecker {
+    user_re: regex::Regex,
+    ms_repo_re: regex::Regex,
+}
+
+impl Tier1UserChecker {
+    fn new(user: &str) -> Option<Self> {
+        if user.is_empty() {
+            return None;
+        }
+        Some(Self {
+            user_re: regex::Regex::new(&regex::escape(user)).expect("用户名转义后必为合法正则"),
+            ms_repo_re: regex::Regex::new(&format!(r"{}[/]sherpa-onnx-", regex::escape(user)))
+                .expect("MS 仓 ID 正则必合法"),
+        })
+    }
+
+    fn hit(&self, line: &str) -> bool {
+        // 段级剥除：先移除全部仓 ID 匹配段，再查裸用户名——同行兼含仓 ID 与
+        // 其余裸用户名泄漏时仍命中（replace_all 防双仓 ID 行留残余误报）
+        self.user_re
+            .is_match(&self.ms_repo_re.replace_all(line, ""))
+    }
+}
+
 #[test]
 fn tracked_text_files_are_clean() {
     // git ls-files 从仓库根跑；quotepath=false 防非 ASCII 路径被引号转义
@@ -49,21 +79,8 @@ fn tracked_text_files_are_clean() {
     let listing = String::from_utf8(out.stdout).expect("ls-files 输出应为 UTF-8");
 
     let user = std::env::var("USERNAME").unwrap_or_default();
-    let user_re = if user.is_empty() {
-        None
-    } else {
-        Some(regex::Regex::new(&regex::escape(&user)).expect("用户名转义后必为合法正则"))
-    };
-    // D-132 豁免面：MS 镜像仓 ID（`<用户名>/sherpa-onnx-…`）——registry 把它登记
-    // 为公开下载源，属刻意公开的标识而非个人路径泄漏。
-    let ms_repo_re = if user.is_empty() {
-        None
-    } else {
-        Some(
-            regex::Regex::new(&format!(r"{}[/]sherpa-onnx-", regex::escape(&user)))
-                .expect("MS 仓 ID 正则必合法"),
-        )
-    };
+    // Tier1 用户名轴判定器（D-132 仓 ID 形态豁免内置，见类型 doc）
+    let tier1_user_check = Tier1UserChecker::new(&user);
     // Tier1 实名 Users 路径（不区分大小写；< 占位符豁免由匹配后字符判定实现——
     // rust regex 无 lookaround，等价于原版 (?!<)）
     let users_re =
@@ -105,10 +122,9 @@ fn tracked_text_files_are_clean() {
         let in_archive = rel.starts_with("docs/archive/");
         for (i, line) in text.lines().enumerate() {
             let n = i + 1;
-            // D-132 豁免：`<用户名>/sherpa-onnx-…` 仓 ID 形态；目录路径形态不受此
-            // 豁免影响（users_re 独立拦截，仓 ID 形态不含 Users 路径前缀）
-            let ms_repo_id = ms_repo_re.as_ref().is_some_and(|re| re.is_match(line));
-            let t1_user = user_re.as_ref().is_some_and(|re| re.is_match(line)) && !ms_repo_id;
+            // D-132 豁免在 Tier1UserChecker 内评估（仓 ID 形态；同行其余裸
+            // 用户名泄漏与目录路径形态仍命中）
+            let t1_user = tier1_user_check.as_ref().is_some_and(|c| c.hit(line));
             let t1_users = users_re.find(line).is_some_and(|m| {
                 // 匹配段以 '<' 开头 → 占位符路径（<…>），豁免
                 !line[m.end()..].starts_with('<')
@@ -144,24 +160,34 @@ fn tracked_text_files_are_clean() {
 #[test]
 fn tier1_waives_ms_repo_id_form_only() {
     // D-132：registry 的 MS 镜像仓 ID 形如「用户名/sherpa-onnx-…」（刻意公开的
-    // 下载源）→ Tier1 用户名命中豁免；目录路径形态不得享受同一豁免。用户名从
-    // 环境现取——本文件不落字面量（写了会被自家 Tier1 命中）。
+    // 下载源）→ 豁免；但豁免必须最小开口——同行其余裸用户名泄漏与目录路径
+    // 形态不得被掩盖。用户名从环境现取——本文件不落字面量（写了会被自家
+    // Tier1 命中）。
     let user = std::env::var("USERNAME").unwrap_or_default();
-    if user.is_empty() {
+    let Some(check) = Tier1UserChecker::new(&user) else {
         return; // 无用户名环境无 Tier1 用户名面，无可验对象
-    }
-    let ms_re = regex::Regex::new(&format!(r"{}[/]sherpa-onnx-", regex::escape(&user)))
-        .expect("MS 仓 ID 正则必合法");
-    let users_re =
-        regex::Regex::new(r"(?i)C:[/\\]{1,2}Users[/\\]{1,2}").expect("Tier1 正则常量合法");
-    let repo_id = format!("{user}/sherpa-onnx-funasr-nano-int8-2025-12-30");
-    assert!(ms_re.is_match(&repo_id), "仓 ID 形态应豁免");
-    // 目录路径形态用运行时拼接构造——源码行不得出现「C: + 分隔符 + Users」字面量，
-    // 否则被本守护自己的 Tier1 扫中（头注纪律）
-    let sep = std::path::MAIN_SEPARATOR.to_string();
-    let dir_form = format!("C:{sep}Users{sep}{user}{sep}livetranslate");
+    };
+    // 仓 ID 形态 → 豁免
     assert!(
-        users_re.is_match(&dir_form) && !ms_re.is_match(&dir_form),
-        "目录路径形态仍须拦截，不得被仓 ID 豁免波及"
+        !check.hit(&format!("{user}/sherpa-onnx-funasr-nano-int8-2025-12-30")),
+        "仓 ID 形态应豁免"
+    );
+    // 同行双仓 ID → 均豁免（不得因剥除方式留残余裸用户名而误报）
+    assert!(
+        !check.hit(&format!("{user}/sherpa-onnx-a 与 {user}/sherpa-onnx-b")),
+        "同行双仓 ID 均应剥除豁免"
+    );
+    // 混合行：仓 ID + 同行裸用户名泄漏 → 仍命中（豁免不得掩盖行内其余泄漏）
+    assert!(
+        check.hit(&format!("见 {user}/sherpa-onnx-x，联系 {user}@example.com")),
+        "混合行的裸用户名泄漏不得被仓 ID 豁免掩盖"
+    );
+    // 目录路径形态 → 仍命中（不含仓 ID 前缀，豁免不波及；Users 路径另由
+    // users_re 独立拦截）。路径字面量运行时拼接——源码行不得出现
+    // 「C: + 分隔符 + Users」字面量，否则被本守护自己的 Tier1 扫中（头注纪律）
+    let sep = std::path::MAIN_SEPARATOR.to_string();
+    assert!(
+        check.hit(&format!("C:{sep}Users{sep}{user}{sep}livetranslate")),
+        "目录路径形态不得被仓 ID 豁免波及"
     );
 }

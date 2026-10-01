@@ -97,7 +97,9 @@ pub const FUNASR_NANO: ModelEntry = ModelEntry {
 /// 注意作者是 csukuangfj**2**（`csukuangfj/` 同名仓不存在）。
 /// D-24 曾判「MS 无官方单仓」（csukuangfj2/csukuangfj 双 404）。D-132：用户自建
 /// 逐字节镜像仓补齐 MS 源（6/6 sha256 核对一致，布局与 HF 包同构；jkman2023
-/// 现成镜像亦 6/6 一致，备选未用）。
+/// 现成镜像亦 6/6 一致，备选未用；zengshuishui 上游仓虽亦 6/6 命中但有 5 轮
+/// 重传漂移前科故弃用——与 FUNASR_NANO 的字节不同源是两回事，详见
+/// docs/model-ms-mirror-sources.md §一）。
 /// files_min_bytes 刻意远低于实测（假阴性=多下一次可自愈；假阳性=判已缓存却加载失败）。
 pub const QWEN3_ASR: ModelEntry = ModelEntry {
     key: "qwen3-asr-0.6b",

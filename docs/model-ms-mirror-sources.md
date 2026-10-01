@@ -26,7 +26,7 @@
 |---|---|
 | `crates/lt-models/src/registry.rs` | 两条目 `ms=Some` + `always_hf=false`；`ms`/`always_hf` 字段注释重写（现仅 whisper 六档为单源）；两条目注释记录 zengshuishui 不可用机理；`funasr_nano_entry_hf_only`/`qwen3_entry_hf_only` 两测试改名 `*_dual_hub` 并翻转编译期 const 不变量 |
 | `crates/lt-models/src/cache.rs` | qwen3 探测测试断言翻双 hub（`hub_ms.is_some()`） |
-| `crates/lt-app/tests/repo_hygiene.rs` | Tier1 豁免：`ms_repo_re`（`用户名/sherpa-onnx-` 前缀）+ 判定处豁免；新增 `tier1_waives_ms_repo_id_form_only` 单测（仓 ID 形态豁免、目录路径形态仍拦截）；头注补豁免面注记 |
+| `crates/lt-app/tests/repo_hygiene.rs` | Tier1 豁免：`Tier1UserChecker`（`用户名/sherpa-onnx-` 仓 ID 形态**段级剥除**后查裸用户名——评审 P2 收编：同行兼含仓 ID 与裸用户名泄漏仍命中）；`tier1_waives_ms_repo_id_form_only` 单测钉四形态（单仓 ID/同行双仓 ID/混合行/目录路径）；头注补豁免面注记 |
 | `docs/decisions.md` | D-132 登记 + D-24 行「→ 被 D-132 修订」注记 |
 | `docs/distribution.md` | D-21 行 as-built 勘正（whisper MS 镜像实测不存在由 hf-mirror 端点承接；两族经自建镜像落地） |
 | `README.md` / `README.en.md` | 「下载源」说明更新：直连 ModelScope 的 = SenseVoice / Fun-ASR-Nano / Qwen3-ASR，走 hf-mirror 的仅剩 Whisper |
