@@ -361,6 +361,14 @@
 - **证据**：用户 2026-10-01 两帧截图；headless 全矩阵（真实思源链 + 派生视口 420 高）：zh ModelEdit 窗 531（右超 +28/左超 +11）、zh LineEdit 窗 750（±120）、en LineEdit 771（±77）、纵向 -20..574；clip_rect 归属实证 = 模态内容图元 clip = 窗体∩视口（`元/1M tok` bbox 右 513.8 > clip 右 509.7）；正反馈失控 = 逐帧 area_rect 697→985。机械防线 = `crates/lt-ui/src/windows/panel/mod.rs` `panel_modals_no_horizontal_overflow_at_min_width`（zh/en × 两模态；断言①窗矩形（`memory.area_rect(显式 Id)`）⊆ 视口横纵双轴 + ②横向逐图元 `bbox ⊆ clip_rect`（**纵向不查**：ScrollArea 内容纵向越缘 = 滚动可达的正常溢出，校准实证逐图元纵向断言全假阳）；跳 blur>0 窗阴影装饰）。
 - **版本**：egui 0.36.1。
 
+## G-44 下拉弹层末项描边底边被裁没：弹层 Area 高度 sizing 冻结＝内容高 + ScissorRect 非整缩放取整
+
+- **触发**：任何 ComboBox 弹层在非整数缩放（Windows 125%/150% DPI）实机查看，且弹层高度恰为内容高（sizing pass 精确测量时——典型如选项 ≥3；本仓全部 22 处下拉同病）。用户报案 = 识别页引擎下拉 3 项时末项悬停/选中蓝框缺底边，「3 个或以上才出现」。
+- **症状**：悬停/选中项的描边框左/上/右三边可见、底边整条消失；无报错。选项 ≤2 的弹层可能因 sizing 多测出富余而侥幸完好——「3 项以上才犯」是幸存者偏差，不是阈值。
+- **根因**：三层叠加——① ComboBox 弹层 Area 高度在 sizing pass 一次性冻结＝内容高，此后每帧滚动区 clip 底与末项框底齐平（headless 实测 3 项 @1.0 slack=+0.000）；② 项描边 = Frame Inside 1px，恰好压在裁剪缘上；③ egui-wgpu `ScissorRect` 对 clip min/max 各自 round，非整缩放下框底越缘 0.2px（@1.25 实测 slack=−0.219）→ 底边整条落在 scissor 外。末项之后弹层还有 menu_margin 白边，肉眼易误判为「框底被弹层边吃掉」。
+- **对策**（D-131）：弹层滚动区底部 content_margin 垫 2px——`crate::style::combo_popup_style()` 单源，**一切 ComboBox 弹层一律挂 `.popup_style(combo_popup_style())`**（红线入 style.rs 助手头注，防新调用点绕过）；垫底后 clip 恒比末项框底多 ≥2px（实测 +2.000/+1.781）。回归钉 = `combo_popup_last_item_frame_not_clipped`（3 项 @1.0/@1.25 双缩放 + 2 项静音下拉对照，断言弹层内描边项框底到 clip 缘 ≥1px）。
+- **证据**：headless 数值红面：@1.0 slack=+0.000、@1.25 slack=−0.219、2 项对照 −19.000（与用户「3 项以上才犯」逐项吻合）；用户截图放大取证 = 末项蓝框三边俱在、底边整条无；软光栅化（epaint 真实 tessellate + ScissorRect 同款 round）出图证实底边修复后绘出。修复后回归钉全绿（2026-10-01）。
+
 ## G-43 内嵌字体链只保 CJK/拉丁/希腊/西里尔：新增含其他脚本的 UI 文案必豆腐（egui 无系统回退）
 
 - **触发**：UI 文案（i18n yaml 值或硬编码）含内嵌三字体覆盖之外的文字脚本——现存案例 = 语言下拉 30 项原生名中的阿拉伯/泰/天城文/希伯来四脚本（`lt_i18n::LANGUAGES`，转录自 Python 原版 i18n.py）；这些语言的转写文本、字幕窗译文、日志行同病。
