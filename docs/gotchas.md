@@ -352,7 +352,17 @@
 - **对策**：三列表行走 `style::selectable_button_stable`（未选中行 scope 归零 `w_inactive`，**恒进 scope 保 Id 链**——分支化 scope 会让按钮 Id 随选中翻转变层、egui 双击判定认 Id 而丢双击，T8 实测拦下）；`egui::Button::selectable` 入 clippy disallowed-methods（唯一豁免 = 助手本体与 Noninteractive 灰显占位）；`PanelHarness::render` 注入 `panel_visuals` + stabilize + 面板滚动条三件套；禁全局归零 `inactive.bg_stroke`（同 G-38 边界）。
 - **证据**：headless 探针先红：行文字 y 116.0→117.0（Δ+1.0）、下方「添加」按钮 y 153.0→155.0（Δ+2.0），与用户截图逐像素吻合；egui 0.36.1 `widget_style.rs:158-165`（逐态内边距公式）与 `containers/frame.rs:327`（total_margin 含 stroke）；修复后 `model_row_hover_does_not_shift_geometry` + `selectable_button_stable_row_geometry_stable_across_states` 绿（2026-09-30，全仓 673+0）。定稿 = `docs/panel-selectable-hover-jump.md`。
 
+## G-42 面板内 egui::Window 二级模态窄宿主裁剪：窗随内容走 + constrain 不缩窗 + Grid INFINITY sizing + 窗只涨不缩
+
+- **触发**：面板拉到最小宽（zh 509.7 / en 617.3）时打开面板内 `egui::Window` 二级模态（编辑模型 ModelEditDialog / 编辑字幕行 LineEditDialog）；模态内有「横排串联多控件」的行或复合控件进 `egui::Grid` 单元格。
+- **症状**：模态整块越出宿主左右双缘被裁（截图 1：标题栏横贯全窗、两侧标签/按钮半字消失）；或窗体合围后单行右缘半字消失（截图 2：「元/1M to…」）；最小高 420 下窗体纵向也越缘（按钮行不可达）。无报错无滚动条。
+- **根因**（四层叠加，headless 实证）：① `egui::Window` 尺寸随**内容自然宽/高**走（default_width 只是初值，实测 zh 模态窗 531/750 > 视口 509.7），`Area::constrain`（默认 true）**只摆位不缩窗**——窗宽超视口即居中越界双缘裁；② 横排串联行（价格行 7 控件：币种 label+combo+输入/输出 label+DragValue×2+单位文本）自然宽 zh ~518 / en ~592，超窗内容宽即在窗内被裁（clip = 窗体∩视口）；③ `egui::Grid` 列宽 sizing pass 以 **INFINITY 排版单元格**（grid.rs `max_cell_size` 默认无穷）——`font_picker_row`（含 SAMPLE_TEXT 小样 label）进单元格把列撑到 ~620、窗随之 ~750；④ 治③时若用「随 available_width 派生的列帽」会与「窗随内容走」构成**正反馈**：`Resize::begin` 的 `desired = max(desired, last_content_size)` 语义是**窗只涨不缩**（resize.rs 注释自陈防 auto-shrink），实测 697→985 失控，任何 max_width 都钳不住（窗可被内容最小宽顶破）。
+- **对策**：模态自适应视口（D-126，承 D-122「拆行适配、禁回灌抬 min」同律）——① 窗体 `max_width(视口−16)` 钳制 + `ScrollArea::max_height` 由硬顶常数改 `min(常数, 视口高−110)`（110 = 标题+按钮行 chrome 预算，测试锁）；② 超宽行拆分（价格行拆两行：币种+单位同行、输入/输出独立行）；③ **整行复合控件不进 Grid**（font_picker_row 移出 Grid 页级渲染，同样式页先例）；④ **禁 available_width 派生列帽/宽度**（正反馈失控，唯一稳态解 = 宽度需求与当前窗宽解耦）；⑤ 显式窗 Id（`Window::id`）——默认 `Id::new(标题文本)`（window.rs:104，实为 `Id::new(Option<Cow>)` 测试侧不可重建）随语言热切换变化会丢窗状态。
+- **证据**：用户 2026-10-01 两帧截图；headless 全矩阵（真实思源链 + 派生视口 420 高）：zh ModelEdit 窗 531（右超 +28/左超 +11）、zh LineEdit 窗 750（±120）、en LineEdit 771（±77）、纵向 -20..574；clip_rect 归属实证 = 模态内容图元 clip = 窗体∩视口（`元/1M tok` bbox 右 513.8 > clip 右 509.7）；正反馈失控 = 逐帧 area_rect 697→985。机械防线 = `crates/lt-ui/src/windows/panel/mod.rs` `panel_modals_no_horizontal_overflow_at_min_width`（zh/en × 两模态；断言①窗矩形（`memory.area_rect(显式 Id)`）⊆ 视口横纵双轴 + ②横向逐图元 `bbox ⊆ clip_rect`（**纵向不查**：ScrollArea 内容纵向越缘 = 滚动可达的正常溢出，校准实证逐图元纵向断言全假阳）；跳 blur>0 窗阴影装饰）。
+- **版本**：egui 0.36.1。
+
 ---
+
 
 ## 候选清单（尚未收编——能五段式实证表述才收编，不臆造）
 
