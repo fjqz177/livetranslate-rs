@@ -176,6 +176,11 @@ impl AppShell {
         // D-85：先叫停在途连接测试——否则 join_all 要等它跑完一次尝试
         self.probe_cancel
             .store(true, std::sync::atomic::Ordering::SeqCst);
+        // D-130/K6：同理叫停在途基准——基准线程（Policy::Never 被监督）在
+        // 模型边界轮询 bench_cancel，停机不置位则 join_all 要等剩余模型全部
+        // 跑完（timeout×轮次×模型数，可达分钟级）
+        self.bench_cancel
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         if let Some(p) = self.pipeline.as_mut() {
             p.stop();
         }

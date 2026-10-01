@@ -86,6 +86,8 @@ struct TlJob {
     /// 装置被替换（D-85/F3）：被替换时出队的在队任务按"换模型让位"回执，
     /// 而不是"队列积压"——后者是假原因，用户只是换了个模型
     superseded: Arc<AtomicBool>,
+    /// 用户文案服务（D-130/K5：panic 兜底 detail 经此取键，随界面语言走）
+    msg: Msg,
     run: Option<Box<dyn FnOnce() + Send>>,
 }
 
@@ -96,7 +98,12 @@ impl TlJob {
             // 因此死亡（`catch_unwind` 就地兜住）：监督器看不到死亡、不重生，
             // 后续任务由同一 worker 继续服务（比"重生"更好的结果）。
             if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
-                self.finalize_dropped(FailureKind::Dropped, panic_detail(payload.as_ref()));
+                // D-130/K5：兜底文案随任务携带的 Msg 取键（界面语言热切换跟随）
+                let fallback = self.msg.t("panic_non_string_payload");
+                self.finalize_dropped(
+                    FailureKind::Dropped,
+                    panic_detail(payload.as_ref(), &fallback),
+                );
             }
         }
     }
@@ -122,13 +129,15 @@ impl TlJob {
 
 /// panic 载荷 → 可读文本（ACR-5）：`String` / `&str` 两型，其余兜底文案。
 /// 只做 downcast 与克隆，自身不再 panic。
-fn panic_detail(payload: &(dyn std::any::Any + Send)) -> String {
+/// D-130/K5：兜底文案经调用方注入（`Msg`），不再硬编码中文——en 界面
+/// tooltip 不得混出中文（orchestrator 禁依赖 lt-i18n，经 Msg 取键）。
+fn panic_detail(payload: &(dyn std::any::Any + Send), fallback: &str) -> String {
     if let Some(s) = payload.downcast_ref::<String>() {
         s.clone()
     } else if let Some(s) = payload.downcast_ref::<&str>() {
         (*s).to_string()
     } else {
-        "panic（载荷非字符串）".to_string()
+        fallback.to_string()
     }
 }
 
@@ -168,6 +177,8 @@ struct JobPool {
     in_flight: Arc<AtomicUsize>,
     /// R15② 水位事件出口（W2：慢 LLM 积压从"仅日志 warn"升级为类型化事件）
     sink: EventSink,
+    /// 用户文案服务（D-130/K5：随任务下发，panic 兜底 detail 取键用）
+    msg: Msg,
     /// 已上报丢弃计数（与队列丢弃告警同节奏，≥200 条报一次，防洪泛）
     reported: AtomicU64,
 }
@@ -178,6 +189,7 @@ impl JobPool {
         sup: &Supervisor,
         sink: EventSink,
         transcript: Arc<lt_audio::transcript::TranscriptWriter>,
+        msg: Msg,
     ) -> Self {
         let queue = Arc::new(BoundedDropQueue::<TlJob>::new(TL_QUEUE_CAP, "tl-job"));
         let stopped = Arc::new(AtomicBool::new(false));
@@ -231,6 +243,7 @@ impl JobPool {
             alive_workers,
             in_flight,
             sink,
+            msg,
             reported: AtomicU64::new(0),
         }
     }
@@ -247,6 +260,7 @@ impl JobPool {
             transcript: self.transcript.clone(),
             stopped: self.stopped.clone(),
             superseded: self.superseded.clone(),
+            msg: self.msg.clone(),
             run: Some(Box::new(job)),
         });
         let dropped = self.queue.dropped_count();
@@ -854,13 +868,17 @@ fn finish_ok(
     // D-85：会话级累计——价格/币种按**本次调用**的配置记账
     stats.record_translation(pt, ct, attempt.usage_known, prices, currency);
     tracing::info!("Translate ({tl_ms:.0}ms): {text}");
+    // D-130/K4：先落盘后回执（对齐 fail() 的序）——两步缝隙 panic 时的矛盾面
+    // 从「屏幕有译文、all 记无译文」变为「屏幕无译文、转录如实的可重试缺失」；
+    // 严格序无法机器断言（TranscriptWriter 为 parking_lot 非毒锁、EventSink 为
+    // 具体队列，两调用间无注入观察点），序靠本注释 + 代码评审兜
+    transcript.write_translation(id, &text);
     sink.push(UiEvent::UpdateTranslation {
         id,
         text: text.clone(),
         tl_ms,
     });
     sink.push(stats.snapshot_event());
-    transcript.write_translation(id, &text);
 }
 
 /// 失败收尾（W2/结论化：带原因；用量照记——钱花了就要记账）
@@ -997,7 +1015,7 @@ impl TlRig {
         learned: Learned,
         degraded_notified: Arc<Mutex<std::collections::HashSet<(String, String)>>>,
         session_stats: &Arc<TlStats>,
-        ui_lang: &str,
+        msg: &Msg,
     ) -> Result<Option<Self>, String> {
         let eff = bus.load();
         let Some(mc) = eff.raw.models.get(eff.raw.active_model) else {
@@ -1013,7 +1031,7 @@ impl TlRig {
             learned,
             degraded_notified,
             session_stats,
-            ui_lang,
+            msg,
         )
     }
 
@@ -1032,8 +1050,11 @@ impl TlRig {
         learned: Learned,
         degraded_notified: Arc<Mutex<std::collections::HashSet<(String, String)>>>,
         session_stats: &Arc<TlStats>,
-        ui_lang: &str,
+        msg: &Msg,
     ) -> Result<Option<Self>, String> {
+        // D-130/K5：Msg 随装置进 JobPool（panic 兜底文案取键）；币种默认值
+        // 的界面语言取 Msg.lang()（与原 ui_lang 参数同源，热切换随装置重建生效）
+        let ui_lang = msg.lang();
         let params = translator_params(mc, eff);
         let translator = match Translator::new(params.clone()) {
             Ok(t) => {
@@ -1061,8 +1082,8 @@ impl TlRig {
             translator,
             stats: session_stats.clone(),
             prices: (mc.input_price, mc.output_price),
-            currency: lt_proto::effective_currency(mc.currency.as_deref(), ui_lang),
-            pool: JobPool::new(TL_POOL_WORKERS, sup, sink, transcript.clone()),
+            currency: lt_proto::effective_currency(mc.currency.as_deref(), &ui_lang),
+            pool: JobPool::new(TL_POOL_WORKERS, sup, sink, transcript.clone(), msg.clone()),
             transcript,
             bus: bus.clone(),
             learned,
@@ -1510,7 +1531,6 @@ impl Pipeline {
         // D-85/G：会话级累计器——**本次进程只建一次**，跨装置重建共享
         //（换模型不清零；进程退出自然归零 = 用户要的"重启重算"）
         let session_stats: Arc<TlStats> = Arc::new(TlStats::new());
-        let ui_lang = msg.lang();
         let tl = match TlRig::from_settings(
             bus,
             &sup,
@@ -1519,7 +1539,7 @@ impl Pipeline {
             learned.clone(),
             degraded_notified.clone(),
             &session_stats,
-            &ui_lang,
+            &msg,
         ) {
             Ok(t) => {
                 // D-85/F2：启动即回执一次"当前使用"——面板状态行首帧就正确，
@@ -2170,8 +2190,7 @@ fn route_translator_switch(
     match sw {
         TlSwitch::ReplaceRig { config } => {
             let eff = bus.load();
-            // 会话统计与界面语言随装置传承（替换不换账本；语言取当前注入）
-            let ui_lang = msg.lang();
+            // 会话统计随装置传承（替换不换账本）；Msg 直传（D-130/K5）
             match TlRig::from_effective(
                 &config,
                 &eff,
@@ -2182,7 +2201,7 @@ fn route_translator_switch(
                 learned.clone(),
                 degraded_notified.clone(),
                 session_stats,
-                &ui_lang,
+                msg,
             ) {
                 Ok(Some(rig)) => {
                     tracing::info!("翻译器已切换: {} ({})", config.name, config.model);
@@ -2527,6 +2546,9 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
     };
 
     let mut manager = AsrManager::new();
+    // D-130/K1：停机标志注入——退出恰逢识别超时时 recover 不再原地重生等
+    // ready_timeout 180s（进程逗留分钟级的病根；见 docs/asr-leftover-p3-fixes.md）
+    manager.set_shutdown_flag(stop.clone());
     // 当前生效引擎的显示标签（切换失败回滚后用于恢复 AsrDevice，避免
     // 状态行挂着「ASR unavailable」而旧引擎实际仍在工作——P0-4）
     let mut current_display = display.clone();
@@ -2618,7 +2640,7 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
                     &session_stats,
                     &msg,
                 );
-                let samples = { vad.lock().unwrap().speech_samples() };
+                let samples = { lt_audio::vad::lock_vad(&vad).speech_samples() };
                 interim
                     .last_interim_samples
                     .store(samples as u64, Ordering::Relaxed);
@@ -2871,7 +2893,7 @@ fn realtime_tick(
     // ① 锁内 peek + 停顿信号同读（识别完成后再读静音会把识别耗时算进去，
     // 语义即错）；代际随行（AH-4/D-27）——识别期间 VAD 可能被收段/切分
     let (peek, silence_secs) = {
-        let v = vad.lock().unwrap();
+        let v = lt_audio::vad::lock_vad(vad);
         (v.peek_buffer(), v.pending_silence_secs())
     };
     let Some((audio, duration, generation)) = peek else {
@@ -2889,7 +2911,7 @@ fn realtime_tick(
     let asr_ms = t0.elapsed().as_secs_f64() * 1000.0;
     // ③ 代际复核（D-128 对 D-27 的扩展）：识别期间收段/切分/复位 → 本轮假设
     // 过期，整体丢弃不上屏不定稿——flush 链路会对同一段音频走收尾定稿
-    if vad.lock().unwrap().buffer_generation() != generation {
+    if lt_audio::vad::lock_vad(vad).buffer_generation() != generation {
         tracing::debug!("实时识别 tick 结果过期（代际推进），丢弃");
         return false;
     }
@@ -2922,9 +2944,7 @@ fn realtime_tick(
     }
     // ⑥ 裁剪已消费音频（带代际校验，AH-4/D-27：③已复核，此处兜底再验）
     if outcome.trim_samples > 0 {
-        vad.lock()
-            .unwrap()
-            .trim_front_checked(outcome.trim_samples, generation);
+        lt_audio::vad::lock_vad(vad).trim_front_checked(outcome.trim_samples, generation);
     }
     if !outcome.finalized.is_empty() {
         tracing::info!(
@@ -3451,6 +3471,11 @@ mod tests {
         )))
     }
 
+    /// D-130/K5：键名直返的 Msg（panic 兜底文案测试只看注入通路，不看翻译值）
+    fn test_msg() -> Msg {
+        Msg::new(|k| k.to_string(), || "zh".into())
+    }
+
     /// 测试设置总线（W4：from_settings 改读总线；发布即版本 1）
     fn test_bus(settings: lt_proto::Settings) -> Arc<SettingsBus> {
         Arc::new(SettingsBus::new(settings))
@@ -3789,7 +3814,7 @@ mod tests {
             test_learned(),
             test_degraded_notified(),
             &test_session_stats(),
-            "zh",
+            &test_msg(),
         )
         .expect("默认设置不应报配置错误")
         .expect("默认 settings 带一个默认模型，应能构建");
@@ -3824,7 +3849,7 @@ mod tests {
             test_learned(),
             test_degraded_notified(),
             &test_session_stats(),
-            "zh",
+            &test_msg(),
         )
         .expect("默认设置不应报配置错误")
         .expect("默认 settings 带一个默认模型，应能构建");
@@ -3852,7 +3877,7 @@ mod tests {
             test_learned(),
             test_degraded_notified(),
             &test_session_stats(),
-            "zh"
+            &test_msg()
         )
         .unwrap()
         .is_none());
@@ -3872,7 +3897,7 @@ mod tests {
             test_learned(),
             test_degraded_notified(),
             &test_session_stats(),
-            "zh"
+            &test_msg()
         )
         .unwrap()
         .is_none());
@@ -3883,7 +3908,7 @@ mod tests {
     fn job_pool_drops_jobs_after_shutdown() {
         use std::sync::atomic::AtomicU64;
         let sup = test_sup();
-        let pool = JobPool::new(2, &sup, EventArtery::new(), test_transcript());
+        let pool = JobPool::new(2, &sup, EventArtery::new(), test_transcript(), test_msg());
         pool.shutdown();
         sup.join_all();
         // shutdown 之后的提交不执行（submit 侧短路 + worker 侧双重检查）
@@ -3902,7 +3927,7 @@ mod tests {
     fn retired_pool_emits_receipts_for_queued_jobs() {
         let sup = test_sup();
         let sink = EventArtery::new();
-        let pool = JobPool::new(0, &sup, sink.clone(), test_transcript());
+        let pool = JobPool::new(0, &sup, sink.clone(), test_transcript(), test_msg());
         for id in 0..3u64 {
             pool.submit(id, || {});
         }
@@ -3923,7 +3948,7 @@ mod tests {
         }
         assert_eq!(dropped_ids, vec![0, 1, 2], "替换时在队任务必须逐条回执");
         // 停机路径（不 retire）保持静默：事件无处可去，也不该刷失败
-        let pool2 = JobPool::new(0, &sup, sink.clone(), test_transcript());
+        let pool2 = JobPool::new(0, &sup, sink.clone(), test_transcript(), test_msg());
         for id in 10..12u64 {
             pool2.submit(id, || {});
         }
@@ -3947,7 +3972,7 @@ mod tests {
         let sup = test_sup();
         let sink = EventArtery::new();
         // worker 数为 0：任务只进队、不消费，灌满即丢最旧
-        let pool = JobPool::new(0, &sup, sink.clone(), test_transcript());
+        let pool = JobPool::new(0, &sup, sink.clone(), test_transcript(), test_msg());
         let ran = Arc::new(AtomicU64::new(0));
         for id in 0..(TL_QUEUE_CAP as u64 + 3) {
             let r = ran.clone();
@@ -3973,6 +3998,29 @@ mod tests {
         sup.join_all();
     }
 
+    /// D-130/K5：panic 兜底 detail 经注入文案（不再硬编码中文）——非字符串载荷
+    /// 返回注入值，String/&str 载荷仍透传原文。
+    #[test]
+    fn panic_detail_uses_injected_fallback_for_non_string_payload() {
+        struct Opaque;
+        let p: Box<dyn std::any::Any + Send> = Box::new(Opaque);
+        assert_eq!(
+            panic_detail(p.as_ref(), "non-string fallback"),
+            "non-string fallback"
+        );
+        // 界面语言通路：Msg 键直返形态下 fallback = 键名（注入面生效即语言面生效）
+        let p2: Box<dyn std::any::Any + Send> = Box::new(Opaque);
+        assert_eq!(
+            panic_detail(p2.as_ref(), &test_msg().t("panic_non_string_payload")),
+            "panic_non_string_payload"
+        );
+        // 字符串载荷透传不受注入影响
+        let s: Box<dyn std::any::Any + Send> = Box::new("boom".to_string());
+        assert_eq!(panic_detail(s.as_ref(), "fb"), "boom");
+        let r: Box<dyn std::any::Any + Send> = Box::new("raw");
+        assert_eq!(panic_detail(r.as_ref(), "fb"), "raw");
+    }
+
     /// ACR-5：翻译任务执行期 panic 视同任务丢失——补 `Dropped` 回执 + 转录收口；
     /// worker 不因该 panic 死亡，后续任务由**同一 worker** 继续服务（不依赖重生）。
     #[test]
@@ -3982,7 +4030,7 @@ mod tests {
         let sink = EventArtery::new();
         let dir = tmp_models_dir("acr5-panic");
         let transcript = Arc::new(lt_audio::transcript::TranscriptWriter::new(&dir));
-        let pool = JobPool::new(1, &sup, sink.clone(), transcript.clone());
+        let pool = JobPool::new(1, &sup, sink.clone(), transcript.clone(), test_msg());
 
         // 病灶：闭包 panic——旧实现 `run.take()` 已使 Drop 守卫不成立：
         // 该消息永久"翻译中"、转录 pending 悬挂（all 文件整段消失）
@@ -4145,7 +4193,7 @@ mod tests {
     fn job_pool_wait_idle_tracks_in_flight_and_budget() {
         use std::sync::atomic::AtomicU64;
         let sup = test_sup();
-        let pool = JobPool::new(1, &sup, EventArtery::new(), test_transcript());
+        let pool = JobPool::new(1, &sup, EventArtery::new(), test_transcript(), test_msg());
 
         assert!(pool.wait_idle(Duration::from_millis(10)), "空池应立即空闲");
 
@@ -4205,7 +4253,7 @@ mod tests {
         let sink = EventArtery::new();
         let dir = tmp_models_dir("acr1b-discard");
         let transcript = Arc::new(lt_audio::transcript::TranscriptWriter::new(&dir));
-        let pool = JobPool::new(0, &sup, sink.clone(), transcript.clone());
+        let pool = JobPool::new(0, &sup, sink.clone(), transcript.clone(), test_msg());
         transcript.write_original(3, "00:00:03", "在队段");
         pool.submit(3, || panic!("不应被执行"));
         pool.shutdown();
@@ -4268,7 +4316,7 @@ mod tests {
             test_learned(),
             test_degraded_notified(),
             &test_session_stats(),
-            "zh",
+            &test_msg(),
         )
         .unwrap()
         .unwrap();
@@ -4284,7 +4332,7 @@ mod tests {
             test_learned(),
             test_degraded_notified(),
             &test_session_stats(),
-            "zh",
+            &test_msg(),
         )
         .unwrap()
         .unwrap();
@@ -4312,7 +4360,7 @@ mod tests {
             test_learned(),
             test_degraded_notified(),
             &test_session_stats(),
-            "zh",
+            &test_msg(),
         )
         .unwrap()
         .unwrap();
@@ -4550,7 +4598,7 @@ mod tests {
     fn queue_overflow_still_reports_dropped() {
         let sup = test_sup();
         let sink = EventArtery::new();
-        let pool = JobPool::new(0, &sup, sink.clone(), test_transcript());
+        let pool = JobPool::new(0, &sup, sink.clone(), test_transcript(), test_msg());
         // 队列容量 TL_QUEUE_CAP：塞满再多推一条 → 丢最旧（Drop 补 Dropped 回执）
         for id in 0..(TL_QUEUE_CAP as u64 + 1) {
             pool.submit(id, || {});
@@ -4582,7 +4630,7 @@ mod tests {
     fn retired_pool_marks_superseded_not_dropped() {
         let sup = test_sup();
         let sink = EventArtery::new();
-        let pool = JobPool::new(0, &sup, sink.clone(), test_transcript());
+        let pool = JobPool::new(0, &sup, sink.clone(), test_transcript(), test_msg());
         for id in 0..2u64 {
             pool.submit(id, || {});
         }
@@ -4903,7 +4951,7 @@ mod tests {
         let sink = EventArtery::new();
         let dir = tmp_models_dir("transcript-drop");
         let transcript = Arc::new(lt_audio::transcript::TranscriptWriter::new(&dir));
-        let pool = JobPool::new(0, &sup, sink.clone(), transcript.clone());
+        let pool = JobPool::new(0, &sup, sink.clone(), transcript.clone(), test_msg());
         for id in 0..2u64 {
             transcript.write_original(id, "00:00:01", &format!("原文{id}"));
             pool.submit(id, || {});
@@ -5035,7 +5083,7 @@ mod tests {
                 learned.clone(),
                 degraded.clone(),
                 &session_stats,
-                "zh",
+                &test_msg(),
             )
             .expect("配置应可构建")
             .expect("models 非空应产出装置")

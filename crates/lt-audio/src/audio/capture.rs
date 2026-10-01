@@ -12,7 +12,7 @@
 //! 进段队列，**不在 capture 线程跑 ASR**（原版拓扑）。
 
 use crate::audio::{rms, BoundedDropQueue, CHUNK_SAMPLES, TARGET_RATE};
-use crate::vad::VadProcessor;
+use crate::vad::{lock_vad, VadProcessor};
 use crate::SegmentSource;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -168,7 +168,7 @@ impl<F: Fn(f32, f64, Option<f32>) + Send> CaptureLoop<F> {
             // 替代旧槽 take-and-clear——同一发布内全字段整体重算，无半应用窗口）
             let (ver, s) = (self.vad_tick)();
             if ver != applied_version {
-                let mut v = vad.lock().unwrap();
+                let mut v = lock_vad(vad);
                 if self.current_mode != s.mode {
                     // 架构 2.0 W1/R2：模式变化必须替换置信度源——update_settings
                     // 只更新阈值语义，源不换则 silero→energy/disabled 热切换不生效。
@@ -184,12 +184,12 @@ impl<F: Fn(f32, f64, Option<f32>) + Send> CaptureLoop<F> {
                 None => {
                     // 超时：VAD 在说话则喂静音推进（原版 effective_silence_limit()+1 个）
                     let (speaking, n) = {
-                        let v = vad.lock().unwrap();
+                        let v = lock_vad(vad);
                         (v.is_speaking(), v.effective_silence_limit() + 1)
                     };
                     if speaking && !self.paused.load(Ordering::Relaxed) {
                         for _ in 0..n {
-                            let seg = vad.lock().unwrap().process_chunk(&silence_chunk);
+                            let seg = lock_vad(vad).process_chunk(&silence_chunk);
                             if let Some(seg) = seg {
                                 // 原版 _enqueue_asr("vad_flush", seg)：capture 线程直塞段队列
                                 self.segment_tx.push((SegmentSource::VadFlush, seg));
@@ -204,11 +204,11 @@ impl<F: Fn(f32, f64, Option<f32>) + Send> CaptureLoop<F> {
                     }
                     let r = rms(&chunk);
                     // 原版顺序：monitor 用的是上一 chunk 的 last_confidence
-                    let last_confidence = vad.lock().unwrap().last_confidence;
+                    let last_confidence = lock_vad(vad).last_confidence;
                     (self.monitor)(r, last_confidence, mic_rms);
                     // 先绑定结果再分支：MutexGuard 临时值在 if let 的 scrutinee 里
                     // 存活到整个语句结束（edition 2021），否则 else 内再锁 vad 即自死锁
-                    let seg = vad.lock().unwrap().process_chunk(&chunk);
+                    let seg = lock_vad(vad).process_chunk(&chunk);
                     if let Some(seg) = seg {
                         self.segment_tx.push((SegmentSource::VadFlush, seg));
                     } else {
@@ -247,7 +247,7 @@ impl<F: Fn(f32, f64, Option<f32>) + Send> CaptureLoop<F> {
         }
         let interval = self.interim.effective_interval();
         let (total, speaking) = {
-            let v = vad.lock().unwrap();
+            let v = lock_vad(vad);
             (v.speech_samples(), v.is_speaking())
         };
         let now_ms = now_epoch_ms();

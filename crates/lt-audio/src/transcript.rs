@@ -94,13 +94,17 @@ impl TranscriptWriter {
             return;
         }
         let mut g = self.inner.lock();
+        // D-130/K7：先摘 pending 再判 enabled（与 finalize_no_translation 同构）——
+        // 「译文已产出」不因转录开关丢账；否则中途关转录会把挂起原文残留到
+        // close()，下次开会话同 id 配对错乱
+        let pending = g.pending.remove(&msg_id);
         if !g.enabled {
             return;
         }
         if !g.opened {
             open_session(&self.base_dir, &mut g);
         }
-        match g.pending.remove(&msg_id) {
+        match pending {
             None => {
                 let ts = chrono::Local::now().format("%H:%M:%S");
                 write_kind(&mut g, "translation", &format!("[{ts}] {translation}\n"));
@@ -279,6 +283,27 @@ mod tests {
         assert!(!dir.join("livetrans_original.txt").exists());
         let any: Vec<_> = std::fs::read_dir(&dir).unwrap().collect();
         assert!(any.is_empty());
+    }
+
+    /// D-130/K7：会话中途关转录时，`write_translation` 不得把译文到达前挂起的
+    /// 原文留在 pending（与 `finalize_no_translation` 的「先 remove 再判
+    /// enabled」同构）——否则下次 set_enabled(true) 后同 msg_id 的配对会错配，
+    /// 且残留只能靠 close() 兜底。
+    #[test]
+    fn write_translation_while_disabled_clears_pending() {
+        let dir = tmpdir("k7");
+        let tw = TranscriptWriter::new(&dir);
+        tw.write_original(5, "12:00:00", "挂起原文");
+        tw.set_enabled(false);
+        tw.write_translation(5, "迟到译文");
+        assert!(
+            tw.inner.lock().pending.is_empty(),
+            "disabled 时 write_translation 仍须清掉同 id 的挂起原文（K7）"
+        );
+        // 对照：finalize 路径早已同构（既有语义，锁住不回退）
+        tw.write_original(6, "12:00:01", "另一条");
+        tw.finalize_no_translation(6);
+        assert!(tw.inner.lock().pending.is_empty());
     }
 
     #[test]

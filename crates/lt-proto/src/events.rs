@@ -472,8 +472,10 @@ pub enum ThreadRole {
     Capture,
     AsrMain,
     TlWorker,
-    /// W2 预留（当前仍在 lt-translate 内裸 spawn，lt-app 监督器暂不可及；
-    /// 转入 orchestrator 后按方案线程表转 Never 接管）
+    /// 基准线程（shell 注册的是基准**编排**线程；lt-translate 内层逐模型线程
+    /// 不可及）。停机纪律（D-130/K6）：**禁 join_role(Bench) 叫停**——经
+    /// `bench_cancel` 在模型边界收敛，join 交给 join_all 兜底。
+    /// W2 预留（当前仍在 lt-translate 内裸 spawn；转入 orchestrator 后按方案线程表转 Never 接管）
     Bench,
     LogBridge,
     /// wasapi 可用性边沿事件 → UiEvent::Capture 的转发线程（W1/R4）

@@ -7,6 +7,16 @@ use crate::audio::energy_confidence;
 use anyhow::Context;
 use std::collections::VecDeque;
 use std::path::Path;
+use std::sync::{Mutex, MutexGuard};
+
+/// 共享 VAD 的中毒容忍取回（D-130/K3）：持锁方 panic 过的话数据本身不坏
+/// （VAD 状态是启发式缓存），取回即用——capture/ASR 循环体一律经本助手锁
+/// VAD，禁再裸 `.lock().unwrap()`（中毒即线程死亡：capture 死 → `capture_done`
+/// 永假、退出白等一个预算且尾巴丢失；ASR 线程死 → 依赖监督器重生）。
+/// 先行先例 = capture 退出尾巴的同款防御（`force_flush` 处 into_inner）。
+pub fn lock_vad(vad: &Mutex<VadProcessor>) -> MutexGuard<'_, VadProcessor> {
+    vad.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 /// 内嵌 Silero v5 模型（uv 管理：pyproject dev 组钉版 `silero-vad==5.1.2`，uv sync 装进
 /// 仓库内 .venv，本处直接内嵌 wheel 里的模型文件；来源与 sha256 见 assets/SOURCES.md）
@@ -767,6 +777,25 @@ mod tests {
         let mut p = VadProcessor::new(conf, 16000, 0.5, 1.0, 15.0, 0.032);
         p.mode = "silero".into();
         p
+    }
+
+    /// D-130/K3：锁中毒后 lock_vad 取回数据不 panic（旧式 `.lock().unwrap()`
+    /// 在同一场景必 panic = 本测试的红面）。中毒构造 = 子线程持锁 panic。
+    #[test]
+    fn lock_vad_recovers_data_from_poisoned_mutex() {
+        let vad = Arc::new(Mutex::new(make_dyn(Box::new(Script::new(&[0.0])))));
+        let v2 = vad.clone();
+        #[allow(clippy::disallowed_methods)]
+        // 测试机制：毒锁须在受控线程持锁 panic（非生产出生点；ADR-21 豁免编目）
+        let h = std::thread::spawn(move || {
+            let _g = v2.lock().unwrap();
+            panic!("毒化：持锁方崩溃");
+        });
+        assert!(h.join().is_err(), "子线程 panic 才构成毒锁前置");
+        // 等价旧实现的 `vad.lock().unwrap()` 在这一行必 panic；lock_vad 应回数据
+        let g = lock_vad(&vad);
+        assert!(!g.is_speaking());
+        assert_eq!(g.speech_samples(), 0);
     }
 
     /// 测试 mock（W1-R2 换源）：带内部状态 + 共享 reset 计数器的源。

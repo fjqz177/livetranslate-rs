@@ -511,3 +511,70 @@ fn explicit_retry_revives_same_config_after_exhaustion() {
     assert!(!m.is_unavailable());
     m.shutdown();
 }
+
+/// D-130/K1：停机标志置位后，识别超时进 recover 臂**不再重生 worker**——
+/// 旧实现在停机路径里原地 spawn_ready 等 ready_timeout 180s（退出恰逢识别
+/// 超时 → 进程逗留分钟级）。对照组证明同一构造未置标志时照常重生。
+#[test]
+fn recover_suppressed_by_shutdown_flag_while_timeout_recovers_normally() {
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    use std::sync::Arc;
+
+    // 计数 spawner：每次 spawn 尝试 +1（全走真 fake worker）
+    fn counting_spawn() -> (Spawner, Arc<AtomicU32>) {
+        let calls = Arc::new(AtomicU32::new(0));
+        let path = PathBuf::from(env!("CARGO_BIN_EXE_fake_asr_worker"));
+        let c2 = calls.clone();
+        let sp: Spawner = Box::new(move |cfg: &WorkerConfig| {
+            c2.fetch_add(1, Ordering::SeqCst);
+            AsrWorkerClient::spawn_program(&path, cfg.clone())
+        });
+        (sp, calls)
+    }
+    // base_secs=0 → 请求零超时 → Timeout 进 recover 臂（不烧真等待）
+    fn eff_zero_timeout() -> AsrEffectiveSettings {
+        AsrEffectiveSettings {
+            transcribe_base_secs: 0.0,
+            ..eff()
+        }
+    }
+
+    // ── 对照组：未置停机标志 → recover 照常重生（旧语义保持）──
+    let (sp, calls) = counting_spawn();
+    let mut m = AsrManager::with_spawner(sp);
+    let c = cfg_engine(WorkerEngine::Echo, "echo");
+    m.ensure_started_explicit(&c).expect("start");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let err = m
+        .transcribe(&audio(), false, &eff_zero_timeout())
+        .expect_err("零超时必失败");
+    assert!(
+        matches!(err, AsrManagerError::Restarted(_)),
+        "对照组应走 recover 重生：{err:?}"
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 2, "对照组应重生一次");
+    m.shutdown();
+
+    // ── 抑制组：置停机标志 → 同样超时不重生（K1 病根封堵）──
+    let (sp, calls) = counting_spawn();
+    let mut m = AsrManager::with_spawner(sp);
+    let stop = Arc::new(AtomicBool::new(false));
+    m.set_shutdown_flag(stop.clone());
+    let c = cfg_engine(WorkerEngine::Echo, "echo");
+    m.ensure_started_explicit(&c).expect("start");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    stop.store(true, Ordering::SeqCst);
+    let err = m
+        .transcribe(&audio(), false, &eff_zero_timeout())
+        .expect_err("零超时必失败");
+    assert!(
+        matches!(err, AsrManagerError::Unavailable(ref msg) if msg.contains("停机")),
+        "抑制组应返回停机 Unavailable：{err:?}"
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "停机中不得重生（K1）");
+    assert!(
+        !m.is_unavailable(),
+        "停机跳过不 mark_unavailable（不污染复活语义）"
+    );
+    m.shutdown();
+}

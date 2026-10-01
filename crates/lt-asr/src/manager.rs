@@ -15,6 +15,8 @@
 use crate::client::{AsrClientError, AsrWorkerClient};
 use crate::worker::{WorkerConfig, WorkerEngine};
 use lt_proto::AsrResult;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 /// 自动重启上限（原版 _asr_restart_max）
 const RESTART_MAX: u32 = 3;
@@ -70,12 +72,29 @@ pub struct AsrManager {
     /// 评审 §3.3 P2 顺手项：sysinfo::System 复用实例——旧 sample_rss_mb
     /// 每 500ms 新建（进程表全量初始化），回收采样热路径上重复建开销
     rss_sys: Option<sysinfo::System>,
+    /// 停机信号（D-130/K1）：宿主（run_asr_thread）注入管道停机标志——置位后
+    /// recover/空窗重建/RSS 回收三口一律**不再重生 worker**（退出恰逢识别
+    /// 超时的场景，重生会在停机路径里原地等 ready_timeout 180s → 进程逗留
+    /// 分钟级）。None = 永不停（默认，测试与旧用法零改动）
+    shutdown: Option<Arc<AtomicBool>>,
 }
 
 impl AsrManager {
     /// 生产构造：走 `当前exe --asr-worker`（与 AsrWorkerClient::spawn 相同）
     pub fn new() -> Self {
         Self::with_spawner(Box::new(|cfg| AsrWorkerClient::spawn(cfg.clone())))
+    }
+
+    /// 注入停机标志（D-130/K1）：run_asr_thread 传入管道 stop 标志
+    pub fn set_shutdown_flag(&mut self, flag: Arc<AtomicBool>) {
+        self.shutdown = Some(flag);
+    }
+
+    /// 停机判定（三口重生闸共用）
+    fn shutting_down(&self) -> bool {
+        self.shutdown
+            .as_ref()
+            .is_some_and(|f| f.load(Ordering::Relaxed))
     }
 
     /// 注入 spawner（测试用假 worker）
@@ -89,6 +108,7 @@ impl AsrManager {
             unavailable: false,
             spawn,
             rss_sys: None,
+            shutdown: None,
         }
     }
 
@@ -221,6 +241,12 @@ impl AsrManager {
                 self.mark_unavailable("无配置可重建");
                 return Err(AsrManagerError::Unavailable("无配置可重建".into()));
             };
+            // D-130/K1：停机中不重建（同 recover 闸）
+            if self.shutting_down() {
+                return Err(AsrManagerError::Unavailable(
+                    "停机中，跳过 ASR worker 重建".into(),
+                ));
+            }
             tracing::warn!("ASR worker 缺位（此前重建失败），尝试恢复");
             return match self.spawn_ready(&config) {
                 Ok(()) => Err(AsrManagerError::Restarted("worker 已恢复，本段丢弃".into())),
@@ -363,6 +389,13 @@ impl AsrManager {
             old.shutdown();
         }
         self.client = None;
+        // D-130/K1：停机中不再重生——退出恰逢识别超时时，原地重生会在停机
+        // 路径里等 ready_timeout 180s（进程逗留分钟级）。不 mark_unavailable
+        // （停机即终态，无需粘滞；也不污染"不可用"语义给复活路径）
+        if self.shutting_down() {
+            tracing::warn!("停机中 ASR worker 死亡（{reason}），跳过重生（K1）");
+            return AsrManagerError::Unavailable("停机中，跳过 ASR worker 重生".into());
+        }
         let Some(config) = self.config.clone() else {
             self.mark_unavailable("无配置可重启");
             return AsrManagerError::Unavailable("无配置可重启".into());
@@ -430,6 +463,10 @@ impl AsrManager {
                         old.shutdown();
                     }
                     self.client = None;
+                    // D-130/K1：停机中不回收重建（同 recover 闸）
+                    if self.shutting_down() {
+                        return;
+                    }
                     let config = self.config.clone();
                     if let Some(config) = config {
                         if let Err(e) = self.spawn_ready(&config) {
