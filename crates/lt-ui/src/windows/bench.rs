@@ -143,6 +143,7 @@ pub fn bench_ui(
 /// 源/目标语言下拉（索引写回 state；紧凑宽度）
 fn lang_combo(ui: &mut Ui, id: &str, index: &mut usize, langs: &[&str]) {
     egui::ComboBox::from_id_salt(id)
+        .popup_style(crate::style::combo_popup_style())
         .selected_text(langs[*index].to_string())
         .width(76.0)
         .show_ui(ui, |ui| {

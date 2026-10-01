@@ -402,6 +402,7 @@ fn capped_combo(
         egui::Layout::left_to_right(egui::Align::Center),
         |ui| {
             ComboBox::from_id_salt(id_salt)
+                .popup_style(crate::style::combo_popup_style())
                 .width(share_w)
                 .truncate()
                 .selected_text(selected_text)

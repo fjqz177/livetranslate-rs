@@ -357,6 +357,7 @@ pub fn page(
         ui.horizontal(|ui| {
             ui.label(RichText::new(format!("{} ", lt_i18n::t("label_engine"))).color(pal.text));
             egui::ComboBox::from_id_salt("panel_engine")
+                .popup_style(crate::style::combo_popup_style())
                 .selected_text(engine_display(&engine))
                 .width(240.0)
                 .show_ui(ui, |ui| {
@@ -384,6 +385,7 @@ pub fn page(
                 RichText::new(format!("{} ", lt_i18n::t("label_language_hint"))).color(pal.text),
             );
             egui::ComboBox::from_id_salt("panel_asr_lang")
+                .popup_style(crate::style::combo_popup_style())
                 .selected_text(langs[lang_idx].1.clone())
                 .width(240.0)
                 .show_ui(ui, |ui| {
@@ -413,6 +415,7 @@ pub fn page(
                     RichText::new(format!("{} ", lt_i18n::t("label_funasr_model"))).color(pal.text),
                 );
                 egui::ComboBox::from_id_salt("panel_funasr_model")
+                    .popup_style(crate::style::combo_popup_style())
                     .selected_text(items[m_idx].display.clone())
                     .width(240.0)
                     .show_ui(ui, |ui| {
@@ -441,6 +444,7 @@ pub fn page(
                         .color(pal.text),
                 );
                 egui::ComboBox::from_id_salt("panel_whisper_model")
+                    .popup_style(crate::style::combo_popup_style())
                     .selected_text(whisper_tier_display_for(&settings.whisper_model_size))
                     .width(240.0)
                     .show_ui(ui, |ui| {
@@ -529,6 +533,7 @@ pub fn page(
         ui.horizontal(|ui| {
             ui.label(RichText::new(format!("{} ", lt_i18n::t("label_hub"))).color(pal.text));
             egui::ComboBox::from_id_salt("panel_hub")
+                .popup_style(crate::style::combo_popup_style())
                 .selected_text(hubs[hub_idx].clone())
                 .width(240.0)
                 .show_ui(ui, |ui| {
@@ -574,6 +579,7 @@ pub fn page(
             let langs = ["English", zh.as_str()]; // 与原版 addItem(["English","中文"]) 顺序一致
             let lang_idx = ui_lang_combo_index(&settings.ui_lang);
             egui::ComboBox::from_id_salt("panel_ui_lang_vad")
+                .popup_style(crate::style::combo_popup_style())
                 .selected_text(langs[lang_idx].to_string())
                 .width(240.0)
                 .show_ui(ui, |ui| {
@@ -605,6 +611,7 @@ pub fn page(
         ui.horizontal(|ui| {
             ui.label(RichText::new(format!("{} ", lt_i18n::t("label_audio"))).color(pal.text));
             egui::ComboBox::from_id_salt("panel_audio_device")
+                .popup_style(crate::style::combo_popup_style())
                 .selected_text(device_label(a_idx, &outputs, lt_i18n::t("audio_disabled")))
                 .width(300.0)
                 .show_ui(ui, |ui| {
@@ -662,6 +669,7 @@ pub fn page(
                 );
             }
             let combo = egui::ComboBox::from_id_salt("panel_mic_device")
+                .popup_style(crate::style::combo_popup_style())
                 .selected_text(device_label(m_idx, &inputs, lt_i18n::t("mic_disabled")))
                 .width(300.0);
             ui.add_enabled_ui(m_enabled, |ui| {
@@ -704,6 +712,7 @@ pub fn page(
             .unwrap_or(0);
         let mut next = mode_idx;
         egui::ComboBox::from_id_salt("panel_vad_mode")
+            .popup_style(crate::style::combo_popup_style())
             .selected_text(labels[mode_idx].clone())
             .width(240.0)
             .show_ui(ui, |ui| {
@@ -793,6 +802,7 @@ pub fn page(
         ui.horizontal(|ui| {
             ui.label(RichText::new(format!("{} ", lt_i18n::t("label_silence"))).color(pal.text));
             egui::ComboBox::from_id_salt("panel_silence_mode")
+                .popup_style(crate::style::combo_popup_style())
                 .selected_text(mode_labels[sm_idx].clone())
                 .width(160.0)
                 .show_ui(ui, |ui| {

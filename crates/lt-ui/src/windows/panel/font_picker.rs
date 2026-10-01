@@ -63,6 +63,7 @@ pub fn font_picker_row(
             current.clone()
         };
         ComboBox::from_id_salt(id)
+            .popup_style(crate::style::combo_popup_style())
             .width(240.0)
             .selected_text(shown)
             .show_ui(ui, |ui| {

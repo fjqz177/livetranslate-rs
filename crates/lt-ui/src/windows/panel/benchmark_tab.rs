@@ -86,6 +86,7 @@ pub fn page(
 fn lang_combo(ui: &mut Ui, id: &str, idx: &mut usize, items: &[&str], pal: &Palette) {
     let i = (*idx).min(items.len() - 1);
     egui::ComboBox::from_id_salt(id)
+        .popup_style(crate::style::combo_popup_style())
         .selected_text(items[i].to_string())
         .width(80.0)
         .show_ui(ui, |ui| {

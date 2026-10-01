@@ -95,6 +95,7 @@ pub fn combo_index(
 ) -> Option<usize> {
     let mut next = current;
     egui::ComboBox::from_id_salt(id)
+        .popup_style(crate::style::combo_popup_style())
         .selected_text(labels[current].clone())
         .width(width)
         .show_ui(ui, |ui| {

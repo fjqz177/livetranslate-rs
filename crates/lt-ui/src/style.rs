@@ -182,6 +182,26 @@ pub fn stabilize_widget_strokes(v: &mut egui::Visuals) {
 
 // ── 弹层可选项稳定（D-119 / G-38） ──
 
+/// 下拉弹层末项底部安全余量（D-131）：弹层滚动区 clip 底必须比末项框底
+/// 至少多出该值，1px Inside 描边 + AA 羽化才不被 scissor 裁没。
+pub const COMBO_POPUP_BOTTOM_SLACK: i8 = 2;
+
+/// 下拉弹层统一样式（D-131）：给弹层滚动区垫底部 content_margin。
+///
+/// **根因**：ComboBox 弹层 Area 高度在 sizing pass 一次性冻结＝内容高，
+/// 之后每帧的滚动区 clip 底与末项框底**齐平**——悬停/选中描边
+/// （Inside 1px）正好压在裁剪缘上，非整缩放（1.25 等）下 egui-wgpu 的
+/// ScissorRect 按 min/max 各自 round，框底越缘 0.2px 即整条底边被裁没
+/// （用户实报：≥3 项下拉末项蓝框缺底边；2 项弹层因 sizing 多测出富余
+/// 而幸免，属侥幸非豁免）。**红线：本仓一切 ComboBox 弹层一律挂
+/// `.popup_style(combo_popup_style())`**——绕过本助手的弹层在非整缩放
+/// 实机必复现末项缺底边。
+pub fn combo_popup_style() -> egui::style::StyleModifier {
+    egui::style::StyleModifier::from(|s: &mut egui::Style| {
+        s.spacing.scroll.content_margin.bottom = COMBO_POPUP_BOTTOM_SLACK
+    })
+}
+
 /// ComboBox 弹层可选项稳定包装。egui 0.36 `Button::selectable(false)` 静止态
 /// 走无帧分支（`Frame::new()`，描边不画），内边距却仍按
 /// `button_padding − inactive.bg_stroke.width` 预扣；悬停切全帧时描边回补 →

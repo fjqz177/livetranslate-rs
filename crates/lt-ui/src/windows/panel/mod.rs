@@ -747,6 +747,204 @@ pub(crate) mod click_testing {
 mod tests {
     use super::*;
 
+    /// D-131 回归钉：下拉弹层内悬停/选中项的描边框不得贴弹层裁剪缘。
+    /// 根因：弹层 Area 高度在 sizing pass 冻结＝内容高 → 滚动区 clip 底与
+    /// 末项框底齐平（1.25 等非整缩放下 scissor 取整越缘 +0.2px）→ Inside
+    /// 描边的底边整条被裁没（用户实报：≥3 项下拉末项蓝框缺底边；2 项弹层
+    /// 因 sizing 多测 19px 而幸免）。对策 = 弹层滚动区底部 content_margin
+    /// 垫 2px（style::combo_popup_style 单源）。断言：弹层内所有描边项框
+    /// 的框底到裁剪缘距离 ≥1.0px（1px 描边 + AA 羽化的安全余量），
+    /// 3 项引擎下拉 @1.0/@1.25 双缩放 + 2 项静音下拉对照。
+    #[test]
+    fn combo_popup_last_item_frame_not_clipped() {
+        let _lang_guard = crate::lang_test_guard();
+        lt_i18n::set_lang("zh").expect("语言表解析");
+        let ctx = real_fonts_ctx();
+        let min_w = derived_panel_min_width(&ctx);
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(min_w, 1200.0));
+
+        let mut st = crate::state::AppUi::new(Settings::default());
+        st.panel.state.page = PanelPage::VadAsr;
+
+        let render = |ctx: &egui::Context,
+                      st: &mut crate::state::AppUi,
+                      events: Vec<egui::Event>,
+                      t: f64|
+         -> egui::FullOutput {
+            let mut visuals = panel_visuals();
+            crate::style::stabilize_widget_strokes(&mut visuals);
+            ctx.set_visuals(visuals);
+            let scroll = crate::style::panel_scroll_style();
+            ctx.all_styles_mut(move |s| s.spacing.scroll = scroll);
+            let mut out = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(screen),
+                    events,
+                    time: Some(t),
+                    ..Default::default()
+                },
+                |ui| crate::windows::dispatch(crate::state::WinId::Panel, ui, st),
+            );
+            out.textures_delta.clear();
+            out
+        };
+
+        // 场景驱动：点开组合框 → 悬停弹层最后一项 → 返回末帧（弹层是否打开
+        // 以「末项文本出现」为准——popup Area id 是 Ui 链哈希，外部无法按
+        // salt 重建）
+        let open_and_hover = |ctx: &egui::Context,
+                              st: &mut crate::state::AppUi,
+                              sel_text: &str,
+                              last_needle: &str,
+                              t0: f64|
+         -> (egui::FullOutput, egui::Rect, f64) {
+            let mut t = t0;
+            let mut btn_pos = None;
+            for _ in 0..4 {
+                t += 1.0 / 60.0;
+                let out = render(ctx, st, vec![], t);
+                btn_pos = click_testing::text_center(&out.shapes, sel_text);
+            }
+            let btn_pos = btn_pos.expect("找不到组合框按钮文本");
+            let evs = [
+                vec![egui::Event::PointerMoved(btn_pos)],
+                vec![egui::Event::PointerButton {
+                    pos: btn_pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::default(),
+                }],
+                vec![egui::Event::PointerButton {
+                    pos: btn_pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::default(),
+                }],
+            ];
+            for ev in evs {
+                t += 1.0 / 60.0;
+                render(ctx, st, ev, t);
+            }
+            let mut last_rect = None;
+            for _ in 0..3 {
+                t += 1.0 / 60.0;
+                let out = render(ctx, st, vec![], t);
+                for clipped in &out.shapes {
+                    if let egui::Shape::Text(txt) = &clipped.shape {
+                        if txt.galley.text().contains(last_needle) {
+                            last_rect = Some(txt.galley.rect.translate(txt.pos.to_vec2()));
+                        }
+                    }
+                }
+            }
+            let last_rect =
+                last_rect.unwrap_or_else(|| panic!("弹层未打开或找不到末项文本: {last_needle:?}"));
+            let hover = egui::Pos2::new(last_rect.center().x, last_rect.bottom() - 2.0);
+            let mut out = None;
+            for _ in 0..3 {
+                t += 1.0 / 60.0;
+                out = Some(render(ctx, st, vec![egui::Event::PointerMoved(hover)], t));
+            }
+            (out.expect("悬停帧必有产出"), last_rect, t)
+        };
+
+        // 场景间点空白处关掉上一个弹层（CloseOnClick），防下次点击被 toggle 吞掉
+        let click_at =
+            |ctx: &egui::Context, st: &mut crate::state::AppUi, pos: egui::Pos2, t0: f64| -> f64 {
+                let mut t = t0;
+                for ev in [
+                    vec![egui::Event::PointerMoved(pos)],
+                    vec![egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: true,
+                        modifiers: egui::Modifiers::default(),
+                    }],
+                    vec![egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: false,
+                        modifiers: egui::Modifiers::default(),
+                    }],
+                ] {
+                    t += 1.0 / 60.0;
+                    render(ctx, st, ev, t);
+                }
+                for _ in 0..2 {
+                    t += 1.0 / 60.0;
+                    render(ctx, st, vec![], t);
+                }
+                t
+            };
+
+        // 快进 n 帧无事件（拉开幕间间隔，防双击判定 + ppp 切换后重整一帧）
+        let idle = |ctx: &egui::Context, st: &mut crate::state::AppUi, n: usize, t0: f64| -> f64 {
+            let mut t = t0;
+            for _ in 0..n {
+                t += 1.0 / 60.0;
+                render(ctx, st, vec![], t);
+            }
+            t
+        };
+
+        let scenarios = [
+            ("引擎3项@1.0", "FunASR (SenseVoice)", "Qwen3", 1.0),
+            ("引擎3项@1.25", "FunASR (SenseVoice)", "Qwen3", 1.25),
+            ("静音2项@1.0", "自动", "固定", 1.0),
+        ];
+        let mut fails: Vec<String> = Vec::new();
+        let mut t = 0.0f64;
+        for (tag, sel_text, last_needle, ppp) in scenarios {
+            ctx.set_pixels_per_point(ppp);
+            t = idle(&ctx, &mut st, 30, t);
+            t = click_at(&ctx, &mut st, egui::Pos2::new(5.0, 1150.0), t);
+            let (out, last_rect, t_end) = open_and_hover(&ctx, &mut st, sel_text, last_needle, t);
+            t = t_end;
+            // 弹层项描边框集合：有描边、行高 15..40、宽 >100、且所在 clip
+            // 高 <500（页面级控件的 clip = 视口 ~1167，据此只留弹层内行）
+            let mut worst: Option<(f32, egui::Rect)> = None;
+            for clipped in &out.shapes {
+                let cr = clipped.clip_rect;
+                if cr.height() >= 500.0 {
+                    continue;
+                }
+                let mut leafs: Vec<&egui::Shape> = Vec::new();
+                fn push_leafs<'a>(s: &'a egui::Shape, out: &mut Vec<&'a egui::Shape>) {
+                    match s {
+                        egui::Shape::Vec(v) => v.iter().for_each(|s| push_leafs(s, out)),
+                        s => out.push(s),
+                    }
+                }
+                push_leafs(&clipped.shape, &mut leafs);
+                for leaf in leafs {
+                    if let egui::Shape::Rect(r) = leaf {
+                        let h = r.rect.height();
+                        if r.stroke.width > 0.0
+                            && (15.0..40.0).contains(&h)
+                            && r.rect.width() > 100.0
+                        {
+                            let slack = cr.bottom() - r.rect.bottom();
+                            if worst.is_none_or(|(s, _)| slack < s) {
+                                worst = Some((slack, r.rect));
+                            }
+                        }
+                    }
+                }
+            }
+            let Some((slack, rect)) = worst else {
+                fails.push(format!("{tag}: 弹层内未找到任何描边项框（过滤面失效）"));
+                continue;
+            };
+            if slack < 1.0 {
+                fails.push(format!(
+                    "{tag}: 弹层项描边框贴/越裁剪缘 slack={slack:+.3}（框 {rect:?}，末项文本矩形 {last_rect:?}）——底边会被 scissor 裁没（D-131）"
+                ));
+            }
+        }
+        ctx.set_pixels_per_point(1.0);
+        assert!(fails.is_empty(), "{}", fails.join("\n"));
+    }
+
     /// 设置导出 → 导入往返一致；legacy 键经 from_value_compatible 迁移
     #[test]
     fn settings_export_import_roundtrip() {

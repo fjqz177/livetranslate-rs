@@ -75,6 +75,7 @@ fn wizard_ui(ui: &mut Ui, startup: &mut StartupUi, session: &mut SessionView) {
             ui.strong(lt_i18n::t("group_download_source"));
             let hub_items = [lt_i18n::t("hub_modelscope"), lt_i18n::t("hub_huggingface")];
             egui::ComboBox::from_id_salt("wizard_hub")
+                .popup_style(crate::style::combo_popup_style())
                 .selected_text(hub_items[w.hub_index].clone())
                 .show_ui(ui, |ui| {
                     // 任一控件变更重置倒计时（原版 currentIndexChanged → _reset_countdown）
@@ -105,6 +106,7 @@ fn wizard_ui(ui: &mut Ui, startup: &mut StartupUi, session: &mut SessionView) {
                 .show(ui, |ui| {
                     ui.label(lt_i18n::t("label_proxy"));
                     egui::ComboBox::from_id_salt("wizard_proxy_mode")
+                        .popup_style(crate::style::combo_popup_style())
                         .selected_text(mode_items[w.proxy_index].clone())
                         .show_ui(ui, |ui| {
                             for (i, item) in mode_items.iter().enumerate() {

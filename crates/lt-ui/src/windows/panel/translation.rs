@@ -672,6 +672,7 @@ pub fn page(
                 RichText::new(format!("{} ", lt_i18n::t("label_prompt_preset"))).color(pal.text),
             );
             egui::ComboBox::from_id_salt("panel_prompt_preset")
+                .popup_style(crate::style::combo_popup_style())
                 .selected_text(lt_i18n::t(PROMPT_PRESET_KEYS[cur]))
                 .width(220.0)
                 .show_ui(ui, |ui| {
@@ -855,6 +856,7 @@ fn editor_fields(ui: &mut Ui, ed: &mut ModelEditState, pal: &Palette) {
             .map(preset_label)
             .unwrap_or_else(|| lt_i18n::t("preset_provider_custom"));
         egui::ComboBox::from_id_salt("model_edit_preset")
+            .popup_style(crate::style::combo_popup_style())
             .selected_text(selected)
             .width(220.0)
             .show_ui(ui, |ui| {
@@ -894,6 +896,7 @@ fn editor_fields(ui: &mut Ui, ed: &mut ModelEditState, pal: &Palette) {
                 lt_i18n::t("proxy_custom"),
             ];
             egui::ComboBox::from_id_salt("model_edit_proxy_mode")
+                .popup_style(crate::style::combo_popup_style())
                 .selected_text(modes[ed.proxy_index].clone())
                 .width(240.0)
                 .show_ui(ui, |ui| {
@@ -976,6 +979,7 @@ fn editor_fields(ui: &mut Ui, ed: &mut ModelEditState, pal: &Palette) {
                     }),
                 };
                 egui::ComboBox::from_id_salt("model_edit_currency")
+                    .popup_style(crate::style::combo_popup_style())
                     .selected_text(selected)
                     .width(120.0)
                     .show_ui(ui, |ui| {
@@ -1064,6 +1068,7 @@ fn editor_fields(ui: &mut Ui, ed: &mut ModelEditState, pal: &Palette) {
                     .collect::<Vec<_>>();
                 let idx = ed.thinking_index.min(styles.len() - 1);
                 egui::ComboBox::from_id_salt("model_edit_thinking")
+                    .popup_style(crate::style::combo_popup_style())
                     .selected_text(styles[idx].clone())
                     .width(240.0)
                     .show_ui(ui, |ui| {
