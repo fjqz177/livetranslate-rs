@@ -622,6 +622,16 @@ pub enum Cmd {
     },
 }
 
+impl UiEvent {
+    /// 流式行清空事件单点构造（D-128；Q11 会话边界语义的唯一定义点——
+    /// 收尾冲刷/引擎切换/设备切换共用，散写字面量迟早漂移）
+    pub fn realtime_partial_cleared() -> Self {
+        Self::RealtimePartial {
+            text: String::new(),
+        }
+    }
+}
+
 impl Cmd {
     /// D-117（扫描批 C3）：该命令是否携带设置草稿效果。
     ///

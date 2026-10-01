@@ -306,9 +306,7 @@ impl AppShell {
                     p.set_audio_device(choice);
                 }
                 // D-128：设备切换 = 会话边界，流式行一并清空（Q11 收尾语义）
-                self.artery.push(UiEvent::RealtimePartial {
-                    text: String::new(),
-                });
+                self.artery.push(UiEvent::realtime_partial_cleared());
                 self.publish_settings();
                 self.persist_settings();
             }
@@ -317,9 +315,7 @@ impl AppShell {
                     p.set_mic_device(choice);
                 }
                 // D-128：设备切换 = 会话边界，流式行一并清空（Q11 收尾语义）
-                self.artery.push(UiEvent::RealtimePartial {
-                    text: String::new(),
-                });
+                self.artery.push(UiEvent::realtime_partial_cleared());
                 self.publish_settings();
                 self.persist_settings();
             }

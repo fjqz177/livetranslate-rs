@@ -25,9 +25,10 @@ use crate::interim::{
     trim_samples,
 };
 
-/// 句内停顿兜底阈值（句界信号③）。**必须严格小于 VAD 收段静音阈值**：
-/// fixed 档用户可调下限 0.3s 时 VAD flush 先行收段（同效定稿），本兜底自然
-/// 失效；auto 档短缓冲下限 0.8s，0.5s 留出兜底窗口。
+/// 句内停顿兜底阈值（句界信号③）。只在 VAD 收段静音阈值 > 0.5s 时先于收段
+/// 触发（auto 档短缓冲 0.8s 起——0.5s 留出兜底窗口）；fixed 档用户把静音调到
+/// ≤0.5s 时 VAD flush 先行收段——收段=同效定稿（尾巴照走收尾提交），本兜底
+/// 自然失效，语义不受损。
 pub const PAUSE_FINALIZE_SECS: f64 = 0.5;
 
 /// 提交尾部回声账本长度（对照原版 `_interim_committed_tail` 的末 50 字符）。
@@ -83,9 +84,10 @@ pub fn realtime_pass(
 
     // ② 空/纯标点假设（管道侧已有 alnum 闸，此处纵深防御——回声剥除也可能
     //    把字母数字部分剥干净）：行退到 pending（不清屏不裁剪）。
-    //    注意惰性：display 取 pending 必须发生在判定之后，禁提前 mem::take
-    let empty_out = |st: &mut RealtimeState| RealtimeOutcome {
-        display: std::mem::take(&mut st.pending),
+    //    pending 用 clone 展示、状态保留——它还没被任何定稿区消费，清掉就永远
+    //    合并不进翻译（评审抓出的 mem::take 病灶）；惰性构造防提前取用
+    let empty_out = |st: &RealtimeState| RealtimeOutcome {
+        display: st.pending.clone(),
         finalized: Vec::new(),
         trim_samples: 0,
     };
@@ -201,6 +203,10 @@ mod tests {
         assert_eq!(out.display, "好的。");
         assert!(out.finalized.is_empty());
         assert_eq!(out.trim_samples, 0);
+        assert_eq!(
+            st.pending, "好的。",
+            "空假设只展示 pending、状态必须保留——清掉就永远合并不进翻译"
+        );
     }
 
     // ── 句界信号①：句末标点 ──

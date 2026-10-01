@@ -2339,9 +2339,7 @@ fn drain_tl_switch(
                         ctx.interim.set_scale(lt_proto::realtime_tick_scale(
                             lt_proto::EngineKey::from_settings_str(&engine),
                         ));
-                        ctx.sink.push(UiEvent::RealtimePartial {
-                            text: String::new(),
-                        });
+                        ctx.sink.push(UiEvent::realtime_partial_cleared());
                         // 日志按引擎打实际模型键（whisper 打 funasr_model 会误导诊断）
                         let model_key =
                             engine_model_key(&engine, &funasr_model, &whisper_model_size);
@@ -2770,9 +2768,7 @@ fn handle_vad_flush(
     interim_state.reset();
     interim.last_interim_samples.store(0, Ordering::Relaxed);
     interim.last_check_ms.store(0, Ordering::Relaxed);
-    sink.push(UiEvent::RealtimePartial {
-        text: String::new(),
-    });
+    sink.push(UiEvent::realtime_partial_cleared());
 }
 
 /// 退出收尾循环（ACR-1a）：等 capture 落板（`capture_done`）与持续消费段队列

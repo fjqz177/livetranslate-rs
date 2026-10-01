@@ -20,6 +20,8 @@ use std::time::Duration;
 
 /// 增量 ASR 跨线程控制块（原版 `_incremental_enabled` / `_interim_interval` /
 /// `_last_interim_samples` / `_last_interim_check_time` 四个散字段的原子等价）。
+/// D-128 起服务实时识别（面板「实时识别」开关/节拍）：Interim 旧名保守保留——
+/// 机制沿用原触发时序，且 egui id_salt（"panel_interim"）改名会重置用户拖拽态。
 /// capture 线程只读 enabled/interval + 写 last_check_ms；ASR 线程写
 /// last_interim_samples——各写各的、无复合不变量，故用原子而非锁。
 #[derive(Debug)]
