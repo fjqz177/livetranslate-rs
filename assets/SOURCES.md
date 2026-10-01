@@ -74,7 +74,7 @@
 
 ## fonts/（W-7 定稿：brotli 压缩资产，运行时一次性解压——字形零损失）
 
-体积策略：全量 OTF/TTF 内嵌共 ~34MB → brotli(q11) 入库 ~12.7MB（exe 中同量）；
+体积策略：全量 OTF/TTF 内嵌共 ~21.2MB → brotli(q11) 入库 ~13.5MB（exe 中同量）；
 解压发生在进程内一次（启动 +~100ms），解压后 `FontData::from_static` 零拷贝。
 
 ### 压缩资产（仓库实存）
@@ -82,8 +82,8 @@
 | 文件 | 大小 | 压缩体 sha256 |
 |---|---|---|
 | `NotoSansCJKsc-Regular.otf.br` | 11,457,451 B | `d35b738332ab714af2511b8b3cd73f3bc164cb1b519406738dfce4ee0020cd02` |
-| `NotoSansMono-VF.ttf.br` | 761,491 B | 118384f344fdc8f3d664a3c5fcf49424bdb9793e2c3b60af43270a13420aeec8 |
-| `NotoSansSymbols2-Regular.ttf.br` | 435,506 B | 7ab1b92eae75a194d8ba653e06ab0e60af902d1a6154a082673f87e4c14e5b27 |
+| `NotoSansMono-VF.ttf.br` | 759,156 B | 118384f344fdc8f3d664a3c5fcf49424bdb9793e2c3b60af43270a13420aeec8 |
+| `NotoSansSymbols2-Regular.ttf.br` | 435,925 B | 7ab1b92eae75a194d8ba653e06ab0e60af902d1a6154a082673f87e4c14e5b27 |
 | `NotoSansArabic-VF.ttf.br` | 368,819 B | 311340b84de7170f63af6dd1e127a0748dee80c1a4715e1776621234c86d5dc1 |
 | `NotoSansThai-VF.ttf.br` | 111,668 B | b90b71e4abeae0ee481cfe75b75ef4e0df5e7f245c2587ddf912018b9bac5829 |
 | `NotoSansDevanagari-VF.ttf.br` | 271,833 B | 4ac4207bd705aa2cb4b269088d63cc49ef6da12c4de8740af4acc8708fd3e8d5 |
@@ -120,6 +120,7 @@ python -c "import brotli;open('x.br','wb').write(brotli.compress(open('x','rb').
 - 许可：七者均 SIL Open Font License 1.1（OFL.txt 随附）
 - 裁剪记录（2026-09-07）：NotoSansMonoCJKsc 已移除——等宽 chrome 的中文回落思源（与有 Consolas 机器现状一致）；区域子集（NotoSansSC 8.3MB）经实测缺失韩文音节，否决不采纳。
 - 补字记录（2026-10-01，D-127）：内嵌三字体联合缺阿拉伯/泰/天城文/希伯来四脚本（egui 无系统回退 → 语言下拉豆腐块）；红线 = 覆盖测试机械枚举 `lt_i18n::LANGUAGES` 全表（`embedded_chain_covers_language_native_names`）。
+- 大小列校正（2026-10-01，D-127 评审）：Mono 与 Symbols2 的大小列为历史误记（sha256 恒与实存一致，仅字节数错），按 `ls -l` 实测校正。
 
 ## .cache/sherpa-onnx/（构建期预取，gitignored 不入库）
 

@@ -33,12 +33,6 @@ static SANS_BR: &[u8] = include_bytes!("../../../assets/fonts/NotoSansCJKsc-Regu
 static MONO_BR: &[u8] = include_bytes!("../../../assets/fonts/NotoSansMono-VF.ttf.br");
 /// 内嵌符号字体（brotli 压缩资产；经 [`embedded_symbols`] 运行时解压）。
 static SYMBOLS_BR: &[u8] = include_bytes!("../../../assets/fonts/NotoSansSymbols2-Regular.ttf.br");
-/// 内嵌四脚本补字（brotli 压缩资产；经 [`embedded_scripts`] 运行时解压）——
-/// 思源所缺的阿拉伯/泰/天城文/希伯来（D-127，G-43：egui 无系统回退，缺字即豆腐）。
-static ARABIC_BR: &[u8] = include_bytes!("../../../assets/fonts/NotoSansArabic-VF.ttf.br");
-static THAI_BR: &[u8] = include_bytes!("../../../assets/fonts/NotoSansThai-VF.ttf.br");
-static DEVANAGARI_BR: &[u8] = include_bytes!("../../../assets/fonts/NotoSansDevanagari-VF.ttf.br");
-static HEBREW_BR: &[u8] = include_bytes!("../../../assets/fonts/NotoSansHebrew-VF.ttf.br");
 /// 内嵌字体「展示族名」：设置键默认值 + 选择器首项显示。
 pub const EMBEDDED_FAMILY: &str = "Noto Sans CJK SC";
 /// 内嵌思源在 `FontDefinitions.font_data` 中的注册名（链尾兜底 + 命名族链尾部）。
@@ -47,13 +41,10 @@ pub const EMBEDDED_KEY: &str = "sans-cjk-sc";
 pub const MONO_KEY: &str = "sans-mono";
 /// 内嵌符号字体的注册名（各链尾部；✓ ✗ 等）。
 pub const SYMBOLS_KEY: &str = "sans-symbols";
-/// 四脚本补字的注册名（各链尾部；D-127）。
+/// 四脚本补字的注册名（各链尾部；D-127，语义见 [`SCRIPT_FONTS`]）。
 pub const ARABIC_KEY: &str = "sans-arabic";
-/// 四脚本补字的注册名（各链尾部；D-127）。
 pub const THAI_KEY: &str = "sans-thai";
-/// 四脚本补字的注册名（各链尾部；D-127）。
 pub const DEVANAGARI_KEY: &str = "sans-devanagari";
-/// 四脚本补字的注册名（各链尾部；D-127）。
 pub const HEBREW_KEY: &str = "sans-hebrew";
 /// 中英韩样例：UI 预览卡与字形覆盖测试共用（防漂移）。
 pub const SAMPLE_TEXT: &str = "天地玄黄 宇宙洪荒 The quick brown fox 한국어 어둠 0123456789";
@@ -92,12 +83,34 @@ pub fn embedded_symbols() -> &'static [u8] {
     S.get_or_init(|| inflate_embedded(SYMBOLS_BR, "Noto Sans Symbols 2"))
 }
 
-/// 四脚本补字表：(注册键, brotli 资产, 解压展示名)——注册与覆盖测试共用。
-const SCRIPT_FONTS: [(&str, &[u8], &str); 4] = [
-    (ARABIC_KEY, ARABIC_BR, "Noto Sans Arabic"),
-    (THAI_KEY, THAI_BR, "Noto Sans Thai"),
-    (DEVANAGARI_KEY, DEVANAGARI_BR, "Noto Sans Devanagari"),
-    (HEBREW_KEY, HEBREW_BR, "Noto Sans Hebrew"),
+/// 四脚本补字表（D-127，G-43：思源所缺的阿拉伯/泰/天城文/希伯来——egui 无系统
+/// 回退，缺字即豆腐）：(注册键, brotli 资产, 解压展示名, 本文名覆盖自检样例)。
+/// 注册与覆盖测试共用单源；新增脚本 = 加一行 + 资产登记 assets/SOURCES.md。
+const SCRIPT_FONTS: [(&str, &[u8], &str, &str); 4] = [
+    (
+        ARABIC_KEY,
+        include_bytes!("../../../assets/fonts/NotoSansArabic-VF.ttf.br"),
+        "Noto Sans Arabic",
+        "العربية",
+    ),
+    (
+        THAI_KEY,
+        include_bytes!("../../../assets/fonts/NotoSansThai-VF.ttf.br"),
+        "Noto Sans Thai",
+        "ไทย",
+    ),
+    (
+        DEVANAGARI_KEY,
+        include_bytes!("../../../assets/fonts/NotoSansDevanagari-VF.ttf.br"),
+        "Noto Sans Devanagari",
+        "हिन्दी",
+    ),
+    (
+        HEBREW_KEY,
+        include_bytes!("../../../assets/fonts/NotoSansHebrew-VF.ttf.br"),
+        "Noto Sans Hebrew",
+        "עברית",
+    ),
 ];
 
 /// 解压后的四脚本补字字节（键 → 字节；链装配与覆盖测试共用）。
@@ -106,7 +119,7 @@ pub fn embedded_scripts() -> &'static [(&'static str, &'static [u8])] {
     S.get_or_init(|| {
         SCRIPT_FONTS
             .iter()
-            .map(|(key, br, name)| (*key, inflate_embedded(br, name)))
+            .map(|(key, br, name, _)| (*key, inflate_embedded(br, name)))
             .collect()
     })
 }
@@ -381,7 +394,7 @@ fn wish_family<'a>(wanted: &mut Vec<&'a str>, seen: &mut HashSet<String>, fam: &
 pub fn build_definitions(settings: &Settings, fonts: &mut FontsState) -> FontDefinitions {
     let mut defs = FontDefinitions::default();
 
-    // 内嵌主三字体恒注册：思源（链尾兜底）+ 等宽 MonoCJK（chrome 保证回退）+ 符号
+    // 内嵌主三字体恒注册：思源（链尾兜底）+ 等宽（chrome 保证回退，中文回落思源）+ 符号
     defs.font_data.insert(
         EMBEDDED_KEY.into(),
         FontData::from_static(embedded_sans()).into(),
@@ -659,6 +672,17 @@ mod tests {
             .collect()
     }
 
+    /// 联合覆盖判定：text 中不被任一内嵌字体包含的字符（返回空 = 全覆盖）。
+    fn missing_across(embedded: &[&[u8]], text: &str) -> String {
+        text.chars()
+            .filter(|c| {
+                !embedded
+                    .iter()
+                    .any(|b| font_missing(b, &c.to_string()).is_empty())
+            })
+            .collect()
+    }
+
     /// 仓库自洽字形覆盖（机器无关，解析级）：全部内嵌字体联合覆盖全部 UI
     /// 字符集；且链装配必须包含内嵌字体——任何系统字体缺失都不影响渲染。
     #[test]
@@ -667,19 +691,8 @@ mod tests {
             "天地玄黄宇宙洪荒한국어日本語 ABZdef0123456789✓✗●▲▼◆→←◎▪LiveTranslate%,:.⚠—";
         // 联合覆盖（= 渲染链覆盖）：任一字符不被任一内嵌字体包含即失败
         let embedded = embedded_all();
-        let mut missing: Vec<char> = ALL
-            .chars()
-            .filter(|c| {
-                !embedded
-                    .iter()
-                    .any(|b| font_missing(b, &c.to_string()).is_empty())
-            })
-            .collect();
-        assert!(
-            missing.is_empty(),
-            "内嵌字体联合覆盖缺失: {}",
-            missing.drain(..).collect::<String>()
-        );
+        let missing = missing_across(&embedded, ALL);
+        assert!(missing.is_empty(), "内嵌字体联合覆盖缺失: {missing}");
         // 语义职责：思源=中/英/韩；等宽=chrome 拉丁/数字/中文；符号=✗（思源所缺）
         assert!(
             font_missing(
@@ -697,15 +710,9 @@ mod tests {
             font_missing(embedded_symbols(), "✓✗●").is_empty(),
             "符号应覆盖 ✓✗●（旧实现依赖系统 seguisym.ttf 的理由）"
         );
-        // 语义职责（D-127）：四脚本补字各覆盖自己的语言本文名
-        for (key, bytes) in embedded_scripts() {
-            let own = match *key {
-                ARABIC_KEY => "العربية",
-                THAI_KEY => "ไทย",
-                DEVANAGARI_KEY => "हिन्दी",
-                HEBREW_KEY => "עברית",
-                _ => unreachable!("SCRIPT_FONTS 表外注册键"),
-            };
+        // 语义职责（D-127）：四脚本补字各覆盖自己的语言本文名（样例 = 表单源；
+        // 字节取 embedded_scripts 解压体，与表同序 zip）
+        for ((key, bytes), (_, _, _, own)) in embedded_scripts().iter().zip(SCRIPT_FONTS) {
             assert!(
                 font_missing(bytes, own).is_empty(),
                 "{key} 应覆盖本文名 {own}"
@@ -737,7 +744,7 @@ mod tests {
     }
 
     /// 等宽 chrome 覆盖测试（机器无关）：无 Consolas 的系统也须由内嵌
-    /// MonoCJK 提供拉丁/数字/中文等宽渲染（仓库自洽第二条保证）。
+    /// 等宽字体提供拉丁/数字渲染（中文回落思源；仓库自洽第二条保证）。
     #[test]
     fn embedded_mono_covers_chrome() {
         // 拉丁/数字/单位（中文字符回落内嵌思源——与有 Consolas 机器现状一致）
@@ -812,14 +819,7 @@ mod tests {
         let mut bad: Vec<String> = Vec::new();
         for (code, native) in lt_i18n::LANGUAGES {
             let Some(name) = native else { continue };
-            let missing: String = name
-                .chars()
-                .filter(|c| {
-                    !embedded
-                        .iter()
-                        .any(|b| font_missing(b, &c.to_string()).is_empty())
-                })
-                .collect();
+            let missing = missing_across(&embedded, name);
             if !missing.is_empty() {
                 bad.push(format!("{code} - {name} 缺字形: {missing}"));
             }
