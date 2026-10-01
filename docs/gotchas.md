@@ -361,6 +361,14 @@
 - **证据**：用户 2026-10-01 两帧截图；headless 全矩阵（真实思源链 + 派生视口 420 高）：zh ModelEdit 窗 531（右超 +28/左超 +11）、zh LineEdit 窗 750（±120）、en LineEdit 771（±77）、纵向 -20..574；clip_rect 归属实证 = 模态内容图元 clip = 窗体∩视口（`元/1M tok` bbox 右 513.8 > clip 右 509.7）；正反馈失控 = 逐帧 area_rect 697→985。机械防线 = `crates/lt-ui/src/windows/panel/mod.rs` `panel_modals_no_horizontal_overflow_at_min_width`（zh/en × 两模态；断言①窗矩形（`memory.area_rect(显式 Id)`）⊆ 视口横纵双轴 + ②横向逐图元 `bbox ⊆ clip_rect`（**纵向不查**：ScrollArea 内容纵向越缘 = 滚动可达的正常溢出，校准实证逐图元纵向断言全假阳）；跳 blur>0 窗阴影装饰）。
 - **版本**：egui 0.36.1。
 
+## G-43 内嵌字体链只保 CJK/拉丁/希腊/西里尔：新增含其他脚本的 UI 文案必豆腐（egui 无系统回退）
+
+- **触发**：UI 文案（i18n yaml 值或硬编码）含内嵌三字体覆盖之外的文字脚本——现存案例 = 语言下拉 30 项原生名中的阿拉伯/泰/天城文/希伯来四脚本（`lt_i18n::LANGUAGES`，转录自 Python 原版 i18n.py）；这些语言的转写文本、字幕窗译文、日志行同病。
+- **症状**：egui 渲染面（面板/悬浮窗/字幕窗/日志窗）该文字整串显示豆腐块 □□□，无报错无 panic；托盘菜单是 Win32 原生渲染不受影响（同理也不吃内嵌链保护）。
+- **根因**：egui `FontDefinitions` 是封闭世界——链上没有的字形直接 .notdef，**无系统字体自动回退**；内嵌三字体（思源 CJK SC / 等宽 Mono VF / Symbols 2）联合覆盖 = CJK/假名/谚文/拉丁/希腊/西里尔，四脚本零字符。旧覆盖红线 `embedded_fonts_cover_all_ui_glyphs` 的字符集是**手抄常量**，语言表原生名从未入册——「UI 字符集清单手工维护」即漏网之缝。
+- **对策**（D-127）：链级补字——Noto 四脚本 VF（Arabic/Thai/Devanagari/Hebrew）内嵌进字体链尾，**三条链全挂**（Proportional / Monospace / 命名族链尾——命名族兜底用户系统字体的缺字）；红线改**机械枚举** = 覆盖测试直接遍历 `lt_i18n::LANGUAGES` 全表原生名（`embedded_chain_covers_language_native_names`，新语言进表自动受检）；**整形/RTL 不自修**——egui 0.36 harfrust（HarfBuzz）已就绪，上游 text_layout.rs:1366「once RTL/bidi support is added」注释已过时（实测单方向 run RTL 视觉序正确），只欠字形。
+- **证据**：红循环 = LANGUAGES 逐字符 skrifa cmap 过三字体，恰好 ar/th/hi/he 全量缺字、26 项全过（0.71s 确定性红，与用户截图逐项吻合）；harfrust 探针（系统字体预演补字后渲染）= `he - עברית` 输出 ע 最右（RTL 视觉序正确）、`हिन्दी` 6 码点→4 字形（i-matra 重排 + न्द 合体）、`ar - العربية` 混合串前缀 LTR+阿段 RTL 均正确；harfrust 0.12.0 = epaint 0.36.1 `font.rs:361` shaper_data。
+
 ---
 
 
