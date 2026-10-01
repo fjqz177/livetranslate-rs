@@ -54,7 +54,7 @@ jobs:
       # 以下工具链/缓存四步与 release.yml 镜像——改动须两文件同步（三次法则：第三处出现再抽 composite action）
       # K：第三方 action 全 SHA 钉版 + 版本注释（dependabot 接管升版）
       - name: Setup uv（仓库内 libclang/cmake 分发器）
-        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0（该仓无浮动大标签）
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.1.0（该仓无浮动大标签）
 
       - name: Sync pinned toolchain (libclang + cmake via uv)
         run: uv sync --locked
