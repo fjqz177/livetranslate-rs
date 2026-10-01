@@ -10,9 +10,9 @@ pub struct ModelEntry {
     pub display: &'static str,
     /// HuggingFace repo id（None = 无 HF 源）
     pub hf: Option<&'static str>,
-    /// ModelScope repo id（None = 无 MS 源，always HF）
+    /// ModelScope repo id（None = 无 MS 源；现仅 whisper 六档为 None——WD-4 实测无镜像）
     pub ms: Option<&'static str>,
-    /// 该模型必须从 HF 下载（MS 无对应仓库）
+    /// true = HF 恒居首（所选 hub 不改变优先级，D-21 语义「HF 优先」；现仅 whisper 六档）
     pub always_hf: bool,
     /// 体积估计（进度条/「未缓存 ≈X」展示用；不参与完整性判定）
     pub estimated_bytes: u64,
@@ -55,15 +55,16 @@ pub const SENSEVOICE_SMALL: ModelEntry = ModelEntry {
 
 /// funasr-nano（WP-A 实装）。【2026-09-08 核实】sherpa-onnx 官方 int8 包，
 /// 仓/清单/字节数经 HF API 实测（docs/archive/asr-engine-expansion.md §2.2）。
-/// D-24：MS 无官方单仓 → ms=None 诚实留空（禁止伪造 ms 字段），always_hf=true，
-/// 国内经 hf-mirror 镜像下载（download::hf_endpoint_for）。
+/// D-24 曾判「MS 无官方单仓」——zengshuishui 上游仓（HF README 所指来源）的 onnx
+/// 与 HF 包不同源（csukuangfj 自行再导出，MS 全历史版本 sha256 无一匹配，2026-10-02
+/// 实测），不可作源。D-132：用户自建逐字节镜像仓补齐 MS 源（6/6 sha256 核对一致）。
 /// files_min_bytes 刻意远低于实测（假阴性=多下一次可自愈；假阳性=判已缓存却加载失败）。
 pub const FUNASR_NANO: ModelEntry = ModelEntry {
     key: "funasr-nano-2512",
     display: "Fun-ASR-Nano",
     hf: Some("csukuangfj/sherpa-onnx-funasr-nano-int8-2025-12-30"),
-    ms: None,
-    always_hf: true,
+    ms: Some("fjqz177/sherpa-onnx-funasr-nano-int8-2025-12-30"),
+    always_hf: false,
     estimated_bytes: 1_050_000_000,
     files: &[
         "embedding.int8.onnx",
@@ -94,15 +95,16 @@ pub const FUNASR_NANO: ModelEntry = ModelEntry {
 /// Qwen3-ASR-0.6B（WP-B 实装）。【2026-09-08 核实】sherpa-onnx 官方 int8 包，
 /// 仓/清单/字节数经 HF API 实测（docs/archive/asr-engine-expansion.md §4.2）；
 /// 注意作者是 csukuangfj**2**（`csukuangfj/` 同名仓不存在）。
-/// D-24：MS 无官方单仓（csukuangfj2/csukuangfj 双 404）→ ms=None 诚实留空，
-/// always_hf=true，国内经 hf-mirror 镜像下载（download::hf_endpoint_for）。
+/// D-24 曾判「MS 无官方单仓」（csukuangfj2/csukuangfj 双 404）。D-132：用户自建
+/// 逐字节镜像仓补齐 MS 源（6/6 sha256 核对一致，布局与 HF 包同构；jkman2023
+/// 现成镜像亦 6/6 一致，备选未用）。
 /// files_min_bytes 刻意远低于实测（假阴性=多下一次可自愈；假阳性=判已缓存却加载失败）。
 pub const QWEN3_ASR: ModelEntry = ModelEntry {
     key: "qwen3-asr-0.6b",
     display: "Qwen3-ASR-0.6B",
     hf: Some("csukuangfj2/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25"),
-    ms: None,
-    always_hf: true,
+    ms: Some("fjqz177/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25"),
+    always_hf: false,
     estimated_bytes: 1_020_000_000,
     files: &[
         "conv_frontend.onnx",
@@ -346,15 +348,18 @@ mod tests {
     }
 
     #[test]
-    fn funasr_nano_entry_hf_only() {
-        // WP-A/D-24：真实仓（HF API 实测存在）；无 MS 源 → ms=None 诚实留空
+    fn funasr_nano_entry_dual_hub() {
+        // WP-A/D-24：真实仓（HF API 实测存在）；D-132：自建逐字节镜像仓补齐 MS 源
         assert_eq!(
             FUNASR_NANO.hf,
             Some("csukuangfj/sherpa-onnx-funasr-nano-int8-2025-12-30")
         );
-        assert!(FUNASR_NANO.ms.is_none());
-        const { assert!(FUNASR_NANO.always_hf) } // 编译期不变量：仅 HF 源
-                                                 // 六件套（三 onnx + Qwen3-0.6B tokenizer 子目录）；实测合计 963MB + 余量
+        assert_eq!(
+            FUNASR_NANO.ms,
+            Some("fjqz177/sherpa-onnx-funasr-nano-int8-2025-12-30")
+        );
+        const { assert!(!FUNASR_NANO.always_hf) } // 编译期不变量：双 hub（D-132）
+                                                  // 六件套（三 onnx + Qwen3-0.6B tokenizer 子目录）；实测合计 963MB + 余量
         assert_eq!(FUNASR_NANO.files.len(), 6);
         assert_eq!(FUNASR_NANO.files_min_bytes.len(), 6);
         assert!(FUNASR_NANO
@@ -365,15 +370,18 @@ mod tests {
     }
 
     #[test]
-    fn qwen3_entry_hf_only() {
-        // WP-B/D-24：真实仓（HF API 实测存在，作者 csukuangfj2）；无 MS 源 → ms=None 诚实留空
+    fn qwen3_entry_dual_hub() {
+        // WP-B/D-24：真实仓（HF API 实测存在，作者 csukuangfj2）；D-132：自建镜像仓补齐 MS 源
         assert_eq!(
             QWEN3_ASR.hf,
             Some("csukuangfj2/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25")
         );
-        assert!(QWEN3_ASR.ms.is_none());
+        assert_eq!(
+            QWEN3_ASR.ms,
+            Some("fjqz177/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25")
+        );
         const {
-            assert!(QWEN3_ASR.always_hf && QWEN3_ASR.ms.is_none()) // 编译期不变量：仅 HF 源
+            assert!(!QWEN3_ASR.always_hf && QWEN3_ASR.ms.is_some()) // 编译期不变量：双 hub（D-132）
         }
         // 六件套（三 onnx + tokenizer 子目录）；实测合计 987,015,347B + 余量
         assert_eq!(QWEN3_ASR.files.len(), 6);

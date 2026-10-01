@@ -4,7 +4,9 @@
 //! - ② 严格 UTF-8（非法字节即红）
 //! - （index LF 不查——.gitattributes 已全仓锁 LF，ADR-20；双真源必漂移）
 //! - Tier1 = 本机用户名 / 实名用户目录路径：任何文件命中即红（`<占位符>` 豁免；
-//!   本头注刻意不写路径示例字面量——写了会被本守护自己的 Tier1 命中）
+//!   本头注刻意不写路径示例字面量——写了会被本守护自己的 Tier1 命中）。
+//!   唯一豁免形态 = 用户名紧跟 `/sherpa-onnx-` 的仓 ID（D-132：registry 登记
+//!   的 MS 镜像下载源，刻意公开非泄漏；目录路径形态仍由 Users 路径规则拦截）
 //! - Tier2 = 剥除 URL / 系统级白名单（Windows、Program Files）/ 占位符 Users 路径后，
 //!   其余盘符路径：archive 外红、archive 内仅提示（史档快照降档）
 //!
@@ -52,6 +54,16 @@ fn tracked_text_files_are_clean() {
     } else {
         Some(regex::Regex::new(&regex::escape(&user)).expect("用户名转义后必为合法正则"))
     };
+    // D-132 豁免面：MS 镜像仓 ID（`<用户名>/sherpa-onnx-…`）——registry 把它登记
+    // 为公开下载源，属刻意公开的标识而非个人路径泄漏。
+    let ms_repo_re = if user.is_empty() {
+        None
+    } else {
+        Some(
+            regex::Regex::new(&format!(r"{}[/]sherpa-onnx-", regex::escape(&user)))
+                .expect("MS 仓 ID 正则必合法"),
+        )
+    };
     // Tier1 实名 Users 路径（不区分大小写；< 占位符豁免由匹配后字符判定实现——
     // rust regex 无 lookaround，等价于原版 (?!<)）
     let users_re =
@@ -93,7 +105,10 @@ fn tracked_text_files_are_clean() {
         let in_archive = rel.starts_with("docs/archive/");
         for (i, line) in text.lines().enumerate() {
             let n = i + 1;
-            let t1_user = user_re.as_ref().is_some_and(|re| re.is_match(line));
+            // D-132 豁免：`<用户名>/sherpa-onnx-…` 仓 ID 形态；目录路径形态不受此
+            // 豁免影响（users_re 独立拦截，仓 ID 形态不含 Users 路径前缀）
+            let ms_repo_id = ms_repo_re.as_ref().is_some_and(|re| re.is_match(line));
+            let t1_user = user_re.as_ref().is_some_and(|re| re.is_match(line)) && !ms_repo_id;
             let t1_users = users_re.find(line).is_some_and(|m| {
                 // 匹配段以 '<' 开头 → 占位符路径（<…>），豁免
                 !line[m.end()..].starts_with('<')
@@ -124,4 +139,29 @@ fn tracked_text_files_are_clean() {
     if archive_warns > 0 {
         eprintln!("note: archive 内 Tier2 提示 {archive_warns} 处（不阻断）");
     }
+}
+
+#[test]
+fn tier1_waives_ms_repo_id_form_only() {
+    // D-132：registry 的 MS 镜像仓 ID 形如「用户名/sherpa-onnx-…」（刻意公开的
+    // 下载源）→ Tier1 用户名命中豁免；目录路径形态不得享受同一豁免。用户名从
+    // 环境现取——本文件不落字面量（写了会被自家 Tier1 命中）。
+    let user = std::env::var("USERNAME").unwrap_or_default();
+    if user.is_empty() {
+        return; // 无用户名环境无 Tier1 用户名面，无可验对象
+    }
+    let ms_re = regex::Regex::new(&format!(r"{}[/]sherpa-onnx-", regex::escape(&user)))
+        .expect("MS 仓 ID 正则必合法");
+    let users_re =
+        regex::Regex::new(r"(?i)C:[/\\]{1,2}Users[/\\]{1,2}").expect("Tier1 正则常量合法");
+    let repo_id = format!("{user}/sherpa-onnx-funasr-nano-int8-2025-12-30");
+    assert!(ms_re.is_match(&repo_id), "仓 ID 形态应豁免");
+    // 目录路径形态用运行时拼接构造——源码行不得出现「C: + 分隔符 + Users」字面量，
+    // 否则被本守护自己的 Tier1 扫中（头注纪律）
+    let sep = std::path::MAIN_SEPARATOR.to_string();
+    let dir_form = format!("C:{sep}Users{sep}{user}{sep}livetranslate");
+    assert!(
+        users_re.is_match(&dir_form) && !ms_re.is_match(&dir_form),
+        "目录路径形态仍须拦截，不得被仓 ID 豁免波及"
+    );
 }

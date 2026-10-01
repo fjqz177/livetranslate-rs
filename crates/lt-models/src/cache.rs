@@ -472,8 +472,8 @@ mod tests {
         let miss = missing_models(&dir, "qwen3", "", "");
         assert_eq!(miss.len(), 1);
         assert_eq!(miss[0].display, "Qwen3-ASR-0.6B");
-        assert!(miss[0].always_hf, "D-24：qwen3 仅 HF 源");
-        assert!(miss[0].hub_ms.is_none());
+        assert!(!miss[0].always_hf, "D-132：qwen3 双 hub");
+        assert!(miss[0].hub_ms.is_some());
         assert_eq!(
             miss[0].hub_hf,
             Some("csukuangfj2/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25")
