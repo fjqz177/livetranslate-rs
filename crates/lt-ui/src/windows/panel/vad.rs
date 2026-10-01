@@ -908,183 +908,197 @@ pub fn page(
                 s
             }
         };
-        ui.horizontal(|ui| {
-            let model_display = match settings.engine_key() {
-                lt_proto::EngineKey::FunAsr => funasr_model_items()
-                    [funasr_index_for(&settings.funasr_model)]
-                .display
-                .clone(),
-                // WP-B：qwen3 显示名取注册表（缓存卡片/下载标题行）
-                lt_proto::EngineKey::Qwen3 => {
-                    lt_models::registry::qwen3_entry().display.to_string()
-                }
-                lt_proto::EngineKey::Whisper => {
-                    whisper_tier_display_for(&settings.whisper_model_size)
-                }
-            };
-            ui.label(RichText::new(model_display).color(pal.text));
-            match &panel.download {
-                // ── 下载进行中：按当前文件显示「文件名（k/n）」+ 精确字节进度
-                //    （DL-3：机器段驱动；total 未知 → 明确文案的日志模式）──
-                DownloadUiState::Downloading {
-                    file,
-                    k,
-                    n,
-                    done_bytes,
-                    total_bytes,
-                    log,
-                } => {
-                    let known = *total_bytes > 0;
-                    let head = if known {
-                        let pct = (*done_bytes as f64 / *total_bytes as f64 * 100.0) as u32;
-                        format!("{} {file}（{k}/{n}）{pct}%", lt_i18n::t("downloading"))
-                    } else {
-                        format!("{} {file}（{k}/{n}）", lt_i18n::t("downloading"))
-                    };
+        // 模型显示名（卡片首行；四态共用，先于 match 计算避免每态重复）
+        let model_display = match settings.engine_key() {
+            lt_proto::EngineKey::FunAsr => funasr_model_items()
+                [funasr_index_for(&settings.funasr_model)]
+            .display
+            .clone(),
+            // WP-B：qwen3 显示名取注册表（缓存卡片/下载标题行）
+            lt_proto::EngineKey::Qwen3 => lt_models::registry::qwen3_entry().display.to_string(),
+            lt_proto::EngineKey::Whisper => whisper_tier_display_for(&settings.whisper_model_size),
+        };
+        // G-39 拆行（L2 R1）：曾把「模型名 + 状态头 + 进度条 + 字节对 + 日志行 +
+        // 按钮」全塞单行 horizontal——横排溢出静默右裁（用户 2026-10-01 截图：窄窗
+        // 大小/路径不见），宽窗下长日志行也把按钮推出视口。非 Idle 三态改堆叠行：
+        // 短行用 horizontal、长文案行（日志/错误详情）落纵向布局自动折行；每行
+        // 自然宽自证 ≤ 可用宽（防回归 =
+        // panel_download_states_no_horizontal_overflow_at_min_width）。
+        match &panel.download {
+            // ── 下载进行中：按当前文件显示「文件名（k/n）」+ 精确字节进度
+            //    （DL-3：机器段驱动；total 未知 → 明确文案的日志模式）──
+            DownloadUiState::Downloading {
+                file,
+                k,
+                n,
+                done_bytes,
+                total_bytes,
+                log,
+            } => {
+                let known = *total_bytes > 0;
+                let head = if known {
+                    let pct = (*done_bytes as f64 / *total_bytes as f64 * 100.0) as u32;
+                    format!("{} {file}（{k}/{n}）{pct}%", lt_i18n::t("downloading"))
+                } else {
+                    format!("{} {file}（{k}/{n}）", lt_i18n::t("downloading"))
+                };
+                // 行1：模型名 + 状态头
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(model_display).color(pal.text));
                     ui.label(RichText::new(head).color(pal.accent));
-                    ui.horizontal(|ui| {
-                        if known {
-                            ui.add(
-                                egui::ProgressBar::new(*done_bytes as f32 / *total_bytes as f32)
-                                    .desired_width(160.0)
-                                    .desired_height(10.0),
-                            );
-                            ui.label(
-                                RichText::new(format!(
-                                    "{} / {}",
-                                    format_size(*done_bytes),
-                                    format_size(*total_bytes)
-                                ))
-                                .size(11.0)
-                                .color(pal.weak),
-                            );
-                        } else {
-                            ui.label(
-                                RichText::new(lt_i18n::t("download_size_unknown"))
-                                    .size(11.0)
-                                    .color(pal.weak),
-                            );
-                        }
-                    });
-                    if log.is_empty() {
+                });
+                // 行2：进度条 + 字节对（固定 160 < R2 阈值 240，行自然宽自证放得下）
+                ui.horizontal(|ui| {
+                    if known {
+                        ui.add(
+                            egui::ProgressBar::new(*done_bytes as f32 / *total_bytes as f32)
+                                .desired_width(160.0)
+                                .desired_height(10.0),
+                        );
                         ui.label(
-                            RichText::new(lt_i18n::t("download_starting"))
-                                .size(11.0)
-                                .color(pal.weak),
+                            RichText::new(format!(
+                                "{} / {}",
+                                format_size(*done_bytes),
+                                format_size(*total_bytes)
+                            ))
+                            .size(11.0)
+                            .color(pal.weak),
                         );
                     } else {
-                        let last = log.last().cloned().unwrap_or_default();
                         ui.label(
-                            RichText::new(format!("\u{2026} {last}"))
+                            RichText::new(lt_i18n::t("download_size_unknown"))
                                 .size(11.0)
                                 .color(pal.weak),
                         );
                     }
-                    // DL-4/D-23：取消 → backend 置会话令牌，Downloader 在检查点停止
-                    if ui
-                        .add(
-                            egui::Button::new(
-                                RichText::new(lt_i18n::t("cancel_download")).size(12.0),
-                            )
-                            .corner_radius(6.0),
-                        )
-                        .clicked()
-                    {
-                        session.send_cmd(lt_proto::Cmd::CancelDownload);
-                    }
+                });
+                // 行3：最近日志行（纵向布局自动折行，不再静默右裁）
+                if log.is_empty() {
+                    ui.label(
+                        RichText::new(lt_i18n::t("download_starting"))
+                            .size(11.0)
+                            .color(pal.weak),
+                    );
+                } else {
+                    let last = log.last().cloned().unwrap_or_default();
+                    ui.label(
+                        RichText::new(format!("\u{2026} {last}"))
+                            .size(11.0)
+                            .color(pal.weak),
+                    );
                 }
-                // ── 下载已取消（DL-4/D-23）：保留日志 + 继续下载（断点续传）──
-                DownloadUiState::Cancelled { log } => {
+                // 行4：取消（DL-4/D-23：取消 → backend 置会话令牌，Downloader 在检查点停止）
+                if ui
+                    .add(
+                        egui::Button::new(RichText::new(lt_i18n::t("cancel_download")).size(12.0))
+                            .corner_radius(6.0),
+                    )
+                    .clicked()
+                {
+                    session.send_cmd(lt_proto::Cmd::CancelDownload);
+                }
+            }
+            // ── 下载已取消（DL-4/D-23）：保留日志 + 继续下载（断点续传）──
+            DownloadUiState::Cancelled { log } => {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(model_display).color(pal.text));
                     ui.label(
                         RichText::new(lt_i18n::t("download_cancelled_title"))
                             .color(pal.warn)
                             .size(11.5),
                     );
-                    ui.label(
-                        RichText::new(lt_i18n::t("download_cancelled_hint"))
-                            .size(11.0)
-                            .color(pal.weak),
-                    );
-                    let _ = log;
-                    if ui
-                        .add(
-                            egui::Button::new(
-                                RichText::new(lt_i18n::t("resume_download")).size(12.0),
-                            )
+                });
+                ui.label(
+                    RichText::new(lt_i18n::t("download_cancelled_hint"))
+                        .size(11.0)
+                        .color(pal.weak),
+                );
+                let _ = log;
+                if ui
+                    .add(
+                        egui::Button::new(RichText::new(lt_i18n::t("resume_download")).size(12.0))
                             .corner_radius(6.0),
-                        )
-                        .clicked()
-                    {
-                        start_download(panel, session, settings);
-                    }
+                    )
+                    .clicked()
+                {
+                    start_download(panel, session, settings);
                 }
-                // ── 下载失败：分类建议 + 原始错误 + 重试（P2-6）──
-                DownloadUiState::Failed { kind, detail, log } => {
+            }
+            // ── 下载失败：分类建议 + 原始错误 + 重试（P2-6）──
+            DownloadUiState::Failed { kind, detail, log } => {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(model_display).color(pal.text));
                     ui.label(
                         RichText::new(lt_i18n::t("download_failed_title"))
                             .color(pal.err)
                             .size(11.5),
                     );
-                    ui.label(
-                        RichText::new(download_err_advice(*kind))
-                            .size(11.0)
-                            .color(pal.warn),
-                    );
-                    ui.label(
-                        RichText::new(format!("\u{2026} {detail}"))
-                            .size(10.5)
-                            .color(pal.weak),
-                    );
-                    let _ = log;
-                    if ui
-                        .add(
-                            egui::Button::new(RichText::new(lt_i18n::t("retry")).size(12.0))
-                                .corner_radius(6.0),
-                        )
-                        .clicked()
-                    {
-                        start_download(panel, session, settings);
-                    }
+                });
+                ui.label(
+                    RichText::new(download_err_advice(*kind))
+                        .size(11.0)
+                        .color(pal.warn),
+                );
+                ui.label(
+                    RichText::new(format!("\u{2026} {detail}"))
+                        .size(10.5)
+                        .color(pal.weak),
+                );
+                let _ = log;
+                if ui
+                    .add(
+                        egui::Button::new(RichText::new(lt_i18n::t("retry")).size(12.0))
+                            .corner_radius(6.0),
+                    )
+                    .clicked()
+                {
+                    start_download(panel, session, settings);
                 }
-                // ── 空闲态：磁盘探测三态（原状 + 未缓存下载按钮）──
-                DownloadUiState::Idle => match status {
-                    CacheStatus::Cached(bytes) => {
-                        ui.label(
-                            RichText::new(format!(
-                                "\u{2713} {} {}",
-                                lt_i18n::t("whisper_already_cached"),
-                                format_size(bytes)
-                            ))
-                            .color(pal.ok),
-                        );
-                    }
-                    CacheStatus::Missing(bytes) => {
-                        ui.label(
-                            RichText::new(format!(
-                                "{} \u{2248}{}",
-                                lt_i18n::t("model_not_cached"),
-                                format_size(bytes)
-                            ))
-                            .color(pal.warn),
-                        );
-                        if ui
-                            .add(
-                                egui::Button::new(
-                                    RichText::new(lt_i18n::t("btn_download_whisper")).size(12.0),
+            }
+            // ── 空闲态：单行放得下，保持横排（磁盘探测三态 + 未缓存下载按钮）──
+            DownloadUiState::Idle => {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(model_display).color(pal.text));
+                    match status {
+                        CacheStatus::Cached(bytes) => {
+                            ui.label(
+                                RichText::new(format!(
+                                    "\u{2713} {} {}",
+                                    lt_i18n::t("whisper_already_cached"),
+                                    format_size(bytes)
+                                ))
+                                .color(pal.ok),
+                            );
+                        }
+                        CacheStatus::Missing(bytes) => {
+                            ui.label(
+                                RichText::new(format!(
+                                    "{} \u{2248}{}",
+                                    lt_i18n::t("model_not_cached"),
+                                    format_size(bytes)
+                                ))
+                                .color(pal.warn),
+                            );
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        RichText::new(lt_i18n::t("btn_download_whisper"))
+                                            .size(12.0),
+                                    )
+                                    .corner_radius(6.0),
                                 )
-                                .corner_radius(6.0),
-                            )
-                            .clicked()
-                        {
-                            start_download(panel, session, settings);
+                                .clicked()
+                            {
+                                start_download(panel, session, settings);
+                            }
+                        }
+                        CacheStatus::Unavailable => {
+                            hint_line(ui, pal, &lt_i18n::t("model_unavailable_hint"));
                         }
                     }
-                    CacheStatus::Unavailable => {
-                        hint_line(ui, pal, &lt_i18n::t("model_unavailable_hint"));
-                    }
-                },
+                });
             }
-        });
+        }
     });
 
     ui.add_space(8.0);

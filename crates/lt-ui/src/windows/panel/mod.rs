@@ -981,6 +981,104 @@ mod tests {
         }
     }
 
+    /// 防回归（G-39 家族 / 用户 2026-10-01 截图）：下载卡片**非 Idle 三态**在最小
+    /// 窗宽下任何图元不得越出视口右缘。既有 [`panel_no_horizontal_overflow_at_min_width`]
+    /// 只渲染 `AppUi::new` 默认的 Idle 态（测试盲区逃逸）——Downloading/Failed 的长
+    /// 文案（状态头 + 字节对 + 含 repo 路径的日志行/原始错误串 + 取消按钮）全挂在
+    /// vad.rs 下载卡单行 horizontal 里，溢出即静默右裁：用户看到「右侧大小/路径
+    /// 没了」，宽窗下取消按钮也被长日志行推出视口不可达。技术同上测（真实思源链、
+    /// 派生视口、图元 bbox 扫描）；视口高 2000 让整页免滚动完整绘制——下载卡在
+    /// VAD/ASR 页底，420 高会整卡滚出视口使断言空转，故断言只看横向。
+    #[test]
+    fn panel_download_states_no_horizontal_overflow_at_min_width() {
+        let _lang_guard = crate::lang_test_guard();
+        use crate::state::DownloadUiState;
+        const TOL: f32 = 2.0;
+        const REPO: &str = "csukuangfj2/sherpa-onnx-qwen3-0.6B-int8-2026-03-25";
+        // 真实形态造数（用户截图量级）：Qwen3 第 2/6 个文件、114/174 MB、日志行带全 repo 路径
+        let states: [(&str, DownloadUiState); 3] = [
+            (
+                "downloading",
+                DownloadUiState::Downloading {
+                    file: "encoder.int8.onnx".into(),
+                    k: 2,
+                    n: 6,
+                    done_bytes: 119_537_664,  // ≈114.0 MiB
+                    total_bytes: 182_452_224, // ≈174.0 MiB
+                    log: vec![format!("[{REPO}] 开始下载 encoder.int8.onnx")],
+                },
+            ),
+            (
+                "failed",
+                DownloadUiState::Failed {
+                    kind: lt_proto::DownloadFailKind::Net,
+                    detail: format!("[{REPO}] encoder.int8.onnx 下载失败，16s 后第 3 次重试"),
+                    log: vec![],
+                },
+            ),
+            (
+                "cancelled",
+                DownloadUiState::Cancelled {
+                    log: vec![format!("[{REPO}] 开始下载 encoder.int8.onnx")],
+                },
+            ),
+        ];
+        let mut fails: Vec<String> = Vec::new();
+        for lang in ["zh", "en"] {
+            lt_i18n::set_lang(lang).expect("语言表解析");
+            let ctx = real_fonts_ctx();
+            let min_w = super::derived_panel_min_width(&ctx);
+            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(min_w, 2000.0));
+            for (name, ds) in &states {
+                let mut st = crate::state::AppUi::new(Settings::default());
+                st.panel.state.page = PanelPage::VadAsr;
+                st.panel.download = ds.clone();
+                let mut frame = None;
+                for attempt in 0..8 {
+                    lt_i18n::set_lang(lang).expect("语言表解析");
+                    let mut out = ctx.run_ui(
+                        egui::RawInput {
+                            screen_rect: Some(screen),
+                            ..egui::RawInput::default()
+                        },
+                        |ui| crate::windows::dispatch(crate::state::WinId::Panel, ui, &mut st),
+                    );
+                    // epaint debug 断言要求消费纹理增量——先于溢出断言 clear
+                    out.textures_delta.clear();
+                    frame = Some(out);
+                    if lt_i18n::get_lang() == lang && attempt >= 1 {
+                        break;
+                    }
+                }
+                let out = frame.expect("重试环内必有产出");
+                for clipped in &out.shapes {
+                    if shape_paints_nothing(&clipped.shape) {
+                        continue;
+                    }
+                    let bb = clipped.shape.visual_bounding_rect();
+                    if bb.right() > screen.right() + TOL {
+                        let txt = match &clipped.shape {
+                            egui::Shape::Vec(v) => v.iter().find_map(|s| match s {
+                                egui::Shape::Text(t) => Some(t.galley.text().to_owned()),
+                                _ => None,
+                            }),
+                            egui::Shape::Text(t) => Some(t.galley.text().to_owned()),
+                            _ => None,
+                        }
+                        .unwrap_or_default();
+                        fails.push(format!(
+                            "{lang} {name} 态图元越右缘 {:+.1}px（视口右 {:.1}）bbox {bb:?} | {txt}",
+                            bb.right() - screen.right(),
+                            screen.right()
+                        ));
+                    }
+                }
+            }
+        }
+        // 末尾一次性断言：全矩阵失败一次看全
+        assert!(fails.is_empty(), "{}", fails.join("\n"));
+    }
+
     /// 防回归（G-42 面板内二级模态形态 / D-126；G-39 同族）：面板拉到最小宽时打开
     /// 编辑模型 / 编辑字幕行两个 egui::Window 内部模态，任何图元不得越出视口
     /// 左右缘（用户 2026-10-01 截图：模态整块超出宿主窗宽、左右双缘被裁）。
