@@ -22,7 +22,7 @@
 | D-18 | **暂不公开发布** | 阶段决策：现阶段本地打 zip 分发给身边用户验证；CI/GitHub Releases/公开 README/原 Python 仓导流全部后置到「公开发布」阶段 | 原版走公开 GitHub Releases；本版暂缓，届时重开渠道议题（新仓 vs 沿用 TheDeathDragon/LiveTranslate） |
 | D-19 | **首启直进主界面** | 无 settings 文件 → 全默认值直接进主界面并自动启动管道；模型缺失由悬浮窗 unavailable + 识别页按需下载承接（现状 `lt-app/src/main.rs:3-6`）。向导全套代码（`setup.rs` + `StartupFlow` + backend first_launch 编排，均有测试）**保留不删、不接线**；重启用 = `startup_flow` first_launch 分支 + `main.rs` 传 `first_launch=true`（docs/archive/parity-closure.md 已记录为一行改动） | **偏差转正**：原版为强制向导（取消即退出）+ 缺模型弹下载门；本版 2026-09-01 决策取消，本次用户确认维持 |
 | D-20 | **应用内「检查更新」按钮** | 设置页按钮 → GitHub Releases API 比对版本 → 有新版提示并打开下载页；不自动下载/替换。失败（含 api.github.com 不可达）静默提示 | **新增能力**（原版应用内无更新）；依赖公开 Releases，实现排在阶段二 |
-| D-21 | **全模型双源** | 所有模型尽量同时具备 HuggingFace + ModelScope 两个源：sensevoice-small、funasr-nano 已双源；**whisper 六档打破 `always_hf`，增加 MS 镜像仓条目**；下载时按用户所选 hub 优先，所选 hub 无该模型则自动回落另一 hub。**不做** hf_endpoint 设置键（原讨论方向已由本裁决取代） | **新增偏差**：原版/现 Rust 均为 whisper 永远走 HF（原版 faster-whisper 仓只在 HF）；MS 候选镜像仓（`cjc1887415157/whisper.cpp`、`timeless/whispercpp`）均为第三方，**档位完整性需实测后登记** |
+| D-21 | **全模型双源** | 所有模型尽量同时具备 HuggingFace + ModelScope 两个源：sensevoice-small、funasr-nano 已双源；**whisper 六档打破 `always_hf`，增加 MS 镜像仓条目**；下载时按用户所选 hub 优先，所选 hub 无该模型则自动回落另一 hub。**不做** hf_endpoint 设置键（原讨论方向已由本裁决取代）。【as-built 2026-10-02】whisper 的 MS 镜像实测不存在（WD-4），双源语义由 hf-mirror 端点机制承接；funasr-nano/qwen3 经用户自建逐字节镜像仓落地真双 hub（D-132，always_hf 翻 false） | **新增偏差**：原版/现 Rust 均为 whisper 永远走 HF（原版 faster-whisper 仓只在 HF）；MS 候选镜像仓（`cjc1887415157/whisper.cpp`、`timeless/whispercpp`）均为第三方，**档位完整性需实测后登记** |
 
 ## 2. 已锁定基线（不因本计划重开）
 

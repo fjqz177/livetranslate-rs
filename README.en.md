@@ -33,7 +33,7 @@ There is no wizard: you land straight in the main UI and it starts working autom
 
 - Under "ASR engine", pick an engine and a model size — beginners should pick **SenseVoice** (good Chinese, small download);
 - "Audio" captures system sound by default; tick "Microphone" if you also want your own voice;
-- "Download source": pick **ModelScope** (fast from mainland China) — SenseVoice Small downloads from ModelScope directly, while Nano / Qwen3 / Whisper automatically go through the hf-mirror.com mirror; pick **HuggingFace** to connect everything to the official source;
+- "Download source": pick **ModelScope** (fast from mainland China) — SenseVoice / Fun-ASR-Nano / Qwen3-ASR download from ModelScope directly, while Whisper automatically goes through the hf-mirror.com mirror; pick **HuggingFace** to connect everything to the official source;
 - Click "**Download**"; the engine is ready as soon as the progress bar finishes.
 
 Model size reference: SenseVoice ≈ 230 MB; Whisper from tiny ≈ 30 MB up to large-v3 ≈ 1.1 GB; Nano / Qwen3 ≈ 1 GB each. Downloads can be resumed and cancelled.

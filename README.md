@@ -33,7 +33,7 @@ Windows 上的实时音频翻译工具：**把系统声音抓下来 → 在本�
 
 - 「ASR 引擎」选引擎和档位——新手推荐 **SenseVoice**（中文好、体积小）；
 - 「音频」默认抓系统声音；想同时收自己说话，勾上「麦克风」；
-- 「下载源」选 **ModelScope**（国内快）：SenseVoice Small 直连 ModelScope，Nano / Qwen3 / Whisper 自动走 hf-mirror.com 镜像；选 **HuggingFace** 则全部直连官方源；
+- 「下载源」选 **ModelScope**（国内快）：SenseVoice / Fun-ASR-Nano / Qwen3-ASR 直连 ModelScope，Whisper 自动走 hf-mirror.com 镜像；选 **HuggingFace** 则全部直连官方源；
 - 点「**下载**」，进度条走完引擎自动就绪。
 
 模型大小参考：SenseVoice 约 230MB；Whisper 从 tiny 约 30MB 到 large-v3 约 1.1GB；Nano / Qwen3 各约 1GB。下载支持断点续传和取消。
