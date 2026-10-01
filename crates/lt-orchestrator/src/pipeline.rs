@@ -28,10 +28,8 @@ use arc_swap::ArcSwap;
 use lt_asr::{AsrEffectiveSettings, AsrManager, WorkerConfig, WorkerEngine};
 use lt_audio::audio::capture::VadSource;
 use lt_audio::audio::wasapi_win::WasapiBackend;
-use lt_audio::interim::{
-    is_short_utterance, pending_merge, split_sentences, strip_committed_overlap, trim_samples,
-    InterimState,
-};
+use lt_audio::interim::{pending_merge, strip_committed_overlap};
+use lt_audio::realtime::{realtime_pass, RealtimeState};
 use lt_audio::{
     AudioBackend, BoundedDropQueue, CaptureLoop, InterimControl, SegmentSource, VadProcessor,
 };
@@ -1429,8 +1427,10 @@ impl Pipeline {
         // peek/trim/speech_samples 读，锁粒度 = 单次方法调用
         let vad = Arc::new(Mutex::new(vad));
         let interim = Arc::new(InterimControl::default());
-        // 启动即按持久化设置就位（原版 _incremental_enabled/_interim_interval 随启动初始化）
-        interim.set(settings.incremental_asr, settings.interim_interval);
+        // 启动即按持久化设置就位（D-128：开关/基准节拍随启动初始化；引擎倍率
+        // 随启动引擎落位——实际节拍 = 基准 × realtime_tick_scale(引擎)）
+        interim.set(settings.realtime_asr, settings.realtime_interval);
+        interim.set_scale(lt_proto::realtime_tick_scale(settings.engine_key()));
         // W2/D-67：音频监视快照格——capture 每 chunk 写；UI 以 ~33ms 节拍读格
         // 重绘（替代 UpdateMonitor 逐事件直发：31/s 唤醒泛洪归零，R23）
         let monitor_seq = Arc::new(AtomicU64::new(0));
@@ -1739,12 +1739,17 @@ impl Pipeline {
         self.interim.reset_counter();
     }
 
-    /// 增量识别开关/间隔热应用（原版 _incremental_asr_cb → _incremental_enabled/
-    /// _interim_interval）：写共享控制块，capture 线程下一 chunk 生效；
-    /// 关闭时清进度计数，重开从零起算
-    pub fn set_interim(&self, enabled: bool, interval: f32) {
+    /// 实时识别开关/基准节拍热应用（D-128，原 set_interim；原版
+    /// _incremental_asr_cb 同位）：写共享控制块，capture 线程下一 chunk 生效；
+    /// 关闭时清进度计数，重开从零起算。实际节拍 = 基准 × 引擎倍率
+    pub fn set_realtime(&self, enabled: bool, interval: f32) {
         self.interim.set(enabled, interval);
-        tracing::info!("增量识别: {enabled}（间隔 {interval}s）");
+        tracing::info!("实时识别: {enabled}（基准节拍 {interval}s）");
+    }
+
+    /// 实时识别引擎节拍倍率热应用（D-128）：启动装配与引擎切换时写
+    pub fn set_realtime_scale(&self, scale: f32) {
+        self.interim.set_scale(scale);
     }
 
     pub fn set_paused(&self, paused: bool) {
@@ -2252,7 +2257,7 @@ fn drain_tl_switch(
     manager: &mut AsrManager,
     current_display: &mut String,
     asr_unavailable_notified: &mut bool,
-    interim_state: &mut InterimState,
+    interim_state: &mut RealtimeState,
     ctx: &SwitchDrain<'_>,
 ) {
     while let Ok(sw) = ctx.tl_switch.try_recv() {
@@ -2322,13 +2327,21 @@ fn drain_tl_switch(
                         *asr_unavailable_notified = false;
                         ctx.sink
                             .push(UiEvent::AsrDevice(format!("{display} [cpu]")));
-                        // AH-3：切换后增量会话状态复位——旧引擎的
+                        // AH-3：切换后实时会话状态复位——旧引擎的
                         // committed_tail/active 对新引擎输出无意义，且
                         // 切换后首个收尾段经 commit_interim_final 绕过
                         // 语言过滤，残留 active 会放行语言不符文本
                         interim_state.reset();
                         ctx.interim.last_interim_samples.store(0, Ordering::Relaxed);
                         ctx.interim.last_check_ms.store(0, Ordering::Relaxed);
+                        // D-128：节拍倍率随新引擎落位（实际节拍=基准×倍率）+
+                        // 流式行清空（旧引擎的未定稿假设不得跨引擎续写）
+                        ctx.interim.set_scale(lt_proto::realtime_tick_scale(
+                            lt_proto::EngineKey::from_settings_str(&engine),
+                        ));
+                        ctx.sink.push(UiEvent::RealtimePartial {
+                            text: String::new(),
+                        });
                         // 日志按引擎打实际模型键（whisper 打 funasr_model 会误导诊断）
                         let model_key =
                             engine_model_key(&engine, &funasr_model, &whisper_model_size);
@@ -2387,8 +2400,8 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
         degraded_notified,
         session_stats,
     } = ctx;
-    // 增量识别会话状态（原版 _interim_* 字段；跨段存活，vad_flush 复位）
-    let mut interim_state = InterimState::default();
+    // 实时识别会话状态（D-128，原 interim_state；跨段存活，vad_flush 复位）
+    let mut interim_state = RealtimeState::default();
     // 构造 worker 配置（当前仅 sensevoice；whisper M5）。
     // R3/D-61：models_dir 失败 → 待命态而非 return 杀线程（AH-1 哲学推广：
     // 线程死亡=切换命令通道消亡，用户从此无法唤醒）。待命循环内每次
@@ -2592,10 +2605,10 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
                 // W4：生效视图按段 load（语言过滤/同语言判定/翻译提交全部据此）；
                 // VadFlush 臂由 handle_vad_flush 自行 load（它同时服务退出收尾）
                 let eff = bus.load();
-                // 增量通道（原版 main.py:1720-1724）：排空重复标记 → 锁 VAD
-                // peek/识别/裁剪 → 更新消费进度（capture 线程的 elapsed 由此起算）
+                // 实时通道（D-128，原增量通道位）：排空重复标记 → 锁 VAD
+                // peek/识别/代际复核 → 状态机决策（零门控显示+句界定稿+裁剪）
                 drain_interim_duplicates(&segment_queue);
-                run_interim_pass(
+                realtime_tick(
                     &mut manager,
                     &vad,
                     &mut interim_state,
@@ -2667,7 +2680,7 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
 #[allow(clippy::too_many_arguments)]
 fn handle_vad_flush(
     manager: &mut AsrManager,
-    interim_state: &mut InterimState,
+    interim_state: &mut RealtimeState,
     bus: &Arc<SettingsBus>,
     tl: Option<&TlRig>,
     sink: &EventSink,
@@ -2751,10 +2764,15 @@ fn handle_vad_flush(
             }
         }
     }
-    // 无论走哪支，处理完收尾段后复位全部增量状态（原版 main.py:1715-1719）
+    // 无论走哪支，处理完收尾段后复位全部增量状态（原版 main.py:1715-1719）；
+    // D-128：流式行随收尾清空——尾巴已按定稿/过滤语义处置完毕，未定稿内容
+    // 不应跨段残留（退出收尾同语义，同一份实现）
     interim_state.reset();
     interim.last_interim_samples.store(0, Ordering::Relaxed);
     interim.last_check_ms.store(0, Ordering::Relaxed);
+    sink.push(UiEvent::RealtimePartial {
+        text: String::new(),
+    });
 }
 
 /// 退出收尾循环（ACR-1a）：等 capture 落板（`capture_done`）与持续消费段队列
@@ -2833,16 +2851,19 @@ fn drain_interim_duplicates(queue: &BoundedDropQueue<(SegmentSource, Vec<f32>)>)
     }
 }
 
-/// 增量通道（对照原版 `_do_interim_asr` 逐条）：锁 VAD peek → 短缓冲跳过 →
-/// 识别 → 回声剥离 → 分句 → 提交前 n-1 句（短句 ≤8 字母数字进 pending 拼接）
-/// → 比例裁剪已消费音频 → 更新 tail/active。返回是否提交了句子。
+/// 实时识别单 tick（D-128，取代旧 run_interim_pass 的「仅提交不显示」语义）：
+/// 锁 VAD peek（句内停顿信号同锁读）→ 短缓冲跳过 → 识别 → 代际复核 →
+/// 状态机决策（零门控显示 / 句界定稿 / 裁剪）→ 事件与提交。识别期间 VAD 被
+/// capture 收段/切分（代际推进）则本轮假设整体丢弃——flush 链路会对同一段
+/// 音频走收尾定稿，这里不得重复上屏（D-27 代际校验的显示/定稿扩展）。
+///
 /// `eff` 为设置总线生效视图（W4：语言过滤/transcribe 前应用同源，取代
 /// 旧运行时镜像 asr_language）。
 #[allow(clippy::too_many_arguments)]
-fn run_interim_pass(
+fn realtime_tick(
     manager: &mut AsrManager,
     vad: &Arc<Mutex<VadProcessor>>,
-    st: &mut InterimState,
+    st: &mut RealtimeState,
     eff: &AsrEffectiveSettings,
     target_language: &str,
     tl: Option<&TlRig>,
@@ -2851,9 +2872,12 @@ fn run_interim_pass(
     stats: &TlStats,
     msg: &Msg,
 ) -> bool {
-    // ① 锁内 peek，立即解锁（原版 with self._vad_lock: peek_buffer）；
-    // 代际随行（AH-4/D-27）——识别期间 VAD 可能被 capture 线程收段/切分
-    let peek = vad.lock().unwrap().peek_buffer();
+    // ① 锁内 peek + 停顿信号同读（识别完成后再读静音会把识别耗时算进去，
+    // 语义即错）；代际随行（AH-4/D-27）——识别期间 VAD 可能被收段/切分
+    let (peek, silence_secs) = {
+        let v = vad.lock().unwrap();
+        (v.peek_buffer(), v.pending_silence_secs())
+    };
     let Some((audio, duration, generation)) = peek else {
         return false;
     };
@@ -2863,50 +2887,30 @@ fn run_interim_pass(
     // ② 识别（原版 use_word_ts=False：词级时间戳对重复增量通道太贵）
     let t0 = Instant::now();
     let Ok(result) = manager.transcribe(&audio, false, eff) else {
-        tracing::warn!("Interim ASR 识别失败，跳过本轮（收尾段不受影响）");
+        tracing::warn!("实时识别 tick 失败，流式行保持上一版（收尾段不受影响）");
         return false;
     };
     let asr_ms = t0.elapsed().as_secs_f64() * 1000.0;
-    let full_raw = result.text.trim();
-    if full_raw.is_empty() || !full_raw.chars().any(|c| c.is_alphanumeric()) {
+    // ③ 代际复核（D-128 对 D-27 的扩展）：识别期间收段/切分/复位 → 本轮假设
+    // 过期，整体丢弃不上屏不定稿——flush 链路会对同一段音频走收尾定稿
+    if vad.lock().unwrap().buffer_generation() != generation {
+        tracing::debug!("实时识别 tick 结果过期（代际推进），丢弃");
         return false;
     }
-    // ③ 回声剥离（与上次提交的尾部重叠）
-    let full_text = strip_committed_overlap(full_raw, &st.committed_tail);
-    if full_text.is_empty() {
-        return false;
-    }
-    // ④ 分句；仅一句 → 末句仍在说，不提交
-    let sentences = split_sentences(&full_text, &result.language);
-    if sentences.len() <= 1 {
-        return false;
-    }
-    let complete = &sentences[..sentences.len() - 1];
-    let committed_text: String = complete.concat();
-    if committed_text.trim().is_empty() {
-        return false;
-    }
-    // ⑤ 比例裁剪量（原版 use_word_ts=False 分支；公式已在 interim::trim_samples 移植）
-    let trim = trim_samples(
+    // ④ 状态机决策：零门控显示 + 句界三信号定稿 + 短跨度裁剪（纯函数；
+    // 真值表锚点 = lt-audio realtime::tests）
+    let outcome = realtime_pass(
+        st,
+        result.text.trim(),
         audio.len(),
-        committed_text.chars().count(),
-        full_text.chars().count(),
+        silence_secs,
         lt_audio::TARGET_RATE as usize,
     );
-    // ⑥ 提交完整句；短句进 pending 等下句前置拼接（无分隔符，原版同）
-    let mut committed = false;
-    for sent in complete {
-        let text = sent.trim();
-        if text.is_empty() {
-            continue;
-        }
-        if is_short_utterance(text) {
-            st.pending = pending_merge(&st.pending, text);
-            tracing::debug!("Interim 短句缓冲: {text:?}，pending={:?}", st.pending);
-            continue;
-        }
-        let text = pending_merge(&st.pending, text);
-        st.pending.clear();
+    // ⑤ 显示零门控：每次有效 tick 整段刷新（空串=清行）；定稿即翻译
+    sink.push(UiEvent::RealtimePartial {
+        text: outcome.display,
+    });
+    for text in &outcome.finalized {
         commit_text(
             &eff.language,
             target_language,
@@ -2914,36 +2918,26 @@ fn run_interim_pass(
             sink,
             transcript,
             stats,
-            &text,
+            text,
             &result.language,
             asr_ms,
             msg,
         );
-        committed = true;
     }
-    if !committed {
-        return false;
+    // ⑥ 裁剪已消费音频（带代际校验，AH-4/D-27：③已复核，此处兜底再验）
+    if outcome.trim_samples > 0 {
+        vad.lock()
+            .unwrap()
+            .trim_front_checked(outcome.trim_samples, generation);
     }
-    // ⑦ 裁剪已消费音频（带代际校验，AH-4/D-27：识别期间 VAD 已收段/切分则
-    // 放弃裁剪，防误裁新段头部；committed_tail 回声剥离仍兜底收尾段重复）
-    // + 记录 tail（末 50 字符）+ 置 active
-    if trim > 0 {
-        vad.lock().unwrap().trim_front_checked(trim, generation);
+    if !outcome.finalized.is_empty() {
+        tracing::info!(
+            "实时识别: 定稿 {} 句，裁剪 {:.2}s",
+            outcome.finalized.len(),
+            outcome.trim_samples as f64 / lt_audio::TARGET_RATE as f64
+        );
     }
-    let tail_start = committed_text
-        .char_indices()
-        .rev()
-        .nth(49)
-        .map(|(i, _)| i)
-        .unwrap_or(0);
-    st.committed_tail = committed_text[tail_start..].to_string();
-    st.active = true;
-    tracing::info!(
-        "Interim ASR: committed {} sentence(s), trimmed {:.2}s",
-        complete.len(),
-        trim as f64 / lt_audio::TARGET_RATE as f64
-    );
-    true
+    !outcome.finalized.is_empty()
 }
 
 /// 收尾段提交（原版 `_process_interim_final` 的 Ok(result) 分支 1:1）：
@@ -2953,7 +2947,7 @@ fn run_interim_pass(
 /// 路径：不冲刷 pending，随复位丢弃）。
 #[allow(clippy::too_many_arguments)]
 fn commit_interim_final(
-    st: &mut InterimState,
+    st: &mut RealtimeState,
     asr_language: &str,
     target_language: &str,
     tl: Option<&TlRig>,
@@ -4776,7 +4770,7 @@ mod tests {
         let mut manager = AsrManager::new();
         let mut display = String::from("old");
         let mut notified = false;
-        let mut interim_state = InterimState::default();
+        let mut interim_state = RealtimeState::default();
         let interim = Arc::new(InterimControl::default());
         let learned = test_learned();
         let degraded = test_degraded_notified();
@@ -4859,7 +4853,7 @@ mod tests {
         let mut manager = AsrManager::new();
         let mut display = String::from("old");
         let mut notified = false;
-        let mut interim_state = InterimState::default();
+        let mut interim_state = RealtimeState::default();
         let interim = Arc::new(InterimControl::default());
         let learned = test_learned();
         let degraded = test_degraded_notified();
@@ -5132,5 +5126,51 @@ mod tests {
             }
             other => panic!("期望 UpdateStats，实际 {other:?}"),
         }
+    }
+
+    /// D-128：收尾段处理完必须清流式行（RealtimePartial 空串）——运行期 flush
+    /// 与退出收尾共用本实现，一处断言两路覆盖。manager 无配置 → transcribe 走
+    /// Err 臂（不产 AddMessage），复位与清行仍必须发生（Q11 收尾语义）。
+    #[test]
+    fn vad_flush_clears_realtime_partial_line() {
+        let sink = EventArtery::new();
+        let bus = test_bus(lt_proto::Settings::default());
+        let mut manager = AsrManager::new();
+        let mut interim_state = RealtimeState {
+            pending: "好的。".into(),
+            active: true,
+            ..Default::default()
+        };
+        let interim = Arc::new(InterimControl::default());
+        let mut notified = false;
+        handle_vad_flush(
+            &mut manager,
+            &mut interim_state,
+            &bus,
+            None,
+            &sink,
+            &test_transcript(),
+            &test_session_stats(),
+            &Msg::new(|k| k.to_string(), || "zh".into()),
+            &mut notified,
+            &interim,
+            vec![0.0f32; 16000],
+        );
+        // drain_batch 单批语义（每次调用先清 out）：一批 ≤256 条足够容纳本断言面
+        let mut batch = Vec::new();
+        assert!(
+            sink.drain_batch(&mut batch, Duration::from_millis(50)),
+            "收尾段后必须有事件回流"
+        );
+        assert!(
+            batch
+                .iter()
+                .any(|e| matches!(e, UiEvent::RealtimePartial { text } if text.is_empty())),
+            "收尾段后必须清流式行，实际 {batch:?}"
+        );
+        assert!(
+            !interim_state.active && interim_state.pending.is_empty(),
+            "收尾后实时会话状态必须复位"
+        );
     }
 }

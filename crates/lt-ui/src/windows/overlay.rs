@@ -795,6 +795,33 @@ fn messages_area(
                 }
                 ui.add_space(2.0);
             }
+            // 实时识别流式行（D-128）：未定稿假设整段显示，灰显轻区分（Q14——
+            // 观众一眼知道这行还在变、不算数）；与定稿消息同字体链/字号基准，
+            // 颜色在原文本色上降档；字幕窗数据源永不含此行（Q10）
+            if !overlay.realtime_partial.is_empty() {
+                let s = &settings.style;
+                let dim = opa(
+                    parse_color(&s.original_color, Color32::from_rgb(0xcc, 0xcc, 0xcc)),
+                    opa_pct,
+                )
+                .gamma_multiply(0.55);
+                let font = FontId::new(
+                    pt(s.original_font_size),
+                    crate::fonts::font_family_for(
+                        crate::fonts::resolve_family(
+                            &s.original_font_family,
+                            &settings.subtitle_font_family,
+                        ),
+                        &ctx.fonts,
+                    ),
+                );
+                ui.add_space(2.0);
+                ui.label(
+                    RichText::new(&overlay.realtime_partial)
+                        .font(font)
+                        .color(dim),
+                );
+            }
             if overlay.state.scroll_pending && overlay.ov_auto_scroll {
                 ui.scroll_to_cursor(Some(egui::Align::BOTTOM));
                 overlay.state.scroll_pending = false;
@@ -1691,5 +1718,30 @@ mod tests {
             }
             _ => false,
         }
+    }
+
+    /// D-128：流式行渲染——未定稿文本上屏（零门控显示）+ 清空列表联动丢弃
+    /// （Q11/Q14：灰显样式见 messages_area，此处断言文本面）
+    #[test]
+    fn realtime_partial_renders_and_clears_with_list() {
+        let ctx = egui::Context::default();
+        let mut st = crate::state::AppUi::new(lt_proto::Settings::default());
+        st.overlay.realtime_partial = "正在说的这句话还没有定稿".into();
+        let texts = render_overlay_stats(&ctx, &mut st);
+        assert!(
+            texts.iter().any(|t| t.contains("正在说的这句话还没有定稿")),
+            "流式行应上屏，实际 {texts:?}"
+        );
+        // 清空列表 → 流式行一并丢弃（clear_messages 单一落点）
+        st.overlay.clear_messages();
+        assert!(
+            st.overlay.realtime_partial.is_empty(),
+            "清空必须同清流式行（Q11）"
+        );
+        let texts = render_overlay_stats(&ctx, &mut st);
+        assert!(
+            !texts.iter().any(|t| t.contains("正在说的这句话还没有定稿")),
+            "清空后流式行不得残留，实际 {texts:?}"
+        );
     }
 }

@@ -827,42 +827,59 @@ pub fn page(
             mark_settings_dirty(session);
         }
 
-        // 增量识别 + 间隔（原版 _incremental_asr_cb / _interim_interval_spin：
-        // 变更即时发 Cmd::IncrementalAsr 热应用 + 300ms 防抖 ApplySettings 落盘）
-        let mut inc = settings.incremental_asr;
+        // 实时识别 + 基准节拍（D-128，取代旧增量识别开关：变更即时发
+        // Cmd::SetRealtimeAsr 热应用 + 300ms 防抖 ApplySettings 落盘）。
+        // 实际节拍 = 基准 × realtime_tick_scale(引擎)——慢引擎自动变疏，行内诚实显示
+        let mut inc = settings.realtime_asr;
         if ui
             .add(egui::Checkbox::new(
                 &mut inc,
-                RichText::new(lt_i18n::t("label_incremental_asr")).color(pal.text),
+                RichText::new(lt_i18n::t("label_realtime_asr")).color(pal.text),
             ))
             .changed()
         {
             // E1-4：只发命令——草稿写入收敛在 shell 纯写入面
-            session.send_cmd(lt_proto::Cmd::IncrementalAsr {
+            session.send_cmd(lt_proto::Cmd::SetRealtimeAsr {
                 enabled: inc,
-                interval: settings.interim_interval,
+                interval: settings.realtime_interval,
             });
             mark_settings_dirty(session);
         }
-        let mut itv = settings.interim_interval;
+        let mut itv = settings.realtime_interval;
         let itv_changed = drag_secs(
             ui,
             "panel_interim",
-            &lt_i18n::t("label_interim_interval"),
+            &lt_i18n::t("label_realtime_interval"),
             &mut itv,
             1.0..=10.0,
-            inc, // 未勾选时禁用（原版 setEnabled(incremental_asr)）
+            inc, // 未勾选时禁用（原版 setEnabled(incremental_asr) 同语义）
         );
         if !inc {
-            hint_line(ui, pal, &lt_i18n::t("interim_interval_disabled_tooltip"));
+            hint_line(ui, pal, &lt_i18n::t("realtime_interval_disabled_tooltip"));
         }
         if itv_changed {
             // E1-4：只发命令——草稿写入收敛在 shell 纯写入面
-            session.send_cmd(lt_proto::Cmd::IncrementalAsr {
+            session.send_cmd(lt_proto::Cmd::SetRealtimeAsr {
                 enabled: inc,
                 interval: itv,
             });
             mark_settings_dirty(session);
+        }
+        if inc {
+            // 诚实显示（D-128）：当前引擎的实际节拍（倍率 >1 才有信息量）
+            let effective =
+                settings.realtime_interval * lt_proto::realtime_tick_scale(settings.engine_key());
+            if effective > settings.realtime_interval + f32::EPSILON {
+                hint_line(
+                    ui,
+                    pal,
+                    &format!(
+                        "{} {:.1}s",
+                        lt_i18n::t("realtime_interval_effective"),
+                        effective
+                    ),
+                );
+            }
         }
     });
 
@@ -1085,8 +1102,8 @@ const VAD_PAGE_PATHS: [&str; 18] = [
     "max_speech_duration",
     "silence_mode",
     "silence_duration",
-    "incremental_asr",
-    "interim_interval",
+    "realtime_asr",
+    "realtime_interval",
     "asr_engine",
     "funasr_model",
     "whisper_model_size",
@@ -1110,8 +1127,8 @@ fn restore_vad_page(settings: &mut Settings, session: &mut SessionView) {
     s.max_speech_duration = def.max_speech_duration;
     s.silence_mode = def.silence_mode.clone();
     s.silence_duration = def.silence_duration;
-    s.incremental_asr = def.incremental_asr;
-    s.interim_interval = def.interim_interval;
+    s.realtime_asr = def.realtime_asr;
+    s.realtime_interval = def.realtime_interval;
     s.asr_engine = def.asr_engine.clone();
     s.funasr_model = def.funasr_model.clone();
     s.whisper_model_size = def.whisper_model_size.clone();
@@ -1136,9 +1153,9 @@ fn restore_vad_page(settings: &mut Settings, session: &mut SessionView) {
         engine: "whisper".into(),
         secs: settings.whisper_pad_seconds,
     });
-    session.send_cmd(lt_proto::Cmd::IncrementalAsr {
-        enabled: settings.incremental_asr,
-        interval: settings.interim_interval,
+    session.send_cmd(lt_proto::Cmd::SetRealtimeAsr {
+        enabled: settings.realtime_asr,
+        interval: settings.realtime_interval,
     });
     mark_settings_dirty(session);
 }

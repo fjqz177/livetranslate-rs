@@ -22,12 +22,15 @@ use std::time::Duration;
 /// `_last_interim_samples` / `_last_interim_check_time` 四个散字段的原子等价）。
 /// capture 线程只读 enabled/interval + 写 last_check_ms；ASR 线程写
 /// last_interim_samples——各写各的、无复合不变量，故用原子而非锁。
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct InterimControl {
-    /// 增量识别开关（UI 经 `Pipeline::set_interim` 写）
+    /// 实时识别开关（D-128；UI 经 `Pipeline::set_realtime` 写）
     pub enabled: AtomicBool,
-    /// 间隔秒数（f32 bits 存 AtomicU32；0 bits = 0.0s = 永不触发）
+    /// 基准间隔秒数（f32 bits 存 AtomicU32；0 bits = 0.0s = 永不触发）
     pub interval_bits: AtomicU32,
+    /// 引擎节拍倍率（f32 bits；默认 1.0。实际节拍 = 基准 × 倍率，管道随
+    /// 引擎切换热更新——D-128：快引擎密、慢引擎疏）
+    pub interval_scale_bits: AtomicU32,
     /// 上次 interim 消费时的 VAD 缓冲样本数（capture 读、ASR 写；原版
     /// `_last_interim_samples`，vad_flush 复位为 0）
     pub last_interim_samples: AtomicU64,
@@ -37,8 +40,22 @@ pub struct InterimControl {
     pub last_check_ms: AtomicU64,
 }
 
+impl Default for InterimControl {
+    /// 手写 Default：interval_scale_bits 必须 1.0（AtomicU32::default()=0 会
+    /// 把节拍清零、实时识别静默失效）
+    fn default() -> Self {
+        Self {
+            enabled: AtomicBool::new(false),
+            interval_bits: AtomicU32::new(0),
+            interval_scale_bits: AtomicU32::new(1.0f32.to_bits()),
+            last_interim_samples: AtomicU64::new(0),
+            last_check_ms: AtomicU64::new(0),
+        }
+    }
+}
+
 impl InterimControl {
-    /// 热应用开关/间隔（原版 `_incremental_asr_cb`）。关闭时清进度计数，
+    /// 热应用开关/基准间隔（原版 `_incremental_asr_cb`）。关闭时清进度计数，
     /// 重开从零起算（对齐 vad_flush 复位语义）；开启时不清（原版同）。
     pub fn set(&self, enabled: bool, interval: f32) {
         self.enabled.store(enabled, Ordering::Relaxed);
@@ -48,6 +65,19 @@ impl InterimControl {
             self.last_interim_samples.store(0, Ordering::Relaxed);
             self.last_check_ms.store(0, Ordering::Relaxed);
         }
+    }
+
+    /// 热应用引擎节拍倍率（D-128）：启动装配与引擎切换时由管道写
+    pub fn set_scale(&self, scale: f32) {
+        self.interval_scale_bits
+            .store(scale.to_bits(), Ordering::Relaxed);
+    }
+
+    /// 生效节拍 = 基准 × 倍率（capture 触发判定用；倍率缺位按 1.0 兜底）
+    pub fn effective_interval(&self) -> f32 {
+        let base = f32::from_bits(self.interval_bits.load(Ordering::Relaxed));
+        let scale = f32::from_bits(self.interval_scale_bits.load(Ordering::Relaxed));
+        base * if scale > 0.0 { scale } else { 1.0 }
     }
 
     /// R31/D-72：会话边界复位——只清进度计数（enabled/interval 保持，
@@ -213,7 +243,7 @@ impl<F: Fn(f32, f64, Option<f32>) + Send> CaptureLoop<F> {
         if !self.interim.enabled.load(Ordering::Relaxed) {
             return;
         }
-        let interval = f32::from_bits(self.interim.interval_bits.load(Ordering::Relaxed));
+        let interval = self.interim.effective_interval();
         let (total, speaking) = {
             let v = vad.lock().unwrap();
             (v.speech_samples(), v.is_speaking())
@@ -532,6 +562,29 @@ mod tests {
             16000,
             NOW,
             NOW - 999
+        ));
+    }
+
+    /// D-128：生效节拍 = 基准 × 倍率；Default 倍率必须 1.0（AtomicU32 零值
+    /// 陷阱——派生 Default 会得到 0 bits=0.0 倍率，实时识别静默失效）
+    #[test]
+    fn interim_control_effective_interval_scales_base() {
+        let c = InterimControl::default();
+        c.set(true, 2.0);
+        assert_eq!(c.effective_interval(), 2.0, "Default 倍率 = 1.0");
+        c.set_scale(3.0);
+        assert_eq!(c.effective_interval(), 6.0, "qwen3 倍率 3.0 → 2s 基准变 6s");
+        c.set_scale(0.0);
+        assert_eq!(c.effective_interval(), 2.0, "倍率缺位（0 bits）按 1.0 兜底");
+        // 生效节拍仍须过 interim_due 的 ≥1.0s 防御守卫
+        assert!(!interim_due(
+            true,
+            true,
+            c.effective_interval(),
+            16000,
+            0,
+            1,
+            0
         ));
     }
 

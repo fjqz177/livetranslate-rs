@@ -2,6 +2,7 @@
 
 pub mod audio;
 pub mod interim;
+pub mod realtime;
 pub mod transcript;
 pub mod vad;
 

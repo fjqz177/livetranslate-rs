@@ -22,7 +22,7 @@ pub mod settings;
 /// 结构体 + `probe_id`、`UiEvent::TestTranslatorResult` 改型为
 /// `ProbeOutcome` 判别 + id 归位；`FailureKind`/`ThreadRole` 的新增属加法
 /// 豁免不计）= 6。
-pub const PROTO_VERSION: u32 = 8; // D-118：Cmd::SwitchEngine 删死契约字段 hub（既有字段删除=结构变更，评审留痕）
+pub const PROTO_VERSION: u32 = 9; // D-128：实时识别重做——Settings 删 incremental_asr/interim_interval 换 realtime_asr/realtime_interval，Cmd::IncrementalAsr 改型 SetRealtimeAsr（既有项删除/改型=结构变更，评审留痕；UiEvent::RealtimePartial 为纯新增不计）
 
 /// 连接探测总预算（秒，D-85 用户裁决 B）：编排域据此设 deadline，
 /// UI 域据此设看门狗（+10s 裕量）。放契约层是为了让两个域同源又不越依赖边
@@ -44,7 +44,7 @@ pub use presets::{
 };
 pub use prompts::{DEFAULT_PROMPT, PROMPT_PRESETS};
 pub use settings::{
-    effective_currency, normalize_language, Currency, EngineKey, ModelConfig, ProxyMode, Settings,
-    Style, SubtitleLine, SubtitleMode, ASR_ENGINES, DEFAULT_TEMPERATURE, OVERRIDE_KEYS,
-    THINKING_STYLES,
+    effective_currency, normalize_language, realtime_tick_scale, Currency, EngineKey, ModelConfig,
+    ProxyMode, Settings, Style, SubtitleLine, SubtitleMode, ASR_ENGINES, DEFAULT_TEMPERATURE,
+    OVERRIDE_KEYS, THINKING_STYLES,
 };

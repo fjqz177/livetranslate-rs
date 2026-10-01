@@ -1194,6 +1194,14 @@ impl MultiWindowApp {
                     hw.window.request_redraw();
                 }
             }
+            // 实时识别流式行（D-128）：未定稿假设整段刷新（零门控允许回改）；
+            // 空串 = 清行（收尾定稿/引擎切换）。字幕窗数据源不含本事件（Q10 裁决）
+            lt_proto::UiEvent::RealtimePartial { text } => {
+                self.app_state.overlay.realtime_partial = text;
+                if let Some(hw) = self.find_mut(WinId::Overlay) {
+                    hw.window.request_redraw();
+                }
+            }
             // 译文完成（W2 起**只表示成功译文**——空串不再流经此处）
             lt_proto::UiEvent::UpdateTranslation { id, text, tl_ms } => {
                 self.app_state

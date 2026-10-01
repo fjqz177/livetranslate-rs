@@ -52,6 +52,19 @@ impl EngineKey {
     }
 }
 
+/// 实时识别节拍引擎倍率（D-128）：实际节拍 = `realtime_interval` 基准 × 本表。
+/// 快引擎密、慢引擎疏（qwen3 识别档案 base 10s + 段长×4，本机 RTF≈0.28 起步；
+/// funasr/whisper 快于实时）。初档按引擎超时档案推断，
+/// `#[ignore]` 节拍探针实测后校准（lt-asr 引擎级探针先例）；面板与管道共用本表
+/// （放 lt-proto：lt-ui 不依赖 lt-asr，诚实显示与热应用必须同一真源）。
+pub fn realtime_tick_scale(engine: EngineKey) -> f32 {
+    match engine {
+        EngineKey::FunAsr => 1.0,
+        EngineKey::Whisper => 1.5,
+        EngineKey::Qwen3 => 3.0,
+    }
+}
+
 /// 代理三模式（语义对齐原版 proxy="none" 绕系统代理，E-03；E2/D-79 自
 /// lt-download 迁入契约层——`settings.download_proxy` 与
 /// `Cmd::StartDownload` 载荷共用的值域类型）
@@ -136,8 +149,12 @@ pub struct Settings {
     pub whisper_pad_seconds: f32,
     pub hub: String,            // ms | hf
     pub download_proxy: String, // none | system | URL
-    pub incremental_asr: bool,
-    pub interim_interval: f32, // 秒
+    /// 实时识别（D-128，取代旧 incremental_asr/interim_interval）：悬浮窗最新
+    /// 一行流式显示未定稿识别文本，句界定稿进翻译。缺键=开（存量档案旧键被
+    /// serde 忽略、本键走默认）——用户裁决 Q13：所有人升级即享受，想关的人关一次
+    pub realtime_asr: bool,
+    /// 实时识别基准节拍（秒；UI 1..=10）。实际节拍 = 基准 × realtime_tick_scale(引擎)
+    pub realtime_interval: f32,
     // ── 音频设备 ──
     pub audio_device: Option<String>, // None=默认 | 名 | "__disabled__"
     pub mic_device: Option<String>,   // None=禁用 | "__default__" | 名
@@ -181,8 +198,8 @@ impl Default for Settings {
             whisper_pad_seconds: 0.5,
             hub: "ms".into(),
             download_proxy: "system".into(),
-            incremental_asr: false,
-            interim_interval: 2.0,
+            realtime_asr: true,
+            realtime_interval: 1.0,
             audio_device: None,
             mic_device: None,
             // D-85 决策 K：新装用户的首个模型 = DeepSeek 预设（老档案不受影响——
@@ -1212,5 +1229,22 @@ mod tests {
         s2.models[0].currency = Some("usd".into());
         let out2 = serde_json::to_string(&s2).expect("可序列化");
         assert!(out2.contains("\"currency\":\"usd\""), "{out2}");
+    }
+
+    /// D-128 契约（冻结规则「纯新增字段须 serde default 兼容旧档」）：
+    /// 旧档（含已退役的 incremental_asr/interim_interval）反序列化——旧键被
+    /// serde 忽略，新键缺省走 Default：realtime_asr=true（Q13 裁决「缺键=开」）、
+    /// realtime_interval=1.0
+    #[test]
+    fn legacy_incremental_keys_deserialize_with_realtime_default_on() {
+        let legacy = r#"{
+            "vad_mode": "silero",
+            "incremental_asr": false,
+            "interim_interval": 2.0,
+            "asr_engine": "funasr"
+        }"#;
+        let s: Settings = serde_json::from_str(legacy).expect("旧档必须可反序列化");
+        assert!(s.realtime_asr, "缺 realtime_asr 键 → 默认开");
+        assert_eq!(s.realtime_interval, 1.0);
     }
 }

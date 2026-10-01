@@ -1,4 +1,8 @@
-//! 增量 ASR（interim）纯算法层：分句 / 短句判定 / 回声剥离 / 比例裁剪 / pending 合并。
+//! 增量识别纯算法原语：分句 / 短句判定 / 回声剥离 / 比例裁剪 / pending 合并。
+//!
+//! D-128 起本模块退居**算法原语层**：会话状态与「显示/定稿/裁剪」决策已迁
+//! [`crate::realtime`]（实时会话状态机），触发时序原子在 capture 侧
+//! `InterimControl`——本模块只剩被状态机复用的纯函数。
 //!
 //! 移植基准：`LiveTranslate/main.py`（逐字对照）
 //! - [`split_sentences`]         ← `_get_segmenter`（L1359）+ `_split_sentences`（L1368）
@@ -8,8 +12,6 @@
 //! - [`pending_merge`]           ← `_do_interim_asr` L1508 / `_process_interim_final` L1608
 //!   的短句 pending 前置拼接（`text = pending + text`，中间无分隔符）
 //! - [`committed_prefix`]        ← `_do_interim_asr` L1472-1476（`sentences[:-1]` 拼接）
-//! - [`InterimState`]            ← `_interim_*` 状态字段（L262 初始化；L556 / L1217 /
-//!   L1242 / L1715 四处等值复位块合并为 [`InterimState::reset`]）
 //!
 //! 本模块只提供"调用方视角"的纯函数与状态容器：不做线程 / 定时 / 队列装配，
 //! 不触碰 [`crate::vad::VadProcessor`]（peek_buffer / trim_front / force_flush 由
@@ -293,32 +295,6 @@ pub fn pending_merge(pending: &str, text: &str) -> String {
         text.to_string()
     } else {
         format!("{pending}{text}")
-    }
-}
-
-// ─────────────────────────── 状态容器 ───────────────────────────
-
-/// 增量 ASR 状态（原版 `_interim_*` 字段；不含线程/定时，接线时由调用方驱动）。
-#[derive(Debug, Clone, Default)]
-pub struct InterimState {
-    /// 上次已提交文本的末尾（原版 `_interim_committed_tail`；提交后由调用方更新为
-    /// committed_text 的末 ≤50 字符，原版 L1523），用于 [`strip_committed_overlap`] 回声剥离
-    pub committed_tail: String,
-    /// 短句缓冲（原版 `_interim_pending`），[`pending_merge`] 后清空
-    pub pending: String,
-    /// 上次 interim 检查时的 VAD 缓冲样本数（原版 `_last_interim_samples`）
-    pub last_samples: usize,
-    /// 上次 interim 检查的时间戳（原版 `_last_interim_check_time`，perf_counter 秒）
-    pub last_check_time: f64,
-    /// 本轮语音内已有增量提交（原版 `_interim_active`；vad_flush 到来时为真则
-    /// 收尾段走回声剥离 + pending 拼接语义，随后随 [`Self::reset`] 复位）
-    pub active: bool,
-}
-
-impl InterimState {
-    /// 全量复位（原版 L556 / L1217 / L1242 / L1715 四处五连复位的等值合并）
-    pub fn reset(&mut self) {
-        *self = Self::default();
     }
 }
 
@@ -609,26 +585,5 @@ mod tests {
     fn committed_prefix_single_or_empty_is_blank() {
         assert_eq!(committed_prefix(&["Only.".to_string()]), "");
         assert_eq!(committed_prefix(&[]), "");
-    }
-
-    // ── 状态容器 ──
-
-    #[test]
-    fn interim_state_reset_restores_defaults() {
-        let mut st = InterimState {
-            committed_tail: "previous tail".into(),
-            pending: "好的。".into(),
-            last_samples: 32_000,
-            last_check_time: 123.5,
-            active: true,
-        };
-        st.reset();
-        assert_eq!(st.committed_tail, "");
-        assert_eq!(st.pending, "");
-        assert_eq!(st.last_samples, 0);
-        assert_eq!(st.last_check_time, 0.0);
-        assert!(!st.active);
-        // 默认值与 reset 后一致
-        assert_eq!(st.committed_tail, InterimState::default().committed_tail);
     }
 }

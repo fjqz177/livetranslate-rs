@@ -38,6 +38,12 @@ pub enum UiEvent {
     UpdateTranslation { id: u64, text: String, tl_ms: f64 },
     /// 流式译文增量（update_streaming_signal；UI 侧 50ms 节流）
     UpdateStreaming { id: u64, partial: String },
+    /// 实时识别流式行（D-128）：未定稿假设文本整段刷新（零门控、允许回改，
+    /// 用户裁决「忠实体现引擎输出、实时性优先」）；空串 = 清行（定稿落行/
+    /// 会话边界/收尾冲刷）。与 `UpdateStreaming`（翻译 LLM 部分译文）是两条
+    /// 独立通道，字幕窗数据源永不含本事件。
+    /// 纯新增变体（冻结规则加法豁免，PROTO_VERSION 不递增）。
+    RealtimePartial { text: String },
     /// 音频监视（W2 起走快照格 `MonitorSample`：capture 写 ArcSwap，UI 以
     /// ~33ms 节拍读格重绘——替代逐 chunk 事件的 31/s 唤醒，D-67/R23；
     /// update_monitor_signal 语义等价，契约侧从「事件」变为「格」）
@@ -570,7 +576,10 @@ pub enum Cmd {
     SetTargetLanguage(String),
     // E6/D-81：`SetTimeout(u32)` 删除——死契约守卫校准发现零生产者
     //（翻译页超时改动走 ApplySettings 整体重放），shell 处理臂随删
-    IncrementalAsr {
+    /// 实时识别热应用（D-128 改型，取代旧 `IncrementalAsr`）：enabled 联动
+    /// `realtime_asr`、interval 写 `realtime_interval` 基准节拍（UI 1..=10s）；
+    /// 实际节拍 = 基准 × `realtime_tick_scale(引擎)`（面板诚实显示生效值）
+    SetRealtimeAsr {
         enabled: bool,
         interval: f32,
     },
@@ -628,7 +637,7 @@ impl Cmd {
             // ── 判真：草稿写入面九臂对应（ApplySettings/PersistSettings 共臂）──
             Cmd::SetAsrLanguage(_)
             | Cmd::SetPadding { .. }
-            | Cmd::IncrementalAsr { .. }
+            | Cmd::SetRealtimeAsr { .. }
             | Cmd::SetTargetLanguage(_)
             | Cmd::SwitchTranslator(_)
             | Cmd::SwitchEngine { .. }

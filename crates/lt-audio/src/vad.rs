@@ -695,6 +695,22 @@ impl<C: ConfidenceSource> VadProcessor<C> {
     pub fn speech_samples(&self) -> usize {
         self.speech_samples
     }
+
+    /// 说话中的当前句内静音时长（秒；非说话态恒 0）——实时识别句界信号③的
+    /// 停顿兜底信号（D-128）。**必须在 peek 缓冲的同一锁段内读取**：识别完成
+    /// 之后再读会把识别耗时算进去，语义即错（见 `realtime::realtime_pass`）。
+    pub fn pending_silence_secs(&self) -> f64 {
+        if !self.is_speaking {
+            return 0.0;
+        }
+        self.silence_counter as f64 * self.chunk_duration
+    }
+
+    /// 缓冲代际当前值（AH-4/D-27 同源）：实时通道识别返回后复核——识别期间
+    /// 代际推进（收段/切分/复位）则本次结果过期，整体丢弃不上屏不定稿。
+    pub fn buffer_generation(&self) -> u64 {
+        self.generation
+    }
 }
 
 /// 测试观测面（capture.rs 集成测验证版本变化应用；生产无此入口）
@@ -1092,5 +1108,46 @@ mod tests {
             1,
             "update_settings 不应 reset 源"
         );
+    }
+
+    /// D-128 句界信号③：说话中的句内静音秒数随静音 chunk 增长，收段后归零
+    #[test]
+    fn pending_silence_tracks_silence_while_speaking() {
+        // 语音 5 chunk → 静音 3 chunk（未达收段阈值 25）→ 观测 → 继续静音收段
+        let mut confs = vec![0.9; 5];
+        confs.extend(vec![0.05; 40]);
+        let mut p = make(&confs);
+        feed(&mut p, 5);
+        assert_eq!(p.pending_silence_secs(), 0.0, "纯语音期静音为 0");
+        feed(&mut p, 3);
+        assert!(
+            (p.pending_silence_secs() - 3.0 * 0.032).abs() < 1e-9,
+            "3 个静音 chunk = {:.3}s",
+            3.0 * 0.032
+        );
+        feed(&mut p, 30);
+        assert_eq!(p.pending_silence_secs(), 0.0, "收段后非说话态恒 0");
+    }
+
+    /// D-128 过期 tick 丢弃：代际只随「缓冲头部变更」推进（收段/复位），
+    /// 追加 chunk 不推进；getter 与 peek 返回的代际同源
+    #[test]
+    fn buffer_generation_advances_only_on_head_changes() {
+        let mut p = make(&[0.9; 20]);
+        feed(&mut p, 5);
+        let gen0 = p.buffer_generation();
+        let (_, _, peek_gen) = p.peek_buffer().expect("说话中 peek 有缓冲");
+        assert_eq!(gen0, peek_gen);
+        feed(&mut p, 5);
+        assert_eq!(p.buffer_generation(), gen0, "纯追加不推进代际");
+        p.trim_front(100);
+        assert_eq!(
+            p.buffer_generation(),
+            gen0,
+            "trim_front 不推进代际（was_trimmed 语义）"
+        );
+        let _ = p.flush_segment();
+        assert_eq!(p.buffer_generation(), gen0 + 1, "收段（reset）推进代际");
+        assert!(p.peek_buffer().is_none(), "收段后无缓冲可 peek");
     }
 }
