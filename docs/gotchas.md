@@ -367,7 +367,7 @@
 - **症状**：egui 渲染面（面板/悬浮窗/字幕窗/日志窗）该文字整串显示豆腐块 □□□，无报错无 panic；托盘菜单是 Win32 原生渲染不受影响（同理也不吃内嵌链保护）。
 - **根因**：egui `FontDefinitions` 是封闭世界——链上没有的字形直接 .notdef，**无系统字体自动回退**；内嵌三字体（思源 CJK SC / 等宽 Mono VF / Symbols 2）联合覆盖 = CJK/假名/谚文/拉丁/希腊/西里尔，四脚本零字符。旧覆盖红线 `embedded_fonts_cover_all_ui_glyphs` 的字符集是**手抄常量**，语言表原生名从未入册——「UI 字符集清单手工维护」即漏网之缝。
 - **对策**（D-127）：链级补字——Noto 四脚本 VF（Arabic/Thai/Devanagari/Hebrew）内嵌进字体链尾，**三条链全挂**（Proportional / Monospace / 命名族链尾——命名族兜底用户系统字体的缺字）；红线改**机械枚举** = 覆盖测试直接遍历 `lt_i18n::LANGUAGES` 全表原生名（`embedded_chain_covers_language_native_names`，新语言进表自动受检）；**整形/RTL 不自修**——egui 0.36 harfrust（HarfBuzz）已就绪，上游 text_layout.rs:1366「once RTL/bidi support is added」注释已过时（实测单方向 run RTL 视觉序正确），只欠字形。
-- **证据**：红循环 = LANGUAGES 逐字符 skrifa cmap 过三字体，恰好 ar/th/hi/he 全量缺字、26 项全过（0.71s 确定性红，与用户截图逐项吻合）；harfrust 探针（系统字体预演补字后渲染）= `he - עברית` 输出 ע 最右（RTL 视觉序正确）、`हिन्दी` 6 码点→4 字形（i-matra 重排 + न्द 合体）、`ar - العربية` 混合串前缀 LTR+阿段 RTL 均正确；harfrust 0.12.0 = epaint 0.36.1 `font.rs:361` shaper_data。
+- **证据**：红循环 = LANGUAGES 逐字符 skrifa cmap 过三字体，恰好 ar/th/hi/he 全量缺字、26 项全过（0.71s 确定性红，与用户截图逐项吻合）；harfrust 探针（系统字体预演补字后渲染）= `he - עברית` 输出 ע 最右（RTL 视觉序正确）、`हिन्दी` 6 码点→4 字形（i-matra 重排 + न्द 合体）、`ar - العربية` 混合串前缀 LTR+阿段 RTL 均正确；harfrust 0.12.0 = epaint 0.36.1 `font.rs:361` shaper_data。修复后红线绿（2026-10-01，全仓 676 过 0 败；D-127 提交链 101a920 定稿 → da02410 实现 → ac4cb88 评审收编）。跨方向混排（同一行中文+阿拉伯语交替）未探针，留实机走查。
 
 ---
 
