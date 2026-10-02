@@ -142,7 +142,8 @@ silence_auto: "Auto"
 silence_fixed: "Fixed"
 silence_dur_disabled_tooltip: "In Auto mode the pause is judged by the VAD automatically and this value is ignored; switch to Fixed to adjust it manually"
 realtime_interval_disabled_tooltip: "Enable Realtime ASR first to adjust the interval"
-realtime_interval_effective: "Effective interval on this engine ≈"
+realtime_interval_effective: "Nominal interval on this engine ≈"
+realtime_backoff_hint: "auto-stretches when recognition runs slow"
 
 # Translation tab
 group_active_model: "Active Model (used in pipeline)"

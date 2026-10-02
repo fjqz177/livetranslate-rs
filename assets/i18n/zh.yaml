@@ -142,7 +142,8 @@ silence_auto: "自动"
 silence_fixed: "固定"
 silence_dur_disabled_tooltip: "静音模式为「自动」时停顿时长由 VAD 自动判定，此值不生效；切换为「固定」后可手动调整"
 realtime_interval_disabled_tooltip: "需先勾选「实时识别」，识别节拍才可调整"
-realtime_interval_effective: "当前引擎实际节拍 ≈"
+realtime_interval_effective: "当前引擎名义节拍 ≈"
+realtime_backoff_hint: "识别繁忙时自动拉长（自适应退避）"
 
 # 翻译标签页
 group_active_model: "当前模型 (用于翻译管线)"

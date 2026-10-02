@@ -52,16 +52,18 @@ impl EngineKey {
     }
 }
 
-/// 实时识别节拍引擎倍率（D-128）：实际节拍 = `realtime_interval` 基准 × 本表。
-/// 快引擎密、慢引擎疏（qwen3 识别档案 base 10s + 段长×4，本机 RTF≈0.28 起步；
-/// funasr/whisper 快于实时）。初档按引擎超时档案推断，
-/// `#[ignore]` 节拍探针实测后校准（lt-asr 引擎级探针先例）；面板与管道共用本表
+/// 实时识别节拍引擎倍率（D-128 立表，D-133 实测校准）：名义节拍 =
+/// `realtime_interval` 基准 × 本表；运行时另有 EMA 退避兜底（生效节拍 =
+/// max(名义, 1.2×最近识别耗时 EMA)，capture 侧 InterimControl）。
+/// 校准依据 = 2026-10-02 本机节拍探针首跑（SenseVoice 8s=435ms RTF 0.054 /
+/// qwen3 8s=587ms RTF 0.073，D-128 推断初档 qwen3=3.0 证伪）；whisper 档
+/// medium CPU RTF≈1 边缘（社区共识），2.0 起步待探针补测；面板与管道共用本表
 /// （放 lt-proto：lt-ui 不依赖 lt-asr，诚实显示与热应用必须同一真源）。
 pub fn realtime_tick_scale(engine: EngineKey) -> f32 {
     match engine {
         EngineKey::FunAsr => 1.0,
-        EngineKey::Whisper => 1.5,
-        EngineKey::Qwen3 => 3.0,
+        EngineKey::Whisper => 2.0,
+        EngineKey::Qwen3 => 1.5,
     }
 }
 

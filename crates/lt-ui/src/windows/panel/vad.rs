@@ -876,19 +876,21 @@ pub fn page(
             mark_settings_dirty(session);
         }
         if inc {
-            // 诚实显示（D-128）：当前引擎的实际节拍（倍率 >1 才有信息量）
-            let effective =
+            // 诚实显示（D-128/D-133）：名义节拍 = 基准×倍率（倍率 >1 才有信息量）；
+            // EMA 退避只在识别慢于节拍时拉长生效间隔，不改变名义值
+            let nominal =
                 settings.realtime_interval * lt_proto::realtime_tick_scale(settings.engine_key());
-            if effective > settings.realtime_interval + f32::EPSILON {
+            if nominal > settings.realtime_interval + f32::EPSILON {
                 hint_line(
                     ui,
                     pal,
                     &format!(
                         "{} {:.1}s",
                         lt_i18n::t("realtime_interval_effective"),
-                        effective
+                        nominal
                     ),
                 );
+                hint_line(ui, pal, &lt_i18n::t("realtime_backoff_hint"));
             }
         }
     });

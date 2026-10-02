@@ -40,6 +40,9 @@ pub struct InterimControl {
     /// `_last_interim_check_time` 用 perf_counter 秒，此处 epoch 毫秒等价——
     /// 只参与 ≥1s 冷却比较，单调性足够）
     pub last_check_ms: AtomicU64,
+    /// 最近实时识别耗时的 EMA 毫秒（0 = 未知；D-133 A1 自适应退避——ASR 线程
+    /// 识别后回报、capture 触发判定读取，各写各读无复合不变量，原子即可）
+    pub ema_asr_ms: AtomicU32,
 }
 
 impl Default for InterimControl {
@@ -52,6 +55,7 @@ impl Default for InterimControl {
             interval_scale_bits: AtomicU32::new(1.0f32.to_bits()),
             last_interim_samples: AtomicU64::new(0),
             last_check_ms: AtomicU64::new(0),
+            ema_asr_ms: AtomicU32::new(0),
         }
     }
 }
@@ -75,11 +79,34 @@ impl InterimControl {
             .store(scale.to_bits(), Ordering::Relaxed);
     }
 
-    /// 生效节拍 = 基准 × 倍率（capture 触发判定用；倍率缺位按 1.0 兜底）
+    /// ASR 线程回报一次实时识别耗时（D-133 A1）：α=1/8 指数平滑；ema=0 视为
+    /// 首测直接采用。只对「实际跑了识别」的 tick 回报（调用方过滤）。
+    pub fn note_asr_ms(&self, ms: f64) {
+        let prev = self.ema_asr_ms.load(Ordering::Relaxed);
+        let next = if prev == 0 {
+            ms
+        } else {
+            prev as f64 * 0.875 + ms * 0.125
+        };
+        self.ema_asr_ms.store(
+            next.round().clamp(1.0, u32::MAX as f64) as u32,
+            Ordering::Relaxed,
+        );
+    }
+
+    /// EMA 退避间隔（秒；D-133 A1）：1.2× 最近识别耗时——识别慢于节拍时自动
+    /// 拉长触发间隔，不空转烧 CPU、不积压段队列；未知（0）不参与 max。
+    pub fn backoff_secs(&self) -> f32 {
+        self.ema_asr_ms.load(Ordering::Relaxed) as f32 / 1000.0 * 1.2
+    }
+
+    /// 生效节拍 = max(基准 × 倍率, EMA 退避)（capture 触发判定用；倍率缺位按
+    /// 1.0 兜底，D-133 A1 起并入 EMA 退避下限）
     pub fn effective_interval(&self) -> f32 {
         let base = f32::from_bits(self.interval_bits.load(Ordering::Relaxed));
         let scale = f32::from_bits(self.interval_scale_bits.load(Ordering::Relaxed));
-        base * if scale > 0.0 { scale } else { 1.0 }
+        let nominal = base * if scale > 0.0 { scale } else { 1.0 };
+        nominal.max(self.backoff_secs())
     }
 
     /// R31/D-72：会话边界复位——只清进度计数（enabled/interval 保持，
@@ -568,14 +595,19 @@ mod tests {
     }
 
     /// D-128：生效节拍 = 基准 × 倍率；Default 倍率必须 1.0（AtomicU32 零值
-    /// 陷阱——派生 Default 会得到 0 bits=0.0 倍率，实时识别静默失效）
+    /// 陷阱——派生 Default 会得到 0 bits=0.0 倍率，实时识别静默失效）。
+    /// D-133：倍率校准 qwen3 1.5 / whisper 2.0（探针实测），另并入 EMA 退避。
     #[test]
     fn interim_control_effective_interval_scales_base() {
         let c = InterimControl::default();
         c.set(true, 2.0);
         assert_eq!(c.effective_interval(), 2.0, "Default 倍率 = 1.0");
-        c.set_scale(3.0);
-        assert_eq!(c.effective_interval(), 6.0, "qwen3 倍率 3.0 → 2s 基准变 6s");
+        c.set_scale(1.5);
+        assert_eq!(
+            c.effective_interval(),
+            3.0,
+            "qwen3 校准倍率 1.5 → 2s 基准变 3s"
+        );
         c.set_scale(0.0);
         assert_eq!(c.effective_interval(), 2.0, "倍率缺位（0 bits）按 1.0 兜底");
         // 生效节拍仍须过 interim_due 的 ≥1.0s 防御守卫
@@ -588,6 +620,45 @@ mod tests {
             1,
             0
         ));
+    }
+
+    /// D-133 A1：EMA 退避——首测直接采用、α=1/8 平滑、生效节拍取 max、
+    /// 未识别（ema=0）不参与
+    #[test]
+    fn interim_control_ema_backoff_stretches_interval() {
+        let c = InterimControl::default();
+        c.set(true, 1.0);
+        assert_eq!(c.effective_interval(), 1.0, "无 EMA 时退避不参与");
+        c.note_asr_ms(500.0);
+        assert_eq!(c.backoff_secs(), 0.6, "首测 500ms → 退避 0.6s");
+        c.note_asr_ms(1000.0);
+        assert!(
+            (c.backoff_secs() - 0.675).abs() < 1e-3,
+            "α=1/8：500×0.875+1000×0.125=562.5ms（存 u32 取整 563）→ ≈0.675s，实际 {}",
+            c.backoff_secs()
+        );
+        c.set_scale(2.0);
+        assert_eq!(
+            c.effective_interval(),
+            2.0,
+            "名义 2s > 退避 0.675s → 取名义"
+        );
+        for _ in 0..6 {
+            c.note_asr_ms(5000.0);
+        }
+        assert!(
+            c.effective_interval() > 2.0,
+            "连续慢识别后 EMA 退避应接管生效节拍（6 拍后 EMA≈3s→退避 3.6s），实际 {}",
+            c.effective_interval()
+        );
+        let heavy = InterimControl::default();
+        heavy.set(true, 1.0);
+        heavy.note_asr_ms(9000.0);
+        assert_eq!(
+            heavy.effective_interval(),
+            10.8,
+            "EMA 9s → 退避 10.8s 应完全接管生效节拍"
+        );
     }
 
     #[test]

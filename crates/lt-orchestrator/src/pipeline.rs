@@ -2630,7 +2630,7 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
                 // 实时通道（D-128，原增量通道位）：排空重复标记 → 锁 VAD
                 // peek/识别/代际复核 → 状态机决策（零门控显示+句界定稿+裁剪）
                 drain_interim_duplicates(&segment_queue);
-                realtime_tick(
+                let report = realtime_tick(
                     &mut manager,
                     &vad,
                     &mut interim_state,
@@ -2642,6 +2642,10 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
                     &session_stats,
                     &msg,
                 );
+                // D-133 A1：识别耗时 EMA 回报（失败不计——超时/重启等待毒化 EMA）
+                if report.ran && !report.failed && report.asr_ms > 0.0 {
+                    interim.note_asr_ms(report.asr_ms);
+                }
                 let samples = { lt_audio::vad::lock_vad(&vad).speech_samples() };
                 interim
                     .last_interim_samples
@@ -2877,6 +2881,21 @@ fn drain_interim_duplicates(queue: &BoundedDropQueue<(SegmentSource, Vec<f32>)>)
 /// capture 收段/切分（代际推进）则本轮假设整体丢弃——flush 链路会对同一段
 /// 音频走收尾定稿，这里不得重复上屏（D-27 代际校验的显示/定稿扩展）。
 ///
+/// 一次实时 tick 的执行报告（D-133 A1/A6：EMA 退避与心跳计数的数据源）。
+#[derive(Debug, Clone, Copy, Default)]
+struct TickReport {
+    /// 是否实际执行了识别（peek 成功且缓冲 ≥1.5s）
+    ran: bool,
+    /// 识别耗时毫秒（未执行=0；失败不计——超时/重启等待会毒化 EMA）
+    asr_ms: f64,
+    /// 识别完成但代际过期丢弃（D-128 扩展 D-27；耗时真实，可入 EMA）
+    discarded: bool,
+    /// 识别调用失败（worker 死亡/超时等）
+    failed: bool,
+    /// 本轮定稿句数
+    finalized: usize,
+}
+
 /// `eff` 为设置总线生效视图（W4：语言过滤/transcribe 前应用同源，取代
 /// 旧运行时镜像 asr_language）。
 #[allow(clippy::too_many_arguments)]
@@ -2891,7 +2910,8 @@ fn realtime_tick(
     transcript: &lt_audio::transcript::TranscriptWriter,
     stats: &TlStats,
     msg: &Msg,
-) -> bool {
+) -> TickReport {
+    let mut report = TickReport::default();
     // ① 锁内 peek + 停顿信号同读（识别完成后再读静音会把识别耗时算进去，
     // 语义即错）；代际随行（AH-4/D-27）——识别期间 VAD 可能被收段/切分
     let (peek, silence_secs) = {
@@ -2899,23 +2919,26 @@ fn realtime_tick(
         (v.peek_buffer(), v.pending_silence_secs())
     };
     let Some((audio, duration, generation)) = peek else {
-        return false;
+        return report;
     };
     if duration < 1.5 {
-        return false;
+        return report;
     }
+    report.ran = true;
     // ② 识别（原版 use_word_ts=False：词级时间戳对重复增量通道太贵）
     let t0 = Instant::now();
     let Ok(result) = manager.transcribe(&audio, false, eff) else {
         tracing::warn!("实时识别 tick 失败，流式行保持上一版（收尾段不受影响）");
-        return false;
+        report.failed = true;
+        return report;
     };
-    let asr_ms = t0.elapsed().as_secs_f64() * 1000.0;
+    report.asr_ms = t0.elapsed().as_secs_f64() * 1000.0;
     // ③ 代际复核（D-128 对 D-27 的扩展）：识别期间收段/切分/复位 → 本轮假设
     // 过期，整体丢弃不上屏不定稿——flush 链路会对同一段音频走收尾定稿
     if lt_audio::vad::lock_vad(vad).buffer_generation() != generation {
         tracing::debug!("实时识别 tick 结果过期（代际推进），丢弃");
-        return false;
+        report.discarded = true;
+        return report;
     }
     // ④ 状态机决策：零门控显示 + 句界三信号定稿 + 短跨度裁剪（纯函数；
     // 真值表锚点 = lt-audio realtime::tests）
@@ -2940,7 +2963,7 @@ fn realtime_tick(
             stats,
             text,
             &result.language,
-            asr_ms,
+            report.asr_ms,
             msg,
         );
     }
@@ -2955,7 +2978,8 @@ fn realtime_tick(
             outcome.trim_samples as f64 / lt_audio::TARGET_RATE as f64
         );
     }
-    !outcome.finalized.is_empty()
+    report.finalized = outcome.finalized.len();
+    report
 }
 
 /// 收尾段提交（原版 `_process_interim_final` 的 Ok(result) 分支 1:1）：
