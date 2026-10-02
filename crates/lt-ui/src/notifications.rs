@@ -5,8 +5,10 @@
 //! "a desktop application must have a shortcut on the Start menu"）。首次发送时自动
 //! 注册：RoInitialize（winit 已用 COINIT_APARTMENTTHREADED 初始化 → 本线程为 STA，
 //! 必须 RO_INIT_SINGLETHREADED，见 docs/archive/hide-quit-flow-overhaul.md 附录 B）+
-//! SetCurrentProcessExplicitAppUserModelID + 快捷方式创建（图标 = 内嵌 app.ico 经
-//! 配置目录解压）。任一步失败：`tracing::warn` + 返回 Err，**绝不回退阻塞弹窗**。
+//! SetCurrentProcessExplicitAppUserModelID + 快捷方式创建（图标 = 当前 exe 内嵌
+//! 资源 index 0；G-45：进程有显式 AUMID 后任务栏按 AUMID 从快捷方式取按钮图标，
+//! 优先于窗口 WM_SETICON——图标若指向独立磁盘文件，文件一旦缺失即任务栏白纸，
+//! 故图标必须随 exe 走）。任一步失败：`tracing::warn` + 返回 Err，**绝不回退阻塞弹窗**。
 
 use std::sync::OnceLock;
 
@@ -16,10 +18,6 @@ pub const AUMID: &str = "com.livetranslate.app";
 
 /// 快捷方式文件名（开始菜单条目 = 通知归属显示名）
 const LNK_NAME: &str = "LiveTranslate.lnk";
-
-/// 内嵌图标（.lnk SetIconLocation 需要磁盘路径 → 解压到配置目录，同
-/// onnxruntime.dll/silero_vad.onnx 的幂等解压模式）
-const ICON: &[u8] = include_bytes!("../../../assets/icons/app.ico");
 
 /// 首次隐藏提示入口（i18n 取词；结果仅记日志，不可阻断 UI）
 pub fn show_hidden_hint() {
@@ -137,15 +135,16 @@ mod imp {
         Ok(())
     }
 
-    /// 快捷方式缺失**或目标路径与当前 exe 不一致**则重建（每用户开始菜单；写
-    /// AUMID 属性 + 图标 + 指向当前 exe）。目标不一致重建覆盖：便携 exe 迁移、
-    /// 测试示例/旧版安装遗留的指向旧路径 .lnk（避免"存在即跳过"把错误目标
-    /// 固化到开始菜单）。
+    /// 快捷方式缺失**或目标路径 / 图标位置与当前 exe 不一致**则重建（每用户开始
+    /// 菜单；写 AUMID 属性 + 图标 + 指向当前 exe）。目标不一致重建覆盖：便携 exe
+    /// 迁移、测试示例/旧版安装遗留的指向旧路径 .lnk（避免"存在即跳过"把错误目标
+    /// 固化到开始菜单）。图标不一致重建覆盖 G-45 迁移：旧版 .lnk 图标指向配置
+    /// 目录 app.ico，该文件缺失即任务栏白纸。
     fn ensure_aumid_shortcut() -> Result<()> {
         let lnk = lnk_path()?;
         let exe = std::env::current_exe().context("定位当前 exe 失败")?;
         let exe_path = exe.to_string_lossy().into_owned();
-        if file_exists(&lnk) && lnk_target_matches(&lnk, &exe_path) {
+        if file_exists(&lnk) && lnk_matches(&lnk, &exe_path) {
             return Ok(());
         }
         let shell: IShellLinkW =
@@ -153,14 +152,9 @@ mod imp {
                 .context("CoCreateInstance(ShellLink) 失败")?;
         unsafe { shell.SetPath(&HSTRING::from(exe_path.as_str())) }
             .context("IShellLinkW::SetPath 失败")?;
-        match ensure_icon_path() {
-            Ok(Some(ico)) => {
-                if let Err(e) = unsafe { shell.SetIconLocation(&HSTRING::from(ico), 0) } {
-                    tracing::warn!("SetIconLocation 失败（通知将用默认图标）: {e}");
-                }
-            }
-            Ok(None) => tracing::debug!("app.ico 解压跳过"),
-            Err(e) => tracing::warn!("app.ico 解压失败（通知将用默认图标）: {e}"),
+        // 图标 = exe 内嵌资源 index 0（随 exe 走，零磁盘旁路依赖；G-45）
+        if let Err(e) = unsafe { shell.SetIconLocation(&HSTRING::from(exe_path.as_str()), 0) } {
+            tracing::warn!("SetIconLocation 失败（通知将用默认图标）: {e}");
         }
         let store: IPropertyStore = shell.cast().context("IPropertyStore 转换失败")?;
         // VT_LPWSTR 值必须来自 CoTaskMemAlloc——windows crate 为 PROPVARIANT 生成
@@ -214,10 +208,13 @@ mod imp {
         attrs != INVALID_FILE_ATTRIBUTES
     }
 
-    /// 读取既有快捷方式目标并与 exe 比对（失败按"不一致"处理 → 重建）。
+    /// 读取既有快捷方式的目标与图标位置并与当前 exe 比对（任一失败按"不一致"
+    /// 处理 → 重建）。图标一致性同查（G-45）：旧版 .lnk 图标指向配置目录
+    /// app.ico，文件缺失即任务栏白纸；图标策略已改为 exe 内嵌资源 index 0，
+    /// 靠此处比对把存量旧 .lnk 自动迁移重建。
     /// 必须先经 IPersistFile::Load 载入文件——新建 IShellLinkW 实例目标为空，
     /// 直接 GetPath 会恒判不一致导致每次重建。
-    fn lnk_target_matches(lnk: &Path, exe_path: &str) -> bool {
+    fn lnk_matches(lnk: &Path, exe_path: &str) -> bool {
         let Ok(shell) =
             (unsafe { CoCreateInstance::<_, IShellLinkW>(&ShellLink, None, CLSCTX_INPROC_SERVER) })
         else {
@@ -243,25 +240,27 @@ mod imp {
         };
         let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
         let target = String::from_utf16_lossy(&buf[..len]);
-        let eq = target.eq_ignore_ascii_case(exe_path);
-        if !eq {
+        if !target.eq_ignore_ascii_case(exe_path) {
             tracing::info!("通知快捷方式目标已变更（{target} → {exe_path}），重建");
+            return false;
         }
-        eq
+        let mut ibuf = [0u16; 512];
+        let mut iindex: i32 = -1;
+        let Ok(()) = (unsafe { shell.GetIconLocation(&mut ibuf, &mut iindex) }) else {
+            return false;
+        };
+        let ilen = ibuf.iter().position(|&c| c == 0).unwrap_or(ibuf.len());
+        let icon = String::from_utf16_lossy(&ibuf[..ilen]);
+        if !icon_matches(&icon, iindex, exe_path) {
+            tracing::info!("通知快捷方式图标已变更（{icon},{iindex} → {exe_path},0），重建");
+            return false;
+        }
+        true
     }
 
-    /// app.ico 解压到配置目录（尺寸比对幂等；失败仅告警，图标缺失不阻断）
-    fn ensure_icon_path() -> Result<Option<String>> {
-        let dir = lt_models::paths::config_dir()?;
-        std::fs::create_dir_all(&dir)?;
-        let target = dir.join("app.ico");
-        let ok = std::fs::metadata(&target)
-            .map(|m| m.len() == ICON.len() as u64)
-            .unwrap_or(false);
-        if !ok {
-            std::fs::write(&target, ICON)?;
-        }
-        Ok(Some(target.to_string_lossy().into_owned()))
+    /// 图标位置一致性（纯函数，单测缝）：路径等于当前 exe 且资源 index = 0。
+    pub(super) fn icon_matches(icon: &str, index: i32, exe_path: &str) -> bool {
+        index == 0 && icon.eq_ignore_ascii_case(exe_path)
     }
 }
 
@@ -297,5 +296,21 @@ mod tests {
         // 运行时取词路径（全局状态）仅做非空冒烟，不作语言断言
         let (t, b) = hidden_hint_texts();
         assert!(!t.is_empty() && !b.is_empty());
+    }
+
+    /// 图标位置比对（G-45 迁移判据）：exe 同路径 + index 0 才算一致；
+    /// 旧版 .lnk（图标 = 配置目录 app.ico）必须判不一致触发重建。
+    /// 路径样例用相对形态（repo_hygiene 禁盘符绝对路径；比对是纯字符串逻辑，
+    /// 与路径是否绝对无关）。
+    #[test]
+    #[cfg(windows)]
+    fn icon_matches_only_current_exe_index_zero() {
+        let exe = "bin/livetranslate.exe";
+        assert!(imp::icon_matches("bin/livetranslate.exe", 0, exe));
+        assert!(imp::icon_matches("BIN/LIVETRANSLATE.EXE", 0, exe));
+        // 旧版幽灵图标：路径不同 → 重建
+        assert!(!imp::icon_matches("config/app.ico", 0, exe));
+        // index 非 0 → 重建
+        assert!(!imp::icon_matches("bin/livetranslate.exe", 1, exe));
     }
 }

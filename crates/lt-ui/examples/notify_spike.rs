@@ -12,7 +12,7 @@ fn main() {
     match lt_ui::notifications::show(&title, &body) {
         Ok(()) => {
             println!("通知已发送：{title} / {body}");
-            println!("请查看 Windows 通知（右下角 toast / 操作中心）。如需清理测试产生的约束，删除开始菜单 LiveTranslate.lnk 与配置目录 app.ico 即可。");
+            println!("请查看 Windows 通知（右下角 toast / 操作中心）。如需清理测试产生的约束，删除开始菜单 LiveTranslate.lnk 即可。");
         }
         Err(e) => {
             eprintln!("通知链路失败: {e}");

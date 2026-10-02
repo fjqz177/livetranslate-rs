@@ -377,6 +377,14 @@
 - **对策**（D-127）：链级补字——Noto 四脚本 VF（Arabic/Thai/Devanagari/Hebrew）内嵌进字体链尾，**三条链全挂**（Proportional / Monospace / 命名族链尾——命名族兜底用户系统字体的缺字）；红线改**机械枚举** = 覆盖测试直接遍历 `lt_i18n::LANGUAGES` 全表原生名（`embedded_chain_covers_language_native_names`，新语言进表自动受检）；**整形/RTL 不自修**——egui 0.36 harfrust（HarfBuzz）已就绪，上游 text_layout.rs:1366「once RTL/bidi support is added」注释已过时（实测单方向 run RTL 视觉序正确），只欠字形。
 - **证据**：红循环 = LANGUAGES 逐字符 skrifa cmap 过三字体，恰好 ar/th/hi/he 全量缺字、26 项全过（0.71s 确定性红，与用户截图逐项吻合）；harfrust 探针（系统字体预演补字后渲染）= `he - עברית` 输出 ע 最右（RTL 视觉序正确）、`हिन्दी` 6 码点→4 字形（i-matra 重排 + न्द 合体）、`ar - العربية` 混合串前缀 LTR+阿段 RTL 均正确；harfrust 0.12.0 = epaint 0.36.1 `font.rs:361` shaper_data。修复后红线绿（2026-10-01，全仓 676 过 0 败；D-127 提交链 101a920 定稿 → da02410 实现 → ac4cb88 评审收编）。跨方向混排（同一行中文+阿拉伯语交替）未探针，留实机走查。
 
+## G-45 任务栏白纸图标：进程有显式 AUMID 后任务栏从快捷方式取按钮图标，优先于 WM_SETICON——快捷方式图标禁指向独立磁盘文件
+
+- **触发**：任务栏按钮显示默认白纸（文档）图标，而窗口标题栏与 exe 文件图标均正常；且此前发过一次原生通知（隐藏提示/字幕提示等触发 D-33 注册）。窗口图标补挂 `with_taskbar_icon`（winit Windows 后端 = ICON_SMALL）不愈即为本条。
+- **症状**：任务栏按钮白纸图标，无任何报错；`WM_GETICON`（ICON_SMALL/ICON_BIG/ICON_SMALL2）三查全部返回有效 HICON，位图导出目验为正确应用图标——窗口侧完全无辜。
+- **根因**：D-33 通知注册链 `SetCurrentProcessExplicitAppUserModelID("com.livetranslate.app")` + 开始菜单 `.lnk`（带 AUMID 属性）生效后，任务栏按 AUMID 归组解析按钮图标 = **快捷方式 IconLocation，优先级高于窗口 WM_SETICON**。旧实现把 IconLocation 指向运行时解压到配置目录的 `app.ico`（独立磁盘文件），而 `ensure_aumid_shortcut` 的跳过条件只比对目标 exe 路径、从不复查图标文件存活——文件一旦缺失（清理配置目录等），幽灵路径固化，任务栏恒白纸。2026-10-01 12:01 首次注册起犯，用户观感「不知何时引入」。
+- **对策**：IconLocation 改指**当前 exe 内嵌资源 index 0**（`SetIconLocation(exe_path, 0)`，图标随 exe 走零磁盘旁路）；跳过条件扩为**目标 + 图标位置双比对**（`lnk_matches`：GetPath + GetIconLocation，读回 `(exe,0)` 才算一致），存量幽灵 `.lnk` 由下次注册自动迁移重建；配置目录 app.ico 解压整链删除。回归钉 = `icon_matches_only_current_exe_index_zero`（纯函数缝）。
+- **证据**：只读探针（EnumWindows + WM_GETICON + GetClassLongPtrW，位图落盘目验）= 面板窗三查句柄非零且位图为正确图标，任务栏仍白纸；开始菜单 `.lnk` 实测 `Icon: ~/.config/livetranslate/app.ico, Exists: False`；绿证 = 仅把仓库 app.ico 复位到该路径、同一 exe 不改码，任务栏按钮即变正确图标（截图取证）——因果闭环。修复后 notify_spike 实机重注册 `Icon: <exe>,0, IconExists: True`（2026-10-02）。
+
 ---
 
 
