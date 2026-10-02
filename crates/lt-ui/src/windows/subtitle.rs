@@ -1161,6 +1161,7 @@ mod tests {
     /// 原文行照常保留原文（失败不是译文，也不吞原文）；标记在清空后复位
     #[test]
     fn refresh_display_marks_failed_lines_and_keeps_original() {
+        let _lang_guard = crate::lang_test_guard();
         let mut sub = SubtitleUiState {
             sentences: vec![failed_sentence(
                 "识别到的原句",

@@ -1467,6 +1467,7 @@ mod tests {
     /// 合规配置零告警（不阻断保存、不改写用户输入——本函数只读）
     #[test]
     fn config_warnings_cover_shape_and_url_issues() {
+        let _lang_guard = crate::lang_test_guard();
         // 合规样例：/v1 + 无尾斜杠 → 零告警
         let mut ed = ModelEditState::new_add();
         ed.api_base = "http://127.0.0.1:1234/v1".into();

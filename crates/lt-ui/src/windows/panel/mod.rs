@@ -979,6 +979,7 @@ mod tests {
     /// Tab 键齐全：7 页标题 t() 均非键名本身（yaml 同步检查）
     #[test]
     fn all_tab_titles_resolve() {
+        let _lang_guard = crate::lang_test_guard();
         for page in PanelPage::ALL {
             let label = lt_i18n::t(page.tab_key());
             assert_ne!(

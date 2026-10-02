@@ -1254,6 +1254,7 @@ mod tests {
     /// 调用点传参错误。
     #[test]
     fn overlay_mode_button_toggles_and_enqueues() {
+        let _lang_guard = crate::lang_test_guard();
         let ctx = egui::Context::default();
         let mut st = crate::state::AppUi::new(lt_proto::Settings::default());
         let mut acts: Vec<(crate::state::WinId, crate::state::WinAction)> = Vec::new();

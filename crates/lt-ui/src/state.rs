@@ -2860,6 +2860,7 @@ mod tests {
     /// D-87：确认窗状态——打开/幂等/替换语义/取走（单模态源防嵌套）
     #[test]
     fn confirm_modal_request_idempotent_and_replacing() {
+        let _lang_guard = crate::lang_test_guard();
         let mut st = AppUi::new(Settings::default());
 
         // 打开 → 状态在位（宿主概念已删，专用窗渲染）
@@ -2903,6 +2904,7 @@ mod tests {
     /// D-87：Quit 确认 → quit_requested（宿主 about_to_wait 收敛路径不变）
     #[test]
     fn confirm_quit_sets_quit_requested() {
+        let _lang_guard = crate::lang_test_guard();
         let mut st = AppUi::new(Settings::default());
         assert!(!st.modal.quit_requested);
         st.modal.request_confirm(
@@ -3625,6 +3627,7 @@ mod tests {
     /// Rust 版「日志」页（末位）
     #[test]
     fn panel_pages_order_matches_original() {
+        let _lang_guard = crate::lang_test_guard();
         assert_eq!(
             PanelPage::ALL,
             [
@@ -3721,6 +3724,7 @@ mod tests {
     /// 识别页自身不亮（下载卡就地可达），就绪即隐
     #[test]
     fn model_banner_visible_only_when_unavailable_off_vadasr_page() {
+        let _lang_guard = crate::lang_test_guard();
         let mut st = AppUi::new(Settings::default());
         assert!(
             !st.panel.model_banner_visible(),

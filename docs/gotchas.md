@@ -385,6 +385,14 @@
 - **对策**：IconLocation 改指**当前 exe 内嵌资源 index 0**（`SetIconLocation(exe_path, 0)`，图标随 exe 走零磁盘旁路）；跳过条件扩为**目标 + 图标位置双比对**（`lnk_matches`：GetPath + GetIconLocation，读回 `(exe,0)` 才算一致），存量幽灵 `.lnk` 由下次注册自动迁移重建；配置目录 app.ico 解压整链删除。回归钉 = `icon_matches_only_current_exe_index_zero`（纯函数缝）。
 - **证据**：只读探针（EnumWindows + WM_GETICON + GetClassLongPtrW，位图落盘目验）= 面板窗三查句柄非零且位图为正确图标，任务栏仍白纸；开始菜单 `.lnk` 实测 `Icon: ~/.config/livetranslate/app.ico, Exists: False`；绿证 = 仅把仓库 app.ico 复位到该路径、同一 exe 不改码，任务栏按钮即变正确图标（截图取证）——因果闭环。修复后 notify_spike 实机重注册 `Icon: <exe>,0, IconExists: True`（2026-10-02）。
 
+## G-46 测试跨时刻比对 t() 产物不挂 lang_test_guard：并行测试切全局语言，CI 偶发中英混排帧假红
+
+- **触发**：lt-ui 测试函数体内出现真实 `lt_i18n::t()` 调用（`t_for_lang` 不触全局不受限），且**跨时刻比对**——渲染帧里的 t() 产物与断言侧再次 t() 取词不是同一时刻；本地（中文系统）永不复现，CI（英文 runner）偶发红。审计 `t(` 时注意注释与 assert 消息串里的 "t(...)" 文本误报（vad.rs `asr_lang_items_format_and_index` 即消息串、style.rs 即注释，均非真调用）。
+- **症状**：单测假红，报「未找到××按钮」，panic 打出的帧文本**中英混排**——t() 驱动的键变英文，硬编码中文与语言原生名保持中文；且同代码上一次 CI 是绿的（纯调度运气，不是确定性回归）。
+- **根因**：lt-i18n 全局语言是进程级单例。D-121 起语言敏感测试挂 `lang_test_guard` 互斥并临时 `set_lang` 切换还原，但锁只串行化**挂锁者**——未挂锁的测试照样并行跑，渲染帧正好落进别人的切窗（渲染时 en、断言取词时已还原 zh）即假红。
+- **对策**：测试函数体内出现真实 `t()` ⇒ 函数首行 `let _lang_guard = crate::lang_test_guard();`（既有 25+ 处同款）。一致性比对类挂锁即足（语言值泄漏成什么都不影响两边同源）；断言**具体语言**文案的，改 `t_for_lang` 钉死（notifications.rs 先例）或挂锁后 `set_lang` 钉死（translation.rs 先例）。2026-10-02 全量审计补锁 8 处：state.rs 4、overlay.rs 1、panel/mod.rs 1、panel/translation.rs 1、subtitle.rs 1。
+- **证据**：2026-10-02 v1.1.0 发布链 CI run 37011403284 `overlay_mode_button_toggles_and_enqueues` 红——找「完整」落空，帧内 "Full" 与「运行/字幕/隐藏」混排；同代码 a0d4780 与 65993fd 的 CI 均绿（与仅抬版本号的 b1b6bd6 无关）= 调度竞争实锤；补锁后 lt-ui 本地 233+8 过 0 败（2026-10-02）。
+
 ---
 
 
