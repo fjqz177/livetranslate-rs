@@ -1,9 +1,11 @@
-//! 实时识别会话状态机（D-128）：伪流式的「显示 / 定稿 / 裁剪」纯决策层。
+//! 实时识别会话状态机（D-128，D-133 深度优化）：伪流式的「显示 / 定稿 / 裁剪」
+//! 纯决策层。
 //!
 //! 输入 = 当前 tick 的识别假设全文 + 缓冲样本数 + 句内停顿信号；输出 =
-//! [`RealtimeOutcome`]（流式行显示文本 / 本轮定稿句 / 裁剪样本数）。**显示零门控**
-//! （用户裁决：忠实体现引擎输出、实时性优先）——每次成功 tick 都整段刷新显示，
-//! 不等任何「连续一致」确认；定稿由句界信号独立触发：
+//! [`RealtimeOutcome`]（流式行显示文本 / 本轮定稿句 / 裁剪样本数）。
+//! 显示层（D-133 A3 弱化 D-128「零门控」为稳定前缀显示）：连续两拍一致的公共
+//! 前缀锁定，只有尾部活动区生长/回改，连续 2 拍大改才整段重写（见
+//! [`stabilize_display`]）；定稿由句界信号独立触发：
 //!
 //! ① 句末标点分句（[`crate::interim::split_sentences`] 瘦身复用）：除末句外全部
 //!    视为已说完（末句仍在说）；
@@ -46,6 +48,12 @@ pub struct RealtimeState {
     pub pending: String,
     /// 本会话内发生过定稿裁剪（收尾冲刷语义开关：真则尾巴走回声剥离+pending 拼接）
     pub active: bool,
+    /// 上一 tick 的原始显示候选（D-133 A3 稳定前缀的「上一拍假设」）
+    pub prev_display: String,
+    /// 已锁定前缀（连续两拍一致的最长公共前缀；显示层防闪变账本，D-133 A3）
+    pub agreed: String,
+    /// 连续分歧帧数（假设不再以锁定开头；≥2 接受整段重写，D-133 A3）
+    pub divergence: u8,
 }
 
 impl RealtimeState {
@@ -94,7 +102,9 @@ pub fn realtime_pass(
         trim_samples: 0,
     };
     if !hypo.chars().any(|c| c.is_alphanumeric()) {
-        return empty_out(st);
+        let mut out = empty_out(st);
+        out.display = stabilize_display(st, &out.display);
+        return out;
     }
 
     // ③ 定稿区判定：句界信号③（停顿兜底）= 全部；否则句界信号①（句末标点
@@ -102,7 +112,9 @@ pub fn realtime_pass(
     let pause_mode = trailing_silence_secs >= PAUSE_FINALIZE_SECS;
     let sentences = split_sentences(&hypo, "");
     if sentences.is_empty() {
-        return empty_out(st);
+        let mut out = empty_out(st);
+        out.display = stabilize_display(st, &out.display);
+        return out;
     }
     let complete: &[String] = if pause_mode {
         &sentences[..]
@@ -145,7 +157,8 @@ pub fn realtime_pass(
         st.active = true;
     }
 
-    // ⑥ 流式行 = pending 前缀 + 未定稿尾巴（兜底模式全定稿 → 只剩 pending）
+    // ⑥ 流式行 = pending 前缀 + 未定稿尾巴（兜底模式全定稿 → 只剩 pending）；
+    //    D-133 A3：定稿非空 = 显示基础变更（缓冲被裁）→ 锁定账本重置后重稳
     let tail = if pause_mode {
         ""
     } else {
@@ -155,7 +168,65 @@ pub fn realtime_pass(
     if outcome.display.trim().is_empty() {
         outcome.display.clear();
     }
+    if !outcome.finalized.is_empty() {
+        st.prev_display.clear();
+        st.agreed.clear();
+        st.divergence = 0;
+    }
+    outcome.display = stabilize_display(st, &outcome.display);
     outcome
+}
+
+/// 最长公共字符前缀（按 char 比较、byte 切分——不劈 UTF-8）。
+fn common_prefix_chars(a: &str, b: &str) -> String {
+    let mut end = 0usize;
+    for (ac, bc) in a.chars().zip(b.chars()) {
+        if ac != bc {
+            break;
+        }
+        end += ac.len_utf8();
+    }
+    a[..end].to_string()
+}
+
+/// 显示层稳定前缀（D-133 A3；D-128「零门控显示」的弱化修订——整段重写是直播
+/// 字幕可读性的最大伤害，CHI 2023 text stability 结论）：连续两拍一致的公共
+/// 前缀锁定为「已稳定区」，只有尾部活动区生长/回改；假设大改（连续 2 拍不再
+/// 以锁定开头）才接受整段重写（防错误识别被永久锁死）。定稿/清空帧清账本
+/// （显示基础变更，锁定自然失效）。最坏情况 = 现行为（整段重写）。
+fn stabilize_display(st: &mut RealtimeState, cur: &str) -> String {
+    if cur.is_empty() {
+        st.prev_display.clear();
+        st.agreed.clear();
+        st.divergence = 0;
+        return String::new();
+    }
+    let common = common_prefix_chars(&st.prev_display, cur);
+    if st.agreed.is_empty() {
+        // 无锁定（首帧/刚重置）：本帧为基准帧，下拍起才有「两拍一致」可言
+        st.agreed = common;
+        st.divergence = 0;
+    } else if cur.starts_with(st.agreed.as_str()) {
+        // 兼容帧：锁定只在「两拍一致且单调延伸」时生长
+        if common.starts_with(st.agreed.as_str())
+            && common.chars().count() > st.agreed.chars().count()
+        {
+            st.agreed = common;
+        }
+        st.divergence = 0;
+    } else {
+        st.divergence += 1;
+        if st.divergence >= 2 {
+            st.agreed = common;
+            st.divergence = 0;
+        }
+    }
+    st.prev_display = cur.to_string();
+    if cur.starts_with(st.agreed.as_str()) {
+        format!("{}{}", st.agreed, &cur[st.agreed.len()..])
+    } else {
+        cur.to_string()
+    }
 }
 
 /// 定稿区文本的回声账本（末 [`TAIL_CHARS`] 字符；对照原版 L1523）。
@@ -496,8 +567,78 @@ mod tests {
             committed_tail: "旧的尾巴".into(),
             pending: "好的。".into(),
             active: true,
+            ..Default::default()
         };
         st.reset();
         assert_eq!(st, RealtimeState::default());
+    }
+
+    // ── 显示层稳定前缀（A3）──
+
+    #[test]
+    fn stable_prefix_locks_and_only_tail_churns() {
+        let mut st = RealtimeState::default();
+        // 帧1：基准帧（无锁定，照常显示）
+        let f1 = realtime_pass(&mut st, "今天我们聊聊天气", buf(3.0), 0.0, SR);
+        assert_eq!(f1.display, "今天我们聊聊天气");
+        assert!(st.agreed.is_empty(), "单帧无「两拍一致」可言");
+        // 帧2：假设稳定生长 → 公共前缀「今天我们聊聊天气」锁定
+        let f2 = realtime_pass(&mut st, "今天我们聊聊天气吧", buf(4.0), 0.0, SR);
+        assert_eq!(f2.display, "今天我们聊聊天气吧");
+        assert_eq!(st.agreed, "今天我们聊聊天气", "两拍一致的前缀入锁");
+        // 帧3：继续生长 → 锁定延伸、显示=锁定+尾段（文本面不变，账本单调）
+        let f3 = realtime_pass(&mut st, "今天我们聊聊天气吧好", buf(5.0), 0.0, SR);
+        assert_eq!(f3.display, "今天我们聊聊天气吧好");
+        assert_eq!(st.agreed, "今天我们聊聊天气吧", "锁定随两拍一致延伸");
+    }
+
+    #[test]
+    fn engine_rewrite_holds_lock_one_frame_then_rewrites() {
+        let mut st = RealtimeState::default();
+        let _ = realtime_pass(&mut st, "今天天气真的非常不错", buf(3.0), 0.0, SR);
+        let _ = realtime_pass(&mut st, "今天天气真的非常不错啊", buf(4.0), 0.0, SR);
+        assert_eq!(st.agreed, "今天天气真的非常不错");
+        // 帧3：引擎整句改写（前缀不兼容）→ 单帧分歧：账本保持、显示回退整段
+        let f3 = realtime_pass(&mut st, "其实昨天晚上下了一场大雨", buf(5.0), 0.0, SR);
+        assert_eq!(
+            f3.display, "其实昨天晚上下了一场大雨",
+            "不兼容帧诚实整段显示"
+        );
+        assert_eq!(st.agreed, "今天天气真的非常不错", "单帧分歧不拆锁");
+        // 帧4：改写延续 → 连续 2 拍分歧 → 接受重写
+        let f4 = realtime_pass(&mut st, "其实昨天晚上下了一场大雨还在下", buf(6.0), 0.0, SR);
+        assert_eq!(f4.display, "其实昨天晚上下了一场大雨还在下");
+        assert_eq!(st.agreed, "其实昨天晚上下了一场大雨", "两拍分歧接受重写");
+    }
+
+    #[test]
+    fn finalize_resets_prefix_lock() {
+        let mut st = RealtimeState::default();
+        // 帧1-2：无定稿的两拍 → 锁定积累
+        let _ = realtime_pass(&mut st, "今天天气真的非常不错", buf(3.0), 0.0, SR);
+        let _ = realtime_pass(&mut st, "今天天气真的非常不错啊", buf(4.0), 0.0, SR);
+        assert!(!st.agreed.is_empty());
+        // 帧3：句末标点定稿前句 → 显示基础变更（缓冲被裁）→ 锁定重置
+        let f3 = realtime_pass(
+            &mut st,
+            "今天天气真的非常不错啊。新的句子",
+            buf(5.0),
+            0.0,
+            SR,
+        );
+        assert_eq!(f3.display, "新的句子");
+        assert!(st.agreed.is_empty(), "定稿帧重置锁定，下拍重新积累");
+    }
+
+    #[test]
+    fn clear_frame_resets_prefix_books() {
+        let mut st = RealtimeState::default();
+        let _ = realtime_pass(&mut st, "今天天气真的非常不错", buf(3.0), 0.0, SR);
+        let _ = realtime_pass(&mut st, "今天天气真的非常不错啊", buf(4.0), 0.0, SR);
+        assert!(!st.agreed.is_empty());
+        // 兜底全定稿 → 显示空 → 清行帧账本随行清
+        let out = realtime_pass(&mut st, "今天天气真的非常不错啊", buf(4.0), 0.8, SR);
+        assert_eq!(out.display, "", "全部定稿 → 清行");
+        assert!(st.agreed.is_empty() && st.prev_display.is_empty() && st.divergence == 0);
     }
 }
