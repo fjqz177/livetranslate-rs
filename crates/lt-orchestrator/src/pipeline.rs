@@ -2600,6 +2600,23 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
             // 空闲分支：RSS 回收（原版 _asr_loop queue.Empty）+ 翻译器切换命令
             // （AH-1：翻译器三臂经 route_translator_switch 与待命循环共享）
             manager.maybe_recycle_if_idle();
+            // D-133 A5：跨段碎片超时独立成行（不再等合并；会话尾短句最迟 3s 落屏）
+            if interim_state.flush_pending_expired(unix_ms()) {
+                let (held, lang) = interim_state.take_flush_pending();
+                let eff = bus.load();
+                commit_text(
+                    &eff.asr_lang.language,
+                    &eff.tl.target_language,
+                    tl.as_deref(),
+                    &sink,
+                    &transcript,
+                    &session_stats,
+                    &held,
+                    &lang,
+                    0.0,
+                    &msg,
+                );
+            }
             drain_tl_switch(
                 &mut tl,
                 &mut manager,
@@ -2695,6 +2712,24 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
             "超预算（剩余段已放弃）"
         }
     );
+    // D-133 A5：退出前冲刷跨段短碎片（内容不蒸发；语言取暂存时检出值，
+    // asr_ms 无从计——收尾提交按 0 记）
+    if !interim_state.flush_pending.is_empty() {
+        let (held, lang) = interim_state.take_flush_pending();
+        let eff = bus.load();
+        commit_text(
+            &eff.asr_lang.language,
+            &eff.tl.target_language,
+            tl.as_deref(),
+            &sink,
+            &transcript,
+            &session_stats,
+            &held,
+            &lang,
+            0.0,
+            &msg,
+        );
+    }
     manager.shutdown();
     tracing::info!("ASR 线程退出");
 }
@@ -2768,18 +2803,25 @@ fn handle_vad_flush(
                     _ => tracing::debug!("ASR 返回空/纯标点结果，跳过: {:?}", result.text),
                 }
             } else {
-                commit_text(
-                    &eff.asr_lang.language,
-                    &eff.tl.target_language,
-                    tl,
-                    sink,
-                    transcript,
-                    stats,
-                    &result.text,
-                    &result.language,
-                    asr_ms,
-                    msg,
-                );
+                // D-133 A5：收尾路径短碎片跨段暂存——并下一句前置或 3s 超时
+                // 独立成行，不再直接成行（治「P.」「1.」碎片行；内容不蒸发）
+                if lt_audio::interim::is_short_utterance(&result.text) {
+                    interim_state.hold_flush_short(&result.text, &result.language, unix_ms());
+                } else {
+                    let merged = interim_state.take_merged(&result.text);
+                    commit_text(
+                        &eff.asr_lang.language,
+                        &eff.tl.target_language,
+                        tl,
+                        sink,
+                        transcript,
+                        stats,
+                        &merged,
+                        &result.language,
+                        asr_ms,
+                        msg,
+                    );
+                }
             }
         }
         Err(e) => {
@@ -2790,10 +2832,12 @@ fn handle_vad_flush(
             }
         }
     }
-    // 无论走哪支，处理完收尾段后复位全部增量状态（原版 main.py:1715-1719）；
+    // 无论走哪支，处理完收尾段后复位段级增量状态（原版 main.py:1715-1719）；
     // D-128：流式行随收尾清空——尾巴已按定稿/过滤语义处置完毕，未定稿内容
-    // 不应跨段残留（退出收尾同语义，同一份实现）
-    interim_state.reset();
+    // 不应跨段残留（退出收尾同语义，同一份实现）。
+    // D-133 A5：段级复位保留跨段短碎片缓冲（reset_segment）——碎片等的是
+    // 「下一句」，不是本段尾巴；会话级边界（切引擎/切设备）才全清（reset）。
+    interim_state.reset_segment();
     interim.last_interim_samples.store(0, Ordering::Relaxed);
     interim.last_check_ms.store(0, Ordering::Relaxed);
     sink.push(UiEvent::realtime_partial_cleared());
@@ -2896,6 +2940,15 @@ struct TickReport {
     finalized: usize,
 }
 
+/// 当前 UNIX 毫秒（D-133 A5：flush_pending 超时判定用；capture 侧
+/// `now_epoch_ms` 同口径——SystemTime 粒度足够 3s 级超时）
+fn unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
 /// `eff` 为设置总线生效视图（W4：语言过滤/transcribe 前应用同源，取代
 /// 旧运行时镜像 asr_language）。
 #[allow(clippy::too_many_arguments)]
@@ -2954,6 +3007,8 @@ fn realtime_tick(
         text: outcome.display,
     });
     for text in &outcome.finalized {
+        // D-133 A5：定稿提交前并走收尾路径暂存的短碎片（碎片在前、本句在后）
+        let merged = st.take_merged(text);
         commit_text(
             &eff.language,
             target_language,
@@ -2961,7 +3016,7 @@ fn realtime_tick(
             sink,
             transcript,
             stats,
-            text,
+            &merged,
             &result.language,
             report.asr_ms,
             msg,
@@ -3026,6 +3081,13 @@ fn commit_interim_final(
         tracing::debug!("噪声过滤: {seg_seconds:.1}s 段仅产出 {text:?}，跳过");
         return;
     }
+    // D-133 A5：收尾尾巴仍是短碎片 → 跨段暂存（并下一句前置或 3s 超时独立
+    // 成行）；长句提交前并走暂存的碎片（碎片在前、本句在后）
+    if lt_audio::interim::is_short_utterance(&text) {
+        st.hold_flush_short(&text, lang, unix_ms());
+        return;
+    }
+    let text = st.take_merged(&text);
     commit_text(
         asr_language,
         target_language,

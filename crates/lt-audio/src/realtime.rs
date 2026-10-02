@@ -38,6 +38,10 @@ pub const PAUSE_FINALIZE_SECS: f64 = 0.7;
 /// 提交尾部回声账本长度（对照原版 `_interim_committed_tail` 的末 50 字符）。
 const TAIL_CHARS: usize = 50;
 
+/// 收尾路径短句跨段缓冲的独立成行超时（D-133 A5）：3s 无后续句则不再等
+/// 合并、独立提交——内容不蒸发，句尾短叹词（"Yes."）最迟 3s 落屏。
+pub const FLUSH_PENDING_TIMEOUT_MS: u64 = 3000;
+
 /// 实时会话状态（原 `interim::InterimState` 的存活子集：裁剪触发时序原子在
 /// capture 侧 `InterimControl`，此处只留文本账本）。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -54,12 +58,69 @@ pub struct RealtimeState {
     pub agreed: String,
     /// 连续分歧帧数（假设不再以锁定开头；≥2 接受整段重写，D-133 A3）
     pub divergence: u8,
+    /// 收尾路径短句跨段缓冲（D-133 A5）：实时关/收尾段识别出的 ≤8 字符碎片
+    /// 暂存于此，并下一句前置或超时独立成行——治「P.」「1.」碎片行
+    pub flush_pending: String,
+    /// flush_pending 首条入账的 epoch 毫秒（0 = 空；`InterimControl.last_check_ms`
+    /// 同口径，SystemTime 粒度足够 3s 超时判定）
+    pub flush_pending_at_ms: u64,
+    /// flush_pending 识别语言（首条入账时的引擎检出语言；独立成行时供
+    /// commit_text 语言过滤——零散碎片不带语言会被误丢）
+    pub flush_pending_lang: String,
 }
 
 impl RealtimeState {
-    /// 全量复位（会话边界：设备切换/清空联动/管道重置）
+    /// 全量复位（会话边界：设备切换/引擎切换/清空联动/管道重置——跨段缓冲
+    /// 属本会话内容，随会话一并清）
     pub fn reset(&mut self) {
         *self = Self::default();
+    }
+
+    /// 段级复位（每收尾段后）：会话文本账本清，跨段 flush_pending **保留**——
+    /// 碎片等的是「下一句」而非本段尾巴，段边界冲掉就永远丢了
+    pub fn reset_segment(&mut self) {
+        let flush = std::mem::take(&mut self.flush_pending);
+        let at = self.flush_pending_at_ms;
+        let lang = std::mem::take(&mut self.flush_pending_lang);
+        *self = Self::default();
+        self.flush_pending = flush;
+        self.flush_pending_at_ms = at;
+        self.flush_pending_lang = lang;
+    }
+
+    /// A5：收尾路径短碎片入账（已有暂存则按序合并；空账本记首条时刻与语言）
+    pub fn hold_flush_short(&mut self, text: &str, detected_lang: &str, now_ms: u64) {
+        if self.flush_pending.is_empty() {
+            self.flush_pending_at_ms = now_ms;
+            self.flush_pending_lang = detected_lang.to_string();
+        }
+        self.flush_pending = pending_merge(&self.flush_pending, text.trim());
+    }
+
+    /// A5：取走跨段缓冲并与本句前置合并（碎片在前、本句在后；空则原样）
+    pub fn take_merged(&mut self, text: &str) -> String {
+        let (held, _) = self.take_flush_pending();
+        if held.is_empty() {
+            text.to_string()
+        } else {
+            pending_merge(&held, text)
+        }
+    }
+
+    /// A5：取走跨段缓冲与其识别语言 `(文本, 语言)`（超时独立成行/退出冲刷用；
+    /// 语言供 commit_text 过滤——零散碎片不带检出语言会被误丢）
+    pub fn take_flush_pending(&mut self) -> (String, String) {
+        self.flush_pending_at_ms = 0;
+        let text = std::mem::take(&mut self.flush_pending);
+        let lang = std::mem::take(&mut self.flush_pending_lang);
+        (text, lang)
+    }
+
+    /// A5：跨段缓冲是否到独立成行时刻（≥[`FLUSH_PENDING_TIMEOUT_MS`] 无后续；
+    /// 0 = 空，永不超时）
+    pub fn flush_pending_expired(&self, now_ms: u64) -> bool {
+        self.flush_pending_at_ms != 0
+            && now_ms.saturating_sub(self.flush_pending_at_ms) >= FLUSH_PENDING_TIMEOUT_MS
     }
 }
 
@@ -640,5 +701,62 @@ mod tests {
         let out = realtime_pass(&mut st, "今天天气真的非常不错啊", buf(4.0), 0.8, SR);
         assert_eq!(out.display, "", "全部定稿 → 清行");
         assert!(st.agreed.is_empty() && st.prev_display.is_empty() && st.divergence == 0);
+    }
+
+    // ── 收尾路径短句跨段缓冲（A5）──
+
+    #[test]
+    fn flush_short_holds_merges_and_expires() {
+        let mut st = RealtimeState::default();
+        st.hold_flush_short("P.", "en", 1000);
+        assert_eq!(st.flush_pending, "P.");
+        assert_eq!(st.flush_pending_at_ms, 1000, "首条入账记时刻");
+        assert_eq!(st.flush_pending_lang, "en", "首条入账记检出语言");
+        st.hold_flush_short("1.", "en", 1500);
+        assert_eq!(st.flush_pending, "P.1.", "按序合并");
+        assert_eq!(st.flush_pending_at_ms, 1000, "时刻不随后续合并漂移");
+        assert!(!st.flush_pending_expired(1000 + 2999), "2.999s 未超时");
+        assert!(st.flush_pending_expired(1000 + 3000), "恰 3s 超时");
+        let (held, lang) = st.take_flush_pending();
+        assert_eq!(held, "P.1.");
+        assert_eq!(lang, "en");
+        assert_eq!(st.flush_pending_at_ms, 0, "取走后计时复位");
+        assert!(!st.flush_pending_expired(9_999_999), "空账本永不超时");
+    }
+
+    #[test]
+    fn take_merged_prepends_held_before_text() {
+        let mut st = RealtimeState::default();
+        assert_eq!(st.take_merged("Hello there"), "Hello there", "空缓冲原样");
+        st.hold_flush_short("Yes.", "en", 0);
+        assert_eq!(st.take_merged("Hello there"), "Yes.Hello there");
+        assert!(st.flush_pending.is_empty(), "合并即取走");
+        assert!(st.flush_pending_lang.is_empty());
+    }
+
+    #[test]
+    fn reset_segment_keeps_flush_pending_but_reset_clears_it() {
+        let mut st = RealtimeState {
+            committed_tail: "尾巴".into(),
+            pending: "好的。".into(),
+            active: true,
+            flush_pending: "P.".into(),
+            flush_pending_at_ms: 42,
+            flush_pending_lang: "en".into(),
+            ..Default::default()
+        };
+        st.reset_segment();
+        assert_eq!(
+            st,
+            RealtimeState {
+                flush_pending: "P.".into(),
+                flush_pending_at_ms: 42,
+                flush_pending_lang: "en".into(),
+                ..Default::default()
+            },
+            "段级复位只留跨段缓冲（碎片等的是下一句不是本段尾巴）"
+        );
+        st.reset();
+        assert_eq!(st, RealtimeState::default(), "会话级复位全清");
     }
 }
