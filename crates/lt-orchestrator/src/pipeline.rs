@@ -2967,9 +2967,21 @@ fn realtime_tick(
             msg,
         );
     }
-    // ⑥ 裁剪已消费音频（带代际校验，AH-4/D-27：③已复核，此处兜底再验）
+    // ⑥ 裁剪已消费音频（带代际校验，AH-4/D-27：③已复核，此处兜底再验）。
+    // D-133 A2 概率谷对齐：在估计点邻域 [−1.5s, +0.3s] 找真实停顿谷，宁早勿晚
+    // （早切由回声剥离兜底、晚切必断词）；无谷/谷不可信 → 维持字符比例估计
     if outcome.trim_samples > 0 {
-        lt_audio::vad::lock_vad(vad).trim_front_checked(outcome.trim_samples, generation);
+        let sr = lt_audio::TARGET_RATE as usize;
+        let mut v = lt_audio::vad::lock_vad(vad);
+        let valley = v.lowest_confidence_boundary_in(
+            outcome
+                .trim_samples
+                .saturating_sub((1.5 * sr as f64) as usize),
+            outcome.trim_samples + (0.3 * sr as f64) as usize,
+        );
+        let aligned =
+            lt_audio::realtime::align_trim_to_valley(outcome.trim_samples, audio.len(), valley, sr);
+        v.trim_front_checked(aligned, generation);
     }
     if !outcome.finalized.is_empty() {
         tracing::info!(

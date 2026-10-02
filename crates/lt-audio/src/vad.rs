@@ -716,6 +716,39 @@ impl<C: ConfidenceSource> VadProcessor<C> {
         self.silence_counter as f64 * self.chunk_duration
     }
 
+    /// 在缓冲样本窗 `[from_samples, to_samples]` 内找语音概率最低 chunk 的
+    /// **结束边界**（D-133 A2 概率谷对齐裁剪观测口）。返回 `(谷点边界样本数,
+    /// 谷置信)`；窗内无 chunk 边界 → None。
+    /// 对齐不变量：`confidence_history[i]` ↔ `speech_buffer[i]` 一一同索引
+    /// （trim_front 整块移除时成对 remove、部分裁剪保留原置信）——边界由
+    /// 实际 chunk 长度累计而来，部分裁剪后的短 chunk 也正确。
+    pub fn lowest_confidence_boundary_in(
+        &self,
+        from_samples: usize,
+        to_samples: usize,
+    ) -> Option<(usize, f64)> {
+        if self.confidence_history.is_empty() || from_samples > to_samples {
+            return None;
+        }
+        let mut cum = 0usize;
+        let mut best: Option<(usize, f64)> = None;
+        for (i, chunk) in self.speech_buffer.iter().enumerate() {
+            cum += chunk.len();
+            if cum > to_samples {
+                break;
+            }
+            if cum < from_samples {
+                continue;
+            }
+            let conf = self.confidence_history[i];
+            // 并列取更晚边界：同等置信下贴着估计点切，少留已定稿音频的重复
+            if best.is_none_or(|(_, c)| conf <= c) {
+                best = Some((cum, conf));
+            }
+        }
+        best
+    }
+
     /// 缓冲代际当前值（AH-4/D-27 同源）：实时通道识别返回后复核——识别期间
     /// 代际推进（收段/切分/复位）则本次结果过期，整体丢弃不上屏不定稿。
     pub fn buffer_generation(&self) -> u64 {
@@ -1030,6 +1063,41 @@ mod tests {
         assert!(p2.is_speaking());
         let seg = p2.flush().expect("达标应出段");
         assert_eq!(seg.len(), 40 * 512);
+    }
+
+    /// D-133 A2：概率谷边界搜索——窗过滤、谷置信取最小、越界封顶
+    #[test]
+    fn valley_boundary_search_respects_window_and_conf() {
+        let mut confs = vec![0.9; 3];
+        confs.push(0.1);
+        confs.push(0.8);
+        let mut p = make(&confs);
+        let chunk = vec![0.5f32; 512];
+        for _ in 0..5 {
+            p.process_chunk(&chunk);
+        }
+        // 全窗：谷在 chunk3（conf 0.1）→ 边界 = 4×512
+        assert_eq!(
+            p.lowest_confidence_boundary_in(0, 5 * 512),
+            Some((4 * 512, 0.1))
+        );
+        // 窗只含 chunk0-1（全 0.9）→ 谷 = chunk1 边界 1024、conf 0.9
+        assert_eq!(
+            p.lowest_confidence_boundary_in(0, 2 * 512),
+            Some((2 * 512, 0.9))
+        );
+        // 窗倒置（from > to）→ None
+        assert_eq!(p.lowest_confidence_boundary_in(3000, 2600), None);
+        // 窗越过缓冲尾 → 只搜到缓冲尾（chunk4 conf 0.8、边界 5×512）
+        assert_eq!(
+            p.lowest_confidence_boundary_in(4 * 512 + 1, 9 * 512),
+            Some((5 * 512, 0.8))
+        );
+        // 窗起点落在 chunk 缝隙间也按 chunk 边界对齐（1023 < 1024）
+        assert_eq!(
+            p.lowest_confidence_boundary_in(1023, 1024),
+            Some((1024, 0.9))
+        );
     }
 
     #[test]

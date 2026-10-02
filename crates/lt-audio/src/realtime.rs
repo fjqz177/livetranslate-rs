@@ -25,11 +25,13 @@ use crate::interim::{
     trim_samples,
 };
 
-/// 句内停顿兜底阈值（句界信号③）。只在 VAD 收段静音阈值 > 0.5s 时先于收段
-/// 触发（auto 档短缓冲 0.8s 起——0.5s 留出兜底窗口）；fixed 档用户把静音调到
-/// ≤0.5s 时 VAD flush 先行收段——收段=同效定稿（尾巴照走收尾提交），本兜底
+/// 句内停顿兜底阈值（句界信号③）。auto 档 VAD 收段静音 0.8s 时本兜底先于
+/// 收段触发（D-133 A4：0.5→0.7s——解说语流的换气/主播交替常在 0.5s 档，
+/// 把半句切成碎片；0.7s 在「半句转正及时性」与「切碎率」间取中，与业界
+/// endpoint 经验参数 0.8-1.2s 方向一致更及时）；fixed 档用户把静音调到
+/// ≤0.7s 时 VAD flush 先行收段——收段=同效定稿（尾巴照走收尾提交），本兜底
 /// 自然失效，语义不受损。
-pub const PAUSE_FINALIZE_SECS: f64 = 0.5;
+pub const PAUSE_FINALIZE_SECS: f64 = 0.7;
 
 /// 提交尾部回声账本长度（对照原版 `_interim_committed_tail` 的末 50 字符）。
 const TAIL_CHARS: usize = 50;
@@ -167,6 +169,47 @@ fn committed_tail_of(committed_text: &str) -> String {
     committed_text[start..].to_string()
 }
 
+// ─────────────────── 概率谷对齐裁剪（D-133 A2） ───────────────────
+
+/// 谷点采用阈值：谷语音概率高于此值 = 窗内无真实停顿，维持字符比例估计点。
+pub const VALLEY_MAX_CONF: f64 = 0.5;
+/// 谷点可晚于估计点的最大余量（秒）。**宁早勿晚**：晚切 = 切进未定稿词中间，
+/// 下次识别开头出新乱码（回声剥离救不回）；早切 = 已定稿词的尾部音频残留，
+/// 下次识别重复出词由回声剥离吃掉——可修复与不可修复之别。
+pub const VALLEY_LATE_SLACK_SECS: f64 = 0.3;
+/// 谷点下限（秒）：防对刚起话头的缓冲裁到近乎空（与 trim_samples 的最小
+/// 裁剪防循环守卫同精神）。
+pub const VALLEY_MIN_TRIM_SECS: f64 = 0.15;
+
+/// 把字符比例估计的裁剪点对齐到 VAD 概率谷（纯函数；A2 真值表锚点）。
+///
+/// - `estimate_samples`：`trim_samples` 的字符比例估计值（已含 0.3s 余量与
+///   上/下限守卫）；`total_samples`：本轮识别所见缓冲总样本；
+/// - `valley`：`VadProcessor::lowest_confidence_boundary_in` 的搜索结果
+///   `(谷点边界样本数, 谷置信)`——谷点边界 = 低概率 chunk 的结束沿（切在
+///   停顿之后，下次识别从新语音起点开始）；
+/// - 采用条件：谷置信 ≤ [`VALLEY_MAX_CONF`] 且谷点 ≤ 估计点 +
+///   [`VALLEY_LATE_SLACK_SECS`]（宁早勿晚）且 ≥ [`VALLEY_MIN_TRIM_SECS`]；
+///   任一不满足回退估计点（现行行为）。
+pub fn align_trim_to_valley(
+    estimate_samples: usize,
+    total_samples: usize,
+    valley: Option<(usize, f64)>,
+    sample_rate: usize,
+) -> usize {
+    let sr = sample_rate as f64;
+    let late_cap = estimate_samples + (VALLEY_LATE_SLACK_SECS * sr) as usize;
+    let min_trim = ((VALLEY_MIN_TRIM_SECS * sr) as usize).min(total_samples);
+    match valley {
+        Some((boundary, conf))
+            if conf <= VALLEY_MAX_CONF && boundary <= late_cap && boundary >= min_trim =>
+        {
+            boundary
+        }
+        _ => estimate_samples,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -301,7 +344,7 @@ mod tests {
     #[test]
     fn pause_fallback_finalizes_everything_including_half_sentence() {
         let mut st = RealtimeState::default();
-        let out = realtime_pass(&mut st, "我想想啊这个事情怎么办呢", buf(4.0), 0.6, SR);
+        let out = realtime_pass(&mut st, "我想想啊这个事情怎么办呢", buf(4.0), 0.75, SR);
         assert_eq!(
             out.finalized,
             vec!["我想想啊这个事情怎么办呢"],
@@ -314,14 +357,14 @@ mod tests {
     #[test]
     fn pause_threshold_is_inclusive_boundary() {
         let mut st = RealtimeState::default();
-        let out_below = realtime_pass(&mut st, "这句话还没完整地说完呢", buf(3.0), 0.49, SR);
+        let out_below = realtime_pass(&mut st, "这句话还没完整地说完呢", buf(3.0), 0.69, SR);
         assert!(
             out_below.finalized.is_empty(),
-            "0.49s < 兜底阈值 → 仍按句界信号①"
+            "0.69s < 兜底阈值 → 仍按句界信号①"
         );
 
         let mut st2 = RealtimeState::default();
-        let out_at = realtime_pass(&mut st2, "这句话还没完整地说完呢", buf(3.0), 0.5, SR);
+        let out_at = realtime_pass(&mut st2, "这句话还没完整地说完呢", buf(3.0), 0.7, SR);
         assert_eq!(
             out_at.finalized,
             vec!["这句话还没完整地说完呢"],
@@ -403,6 +446,48 @@ mod tests {
         let long: String = "字".repeat(80);
         assert_eq!(committed_tail_of(&long).chars().count(), TAIL_CHARS);
         assert_eq!(committed_tail_of("短"), "短");
+    }
+
+    // ── 概率谷对齐裁剪（A2）──
+
+    #[test]
+    fn valley_adopted_when_confident_pause_within_caps() {
+        // 估计 2s，谷点 1.9s（更早、置信 0.1）→ 采用谷点（宁早勿晚）
+        assert_eq!(
+            align_trim_to_valley(buf(2.0), buf(6.0), Some((buf(1.9), 0.1)), SR),
+            buf(1.9)
+        );
+        // 谷点略晚于估计但在 +0.3s 余量内 → 仍采用（切在真实停顿之后）
+        assert_eq!(
+            align_trim_to_valley(buf(2.0), buf(6.0), Some((buf(2.2), 0.3)), SR),
+            buf(2.2)
+        );
+    }
+
+    #[test]
+    fn valley_rejected_when_too_late_too_speechy_or_too_shallow() {
+        // 谷点晚于估计+0.3s：晚切会切进未定稿词中间 → 拒绝
+        assert_eq!(
+            align_trim_to_valley(buf(2.0), buf(6.0), Some((buf(2.4), 0.1)), SR),
+            buf(2.0)
+        );
+        // 谷置信 0.8 = 窗内无真实停顿（高概率仍是语音）→ 拒绝
+        assert_eq!(
+            align_trim_to_valley(buf(2.0), buf(6.0), Some((buf(1.9), 0.8)), SR),
+            buf(2.0)
+        );
+        // 谷点 < 0.15s：防裁空刚起话头的缓冲 → 拒绝
+        assert_eq!(
+            align_trim_to_valley(
+                buf(2.0),
+                buf(6.0),
+                Some(((0.1 * SR as f64) as usize, 0.1)),
+                SR
+            ),
+            buf(2.0)
+        );
+        // 无谷（None）→ 回退估计点
+        assert_eq!(align_trim_to_valley(buf(2.0), buf(6.0), None, SR), buf(2.0));
     }
 
     #[test]
