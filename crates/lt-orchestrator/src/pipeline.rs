@@ -1766,7 +1766,19 @@ impl Pipeline {
     /// 关闭时清进度计数，重开从零起算。实际节拍 = 基准 × 引擎倍率
     pub fn set_realtime(&self, enabled: bool, interval: f32) {
         self.interim.set(enabled, interval);
-        tracing::info!("实时识别: {enabled}（基准节拍 {interval}s）");
+        // D-133 A6：日志补当前引擎名义节拍与 EMA 退避状态（走查可观测面——
+        // 「打开后没反应/节拍多慢」当场可查）
+        let nominal =
+            interval * f32::from_bits(self.interim.interval_scale_bits.load(Ordering::Relaxed));
+        let ema_ms = self.interim.ema_asr_ms.load(Ordering::Relaxed);
+        tracing::info!(
+            "实时识别: {enabled}（基准节拍 {interval}s，名义 ≈{nominal:.1}s，EMA 退避 {}）",
+            if ema_ms > 0 {
+                format!("{:.1}s", ema_ms as f32 / 1000.0 * 1.2)
+            } else {
+                "未启用".to_string()
+            }
+        );
     }
 
     /// 实时识别引擎节拍倍率热应用（D-128）：启动装配与引擎切换时写
@@ -2571,7 +2583,24 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
         sink.push(UiEvent::AsrDevice(format!("{display} [cpu]")));
     }
 
+    // D-133 A6：实时通道心跳（30s 窗口有活动才 INFO，零活动不刷屏）
+    let mut rt_stats = RealtimeTickStats::default();
+    let mut rt_heartbeat_at = Instant::now();
     while !stop.load(Ordering::Relaxed) {
+        if rt_heartbeat_at.elapsed() >= Duration::from_secs(30) {
+            if rt_stats.ticks > 0 {
+                tracing::info!(
+                    "实时通道心跳(30s): tick {} 次（代际丢弃 {} / 识别失败 {} / 定稿 {} 句），识别耗时 EMA {}ms",
+                    rt_stats.ticks,
+                    rt_stats.discarded,
+                    rt_stats.failed,
+                    rt_stats.finalized,
+                    interim.ema_asr_ms.load(Ordering::Relaxed)
+                );
+                rt_stats = RealtimeTickStats::default();
+            }
+            rt_heartbeat_at = Instant::now();
+        }
         // D-85/F1：取段**之前**先收翻译器命令（`next_segment` 内建该顺序）——
         // 换模型在**下一段边界**即生效，不再依赖"空闲分支"（旧实现要等段队列
         // 连续 500ms 空窗；位置不变量与回归测试见 `next_segment`）
@@ -2659,9 +2688,19 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
                     &session_stats,
                     &msg,
                 );
-                // D-133 A1：识别耗时 EMA 回报（失败不计——超时/重启等待毒化 EMA）
-                if report.ran && !report.failed && report.asr_ms > 0.0 {
-                    interim.note_asr_ms(report.asr_ms);
+                // D-133 A1/A6：EMA 回报（失败不计——超时/重启等待毒化 EMA）+ 心跳计数
+                if report.ran {
+                    rt_stats.ticks += 1;
+                    if report.discarded {
+                        rt_stats.discarded += 1;
+                    }
+                    if report.failed {
+                        rt_stats.failed += 1;
+                    }
+                    rt_stats.finalized += report.finalized as u64;
+                    if !report.failed && report.asr_ms > 0.0 {
+                        interim.note_asr_ms(report.asr_ms);
+                    }
                 }
                 let samples = { lt_audio::vad::lock_vad(&vad).speech_samples() };
                 interim
@@ -2947,6 +2986,16 @@ fn unix_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+/// 实时通道心跳计数（D-133 A6）：30s 窗口汇总（tick / 代际丢弃 / 识别失败 /
+/// 定稿句数），有活动才 INFO——治「打开后没反应/节拍多慢」走查无线索可查。
+#[derive(Debug, Default)]
+struct RealtimeTickStats {
+    ticks: u64,
+    discarded: u64,
+    failed: u64,
+    finalized: u64,
 }
 
 /// `eff` 为设置总线生效视图（W4：语言过滤/transcribe 前应用同源，取代
