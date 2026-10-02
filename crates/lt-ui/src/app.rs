@@ -216,11 +216,16 @@ impl MultiWindowApp {
         id: WinId,
         size: (u32, u32),
     ) -> anyhow::Result<()> {
+        // 任务栏图标须单独挂 taskbar_icon（winit Windows 后端把两属性分别映射
+        // WM_SETICON 的 ICON_BIG/ICON_SMALL；只设 window_icon 时任务栏取不到
+        // ICON_SMALL，回落到未注册图标的窗口类 → 默认白纸图标）
+        let icon = crate::tray::window_icon();
         let mut attrs = Window::default_attributes()
             .with_title(id.title())
             .with_inner_size(winit::dpi::LogicalSize::new(size.0, size.1))
             .with_resizable(true)
-            .with_window_icon(crate::tray::window_icon());
+            .with_window_icon(icon.clone())
+            .with_taskbar_icon(icon);
         if matches!(id, WinId::Overlay | WinId::Subtitle) {
             // 不用 winit 的 with_transparent：它开启 NOREDIRECTIONBITMAP + DWM
             // blur-behind，而 wgpu 在 Windows(HWND) 只有 Opaque 合成模式
