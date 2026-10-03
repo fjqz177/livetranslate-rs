@@ -836,63 +836,6 @@ pub fn page(
             settings.silence_duration = sil_v;
             mark_settings_dirty(session);
         }
-
-        // 实时识别 + 基准节拍（D-128，取代旧增量识别开关：变更即时发
-        // Cmd::SetRealtimeAsr 热应用 + 300ms 防抖 ApplySettings 落盘）。
-        // 实际节拍 = 基准 × realtime_tick_scale(引擎)——慢引擎自动变疏，行内诚实显示
-        let mut inc = settings.realtime_asr;
-        if ui
-            .add(egui::Checkbox::new(
-                &mut inc,
-                RichText::new(lt_i18n::t("label_realtime_asr")).color(pal.text),
-            ))
-            .changed()
-        {
-            // E1-4：只发命令——草稿写入收敛在 shell 纯写入面
-            session.send_cmd(lt_proto::Cmd::SetRealtimeAsr {
-                enabled: inc,
-                interval: settings.realtime_interval,
-            });
-            mark_settings_dirty(session);
-        }
-        let mut itv = settings.realtime_interval;
-        let itv_changed = drag_secs(
-            ui,
-            "panel_interim",
-            &lt_i18n::t("label_realtime_interval"),
-            &mut itv,
-            1.0..=10.0,
-            inc, // 未勾选时禁用（原版 setEnabled(incremental_asr) 同语义）
-        );
-        if !inc {
-            hint_line(ui, pal, &lt_i18n::t("realtime_interval_disabled_tooltip"));
-        }
-        if itv_changed {
-            // E1-4：只发命令——草稿写入收敛在 shell 纯写入面
-            session.send_cmd(lt_proto::Cmd::SetRealtimeAsr {
-                enabled: inc,
-                interval: itv,
-            });
-            mark_settings_dirty(session);
-        }
-        if inc {
-            // 诚实显示（D-128/D-133）：名义节拍 = 基准×倍率（倍率 >1 才有信息量）；
-            // EMA 退避只在识别慢于节拍时拉长生效间隔，不改变名义值
-            let nominal =
-                settings.realtime_interval * lt_proto::realtime_tick_scale(settings.engine_key());
-            if nominal > settings.realtime_interval + f32::EPSILON {
-                hint_line(
-                    ui,
-                    pal,
-                    &format!(
-                        "{} {:.1}s",
-                        lt_i18n::t("realtime_interval_effective"),
-                        nominal
-                    ),
-                );
-                hint_line(ui, pal, &lt_i18n::t("realtime_backoff_hint"));
-            }
-        }
     });
 
     // ── 模型缓存（原版 _update_whisper_size_label + 下载按钮的泛化：
@@ -1120,7 +1063,7 @@ pub fn page(
 
 /// 识别页字段路径前缀（N3/N4 页级 diff 判定；ui_lang/target_language/models_dir
 /// 等无页内控件命名空间，不纳入）
-const VAD_PAGE_PATHS: [&str; 18] = [
+const VAD_PAGE_PATHS: [&str; 16] = [
     "vad_mode",
     "vad_threshold",
     "energy_threshold",
@@ -1128,8 +1071,6 @@ const VAD_PAGE_PATHS: [&str; 18] = [
     "max_speech_duration",
     "silence_mode",
     "silence_duration",
-    "realtime_asr",
-    "realtime_interval",
     "asr_engine",
     "funasr_model",
     "whisper_model_size",
@@ -1142,7 +1083,7 @@ const VAD_PAGE_PATHS: [&str; 18] = [
 ];
 
 /// 识别页恢复默认：写回字段 + 逐条即时命令（ApplySettings 无法热应用
-/// 引擎/设备/语言/padding/增量，必须重发——N3 生效管道）
+/// 引擎/设备/语言/padding，必须重发——N3 生效管道）
 fn restore_vad_page(settings: &mut Settings, session: &mut SessionView) {
     let def = lt_proto::Settings::default();
     let s = &mut *settings;
@@ -1153,8 +1094,6 @@ fn restore_vad_page(settings: &mut Settings, session: &mut SessionView) {
     s.max_speech_duration = def.max_speech_duration;
     s.silence_mode = def.silence_mode.clone();
     s.silence_duration = def.silence_duration;
-    s.realtime_asr = def.realtime_asr;
-    s.realtime_interval = def.realtime_interval;
     s.asr_engine = def.asr_engine.clone();
     s.funasr_model = def.funasr_model.clone();
     s.whisper_model_size = def.whisper_model_size.clone();
@@ -1164,7 +1103,7 @@ fn restore_vad_page(settings: &mut Settings, session: &mut SessionView) {
     s.audio_device = def.audio_device.clone();
     s.mic_device = def.mic_device.clone();
     s.asr_language = def.asr_language.clone();
-    // 逐条下发即时命令（引擎→语言→设备→padding→增量）
+    // 逐条下发即时命令（引擎→语言→设备→padding）
     super::send_switch_engine(settings, session);
     session.send_cmd(lt_proto::Cmd::SetAsrLanguage(settings.asr_language.clone()));
     session.send_cmd(lt_proto::Cmd::SetAudioDevice(
@@ -1178,10 +1117,6 @@ fn restore_vad_page(settings: &mut Settings, session: &mut SessionView) {
     session.send_cmd(lt_proto::Cmd::SetPadding {
         engine: "whisper".into(),
         secs: settings.whisper_pad_seconds,
-    });
-    session.send_cmd(lt_proto::Cmd::SetRealtimeAsr {
-        enabled: settings.realtime_asr,
-        interval: settings.realtime_interval,
     });
     mark_settings_dirty(session);
 }

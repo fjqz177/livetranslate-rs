@@ -40,12 +40,6 @@ fn apply_settings_side_effects(s: &mut Settings, cmd: &Cmd) {
             "whisper" => s.whisper_pad_seconds = *secs,
             other => tracing::warn!("SetPadding 未知 engine 值域: {other}（忽略写入）"),
         },
-        Cmd::SetRealtimeAsr {
-            enabled, interval, ..
-        } => {
-            s.realtime_asr = *enabled;
-            s.realtime_interval = *interval;
-        }
         Cmd::SetTargetLanguage(lang) => s.target_language = lang.clone(),
         // E6/D-81：SetTimeout 契约变体已删（零生产者）——timeout 走 ApplySettings 重放
         Cmd::SwitchTranslator(config) => {
@@ -235,15 +229,6 @@ impl AppShell {
                 self.publish_settings();
                 self.persist_settings();
             }
-            // 实时识别热应用（D-128，原增量识别臂；草稿写入已过纯写入面）
-            Cmd::SetRealtimeAsr { enabled, interval } => {
-                if let Some(p) = &self.pipeline {
-                    p.set_realtime(enabled, interval);
-                }
-                tracing::info!("实时识别: {enabled}（基准节拍 {interval}s）");
-                self.publish_settings();
-                self.persist_settings();
-            }
             Cmd::SetTargetLanguage(lang) => {
                 tracing::info!("目标语言: {lang}");
                 self.publish_settings();
@@ -310,8 +295,6 @@ impl AppShell {
                 if let Some(p) = self.pipeline.as_mut() {
                     p.set_audio_device(choice);
                 }
-                // D-128：设备切换 = 会话边界，流式行一并清空（Q11 收尾语义）
-                self.artery.push(UiEvent::realtime_partial_cleared());
                 self.publish_settings();
                 self.persist_settings();
             }
@@ -319,20 +302,15 @@ impl AppShell {
                 if let Some(p) = self.pipeline.as_mut() {
                     p.set_mic_device(choice);
                 }
-                // D-128：设备切换 = 会话边界，流式行一并清空（Q11 收尾语义）
-                self.artery.push(UiEvent::realtime_partial_cleared());
                 self.publish_settings();
                 self.persist_settings();
             }
             // 面板"应用"全量重放（原版 settings_changed → main 逐项应用）：
             // W4 起 VAD/目标语言/超时不再逐项进 Pipeline——publish 统一派生
-            //（VAD 钳制已含在总线 overlay 中，本处只留真实动作：增量/转录开关）
+            //（VAD 钳制已含在总线 overlay 中，本处只留真实动作：转录开关）
             Cmd::ApplySettings(s) => {
                 let s = *s;
                 if let Some(p) = &self.pipeline {
-                    // 实时识别重放（D-128，原增量识别重放位；实际节拍=基准×引擎倍率，
-                    // 倍率由启动装配/引擎切换路径落位）
-                    p.set_realtime(s.realtime_asr, s.realtime_interval);
                     // 转录写盘开关（W3 起经 Pipeline 方法——句柄真源收敛为
                     // Pipeline 字段，不再经旧 transcript_shared 全局单例）
                     p.set_transcript_enabled(s.auto_save_transcript);
@@ -656,21 +634,6 @@ mod tests {
         assert_eq!(s.sensevoice_pad_seconds, 1.5, "另一族 pad 不得被串写");
     }
 
-    /// E1-4：SetRealtimeAsr 同法——enabled/interval 都从载荷落草稿
-    #[test]
-    fn realtime_asr_writes_draft_from_payload() {
-        let mut s = Settings::default();
-        apply_settings_side_effects(
-            &mut s,
-            &Cmd::SetRealtimeAsr {
-                enabled: true,
-                interval: 3.0,
-            },
-        );
-        assert!(s.realtime_asr);
-        assert_eq!(s.realtime_interval, 3.0);
-    }
-
     /// E1-4：未知 pad engine 值域拒绝写入（防新值域静默串写）
     #[test]
     fn set_padding_unknown_engine_is_ignored() {
@@ -711,9 +674,9 @@ mod tests {
     // 「带设置效果的 Cmd 变体 ⇔ apply_settings_side_effects 写入臂」的对应：
     // 编译期由 lt-proto `Cmd::touches_settings_draft` 的无通配 match 强制表态
     // （新增变体必须显式归类），运行期由本组测试钉住当前对应——漏登记写入臂
-    // 在此红。判真集合：SetAsrLanguage / SetPadding / SetRealtimeAsr /
+    // 在此红。判真集合：SetAsrLanguage / SetPadding /
     // SetTargetLanguage / SwitchTranslator / SwitchEngine / SetAudioDevice /
-    // SetMicDevice / ApplySettings / PersistSettings（后二者共臂）；判假：其余 12 变体。
+    // SetMicDevice / ApplySettings / PersistSettings（后二者共臂）；判假：其余变体。
 
     #[test]
     fn judged_true_variants_write_draft() {
@@ -736,24 +699,6 @@ mod tests {
             },
         );
         assert_eq!(s.sensevoice_pad_seconds, 1.5);
-
-        assert!(Cmd::SetRealtimeAsr {
-            enabled: false,
-            interval: 9.0,
-        }
-        .touches_settings_draft());
-        apply_settings_side_effects(
-            &mut s,
-            &Cmd::SetRealtimeAsr {
-                enabled: false,
-                interval: 9.0,
-            },
-        );
-        assert!(
-            !s.realtime_asr,
-            "实时识别默认开（D-128 缺键=开）→ 关闭须可见"
-        );
-        assert_eq!(s.realtime_interval, 9.0);
 
         assert!(Cmd::SetTargetLanguage("ja".into()).touches_settings_draft());
         apply_settings_side_effects(&mut s, &Cmd::SetTargetLanguage("ja".into()));

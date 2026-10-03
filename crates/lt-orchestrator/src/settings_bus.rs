@@ -261,8 +261,6 @@ mod tests {
             "whisper_model_size",
             "hub",
             "download_proxy",
-            "realtime_asr",
-            "realtime_interval",
             "audio_device",
             "mic_device",
             "models",

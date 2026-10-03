@@ -38,12 +38,6 @@ pub enum UiEvent {
     UpdateTranslation { id: u64, text: String, tl_ms: f64 },
     /// 流式译文增量（update_streaming_signal；UI 侧 50ms 节流）
     UpdateStreaming { id: u64, partial: String },
-    /// 实时识别流式行（D-128）：未定稿假设文本整段刷新（零门控、允许回改，
-    /// 用户裁决「忠实体现引擎输出、实时性优先」）；空串 = 清行（定稿落行/
-    /// 会话边界/收尾冲刷）。与 `UpdateStreaming`（翻译 LLM 部分译文）是两条
-    /// 独立通道，字幕窗数据源永不含本事件。
-    /// 纯新增变体（冻结规则加法豁免，PROTO_VERSION 不递增）。
-    RealtimePartial { text: String },
     /// 音频监视（W2 起走快照格 `MonitorSample`：capture 写 ArcSwap，UI 以
     /// ~33ms 节拍读格重绘——替代逐 chunk 事件的 31/s 唤醒，D-67/R23；
     /// update_monitor_signal 语义等价，契约侧从「事件」变为「格」）
@@ -578,13 +572,8 @@ pub enum Cmd {
     SetTargetLanguage(String),
     // E6/D-81：`SetTimeout(u32)` 删除——死契约守卫校准发现零生产者
     //（翻译页超时改动走 ApplySettings 整体重放），shell 处理臂随删
-    /// 实时识别热应用（D-128 改型，取代旧 `IncrementalAsr`）：enabled 联动
-    /// `realtime_asr`、interval 写 `realtime_interval` 基准节拍（UI 1..=10s）；
-    /// 实际节拍 = 基准 × `realtime_tick_scale(引擎)`（面板诚实显示生效值）
-    SetRealtimeAsr {
-        enabled: bool,
-        interval: f32,
-    },
+    // D-134：`SetRealtimeAsr`（D-128 改型，更早为 `IncrementalAsr`）删除——
+    // 实时识别整体裁撤，既有契约项删除走评审线，PROTO_VERSION 9→10
     /// 连接测试（D-85 改型）：构建一次性装置跑完整回退阶梯，回执
     /// `TestTranslatorResult`。`probe_id` 由 UI 发号——回执按 id 归位，
     /// 迟到/被取代的结果据此丢弃
@@ -624,16 +613,6 @@ pub enum Cmd {
     },
 }
 
-impl UiEvent {
-    /// 流式行清空事件单点构造（D-128；Q11 会话边界语义的唯一定义点——
-    /// 收尾冲刷/引擎切换/设备切换共用，散写字面量迟早漂移）
-    pub fn realtime_partial_cleared() -> Self {
-        Self::RealtimePartial {
-            text: String::new(),
-        }
-    }
-}
-
 impl Cmd {
     /// D-117（扫描批 C3）：该命令是否携带设置草稿效果。
     ///
@@ -646,10 +625,9 @@ impl Cmd {
     /// 纯新增方法，wire 零变化，PROTO_VERSION 不递增。
     pub fn touches_settings_draft(&self) -> bool {
         match self {
-            // ── 判真：草稿写入面九臂对应（ApplySettings/PersistSettings 共臂）──
+            // ── 判真：草稿写入面八臂对应（ApplySettings/PersistSettings 共臂）──
             Cmd::SetAsrLanguage(_)
             | Cmd::SetPadding { .. }
-            | Cmd::SetRealtimeAsr { .. }
             | Cmd::SetTargetLanguage(_)
             | Cmd::SwitchTranslator(_)
             | Cmd::SwitchEngine { .. }

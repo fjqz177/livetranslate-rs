@@ -248,7 +248,6 @@ pub struct VadProcessor<C: ConfidenceSource = Box<dyn ConfidenceSource + Send>> 
     speech_samples: usize,
     is_speaking: bool,
     silence_counter: usize,
-    was_trimmed: bool,
 
     pre_speech_chunks: usize, // 3
     pre_buffer: VecDeque<Vec<f32>>,
@@ -262,11 +261,6 @@ pub struct VadProcessor<C: ConfidenceSource = Box<dyn ConfidenceSource + Send>> 
     pause_history: VecDeque<f64>, // 50
     adaptive_min: f64,            // 0.3
     adaptive_max: f64,            // 2.0
-
-    /// 缓冲代际（AH-4/D-27）：peek→识别→trim 的增量通道跨线程非原子，
-    /// 识别期间 VAD 收段/切分后旧 trim 依据失效——代际在 reset 与
-    /// split_at_best_pause（缓冲头部变更的两个漏斗）各 +1，trim 前校验
-    pub(crate) generation: u64,
 
     pub last_confidence: f64,
 }
@@ -294,7 +288,6 @@ impl<C: ConfidenceSource> VadProcessor<C> {
             speech_samples: 0,
             is_speaking: false,
             silence_counter: 0,
-            was_trimmed: false,
             pre_speech_chunks: 3,
             pre_buffer: VecDeque::new(),
             silence_mode: "auto".into(),
@@ -304,7 +297,6 @@ impl<C: ConfidenceSource> VadProcessor<C> {
             pause_history: VecDeque::with_capacity(50),
             adaptive_min: 0.3,
             adaptive_max: 2.0,
-            generation: 0,
             last_confidence: 0.0,
         }
     }
@@ -458,12 +450,6 @@ impl<C: ConfidenceSource> VadProcessor<C> {
         if self.is_speaking && self.silence_counter >= eff_silence_limit {
             if self.speech_samples >= self.min_speech_samples {
                 return self.flush_segment();
-            } else if self.was_trimmed {
-                tracing::debug!(
-                    "Short segment after trim ({:.1}s), force flushing for interim final",
-                    self.speech_samples as f64 / self.sample_rate as f64
-                );
-                return self.force_flush();
             } else {
                 tracing::debug!(
                     "Short segment {:.1}s < min {:.1}s, keeping for merge",
@@ -567,8 +553,6 @@ impl<C: ConfidenceSource> VadProcessor<C> {
         self.speech_samples = remain_samples;
         self.is_speaking = true;
         self.silence_counter = 0;
-        // 缓冲头部已整体更替：作废在途增量通道的 trim 依据（AH-4/D-27）
-        self.generation = self.generation.wrapping_add(1);
         Some(segment)
     }
 
@@ -610,65 +594,6 @@ impl<C: ConfidenceSource> VadProcessor<C> {
         self.speech_samples = 0;
         self.is_speaking = false;
         self.silence_counter = 0;
-        self.was_trimmed = false;
-        // 缓冲清空：作废在途增量通道的 trim 依据（AH-4/D-27）
-        self.generation = self.generation.wrapping_add(1);
-    }
-
-    /// 读取当前缓冲（增量 ASR 用；不冲刷）。返回 `(音频, 时长, 代际)`——
-    /// 代际供 `trim_front_checked` 校验（AH-4/D-27）
-    pub fn peek_buffer(&self) -> Option<(Vec<f32>, f64, u64)> {
-        if self.speech_buffer.is_empty() || !self.is_speaking {
-            return None;
-        }
-        let audio = self.concat_buffer();
-        let duration = self.speech_samples as f64 / self.sample_rate as f64;
-        Some((audio, duration, self.generation))
-    }
-
-    /// 从缓冲头部移除 n_samples（增量 ASR 消费；部分裁剪置 was_trimmed）。
-    /// 带代际校验（AH-4/D-27）：peek 之后若 VAD 已收段/切分（代际推进），
-    /// 本次 trim 依据的音频边界已失效——放弃裁剪并返回 false，防误裁新段
-    /// 头部（识别期间 capture 线程仍在写 VAD，全程持锁会阻塞采集）
-    pub fn trim_front_checked(&mut self, n_samples: usize, generation: u64) -> bool {
-        if self.generation != generation {
-            tracing::debug!(
-                "trim_front_checked: 代际不符（peek={generation} 当前={}），放弃本次裁剪",
-                self.generation
-            );
-            return false;
-        }
-        self.trim_front(n_samples);
-        true
-    }
-
-    /// 从缓冲头部移除 n_samples（无校验；增量通道应优先用
-    /// [`Self::trim_front_checked`]，AH-4/D-27）
-    pub fn trim_front(&mut self, n_samples: usize) {
-        if n_samples == 0 {
-            return;
-        }
-        let mut removed = 0usize;
-        while removed < n_samples {
-            let Some(chunk) = self.speech_buffer.first().cloned() else {
-                break;
-            };
-            if removed + chunk.len() <= n_samples {
-                self.speech_buffer.remove(0);
-                self.confidence_history.remove(0);
-                removed += chunk.len();
-            } else {
-                let keep = removed + chunk.len() - n_samples;
-                self.speech_buffer[0] = chunk[chunk.len() - keep..].to_vec();
-                removed = n_samples;
-            }
-        }
-        self.speech_samples = self.speech_buffer.iter().map(|b| b.len()).sum();
-        self.was_trimmed = true;
-        tracing::debug!(
-            "trim_front: removed {removed} samples, remaining {:.2}s",
-            self.speech_samples as f64 / self.sample_rate as f64
-        );
     }
 
     /// 无视 min_speech 直接收段
@@ -681,15 +606,6 @@ impl<C: ConfidenceSource> VadProcessor<C> {
         Some(segment)
     }
 
-    /// 收尾：达标收段，否则丢弃
-    pub fn flush(&mut self) -> Option<Vec<f32>> {
-        if self.speech_samples >= self.min_speech_samples {
-            return self.flush_segment();
-        }
-        self.reset();
-        None
-    }
-
     fn concat_buffer(&self) -> Vec<f32> {
         let mut out = Vec::with_capacity(self.speech_samples);
         for b in &self.speech_buffer {
@@ -700,59 +616,6 @@ impl<C: ConfidenceSource> VadProcessor<C> {
 
     pub fn is_speaking(&self) -> bool {
         self.is_speaking
-    }
-
-    pub fn speech_samples(&self) -> usize {
-        self.speech_samples
-    }
-
-    /// 说话中的当前句内静音时长（秒；非说话态恒 0）——实时识别句界信号③的
-    /// 停顿兜底信号（D-128）。**必须在 peek 缓冲的同一锁段内读取**：识别完成
-    /// 之后再读会把识别耗时算进去，语义即错（见 `realtime::realtime_pass`）。
-    pub fn pending_silence_secs(&self) -> f64 {
-        if !self.is_speaking {
-            return 0.0;
-        }
-        self.silence_counter as f64 * self.chunk_duration
-    }
-
-    /// 在缓冲样本窗 `[from_samples, to_samples]` 内找语音概率最低 chunk 的
-    /// **结束边界**（D-133 A2 概率谷对齐裁剪观测口）。返回 `(谷点边界样本数,
-    /// 谷置信)`；窗内无 chunk 边界 → None。
-    /// 对齐不变量：`confidence_history[i]` ↔ `speech_buffer[i]` 一一同索引
-    /// （trim_front 整块移除时成对 remove、部分裁剪保留原置信）——边界由
-    /// 实际 chunk 长度累计而来，部分裁剪后的短 chunk 也正确。
-    pub fn lowest_confidence_boundary_in(
-        &self,
-        from_samples: usize,
-        to_samples: usize,
-    ) -> Option<(usize, f64)> {
-        if self.confidence_history.is_empty() || from_samples > to_samples {
-            return None;
-        }
-        let mut cum = 0usize;
-        let mut best: Option<(usize, f64)> = None;
-        for (i, chunk) in self.speech_buffer.iter().enumerate() {
-            cum += chunk.len();
-            if cum > to_samples {
-                break;
-            }
-            if cum < from_samples {
-                continue;
-            }
-            let conf = self.confidence_history[i];
-            // 并列取更晚边界：同等置信下贴着估计点切，少留已定稿音频的重复
-            if best.is_none_or(|(_, c)| conf <= c) {
-                best = Some((cum, conf));
-            }
-        }
-        best
-    }
-
-    /// 缓冲代际当前值（AH-4/D-27 同源）：实时通道识别返回后复核——识别期间
-    /// 代际推进（收段/切分/复位）则本次结果过期，整体丢弃不上屏不定稿。
-    pub fn buffer_generation(&self) -> u64 {
-        self.generation
     }
 }
 
@@ -828,7 +691,7 @@ mod tests {
         // 等价旧实现的 `vad.lock().unwrap()` 在这一行必 panic；lock_vad 应回数据
         let g = lock_vad(&vad);
         assert!(!g.is_speaking());
-        assert_eq!(g.speech_samples(), 0);
+        assert_eq!(g.speech_samples, 0);
     }
 
     /// 测试 mock（W1-R2 换源）：带内部状态 + 共享 reset 计数器的源。
@@ -866,7 +729,7 @@ mod tests {
     #[test]
     fn short_segment_kept_for_merge() {
         // 5 chunks 语音 + 25 chunks 静音 = 30 chunks < min(16000=31.25 chunks)
-        // 且未 trim → 保留待合并（若语音 ≥7 chunks 则总数会过 min，直接收段）
+        // → 保留待合并（若语音 ≥7 chunks 则总数会过 min，直接收段）
         let mut confs = vec![0.9; 5];
         confs.extend(vec![0.05; 25]);
         let mut p = make(&confs);
@@ -992,25 +855,6 @@ mod tests {
     }
 
     #[test]
-    fn trim_front_partial_and_flag() {
-        let mut p = make(&[]);
-        // 手工构造缓冲：3 chunks
-        for _ in 0..3 {
-            p.speech_buffer.push(vec![0.5f32; 512]);
-            p.confidence_history.push(0.9);
-            p.speech_samples += 512;
-        }
-        p.is_speaking = true;
-        p.trim_front(512 + 100); // 第一个整块 + 第二块部分裁剪
-        assert!(p.was_trimmed);
-        assert_eq!(p.speech_samples, 2 * 512 - 100);
-        assert_eq!(p.speech_buffer[0].len(), 512 - 100);
-        // 全部裁空后 force_flush 应为 None
-        p.trim_front(p.speech_samples);
-        assert!(p.force_flush().is_none());
-    }
-
-    #[test]
     fn disabled_mode_confidence_constant() {
         let mut p = VadProcessor::new(DisabledVad, 16000, 0.5, 1.0, 15.0, 0.032);
         p.mode = "disabled".into();
@@ -1025,9 +869,6 @@ mod tests {
         assert_eq!(p.last_confidence, 1.0);
         assert!(segs.is_empty());
         assert!(p.is_speaking());
-        // 手动 flush（≥min）出段
-        let seg = p.flush().expect("60 chunks=30720 ≥ min 16000 应出段");
-        assert_eq!(seg.len(), 60 * 512);
     }
 
     #[test]
@@ -1039,95 +880,6 @@ mod tests {
         let chunk = vec![0.03f32; 512];
         p.process_chunk(&chunk);
         assert!(p.is_speaking(), "energy 模式必须用 0.5 固定阈值");
-    }
-
-    #[test]
-    fn peek_and_flush_semantics() {
-        let confs = vec![0.9; 10];
-        let mut p = make(&confs);
-        let chunk = vec![0.5f32; 512];
-        for _ in 0..10 {
-            p.process_chunk(&chunk);
-        }
-        let (audio, dur, _gen) = p.peek_buffer().expect("说话中应有缓冲");
-        assert_eq!(audio.len(), 10 * 512);
-        assert!((dur - 0.32).abs() < 1e-9);
-        // flush：min=1s 未达 → 丢弃
-        assert!(p.flush().is_none());
-        // 达标则收段
-        let mut p2 = make(&[0.9; 40]);
-        for _ in 0..40 {
-            p2.process_chunk(&chunk);
-        }
-        // 40 chunks = 20480 ≥ min 16000，静音为 0 不自动收段
-        assert!(p2.is_speaking());
-        let seg = p2.flush().expect("达标应出段");
-        assert_eq!(seg.len(), 40 * 512);
-    }
-
-    /// D-133 A2：概率谷边界搜索——窗过滤、谷置信取最小、越界封顶
-    #[test]
-    fn valley_boundary_search_respects_window_and_conf() {
-        let mut confs = vec![0.9; 3];
-        confs.push(0.1);
-        confs.push(0.8);
-        let mut p = make(&confs);
-        let chunk = vec![0.5f32; 512];
-        for _ in 0..5 {
-            p.process_chunk(&chunk);
-        }
-        // 全窗：谷在 chunk3（conf 0.1）→ 边界 = 4×512
-        assert_eq!(
-            p.lowest_confidence_boundary_in(0, 5 * 512),
-            Some((4 * 512, 0.1))
-        );
-        // 窗只含 chunk0-1（全 0.9）→ 谷 = chunk1 边界 1024、conf 0.9
-        assert_eq!(
-            p.lowest_confidence_boundary_in(0, 2 * 512),
-            Some((2 * 512, 0.9))
-        );
-        // 窗倒置（from > to）→ None
-        assert_eq!(p.lowest_confidence_boundary_in(3000, 2600), None);
-        // 窗越过缓冲尾 → 只搜到缓冲尾（chunk4 conf 0.8、边界 5×512）
-        assert_eq!(
-            p.lowest_confidence_boundary_in(4 * 512 + 1, 9 * 512),
-            Some((5 * 512, 0.8))
-        );
-        // 窗起点落在 chunk 缝隙间也按 chunk 边界对齐（1023 < 1024）
-        assert_eq!(
-            p.lowest_confidence_boundary_in(1023, 1024),
-            Some((1024, 0.9))
-        );
-    }
-
-    #[test]
-    fn trim_checked_rejects_after_generation_bump() {
-        // AH-4/D-27：同代裁剪成功；peek 后缓冲被收段/清空（reset 代际推进）
-        // → 裁剪必须被拒绝（防误裁新段头部）
-        let chunk = vec![0.5f32; 512];
-        let mut p = make(&[0.9; 10]);
-        for _ in 0..10 {
-            p.process_chunk(&chunk);
-        }
-        let (_, _, gen) = p.peek_buffer().expect("说话中应有缓冲");
-        assert!(p.trim_front_checked(512, gen), "同代裁剪应成功");
-
-        let mut p2 = make(&[0.9; 10]);
-        for _ in 0..10 {
-            p2.process_chunk(&chunk);
-        }
-        let (_, _, gen2) = p2.peek_buffer().expect("说话中应有缓冲");
-        p2.reset(); // 模拟识别期间 capture 线程侧收段（flush→reset）
-                    // 新语音已开始积累（新代际）
-        for _ in 0..4 {
-            p2.process_chunk(&chunk);
-        }
-        assert!(
-            !p2.trim_front_checked(512, gen2),
-            "代际推进后裁剪必须被拒绝"
-        );
-        // 新段缓冲完好未裁（防误裁新段头部）
-        assert_eq!(p2.speech_samples, 4 * 512);
     }
 
     #[test]
@@ -1205,46 +957,5 @@ mod tests {
             1,
             "update_settings 不应 reset 源"
         );
-    }
-
-    /// D-128 句界信号③：说话中的句内静音秒数随静音 chunk 增长，收段后归零
-    #[test]
-    fn pending_silence_tracks_silence_while_speaking() {
-        // 语音 5 chunk → 静音 3 chunk（未达收段阈值 25）→ 观测 → 继续静音收段
-        let mut confs = vec![0.9; 5];
-        confs.extend(vec![0.05; 40]);
-        let mut p = make(&confs);
-        feed(&mut p, 5);
-        assert_eq!(p.pending_silence_secs(), 0.0, "纯语音期静音为 0");
-        feed(&mut p, 3);
-        assert!(
-            (p.pending_silence_secs() - 3.0 * 0.032).abs() < 1e-9,
-            "3 个静音 chunk = {:.3}s",
-            3.0 * 0.032
-        );
-        feed(&mut p, 30);
-        assert_eq!(p.pending_silence_secs(), 0.0, "收段后非说话态恒 0");
-    }
-
-    /// D-128 过期 tick 丢弃：代际只随「缓冲头部变更」推进（收段/复位），
-    /// 追加 chunk 不推进；getter 与 peek 返回的代际同源
-    #[test]
-    fn buffer_generation_advances_only_on_head_changes() {
-        let mut p = make(&[0.9; 20]);
-        feed(&mut p, 5);
-        let gen0 = p.buffer_generation();
-        let (_, _, peek_gen) = p.peek_buffer().expect("说话中 peek 有缓冲");
-        assert_eq!(gen0, peek_gen);
-        feed(&mut p, 5);
-        assert_eq!(p.buffer_generation(), gen0, "纯追加不推进代际");
-        p.trim_front(100);
-        assert_eq!(
-            p.buffer_generation(),
-            gen0,
-            "trim_front 不推进代际（was_trimmed 语义）"
-        );
-        let _ = p.flush_segment();
-        assert_eq!(p.buffer_generation(), gen0 + 1, "收段（reset）推进代际");
-        assert!(p.peek_buffer().is_none(), "收段后无缓冲可 peek");
     }
 }

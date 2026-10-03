@@ -2032,9 +2032,6 @@ pub struct OverlayUi {
     pub monitor: MonitorData,
     /// 悬浮窗消息链（AddMessage 事件追加，上限 50 条、删最旧）
     pub messages: Vec<OverlayMessage>,
-    /// 实时识别流式行（D-128）：未定稿假设文本，RealtimePartial 事件整段刷新
-    /// （零门控允许回改）；空串 = 无行。字幕窗数据源永不含此字段（Q10 裁决）
-    pub realtime_partial: String,
     /// 字幕窗原文旁路账本（ACR-3）：`(id, 原文)`，容量 [`SUBTITLE_LEDGER_CAP`]。
     /// 字幕窗译文到达时从这里取原文（命中即移除，一句只喂一次）——不再回头查
     /// `messages`（上限 50 条，话讲得快 + 翻译慢时原文被挤出会让该句静默不上字幕窗）。
@@ -2261,7 +2258,6 @@ impl AppUi {
                 ov_taskbar: false,
                 asr_label: None,
                 clear_request: false,
-                realtime_partial: String::new(),
             },
             subtitle: SubtitleUi {
                 state: SubtitleUiState::default(),
@@ -2429,15 +2425,13 @@ impl OverlayUi {
         }
     }
 
-    /// 清空列表（ACR-2/3 的**单一落点**）：消息链与两个伴生缓冲一起作废。
+    /// 清空列表（ACR-2/3 的**单一落点**）：消息链与伴生缓冲一起作废。
     /// 两条入口共用（overlay.rs 免确认直清 + app.rs 确认后清）——分散清理迟早
     /// 漂移：完工后严肃评审就抓到 auto_save 直清路径曾绕过同清。
-    /// D-128：流式行随清空一并作废（Q11 裁决：清空 → 流式行一并丢弃）
     pub fn clear_messages(&mut self) {
         self.messages.clear();
         self.state.pending_streams.clear();
         self.subtitle_ledger.clear();
-        self.realtime_partial.clear();
     }
 
     /// 原文入账（ACR-3）：满容量丢最旧（先进先出）

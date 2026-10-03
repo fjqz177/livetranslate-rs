@@ -1,22 +1,21 @@
 //! 管道装配（M2.6；原版 main.py 启动流等价）：
 //!
 //! 音频线程（wasapi 后端内部）→ 16k mono chunk 满丢旧队列
-//! → capture 线程（CaptureLoop：RMS/VAD 监视 + VAD 状态机 + 超时静音推进
-//!   + 增量触发判定），与原版 _capture_loop 一致、无中间分流线程：
+//! → capture 线程（CaptureLoop：RMS/VAD 监视 + VAD 状态机 + 超时静音推进），
+//!   与原版 _capture_loop 一致、无中间分流线程：
 //!     - monitor 数据：capture 线程内经 EventLoopProxy 直接推 UI
 //!       （等价原版跨线程调 update_monitor，每 chunk ≈31/s）
 //!     - 语音段：capture 线程直接入满丢旧段队列（等价原版 _enqueue_asr）
-//!     - 增量触发：VAD 独占改共享（Arc<Mutex>，锁粒度=单次方法调用，对齐
-//!       原版 _vad_lock）；条件满足塞 Interim 空标记，不在 capture 线程跑 ASR
 //!
 //! → ASR 线程：Manager 独占 + 段处理；空闲时 RSS 回收（原版 _asr_loop
-//!   queue.Empty 分支）+ 翻译器切换命令。
-//!   分流（原版 _asr_loop）：Interim 标记 → 排空重复 → 锁 VAD peek/识别/裁剪
-//!   （`_do_interim_asr`）；VadFlush → interim 激活时走回声剥离+pending 拼接
-//!   收尾（`_process_interim_final`），否则段级三层过滤（`_process_segment`，
-//!   空/纯标点 → 噪声 → 语言）→ AddMessage
+//!   queue.Empty 分支）+ 翻译器切换命令 + 跨段短碎片超时冲刷。
+//!   分流（原版 _asr_loop）：VadFlush → 段级三层过滤（`_process_segment`，
+//!   空/纯标点 → 噪声 → 语言）→ ≤8 字符碎片进跨段缓冲（`interim::FlushPending`，
+//!   并下一句或 3s 超时独立成行）→ AddMessage
 //!   → 同语言直接回空译文；否则提交翻译线程池（M3；原版 _tl_executor，
 //!   max_workers=8）→ UpdateStreaming/UpdateTranslation/UpdateStats。
+//!   （增量识别/实时流式通道已随 D-134 整体裁撤——原 Interim 标记、
+//!   realtime_tick、回声剥离与比例裁剪全数删除。）
 //!
 //! 未就绪链路：模型未缓存 → 发 AsrUnavailable（M2.5 向导接管首启下载）。
 
@@ -25,14 +24,11 @@ use crate::settings_bus::{EffectiveSettings, SettingsBus};
 use crate::supervisor::{artery_sink, Policy, Supervisor};
 use crate::Msg;
 use arc_swap::ArcSwap;
-use lt_asr::{AsrEffectiveSettings, AsrManager, WorkerConfig, WorkerEngine};
+use lt_asr::{AsrManager, WorkerConfig, WorkerEngine};
 use lt_audio::audio::capture::VadSource;
 use lt_audio::audio::wasapi_win::WasapiBackend;
-use lt_audio::interim::{pending_merge, strip_committed_overlap};
-use lt_audio::realtime::{realtime_pass, RealtimeState};
-use lt_audio::{
-    AudioBackend, BoundedDropQueue, CaptureLoop, InterimControl, SegmentSource, VadProcessor,
-};
+use lt_audio::interim::FlushPending;
+use lt_audio::{AudioBackend, BoundedDropQueue, CaptureLoop, SegmentSource, VadProcessor};
 use lt_models::registry;
 use lt_proto::{
     AudioRole, CaptureEvent, EngineKey, FailureKind, ModelFault, MonitorSample, QueueId,
@@ -1329,16 +1325,13 @@ pub struct Pipeline {
     /// 运行时翻译器切换通道（UI 域命令 → ASR 线程空闲分支应用；
     /// 原版对应 _switch_translator / _switch_asr_engine / 测试连接）
     tl_switch: Option<crossbeam_channel::Sender<TlSwitch>>,
-    /// 增量识别控制块（与 capture/ASR 线程共享；set_interim 热应用）
-    interim: Arc<InterimControl>,
     /// 线程监督器（架构 2.0 W1/INV3）：capture/ASR/翻译池/音频状态转发全部
     /// 经其出生，stop 时 join_all 统一回收
     sup: Arc<Supervisor>,
     /// 转录写盘（原版 self._transcript；TlRig/面板共用同一句柄）
     transcript: Arc<lt_audio::transcript::TranscriptWriter>,
     /// R31/D-72：与 capture/ASR 线程共享的 VAD（集切换复位入口——
-    /// 设备切换 = 会话边界：清段队列 + VAD 重置 + interim 复位，
-    /// 防新旧设备/会话段拼接错位）
+    /// 设备切换 = 会话边界：清段队列 + VAD 重置，防新旧设备/会话段拼接错位）
     vad_shared: Arc<Mutex<VadProcessor>>,
     /// R31：段队列（ASR 段消费侧同一实例；切换清空丢弃残留半段）
     segment_queue_shared: Arc<BoundedDropQueue<(SegmentSource, Vec<f32>)>>,
@@ -1446,14 +1439,8 @@ impl Pipeline {
             SEGMENT_QUEUE_CAP,
             "segment",
         ));
-        // VAD 共享拓扑（原版 _vad_lock）：capture 写、ASR 线程增量识别时
-        // peek/trim/speech_samples 读，锁粒度 = 单次方法调用
+        // VAD 共享拓扑（原版 _vad_lock）：capture 写，锁粒度 = 单次方法调用
         let vad = Arc::new(Mutex::new(vad));
-        let interim = Arc::new(InterimControl::default());
-        // 启动即按持久化设置就位（D-128：开关/基准节拍随启动初始化；引擎倍率
-        // 随启动引擎落位——实际节拍 = 基准 × realtime_tick_scale(引擎)）
-        interim.set(settings.realtime_asr, settings.realtime_interval);
-        interim.set_scale(lt_proto::realtime_tick_scale(settings.engine_key()));
         // W2/D-67：音频监视快照格——capture 每 chunk 写；UI 以 ~33ms 节拍读格
         // 重绘（替代 UpdateMonitor 逐事件直发：31/s 唤醒泛洪归零，R23）
         let monitor_seq = Arc::new(AtomicU64::new(0));
@@ -1474,7 +1461,6 @@ impl Pipeline {
             let monitor_seq = monitor_seq.clone();
             let vad_tick = vad_tick.clone();
             let vad = vad.clone();
-            let interim = interim.clone();
             let mode = vad_settings.mode.clone();
             // INV3/INV5：经监督器出生；panic 重生 = 工厂重建干净循环状态
             //（消费前清 chunk 陈旧积压——宕机期间音频已满丢旧轮转，续读=句中撕裂）
@@ -1491,7 +1477,6 @@ impl Pipeline {
                     let monitor_seq = monitor_seq.clone();
                     let vad_tick = vad_tick.clone();
                     let vad = vad.clone();
-                    let interim = interim.clone();
                     let mode = mode.clone();
                     let chunk_queue = chunk_queue.clone();
                     Box::new(move || {
@@ -1512,7 +1497,6 @@ impl Pipeline {
                             },
                             paused,
                             vad_tick,
-                            interim,
                             // R2/D-60：初值=启动模式；模式热切换时 capture 换置信度源
                             current_mode: mode,
                             capture_done,
@@ -1619,8 +1603,6 @@ impl Pipeline {
             let settings = settings.clone();
             let bus_asr = bus.clone();
             let tl = tl.clone();
-            let vad = vad.clone();
-            let interim = interim.clone();
             let sup_asr = sup.clone();
             let tl_switch_rx = tl_switch_rx.clone();
             let msg_asr = msg.clone();
@@ -1639,8 +1621,6 @@ impl Pipeline {
                     let settings = settings.clone();
                     let bus = bus_asr.clone();
                     let tl = tl.clone();
-                    let vad = vad.clone();
-                    let interim = interim.clone();
                     let sup = sup_asr.clone();
                     let tl_switch = tl_switch_rx.clone();
                     let msg = msg_asr.clone();
@@ -1653,8 +1633,6 @@ impl Pipeline {
                             &settings,
                             AsrThreadCtx {
                                 segment_queue,
-                                vad,
-                                interim,
                                 bus,
                                 stop,
                                 capture_done,
@@ -1681,7 +1659,6 @@ impl Pipeline {
             paused,
             tl,
             tl_switch: Some(tl_switch_tx),
-            interim,
             sup,
             transcript,
             vad_shared: vad.clone(),
@@ -1726,7 +1703,7 @@ impl Pipeline {
     }
 
     /// 运行时切换采集设备（原版 set_audio_device；后端线程内重启）
-    /// R31/D-72：设备切换 = 会话边界——清段队列 + VAD reset + interim 复位，
+    /// R31/D-72：设备切换 = 会话边界——清段队列 + VAD reset，
     /// 防新旧设备/会话段拼接错位（wasapi 线程内已清 chunk 队列）
     pub fn set_audio_device(&mut self, choice: lt_proto::AudioDeviceChoice) {
         let dev = match choice {
@@ -1751,39 +1728,14 @@ impl Pipeline {
     }
 
     /// R31/D-72：会话复位（设备切换共用入口）——清段队列（丢弃残留半段，
-    /// ASR 线程下轮 pop 自然空）、VAD 状态重置、interim 复位（旧会话
-    /// 增量识别上下文不得跨设备存活）。INV6：vad 锁内不取第二把锁。
+    /// ASR 线程下轮 pop 自然空）、VAD 状态重置（旧会话识别上下文不得跨设备
+    /// 存活；跨段短碎片缓冲在 ASR 线程侧，随引擎/设备切换语义各自清）。
+    /// INV6：vad 锁内不取第二把锁。
     fn reset_session_after_device_switch(&self) {
         self.segment_queue_shared.clear();
         if let Ok(mut v) = self.vad_shared.lock() {
             v.reset();
         }
-        self.interim.reset_counter();
-    }
-
-    /// 实时识别开关/基准节拍热应用（D-128，原 set_interim；原版
-    /// _incremental_asr_cb 同位）：写共享控制块，capture 线程下一 chunk 生效；
-    /// 关闭时清进度计数，重开从零起算。实际节拍 = 基准 × 引擎倍率
-    pub fn set_realtime(&self, enabled: bool, interval: f32) {
-        self.interim.set(enabled, interval);
-        // D-133 A6：日志补当前引擎名义节拍与 EMA 退避状态（走查可观测面——
-        // 「打开后没反应/节拍多慢」当场可查）
-        let nominal =
-            interval * f32::from_bits(self.interim.interval_scale_bits.load(Ordering::Relaxed));
-        let ema_ms = self.interim.ema_asr_ms.load(Ordering::Relaxed);
-        tracing::info!(
-            "实时识别: {enabled}（基准节拍 {interval}s，名义 ≈{nominal:.1}s，EMA 退避 {}）",
-            if ema_ms > 0 {
-                format!("{:.1}s", ema_ms as f32 / 1000.0 * 1.2)
-            } else {
-                "未启用".to_string()
-            }
-        );
-    }
-
-    /// 实时识别引擎节拍倍率热应用（D-128）：启动装配与引擎切换时写
-    pub fn set_realtime_scale(&self, scale: f32) {
-        self.interim.set_scale(scale);
     }
 
     pub fn set_paused(&self, paused: bool) {
@@ -2152,10 +2104,6 @@ fn report_load_failure(
 /// ASR 线程上下文（Pipeline::start 一次性装配的共享件）
 struct AsrThreadCtx {
     segment_queue: Arc<BoundedDropQueue<(SegmentSource, Vec<f32>)>>,
-    /// 与 capture 线程共享的 VAD（增量识别锁内 peek/trim，原版 _vad_lock）
-    vad: Arc<Mutex<VadProcessor>>,
-    /// 增量识别跨线程控制块（capture 写触发时间、本线程写消费进度）
-    interim: Arc<InterimControl>,
     /// 设置总线（W4：语言/padding/目标语言/超时生效值唯一事实源——
     /// transcribe 前 load().asr_lang、同语言判定 load().tl，替代旧
     /// AsrRuntime/挂起句柄/target_language 三重镜像）
@@ -2277,7 +2225,6 @@ struct SwitchDrain<'a> {
     transcript: &'a Arc<lt_audio::transcript::TranscriptWriter>,
     learned: &'a Learned,
     degraded_notified: &'a Arc<Mutex<std::collections::HashSet<(String, String)>>>,
-    interim: &'a Arc<InterimControl>,
     settings: &'a lt_proto::Settings,
     /// 文案 + 界面语言注入（币种默认值的语言回退在编排域算）
     msg: &'a Msg,
@@ -2290,7 +2237,7 @@ fn drain_tl_switch(
     manager: &mut AsrManager,
     current_display: &mut String,
     asr_unavailable_notified: &mut bool,
-    interim_state: &mut RealtimeState,
+    flush_pending: &mut FlushPending,
     ctx: &SwitchDrain<'_>,
 ) {
     while let Ok(sw) = ctx.tl_switch.try_recv() {
@@ -2360,19 +2307,9 @@ fn drain_tl_switch(
                         *asr_unavailable_notified = false;
                         ctx.sink
                             .push(UiEvent::AsrDevice(format!("{display} [cpu]")));
-                        // AH-3：切换后实时会话状态复位——旧引擎的
-                        // committed_tail/active 对新引擎输出无意义，且
-                        // 切换后首个收尾段经 commit_interim_final 绕过
-                        // 语言过滤，残留 active 会放行语言不符文本
-                        interim_state.reset();
-                        ctx.interim.last_interim_samples.store(0, Ordering::Relaxed);
-                        ctx.interim.last_check_ms.store(0, Ordering::Relaxed);
-                        // D-128：节拍倍率随新引擎落位（实际节拍=基准×倍率）+
-                        // 流式行清空（旧引擎的未定稿假设不得跨引擎续写）
-                        ctx.interim.set_scale(lt_proto::realtime_tick_scale(
-                            lt_proto::EngineKey::from_settings_str(&engine),
-                        ));
-                        ctx.sink.push(UiEvent::realtime_partial_cleared());
+                        // AH-3：切换 = 会话级边界——跨段短碎片缓冲全清
+                        // （旧引擎的碎片对新引擎无意义，不得跨引擎续写）
+                        flush_pending.reset();
                         // 日志按引擎打实际模型键（whisper 打 funasr_model 会误导诊断）
                         let model_key =
                             engine_model_key(&engine, &funasr_model, &whisper_model_size);
@@ -2417,8 +2354,6 @@ fn next_segment(
 fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Option<Arc<TlRig>>) {
     let AsrThreadCtx {
         segment_queue,
-        vad,
-        interim,
         bus,
         stop,
         capture_done,
@@ -2431,8 +2366,9 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
         degraded_notified,
         session_stats,
     } = ctx;
-    // 实时识别会话状态（D-128，原 interim_state；跨段存活，vad_flush 复位）
-    let mut interim_state = RealtimeState::default();
+    // 收尾短句跨段缓冲（D-133 A5 机制，D-134 自 realtime::RealtimeState 迁
+    // interim::FlushPending；跨段存活，会话级边界才清）
+    let mut flush_pending = FlushPending::default();
     // 构造 worker 配置（当前仅 sensevoice；whisper M5）。
     // R3/D-61：models_dir 失败 → 待命态而非 return 杀线程（AH-1 哲学推广：
     // 线程死亡=切换命令通道消亡，用户从此无法唤醒）。待命循环内每次
@@ -2583,34 +2519,17 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
         sink.push(UiEvent::AsrDevice(format!("{display} [cpu]")));
     }
 
-    // D-133 A6：实时通道心跳（30s 窗口有活动才 INFO，零活动不刷屏）
-    let mut rt_stats = RealtimeTickStats::default();
-    let mut rt_heartbeat_at = Instant::now();
     while !stop.load(Ordering::Relaxed) {
-        if rt_heartbeat_at.elapsed() >= Duration::from_secs(30) {
-            if rt_stats.ticks > 0 {
-                tracing::info!(
-                    "实时通道心跳(30s): tick {} 次（代际丢弃 {} / 识别失败 {} / 定稿 {} 句），识别耗时 EMA {}ms",
-                    rt_stats.ticks,
-                    rt_stats.discarded,
-                    rt_stats.failed,
-                    rt_stats.finalized,
-                    interim.ema_asr_ms.load(Ordering::Relaxed)
-                );
-                rt_stats = RealtimeTickStats::default();
-            }
-            rt_heartbeat_at = Instant::now();
-        }
         // D-85/F1：取段**之前**先收翻译器命令（`next_segment` 内建该顺序）——
         // 换模型在**下一段边界**即生效，不再依赖"空闲分支"（旧实现要等段队列
         // 连续 500ms 空窗；位置不变量与回归测试见 `next_segment`）
-        let Some((source, audio)) = next_segment(&segment_queue, || {
+        let Some((_, audio)) = next_segment(&segment_queue, || {
             drain_tl_switch(
                 &mut tl,
                 &mut manager,
                 &mut current_display,
                 &mut asr_unavailable_notified,
-                &mut interim_state,
+                &mut flush_pending,
                 &SwitchDrain {
                     tl_switch: &tl_switch,
                     bus: &bus,
@@ -2619,7 +2538,6 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
                     transcript: &transcript,
                     learned: &learned,
                     degraded_notified: &degraded_notified,
-                    interim: &interim,
                     settings,
                     msg: &msg,
                     session_stats: &session_stats,
@@ -2630,8 +2548,8 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
             // （AH-1：翻译器三臂经 route_translator_switch 与待命循环共享）
             manager.maybe_recycle_if_idle();
             // D-133 A5：跨段碎片超时独立成行（不再等合并；会话尾短句最迟 3s 落屏）
-            if interim_state.flush_pending_expired(unix_ms()) {
-                let (held, lang) = interim_state.take_flush_pending();
+            if flush_pending.flush_pending_expired(unix_ms()) {
+                let (held, lang) = flush_pending.take_flush_pending();
                 let eff = bus.load();
                 commit_text(
                     &eff.asr_lang.language,
@@ -2651,7 +2569,7 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
                 &mut manager,
                 &mut current_display,
                 &mut asr_unavailable_notified,
-                &mut interim_state,
+                &mut flush_pending,
                 &SwitchDrain {
                     tl_switch: &tl_switch,
                     bus: &bus,
@@ -2660,7 +2578,6 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
                     transcript: &transcript,
                     learned: &learned,
                     degraded_notified: &degraded_notified,
-                    interim: &interim,
                     settings,
                     msg: &msg,
                     session_stats: &session_stats,
@@ -2668,61 +2585,19 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
             );
             continue;
         };
-        match source {
-            SegmentSource::Interim => {
-                // W4：生效视图按段 load（语言过滤/同语言判定/翻译提交全部据此）；
-                // VadFlush 臂由 handle_vad_flush 自行 load（它同时服务退出收尾）
-                let eff = bus.load();
-                // 实时通道（D-128，原增量通道位）：排空重复标记 → 锁 VAD
-                // peek/识别/代际复核 → 状态机决策（零门控显示+句界定稿+裁剪）
-                drain_interim_duplicates(&segment_queue);
-                let report = realtime_tick(
-                    &mut manager,
-                    &vad,
-                    &mut interim_state,
-                    &eff.asr_lang,
-                    &eff.tl.target_language,
-                    tl.as_deref(),
-                    &sink,
-                    &transcript,
-                    &session_stats,
-                    &msg,
-                );
-                // D-133 A1/A6：EMA 回报（失败不计——超时/重启等待毒化 EMA）+ 心跳计数
-                if report.ran {
-                    rt_stats.ticks += 1;
-                    if report.discarded {
-                        rt_stats.discarded += 1;
-                    }
-                    if report.failed {
-                        rt_stats.failed += 1;
-                    }
-                    rt_stats.finalized += report.finalized as u64;
-                    if !report.failed && report.asr_ms > 0.0 {
-                        interim.note_asr_ms(report.asr_ms);
-                    }
-                }
-                let samples = { lt_audio::vad::lock_vad(&vad).speech_samples() };
-                interim
-                    .last_interim_samples
-                    .store(samples as u64, Ordering::Relaxed);
-            }
-            SegmentSource::VadFlush => {
-                handle_vad_flush(
-                    &mut manager,
-                    &mut interim_state,
-                    &bus,
-                    tl.as_deref(),
-                    &sink,
-                    &transcript,
-                    &session_stats,
-                    &msg,
-                    &mut asr_unavailable_notified,
-                    &interim,
-                    audio,
-                );
-            }
-        }
+        // D-134：段来源只剩 VadFlush（interim 标记随实时通道裁撤）
+        handle_vad_flush(
+            &mut manager,
+            &mut flush_pending,
+            &bus,
+            tl.as_deref(),
+            &sink,
+            &transcript,
+            &session_stats,
+            &msg,
+            &mut asr_unavailable_notified,
+            audio,
+        );
     }
     // ── 退出收尾（ACR-1a）──
     // capture 线程在退出路径把 VAD 残余作为收尾段入队并置 capture_done；
@@ -2731,7 +2606,7 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
     let drained = exit_drain_segments(&segment_queue, &capture_done, EXIT_GRACE, |_, audio| {
         handle_vad_flush(
             &mut manager,
-            &mut interim_state,
+            &mut flush_pending,
             &bus,
             tl.as_deref(),
             &sink,
@@ -2739,7 +2614,6 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
             &session_stats,
             &msg,
             &mut asr_unavailable_notified,
-            &interim,
             audio,
         );
     });
@@ -2753,8 +2627,8 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
     );
     // D-133 A5：退出前冲刷跨段短碎片（内容不蒸发；语言取暂存时检出值，
     // asr_ms 无从计——收尾提交按 0 记）
-    if !interim_state.flush_pending.is_empty() {
-        let (held, lang) = interim_state.take_flush_pending();
+    if !flush_pending.is_empty() {
+        let (held, lang) = flush_pending.take_flush_pending();
         let eff = bus.load();
         commit_text(
             &eff.asr_lang.language,
@@ -2773,14 +2647,14 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
     tracing::info!("ASR 线程退出");
 }
 
-/// 处理一条收尾段（VadFlush）：段级三层过滤 / 增量收尾提交 / 整段提交，末尾
-/// 复位全部增量状态（原版 main.py:1715-1719）。
+/// 处理一条收尾段（VadFlush）：段级三层过滤（空/纯标点 → 噪声 → 语言）→
+/// 短碎片跨段缓冲或整段提交（原版 main.py:1715-1719 的段处理语义）。
 /// ACR-1a：主循环与退出收尾（[`exit_drain_segments`]）共用这一份实现——
 /// 退出时最后一条尾巴必须与运行期同语义落屏、落盘、入账。
 #[allow(clippy::too_many_arguments)]
 fn handle_vad_flush(
     manager: &mut AsrManager,
-    interim_state: &mut RealtimeState,
+    flush_pending: &mut FlushPending,
     bus: &Arc<SettingsBus>,
     tl: Option<&TlRig>,
     sink: &EventSink,
@@ -2788,7 +2662,6 @@ fn handle_vad_flush(
     stats: &TlStats,
     msg: &Msg,
     asr_unavailable_notified: &mut bool,
-    interim: &Arc<InterimControl>,
     audio: Vec<f32>,
 ) {
     if audio.is_empty() {
@@ -2802,24 +2675,7 @@ fn handle_vad_flush(
         Ok(result) => {
             *asr_unavailable_notified = false;
             let asr_ms = t0.elapsed().as_secs_f64() * 1000.0;
-            if interim_state.active {
-                // 收尾段（原版 _process_interim_final 的 Ok(result) 分支）：
-                // 回声剥离 → pending 前置拼接 → 噪声过滤 → 提交
-                commit_interim_final(
-                    interim_state,
-                    &eff.asr_lang.language,
-                    &eff.tl.target_language,
-                    tl,
-                    sink,
-                    transcript,
-                    stats,
-                    &result.text,
-                    &result.language,
-                    asr_ms,
-                    seg_seconds,
-                    msg,
-                );
-            } else if let Some(reason) = reject_segment(
+            if let Some(reason) = reject_segment(
                 &result.text,
                 seg_seconds,
                 &eff.asr_lang.language,
@@ -2845,9 +2701,9 @@ fn handle_vad_flush(
                 // D-133 A5：收尾路径短碎片跨段暂存——并下一句前置或 3s 超时
                 // 独立成行，不再直接成行（治「P.」「1.」碎片行；内容不蒸发）
                 if lt_audio::interim::is_short_utterance(&result.text) {
-                    interim_state.hold_flush_short(&result.text, &result.language, unix_ms());
+                    flush_pending.hold_flush_short(&result.text, &result.language, unix_ms());
                 } else {
-                    let merged = interim_state.take_merged(&result.text);
+                    let merged = flush_pending.take_merged(&result.text);
                     commit_text(
                         &eff.asr_lang.language,
                         &eff.tl.target_language,
@@ -2871,21 +2727,15 @@ fn handle_vad_flush(
             }
         }
     }
-    // 无论走哪支，处理完收尾段后复位段级增量状态（原版 main.py:1715-1719）；
-    // D-128：流式行随收尾清空——尾巴已按定稿/过滤语义处置完毕，未定稿内容
-    // 不应跨段残留（退出收尾同语义，同一份实现）。
-    // D-133 A5：段级复位保留跨段短碎片缓冲（reset_segment）——碎片等的是
-    // 「下一句」，不是本段尾巴；会话级边界（切引擎/切设备）才全清（reset）。
-    interim_state.reset_segment();
-    interim.last_interim_samples.store(0, Ordering::Relaxed);
-    interim.last_check_ms.store(0, Ordering::Relaxed);
-    sink.push(UiEvent::realtime_partial_cleared());
+    // 段级边界：跨段短碎片缓冲**保留**——碎片等的是「下一句」，不是本段
+    // 尾巴，段边界冲掉就永远丢了；会话级边界（切引擎/切设备）才全清
+    // （drain_tl_switch 的 flush_pending.reset()）。（原「复位段级增量状态 +
+    // 流式行清空事件」随实时通道裁撤，D-134。）
 }
 
 /// 退出收尾循环（ACR-1a）：等 capture 落板（`capture_done`）与持续消费段队列
 /// **放在同一个循环里**——只等后排空的话，段队列满时 push 会挤掉最旧
 /// （[`BoundedDropQueue`] 满丢旧语义），积压会让收尾段把一条还没识别的真句子挤掉。
-/// 残留 interim 标记直接丢弃（与 [`drain_interim_duplicates`] 同规则）。
 /// 预算超期 → warn 并放弃剩余（放弃的是音频，无补救）。
 /// 返回 true = 已见 `capture_done`（队列内容已终）；false = 超预算。
 ///
@@ -2919,7 +2769,7 @@ fn exit_drain_segments(
     }
 }
 
-/// 取空段队列（interim 标记丢弃）；**每段前查预算**——预算耗尽即中断返回 false
+/// 取空段队列；**每段前查预算**——预算耗尽即中断返回 false
 /// （单次 handle 自身耗时不受控：识别受引擎档案约束，超时后 manager 的超时重生
 /// 等待更是分钟级——那一段的等待属"在跑识别"，本预算封不住，见归档文档 §3.1a）。
 fn drain_segments_now(
@@ -2929,226 +2779,22 @@ fn drain_segments_now(
     handle: &mut impl FnMut(SegmentSource, Vec<f32>),
 ) -> bool {
     while let Some((source, audio)) = queue.try_pop() {
-        match source {
-            SegmentSource::Interim => continue,
-            other => {
-                if Instant::now() >= deadline {
-                    tracing::warn!("退出收尾超预算（{}s），剩余段放弃", budget.as_secs());
-                    return false;
-                }
-                handle(other, audio);
-            }
+        if Instant::now() >= deadline {
+            tracing::warn!("退出收尾超预算（{}s），剩余段放弃", budget.as_secs());
+            return false;
         }
+        handle(source, audio);
     }
     true
 }
 
-/// 排空队列头部连续的 interim 标记（原版 `_drain_interim_duplicates`）：
-/// 标记积压时只处理最早一枚（调用方已弹出），其余直接丢弃——重复识别同一
-/// 缓冲只产出空结果，纯烧 CPU。首个非 interim 项回插队首保序。
-fn drain_interim_duplicates(queue: &BoundedDropQueue<(SegmentSource, Vec<f32>)>) {
-    while let Some((source, audio)) = queue.try_pop() {
-        match source {
-            SegmentSource::Interim => continue,
-            other => {
-                queue.push_front((other, audio));
-                break;
-            }
-        }
-    }
-}
-
-/// 实时识别单 tick（D-128，取代旧 run_interim_pass 的「仅提交不显示」语义）：
-/// 锁 VAD peek（句内停顿信号同锁读）→ 短缓冲跳过 → 识别 → 代际复核 →
-/// 状态机决策（零门控显示 / 句界定稿 / 裁剪）→ 事件与提交。识别期间 VAD 被
-/// capture 收段/切分（代际推进）则本轮假设整体丢弃——flush 链路会对同一段
-/// 音频走收尾定稿，这里不得重复上屏（D-27 代际校验的显示/定稿扩展）。
-///
-/// 一次实时 tick 的执行报告（D-133 A1/A6：EMA 退避与心跳计数的数据源）。
-#[derive(Debug, Clone, Copy, Default)]
-struct TickReport {
-    /// 是否实际执行了识别（peek 成功且缓冲 ≥1.5s）
-    ran: bool,
-    /// 识别耗时毫秒（未执行=0；失败不计——超时/重启等待会毒化 EMA）
-    asr_ms: f64,
-    /// 识别完成但代际过期丢弃（D-128 扩展 D-27；耗时真实，可入 EMA）
-    discarded: bool,
-    /// 识别调用失败（worker 死亡/超时等）
-    failed: bool,
-    /// 本轮定稿句数
-    finalized: usize,
-}
-
-/// 当前 UNIX 毫秒（D-133 A5：flush_pending 超时判定用；capture 侧
-/// `now_epoch_ms` 同口径——SystemTime 粒度足够 3s 级超时）
+/// 当前 UNIX 毫秒（D-133 A5：收尾跨段短碎片超时判定用；SystemTime 粒度
+/// 足够 3s 级超时）
 fn unix_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
-}
-
-/// 实时通道心跳计数（D-133 A6）：30s 窗口汇总（tick / 代际丢弃 / 识别失败 /
-/// 定稿句数），有活动才 INFO——治「打开后没反应/节拍多慢」走查无线索可查。
-#[derive(Debug, Default)]
-struct RealtimeTickStats {
-    ticks: u64,
-    discarded: u64,
-    failed: u64,
-    finalized: u64,
-}
-
-/// `eff` 为设置总线生效视图（W4：语言过滤/transcribe 前应用同源，取代
-/// 旧运行时镜像 asr_language）。
-#[allow(clippy::too_many_arguments)]
-fn realtime_tick(
-    manager: &mut AsrManager,
-    vad: &Arc<Mutex<VadProcessor>>,
-    st: &mut RealtimeState,
-    eff: &AsrEffectiveSettings,
-    target_language: &str,
-    tl: Option<&TlRig>,
-    sink: &EventSink,
-    transcript: &lt_audio::transcript::TranscriptWriter,
-    stats: &TlStats,
-    msg: &Msg,
-) -> TickReport {
-    let mut report = TickReport::default();
-    // ① 锁内 peek + 停顿信号同读（识别完成后再读静音会把识别耗时算进去，
-    // 语义即错）；代际随行（AH-4/D-27）——识别期间 VAD 可能被收段/切分
-    let (peek, silence_secs) = {
-        let v = lt_audio::vad::lock_vad(vad);
-        (v.peek_buffer(), v.pending_silence_secs())
-    };
-    let Some((audio, duration, generation)) = peek else {
-        return report;
-    };
-    if duration < 1.5 {
-        return report;
-    }
-    report.ran = true;
-    // ② 识别（原版 use_word_ts=False：词级时间戳对重复增量通道太贵）
-    let t0 = Instant::now();
-    let Ok(result) = manager.transcribe(&audio, false, eff) else {
-        tracing::warn!("实时识别 tick 失败，流式行保持上一版（收尾段不受影响）");
-        report.failed = true;
-        return report;
-    };
-    report.asr_ms = t0.elapsed().as_secs_f64() * 1000.0;
-    // ③ 代际复核（D-128 对 D-27 的扩展）：识别期间收段/切分/复位 → 本轮假设
-    // 过期，整体丢弃不上屏不定稿——flush 链路会对同一段音频走收尾定稿
-    if lt_audio::vad::lock_vad(vad).buffer_generation() != generation {
-        tracing::debug!("实时识别 tick 结果过期（代际推进），丢弃");
-        report.discarded = true;
-        return report;
-    }
-    // ④ 状态机决策：零门控显示 + 句界三信号定稿 + 短跨度裁剪（纯函数；
-    // 真值表锚点 = lt-audio realtime::tests）
-    let outcome = realtime_pass(
-        st,
-        result.text.trim(),
-        audio.len(),
-        silence_secs,
-        lt_audio::TARGET_RATE as usize,
-    );
-    // ⑤ 显示零门控：每次有效 tick 整段刷新（空串=清行）；定稿即翻译
-    sink.push(UiEvent::RealtimePartial {
-        text: outcome.display,
-    });
-    for text in &outcome.finalized {
-        // D-133 A5：定稿提交前并走收尾路径暂存的短碎片（碎片在前、本句在后）
-        let merged = st.take_merged(text);
-        commit_text(
-            &eff.language,
-            target_language,
-            tl,
-            sink,
-            transcript,
-            stats,
-            &merged,
-            &result.language,
-            report.asr_ms,
-            msg,
-        );
-    }
-    // ⑥ 裁剪已消费音频（带代际校验，AH-4/D-27：③已复核，此处兜底再验）。
-    // D-133 A2 概率谷对齐：在估计点邻域 [−1.5s, +0.3s] 找真实停顿谷，宁早勿晚
-    // （早切由回声剥离兜底、晚切必断词）；无谷/谷不可信 → 维持字符比例估计
-    if outcome.trim_samples > 0 {
-        let sr = lt_audio::TARGET_RATE as usize;
-        let mut v = lt_audio::vad::lock_vad(vad);
-        let valley = v.lowest_confidence_boundary_in(
-            outcome
-                .trim_samples
-                .saturating_sub((1.5 * sr as f64) as usize),
-            outcome.trim_samples + (0.3 * sr as f64) as usize,
-        );
-        let aligned =
-            lt_audio::realtime::align_trim_to_valley(outcome.trim_samples, audio.len(), valley, sr);
-        v.trim_front_checked(aligned, generation);
-    }
-    if !outcome.finalized.is_empty() {
-        tracing::info!(
-            "实时识别: 定稿 {} 句，裁剪 {:.2}s",
-            outcome.finalized.len(),
-            outcome.trim_samples as f64 / lt_audio::TARGET_RATE as f64
-        );
-    }
-    report.finalized = outcome.finalized.len();
-    report
-}
-
-/// 收尾段提交（原版 `_process_interim_final` 的 Ok(result) 分支 1:1）：
-/// 回声剥离 → pending 前置拼接 → 空/纯标点检查 → 噪声过滤（与 _process_segment
-/// 同阈值，但 interim 完整句不含此层）→ 走 [`commit_text`]（内部再做空/语言过滤，
-/// 对齐原版 `_process_segment_text` 的重复防线）。Err 分支在调用方（≈原版异常
-/// 路径：不冲刷 pending，随复位丢弃）。
-#[allow(clippy::too_many_arguments)]
-fn commit_interim_final(
-    st: &mut RealtimeState,
-    asr_language: &str,
-    target_language: &str,
-    tl: Option<&TlRig>,
-    sink: &EventSink,
-    transcript: &lt_audio::transcript::TranscriptWriter,
-    stats: &TlStats,
-    raw_text: &str,
-    lang: &str,
-    asr_ms: f64,
-    seg_seconds: f64,
-    msg: &Msg,
-) {
-    let stripped = strip_committed_overlap(raw_text.trim(), &st.committed_tail);
-    let mut text = pending_merge(&st.pending, &stripped);
-    st.pending.clear();
-    text = text.trim().to_string();
-    let alnum = text.chars().filter(|c| c.is_alphanumeric()).count();
-    if text.is_empty() || alnum == 0 {
-        return;
-    }
-    if seg_seconds >= 2.0 && alnum <= 3 {
-        tracing::debug!("噪声过滤: {seg_seconds:.1}s 段仅产出 {text:?}，跳过");
-        return;
-    }
-    // D-133 A5：收尾尾巴仍是短碎片 → 跨段暂存（并下一句前置或 3s 超时独立
-    // 成行）；长句提交前并走暂存的碎片（碎片在前、本句在后）
-    if lt_audio::interim::is_short_utterance(&text) {
-        st.hold_flush_short(&text, lang, unix_ms());
-        return;
-    }
-    let text = st.take_merged(&text);
-    commit_text(
-        asr_language,
-        target_language,
-        tl,
-        sink,
-        transcript,
-        stats,
-        &text,
-        lang,
-        asr_ms,
-        msg,
-    );
 }
 
 /// 提交一条已确定文本（原版 `_process_segment_text` 尾部等价）：AddMessage →
@@ -4245,7 +3891,7 @@ mod tests {
     }
 
     /// ACR-1a：退出收尾循环——先取空、再看 `capture_done`、最后看预算；
-    /// 残留 interim 标记丢弃；capture 落板的尾巴必须与预置段一起按序处理。
+    /// capture 落板的尾巴必须与预置段一起按序处理。
     #[test]
     fn exit_drain_waits_for_capture_then_consumes_tail() {
         let sup = test_sup();
@@ -4253,9 +3899,8 @@ mod tests {
             16, "drain",
         ));
         let done = Arc::new(AtomicBool::new(false));
-        // 预置一条真段 + 一枚残留 interim 标记
+        // 预置一条真段
         queue.push((SegmentSource::VadFlush, vec![0.1f32; 16]));
-        queue.push((SegmentSource::Interim, Vec::new()));
         // capture 线程 50ms 后落板：先入队尾巴、再置标志（顺序与生产一致）。
         // INV3：夹具线程同样经监督器出生（裸 spawn 由 clippy.toml 禁令拦截，ADR-21）
         let q2 = queue.clone();
@@ -4280,7 +3925,7 @@ mod tests {
         });
         sup.join_all();
         assert!(ok, "capture_done 到达即完成");
-        assert_eq!(got, vec![16, 32], "两条真段按序处理，interim 标记被丢弃");
+        assert_eq!(got, vec![16, 32], "两条真段按序处理");
         assert!(queue.is_empty(), "队列已取空");
     }
 
@@ -4975,8 +4620,7 @@ mod tests {
         let mut manager = AsrManager::new();
         let mut display = String::from("old");
         let mut notified = false;
-        let mut interim_state = RealtimeState::default();
-        let interim = Arc::new(InterimControl::default());
+        let mut flush_pending = FlushPending::default();
         let learned = test_learned();
         let degraded = test_degraded_notified();
         let transcript = test_transcript();
@@ -4991,7 +4635,7 @@ mod tests {
             &mut manager,
             &mut display,
             &mut notified,
-            &mut interim_state,
+            &mut flush_pending,
             &SwitchDrain {
                 tl_switch: &rx,
                 bus: &bus,
@@ -5000,7 +4644,6 @@ mod tests {
                 transcript: &transcript,
                 learned: &learned,
                 degraded_notified: &degraded,
-                interim: &interim,
                 settings: &settings,
                 msg: &Msg::new(|k| k.to_string(), || "zh".into()),
                 session_stats: &test_session_stats(),
@@ -5023,7 +4666,7 @@ mod tests {
             &mut manager,
             &mut display,
             &mut notified,
-            &mut interim_state,
+            &mut flush_pending,
             &SwitchDrain {
                 tl_switch: &rx,
                 bus: &bus,
@@ -5032,7 +4675,6 @@ mod tests {
                 transcript: &transcript,
                 learned: &learned,
                 degraded_notified: &degraded,
-                interim: &interim,
                 settings: &settings,
                 msg: &Msg::new(|k| k.to_string(), || "zh".into()),
                 session_stats: &test_session_stats(),
@@ -5058,8 +4700,7 @@ mod tests {
         let mut manager = AsrManager::new();
         let mut display = String::from("old");
         let mut notified = false;
-        let mut interim_state = RealtimeState::default();
-        let interim = Arc::new(InterimControl::default());
+        let mut flush_pending = FlushPending::default();
         let learned = test_learned();
         let degraded = test_degraded_notified();
         let transcript = test_transcript();
@@ -5079,7 +4720,7 @@ mod tests {
                 &mut manager,
                 &mut display,
                 &mut notified,
-                &mut interim_state,
+                &mut flush_pending,
                 &SwitchDrain {
                     tl_switch: &rx,
                     bus: &bus,
@@ -5088,7 +4729,6 @@ mod tests {
                     transcript: &transcript,
                     learned: &learned,
                     degraded_notified: &degraded,
-                    interim: &interim,
                     settings: &settings,
                     msg: &Msg::new(|k| k.to_string(), || "zh".into()),
                     session_stats: &test_session_stats(),
@@ -5333,24 +4973,22 @@ mod tests {
         }
     }
 
-    /// D-128：收尾段处理完必须清流式行（RealtimePartial 空串）——运行期 flush
-    /// 与退出收尾共用本实现，一处断言两路覆盖。manager 无配置 → transcribe 走
-    /// Err 臂（不产 AddMessage），复位与清行仍必须发生（Q11 收尾语义）。
+    /// D-133 A5 段级保留语义（收尾路径接线锚点）：跨段短碎片在收尾段识别
+    /// 失败（manager 无配置 → Err 臂，不产 AddMessage）后必须**原样保留**
+    /// ——碎片等的是「下一句」，段边界不冲掉（会话级边界才清，见
+    /// drain_tl_switch）。同时钉住收尾路径零 partial 事件（D-134：全链无
+    /// RealtimePartial）。运行期 flush 与退出收尾共用本实现，一处断言两路覆盖。
     #[test]
-    fn vad_flush_clears_realtime_partial_line() {
+    fn vad_flush_error_keeps_cross_segment_short_buffer() {
         let sink = EventArtery::new();
         let bus = test_bus(lt_proto::Settings::default());
         let mut manager = AsrManager::new();
-        let mut interim_state = RealtimeState {
-            pending: "好的。".into(),
-            active: true,
-            ..Default::default()
-        };
-        let interim = Arc::new(InterimControl::default());
+        let mut flush_pending = FlushPending::default();
+        flush_pending.hold_flush_short("好的。", "zh", 1);
         let mut notified = false;
         handle_vad_flush(
             &mut manager,
-            &mut interim_state,
+            &mut flush_pending,
             &bus,
             None,
             &sink,
@@ -5358,24 +4996,20 @@ mod tests {
             &test_session_stats(),
             &Msg::new(|k| k.to_string(), || "zh".into()),
             &mut notified,
-            &interim,
             vec![0.0f32; 16000],
         );
         // drain_batch 单批语义（每次调用先清 out）：一批 ≤256 条足够容纳本断言面
         let mut batch = Vec::new();
+        let _ = sink.drain_batch(&mut batch, Duration::from_millis(50));
         assert!(
-            sink.drain_batch(&mut batch, Duration::from_millis(50)),
-            "收尾段后必须有事件回流"
-        );
-        assert!(
-            batch
+            !batch
                 .iter()
-                .any(|e| matches!(e, UiEvent::RealtimePartial { text } if text.is_empty())),
-            "收尾段后必须清流式行，实际 {batch:?}"
+                .any(|e| matches!(e, UiEvent::AddMessage { .. })),
+            "识别失败段不得产上屏事件，实际 {batch:?}"
         );
-        assert!(
-            !interim_state.active && interim_state.pending.is_empty(),
-            "收尾后实时会话状态必须复位"
+        assert_eq!(
+            flush_pending.text, "好的。",
+            "段级边界（即使识别失败）不得冲掉跨段短碎片"
         );
     }
 }

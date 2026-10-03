@@ -5,147 +5,16 @@
 //! `update_monitor`），段由本线程直塞段队列（等价原版 `_enqueue_asr`）。
 //! 取数超时且 VAD 在说话时喂静音推进（等价原版超时分支）。
 //!
-//! VAD 为跨线程共享（`Arc<Mutex<VadProcessor>>`）：capture 只写、ASR 线程在
-//! 增量识别时读（peek/trim/speech_samples），锁粒度 = 单次方法调用，对齐原版
-//! `_vad_lock`。增量触发判定也在本线程（原版 `_capture_loop` 的
-//! speech_segment is None 分支）：条件满足塞 `SegmentSource::Interim` 空标记
-//! 进段队列，**不在 capture 线程跑 ASR**（原版拓扑）。
+//! VAD 为跨线程共享（`Arc<Mutex<VadProcessor>>`）：capture 只写，锁粒度 =
+//! 单次方法调用，对齐原版 `_vad_lock`。增量识别通道（interim 标记）已随
+//! D-134 整体裁撤——capture 只产 VadFlush 段。
 
-use crate::audio::{rms, BoundedDropQueue, CHUNK_SAMPLES, TARGET_RATE};
+use crate::audio::{rms, BoundedDropQueue, CHUNK_SAMPLES};
 use crate::vad::{lock_vad, VadProcessor};
 use crate::SegmentSource;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-
-/// 增量 ASR 跨线程控制块（原版 `_incremental_enabled` / `_interim_interval` /
-/// `_last_interim_samples` / `_last_interim_check_time` 四个散字段的原子等价）。
-/// D-128 起服务实时识别（面板「实时识别」开关/节拍）：Interim 旧名保守保留——
-/// 机制沿用原触发时序，且 egui id_salt（"panel_interim"）改名会重置用户拖拽态。
-/// capture 线程只读 enabled/interval + 写 last_check_ms；ASR 线程写
-/// last_interim_samples——各写各的、无复合不变量，故用原子而非锁。
-#[derive(Debug)]
-pub struct InterimControl {
-    /// 实时识别开关（D-128；UI 经 `Pipeline::set_realtime` 写）
-    pub enabled: AtomicBool,
-    /// 基准间隔秒数（f32 bits 存 AtomicU32；0 bits = 0.0s = 永不触发）
-    pub interval_bits: AtomicU32,
-    /// 引擎节拍倍率（f32 bits；默认 1.0。实际节拍 = 基准 × 倍率，管道随
-    /// 引擎切换热更新——D-128：快引擎密、慢引擎疏）
-    pub interval_scale_bits: AtomicU32,
-    /// 上次 interim 消费时的 VAD 缓冲样本数（capture 读、ASR 写；原版
-    /// `_last_interim_samples`，vad_flush 复位为 0）
-    pub last_interim_samples: AtomicU64,
-    /// 上次触发判定的 UNIX 毫秒时间戳（0 = 从未触发；原版
-    /// `_last_interim_check_time` 用 perf_counter 秒，此处 epoch 毫秒等价——
-    /// 只参与 ≥1s 冷却比较，单调性足够）
-    pub last_check_ms: AtomicU64,
-    /// 最近实时识别耗时的 EMA 毫秒（0 = 未知；D-133 A1 自适应退避——ASR 线程
-    /// 识别后回报、capture 触发判定读取，各写各读无复合不变量，原子即可）
-    pub ema_asr_ms: AtomicU32,
-}
-
-impl Default for InterimControl {
-    /// 手写 Default：interval_scale_bits 必须 1.0（AtomicU32::default()=0 会
-    /// 把节拍清零、实时识别静默失效）
-    fn default() -> Self {
-        Self {
-            enabled: AtomicBool::new(false),
-            interval_bits: AtomicU32::new(0),
-            interval_scale_bits: AtomicU32::new(1.0f32.to_bits()),
-            last_interim_samples: AtomicU64::new(0),
-            last_check_ms: AtomicU64::new(0),
-            ema_asr_ms: AtomicU32::new(0),
-        }
-    }
-}
-
-impl InterimControl {
-    /// 热应用开关/基准间隔（原版 `_incremental_asr_cb`）。关闭时清进度计数，
-    /// 重开从零起算（对齐 vad_flush 复位语义）；开启时不清（原版同）。
-    pub fn set(&self, enabled: bool, interval: f32) {
-        self.enabled.store(enabled, Ordering::Relaxed);
-        self.interval_bits
-            .store(interval.to_bits(), Ordering::Relaxed);
-        if !enabled {
-            self.last_interim_samples.store(0, Ordering::Relaxed);
-            self.last_check_ms.store(0, Ordering::Relaxed);
-        }
-    }
-
-    /// 热应用引擎节拍倍率（D-128）：启动装配与引擎切换时由管道写
-    pub fn set_scale(&self, scale: f32) {
-        self.interval_scale_bits
-            .store(scale.to_bits(), Ordering::Relaxed);
-    }
-
-    /// ASR 线程回报一次实时识别耗时（D-133 A1）：α=1/8 指数平滑；ema=0 视为
-    /// 首测直接采用。只对「实际跑了识别」的 tick 回报（调用方过滤）。
-    pub fn note_asr_ms(&self, ms: f64) {
-        let prev = self.ema_asr_ms.load(Ordering::Relaxed);
-        let next = if prev == 0 {
-            ms
-        } else {
-            prev as f64 * 0.875 + ms * 0.125
-        };
-        self.ema_asr_ms.store(
-            next.round().clamp(1.0, u32::MAX as f64) as u32,
-            Ordering::Relaxed,
-        );
-    }
-
-    /// EMA 退避间隔（秒；D-133 A1）：1.2× 最近识别耗时——识别慢于节拍时自动
-    /// 拉长触发间隔，不空转烧 CPU、不积压段队列；未知（0）不参与 max。
-    pub fn backoff_secs(&self) -> f32 {
-        self.ema_asr_ms.load(Ordering::Relaxed) as f32 / 1000.0 * 1.2
-    }
-
-    /// 生效节拍 = max(基准 × 倍率, EMA 退避)（capture 触发判定用；倍率缺位按
-    /// 1.0 兜底，D-133 A1 起并入 EMA 退避下限）
-    pub fn effective_interval(&self) -> f32 {
-        let base = f32::from_bits(self.interval_bits.load(Ordering::Relaxed));
-        let scale = f32::from_bits(self.interval_scale_bits.load(Ordering::Relaxed));
-        let nominal = base * if scale > 0.0 { scale } else { 1.0 };
-        nominal.max(self.backoff_secs())
-    }
-
-    /// R31/D-72：会话边界复位——只清进度计数（enabled/interval 保持，
-    /// 开关是用户意图，设备切换不应重置；vad_flush 同语义）
-    pub fn reset_counter(&self) {
-        self.last_interim_samples.store(0, Ordering::Relaxed);
-        self.last_check_ms.store(0, Ordering::Relaxed);
-    }
-}
-
-/// 触发判定纯函数（对照原版 main.py `_capture_loop` 的条件组合，真值表单测锚点）：
-/// enabled × 在说话 × total/elapsed ≥ 间隔 × 冷却 ≥1s。
-/// `interval < 1.0` 拒绝为防御性守卫（原版无此判；UI 下拉限 1..=10s，防
-/// interval=0 时每秒空转触发）。
-fn interim_due(
-    enabled: bool,
-    speaking: bool,
-    interval: f32,
-    total_samples: u64,
-    last_samples: u64,
-    now_ms: u64,
-    last_check_ms: u64,
-) -> bool {
-    if !enabled || !speaking || interval < 1.0 {
-        return false;
-    }
-    let total_dur = total_samples as f64 / TARGET_RATE as f64;
-    let elapsed = total_samples.saturating_sub(last_samples) as f64 / TARGET_RATE as f64;
-    total_dur >= interval as f64
-        && elapsed >= interval as f64
-        && now_ms.saturating_sub(last_check_ms) >= 1_000
-}
-
-fn now_epoch_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
-}
 
 /// capture 循环参数
 pub struct CaptureLoop<F> {
@@ -162,8 +31,6 @@ pub struct CaptureLoop<F> {
     /// 替代旧"UI 塞槽 take-and-clear"（`vad_update`）——槽即镜像，同步靠人肉
     /// 边（R10）；总线发布为唯一事实源，读者无锁
     pub vad_tick: VadSource,
-    /// 增量识别控制块（与 ASR 线程共享；见 [`InterimControl`]）
-    pub interim: Arc<InterimControl>,
     /// 当前生效 VAD 模式（架构 2.0 W1/R2：检测模式变化以替换置信度源；
     /// 初值 = 启动装配所用模式，避免首帧把 Silero 重复加载一遍）
     pub current_mode: String,
@@ -238,10 +105,6 @@ impl<F: Fn(f32, f64, Option<f32>) + Send> CaptureLoop<F> {
                     let seg = lock_vad(vad).process_chunk(&chunk);
                     if let Some(seg) = seg {
                         self.segment_tx.push((SegmentSource::VadFlush, seg));
-                    } else {
-                        // 仍在积累 —— 增量触发判定（原版 main.py:1657-1668；
-                        // 仅数据 chunk 分支判，超时静音分支不判，对齐原版）
-                        self.maybe_trigger_interim(vad);
                     }
                 }
             }
@@ -263,33 +126,6 @@ impl<F: Fn(f32, f64, Option<f32>) + Send> CaptureLoop<F> {
         }
         // 最后一步：此后本线程不再触碰 VAD——ASR 线程据此判定队列已终
         self.capture_done.store(true, Ordering::Relaxed);
-    }
-
-    /// 增量触发判定：读 VAD 状态 → 纯函数判定 → 塞空音频 interim 标记。
-    /// 原版 `_asr_ready` 条件不搬：Rust ASR 线程无引擎时本就吞段待命，无害。
-    /// 严守「不在持 vad 锁时碰 segment_tx」。
-    fn maybe_trigger_interim(&self, vad: &Arc<Mutex<VadProcessor>>) {
-        if !self.interim.enabled.load(Ordering::Relaxed) {
-            return;
-        }
-        let interval = self.interim.effective_interval();
-        let (total, speaking) = {
-            let v = lock_vad(vad);
-            (v.speech_samples(), v.is_speaking())
-        };
-        let now_ms = now_epoch_ms();
-        if interim_due(
-            true,
-            speaking,
-            interval,
-            total as u64,
-            self.interim.last_interim_samples.load(Ordering::Relaxed),
-            now_ms,
-            self.interim.last_check_ms.load(Ordering::Relaxed),
-        ) {
-            self.interim.last_check_ms.store(now_ms, Ordering::Relaxed);
-            self.segment_tx.push((SegmentSource::Interim, Vec::new()));
-        }
     }
 }
 
@@ -355,14 +191,12 @@ mod tests {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn spawn(
         q: Arc<BoundedDropQueue<(Vec<f32>, Option<f32>)>>,
         seg_tx: Arc<BoundedDropQueue<(SegmentSource, Vec<f32>)>>,
         monitors: MonitorLog,
         paused: Arc<AtomicBool>,
         vad: VadProcessor,
-        interim: Arc<InterimControl>,
     ) -> (std::thread::JoinHandle<()>, Arc<AtomicBool>) {
         // 正确语义：running=stop 标志，false 运行、true 停止（对齐 Pipeline::stop）
         let running = Arc::new(AtomicBool::new(false));
@@ -376,7 +210,6 @@ mod tests {
             // 版本 0 恒等于 applied_version：不触发应用/换源（测试源为自定义
             // mock，走 make_confidence_source 会加载真 Silero）
             vad_tick: Arc::new(|| (0, crate::vad::VadSettings::default())),
-            interim,
             current_mode: String::new(),
             capture_done: Arc::new(AtomicBool::new(false)),
         };
@@ -393,14 +226,7 @@ mod tests {
     fn monitor_precedes_segment_and_chunk_rms_used() {
         let (q, seg_tx, monitors, paused) = setup();
         let vad = VadProcessor::new(boxed(Burst(40.into())), 16000, 0.5, 1.0, 15.0, 0.032);
-        let (h, running) = spawn(
-            q.clone(),
-            seg_tx.clone(),
-            monitors.clone(),
-            paused,
-            vad,
-            Default::default(),
-        );
+        let (h, running) = spawn(q.clone(), seg_tx.clone(), monitors.clone(), paused, vad);
         // chunk 值 0.5 → rms=0.5（monitor 回调应携带）
         for _ in 0..65 {
             q.push((vec![0.5f32; 512], Some(0.25f32)));
@@ -428,14 +254,7 @@ mod tests {
         let (q, seg_tx, monitors, paused) = setup();
         paused.store(true, Ordering::Relaxed);
         let vad = VadProcessor::new(boxed(Zero), 16000, 0.5, 1.0, 15.0, 0.032);
-        let (h, running) = spawn(
-            q.clone(),
-            seg_tx.clone(),
-            monitors.clone(),
-            paused,
-            vad,
-            Default::default(),
-        );
+        let (h, running) = spawn(q.clone(), seg_tx.clone(), monitors.clone(), paused, vad);
         for _ in 0..10 {
             q.push((vec![0.1f32; 512], None));
         }
@@ -473,7 +292,6 @@ mod tests {
             monitor: |_, _, _| {},
             paused,
             vad_tick: Arc::new(|| (0, crate::vad::VadSettings::default())),
-            interim: Default::default(),
             current_mode: String::new(),
             capture_done: Arc::new(AtomicBool::new(false)),
         };
@@ -517,7 +335,6 @@ mod tests {
             monitor: |_, _, _| {},
             paused,
             vad_tick: reader,
-            interim: Default::default(),
             current_mode: "silero".into(),
             capture_done: Arc::new(AtomicBool::new(false)),
         };
@@ -554,239 +371,6 @@ mod tests {
         let _ = h.join();
     }
 
-    // ── 增量触发判定（对照原版 main.py:1657-1668）──
-
-    /// 真值表：enabled × speaking × interval × total/elapsed × cooldown
-    #[test]
-    fn interim_due_truth_table() {
-        const NOW: u64 = 1_700_000_000_000; // 任意 epoch 毫秒
-                                            // 全条件满足（cooldown 从未触发过 → last_check_ms=0 视为远超冷却）
-        assert!(interim_due(true, true, 2.0, 16000 * 3, 16000, NOW, 0));
-        // 冷却恰好 1s → 通过（原版 >= 1.0）
-        assert!(interim_due(
-            true,
-            true,
-            2.0,
-            16000 * 3,
-            16000,
-            NOW,
-            NOW - 1_000
-        ));
-        // 开关关 → false
-        assert!(!interim_due(false, true, 2.0, 16000 * 3, 0, NOW, 0));
-        // 不在说话 → false
-        assert!(!interim_due(true, false, 2.0, 16000 * 3, 0, NOW, 0));
-        // interval < 1.0（防御守卫）→ false
-        assert!(!interim_due(true, true, 0.5, 16000 * 3, 0, NOW, 0));
-        // 累计缓冲不足一个间隔 → false
-        assert!(!interim_due(true, true, 2.0, 16000, 0, NOW, 0));
-        // 距上次消费不足一个间隔（elapsed < interval）→ false
-        assert!(!interim_due(true, true, 2.0, 16000 * 3, 16000 * 2, NOW, 0));
-        // 冷却不足 1s → false
-        assert!(!interim_due(
-            true,
-            true,
-            2.0,
-            16000 * 3,
-            16000,
-            NOW,
-            NOW - 999
-        ));
-    }
-
-    /// D-128：生效节拍 = 基准 × 倍率；Default 倍率必须 1.0（AtomicU32 零值
-    /// 陷阱——派生 Default 会得到 0 bits=0.0 倍率，实时识别静默失效）。
-    /// D-133：倍率校准 qwen3 1.5 / whisper 2.0（探针实测），另并入 EMA 退避。
-    #[test]
-    fn interim_control_effective_interval_scales_base() {
-        let c = InterimControl::default();
-        c.set(true, 2.0);
-        assert_eq!(c.effective_interval(), 2.0, "Default 倍率 = 1.0");
-        c.set_scale(1.5);
-        assert_eq!(
-            c.effective_interval(),
-            3.0,
-            "qwen3 校准倍率 1.5 → 2s 基准变 3s"
-        );
-        c.set_scale(0.0);
-        assert_eq!(c.effective_interval(), 2.0, "倍率缺位（0 bits）按 1.0 兜底");
-        // 生效节拍仍须过 interim_due 的 ≥1.0s 防御守卫
-        assert!(!interim_due(
-            true,
-            true,
-            c.effective_interval(),
-            16000,
-            0,
-            1,
-            0
-        ));
-    }
-
-    /// D-133 A1：EMA 退避——首测直接采用、α=1/8 平滑、生效节拍取 max、
-    /// 未识别（ema=0）不参与
-    #[test]
-    fn interim_control_ema_backoff_stretches_interval() {
-        let c = InterimControl::default();
-        c.set(true, 1.0);
-        assert_eq!(c.effective_interval(), 1.0, "无 EMA 时退避不参与");
-        c.note_asr_ms(500.0);
-        assert_eq!(c.backoff_secs(), 0.6, "首测 500ms → 退避 0.6s");
-        c.note_asr_ms(1000.0);
-        assert!(
-            (c.backoff_secs() - 0.675).abs() < 1e-3,
-            "α=1/8：500×0.875+1000×0.125=562.5ms（存 u32 取整 563）→ ≈0.675s，实际 {}",
-            c.backoff_secs()
-        );
-        c.set_scale(2.0);
-        assert_eq!(
-            c.effective_interval(),
-            2.0,
-            "名义 2s > 退避 0.675s → 取名义"
-        );
-        for _ in 0..6 {
-            c.note_asr_ms(5000.0);
-        }
-        assert!(
-            c.effective_interval() > 2.0,
-            "连续慢识别后 EMA 退避应接管生效节拍（6 拍后 EMA≈3s→退避 3.6s），实际 {}",
-            c.effective_interval()
-        );
-        let heavy = InterimControl::default();
-        heavy.set(true, 1.0);
-        heavy.note_asr_ms(9000.0);
-        assert_eq!(
-            heavy.effective_interval(),
-            10.8,
-            "EMA 9s → 退避 10.8s 应完全接管生效节拍"
-        );
-    }
-
-    #[test]
-    fn interim_control_set_clears_progress_on_disable() {
-        let c = InterimControl::default();
-        c.set(true, 2.5);
-        assert!(c.enabled.load(Ordering::Relaxed));
-        assert_eq!(f32::from_bits(c.interval_bits.load(Ordering::Relaxed)), 2.5);
-        c.last_interim_samples.store(32000, Ordering::Relaxed);
-        c.last_check_ms.store(12345, Ordering::Relaxed);
-        // 关闭 → 进度清零
-        c.set(false, 2.5);
-        assert_eq!(c.last_interim_samples.load(Ordering::Relaxed), 0);
-        assert_eq!(c.last_check_ms.load(Ordering::Relaxed), 0);
-        assert!(!c.enabled.load(Ordering::Relaxed));
-        // 重开不清（此前清过了）
-        c.last_interim_samples.store(100, Ordering::Relaxed);
-        c.set(true, 1.0);
-        assert_eq!(c.last_interim_samples.load(Ordering::Relaxed), 100);
-    }
-
-    /// 集成：连续说话累计 ≥1 间隔后，capture 塞出空音频 Interim 标记
-    #[test]
-    fn interim_marker_pushed_when_speaking_long_enough() {
-        let (q, seg_tx, _monitors, paused) = setup();
-        // 200 chunk 配额 ≈ 6.4s 连续语音（间隔 1s 时远超触发线，且 < max 15s 不收段）
-        let vad = VadProcessor::new(boxed(Burst(200.into())), 16000, 0.5, 1.0, 15.0, 0.032);
-        let interim = Arc::new(InterimControl::default());
-        interim.set(true, 1.0);
-        let (h, running) = spawn(
-            q.clone(),
-            seg_tx.clone(),
-            _monitors,
-            paused,
-            vad,
-            interim.clone(),
-        );
-        for _ in 0..80 {
-            q.push((vec![0.5f32; 512], None)); // 80×512 = 40960 ≈ 2.6s
-        }
-        // 应收到 Interim 标记（空音频）；说话未断，不应有 VadFlush
-        let deadline = std::time::Instant::now() + Duration::from_secs(3);
-        let mut got_interim = false;
-        while std::time::Instant::now() < deadline {
-            match seg_tx.pop_timeout(Duration::from_millis(300)) {
-                Some((SegmentSource::Interim, audio)) => {
-                    assert!(
-                        audio.is_empty(),
-                        "interim 标记必须为空音频（原版 (\"interim\", None)）"
-                    );
-                    got_interim = true;
-                    break;
-                }
-                Some((SegmentSource::VadFlush, _)) => panic!("连续语音中不应产出 VadFlush"),
-                None => continue,
-            }
-        }
-        assert!(got_interim, "说话 ≥1 间隔后应触发 interim 标记");
-        // 触发后 last_check_ms 已记录（冷却计时起点）
-        assert!(interim.last_check_ms.load(Ordering::Relaxed) > 0);
-        running.store(true, Ordering::Relaxed);
-        let _ = h.join();
-    }
-
-    /// 集成：开关关闭时零生产（回归锚点——关闭增量不得改变既有行为）
-    #[test]
-    fn interim_marker_absent_when_disabled_or_silent() {
-        let (q, seg_tx, _monitors, paused) = setup();
-        // 未启用：即便长语音也不产 interim 标记
-        let vad = VadProcessor::new(boxed(Burst(200.into())), 16000, 0.5, 1.0, 15.0, 0.032);
-        let interim = Arc::new(InterimControl::default());
-        let (h, running) = spawn(
-            q.clone(),
-            seg_tx.clone(),
-            _monitors.clone(),
-            paused.clone(),
-            vad,
-            interim,
-        );
-        for _ in 0..80 {
-            q.push((vec![0.5f32; 512], None));
-        }
-        std::thread::sleep(Duration::from_millis(400));
-        assert!(seg_tx.is_empty(), "未启用增量时不应有任何标记/段");
-        running.store(true, Ordering::Relaxed);
-        let _ = h.join();
-
-        // 启用但静音（不说话）：同样零生产
-        let (q2, seg_tx2, monitors2, paused2) = setup();
-        let vad2 = VadProcessor::new(boxed(Zero), 16000, 0.5, 1.0, 15.0, 0.032);
-        let interim2 = Arc::new(InterimControl::default());
-        interim2.set(true, 1.0);
-        let (h2, running2) = spawn(
-            q2.clone(),
-            seg_tx2.clone(),
-            monitors2,
-            paused2,
-            vad2,
-            interim2,
-        );
-        for _ in 0..40 {
-            q2.push((vec![0.0f32; 512], None));
-        }
-        std::thread::sleep(Duration::from_millis(400));
-        assert!(seg_tx2.is_empty(), "静音（不在说话）不应触发 interim 标记");
-        running2.store(true, Ordering::Relaxed);
-        let _ = h2.join();
-    }
-
-    /// R31/D-72：reset_counter 只清进度计数（enabled/interval 保持）——
-    /// 设备切换是会话边界，但用户开关意图不应被重置
-    #[test]
-    fn interim_reset_counter_keeps_toggles() {
-        let c = InterimControl::default();
-        c.set(true, 2.0);
-        c.last_interim_samples.store(1234, Ordering::Relaxed);
-        c.last_check_ms.store(999, Ordering::Relaxed);
-        c.reset_counter();
-        assert_eq!(c.last_interim_samples.load(Ordering::Relaxed), 0);
-        assert_eq!(c.last_check_ms.load(Ordering::Relaxed), 0);
-        assert!(c.enabled.load(Ordering::Relaxed), "开关保持");
-        assert_eq!(
-            f32::from_bits(c.interval_bits.load(Ordering::Relaxed)),
-            2.0,
-            "间隔保持"
-        );
-    }
-
     /// ACR-1a：退出路径把 VAD 残余作为收尾段入队，之后才置 capture_done。
     /// 病灶面：旧实现循环退出即返回，残余（说话中途退出最多 max_speech 秒）直接消失。
     /// 本测以 `running=true` 直调 `run()`——循环体不执行，只走退出收尾，全程同步无竞态。
@@ -807,7 +391,6 @@ mod tests {
             monitor: |_, _, _| {},
             paused: Arc::new(AtomicBool::new(false)),
             vad_tick: Arc::new(|| (0, crate::vad::VadSettings::default())),
-            interim: Default::default(),
             current_mode: String::new(),
             capture_done: done.clone(),
         };
@@ -845,7 +428,6 @@ mod tests {
             monitor: |_, _, _| {},
             paused: Arc::new(AtomicBool::new(false)),
             vad_tick: Arc::new(|| (0, crate::vad::VadSettings::default())),
-            interim: Default::default(),
             current_mode: String::new(),
             capture_done: done.clone(),
         };
