@@ -10,9 +10,9 @@ use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 
 /// 共享 VAD 的中毒容忍取回（D-130/K3）：持锁方 panic 过的话数据本身不坏
-/// （VAD 状态是启发式缓存），取回即用——capture/ASR 循环体一律经本助手锁
-/// VAD，禁再裸 `.lock().unwrap()`（中毒即线程死亡：capture 死 → `capture_done`
-/// 永假、退出白等一个预算且尾巴丢失；ASR 线程死 → 依赖监督器重生）。
+/// （VAD 状态是启发式缓存），取回即用——capture 循环体与 shell 侧设备切换
+/// 复位一律经本助手锁 VAD，禁再裸 `.lock().unwrap()`（中毒即线程死亡：
+/// capture 死 → `capture_done` 永假、退出白等一个预算且尾巴丢失）。
 /// 先行先例 = capture 退出尾巴的同款防御（`force_flush` 处 into_inner）。
 pub fn lock_vad(vad: &Mutex<VadProcessor>) -> MutexGuard<'_, VadProcessor> {
     vad.lock().unwrap_or_else(|poisoned| poisoned.into_inner())

@@ -48,7 +48,8 @@ pub type VadSource = Arc<dyn Fn() -> (u64, crate::vad::VadSettings) + Send + Syn
 
 impl<F: Fn(f32, f64, Option<f32>) + Send> CaptureLoop<F> {
     /// 阻塞运行至 `running`（= stop 标志）置 true。
-    /// `vad` 由调用方构造并与 ASR 线程共享（增量识别跨线程读）。
+    /// `vad` 由调用方构造；锁跨线程的唯一对手方 = shell 侧设备切换复位
+    /// （`Pipeline::reset_session_after_device_switch`），识别线程不再触碰。
     /// 形参特化为 boxed 默认形态（架构 2.0 W1/R2）：模式热切换需要经
     /// `make_confidence_source` 重建源——只有 boxed trait object 可跨型替换；
     /// 具体类型源（测试 mock）装箱传入即可

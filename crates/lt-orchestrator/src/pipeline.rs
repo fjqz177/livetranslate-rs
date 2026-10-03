@@ -2367,7 +2367,7 @@ fn run_asr_thread(settings: &lt_proto::Settings, ctx: AsrThreadCtx, mut tl: Opti
         session_stats,
     } = ctx;
     // 收尾短句跨段缓冲（D-133 A5 机制，D-134 自 realtime::RealtimeState 迁
-    // interim::FlushPending；跨段存活，会话级边界才清）
+    // interim::FlushPending；跨段存活，会话级清的当前接线点 = 切引擎）
     let mut flush_pending = FlushPending::default();
     // 构造 worker 配置（当前仅 sensevoice；whisper M5）。
     // R3/D-61：models_dir 失败 → 待命态而非 return 杀线程（AH-1 哲学推广：
@@ -2728,9 +2728,10 @@ fn handle_vad_flush(
         }
     }
     // 段级边界：跨段短碎片缓冲**保留**——碎片等的是「下一句」，不是本段
-    // 尾巴，段边界冲掉就永远丢了；会话级边界（切引擎/切设备）才全清
-    // （drain_tl_switch 的 flush_pending.reset()）。（原「复位段级增量状态 +
-    // 流式行清空事件」随实时通道裁撤，D-134。）
+    // 尾巴，段边界冲掉就永远丢了；会话级清的当前接线点 = 切引擎
+    // （drain_tl_switch 的 flush_pending.reset()；切设备/清空联动不冲本缓冲，
+    // 3s 超时独立成行兜底——interim.rs 模块注记的已知残面）。
+    // （原「复位段级增量状态 + 流式行清空事件」随实时通道裁撤，D-134。）
 }
 
 /// 退出收尾循环（ACR-1a）：等 capture 落板（`capture_done`）与持续消费段队列
