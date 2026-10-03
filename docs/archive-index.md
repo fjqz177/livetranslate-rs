@@ -8,6 +8,7 @@
 
 | 文档 | 一句话（D-xx） | 完工日期 |
 |---|---|---|
+| `realtime-asr-optimization.md` | 实时识别深度优化定稿（D-133，A1~A6）：→ 2026-10-03 被 D-134 取代（实时通道整体裁撤；⑤收尾短句跨段 pending 迁 interim.rs 幸存），留档证据链 | 2026-10-02 |
 | `asr-leftover-p3-fixes.md` | 识别链留档 P3 缺陷批修（D-130）：K1 停机抑制 recover 重生（治退出×识别超时原地等 180s）/ K3 lock_vad 中毒容忍 10 处 / K4 回执落盘反序对齐 / K5 panic+Drop 臂中文 detail 迁 Msg / K6 停机取消基准（复核补勘）/ K7 转录 pending 一致性；700 过 0 败 | 2026-10-01 |
 | `scripts-usability-review.md` | 脚本评审与守护瘦身底稿（ADR-21）：已删四守护死因存档 + check_agents_health 留任五点理由；S1/S2 已落地，S3/S4 未了项细单 + 归档核销注记（随用随做、须代码解禁） | 2026-09-27 |
 | `window-flash-cleanup.md` | 窗口闪现整治：启动先画后显（全窗隐藏创建+首帧揭示）/ 加载弹窗退役并入悬浮窗状态行（ModelLoadStart 内联、load_dialog 全删）/ 退出先全窗离屏再收尾；坑册 G-35 入册（D-100） | 2026-09-25 |

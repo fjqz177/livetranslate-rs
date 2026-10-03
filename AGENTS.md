@@ -100,7 +100,7 @@ git config core.hooksPath .githooks      # 每 clone 一次：钩子触发面 = 
 
 - **翻译域**（D-82/D-85）：对外只给翻译接口、内部消化供应商差异；**UI 与后端必须一比一同步**；高级参数默认一律不发送（用户显式指定才发）；失败兜底终点 = 最小请求（保留系统提示词）；报错必须与译文一眼可辨；费用按本次运行累计、重启清零。→ `docs/archive/llm-api-round2.md`
 - **模型信任**（D-83）：凡加载必验 sha256；坏文件隔离 + 自动重下（3 次后提醒用户）；不做版本钉死；只验正在加载的模型。→ `docs/archive/model-trust-repair.md`
-- **ASR 既往裁决**：SenseVoice 输出无语言标签 → 三优先 resolve（显式设置 > 模型标签 > 启发式，D-30）；qwen3 生效段长钳制 ≤15s 且 overlay 归一不写穿用户设置（D-28/D-69）；interim 裁剪带代际校验（D-27）；client 非 Worker 错误自动 recover 重启（D-26）；下载源诚实（无 MS 源不伪造 ms 字段，D-24）。→ `docs/decisions.md` 按号查 + `docs/archive/` 各档
+- **ASR 既往裁决**：SenseVoice 输出无语言标签 → 三优先 resolve（显式设置 > 模型标签 > 启发式，D-30）；qwen3 生效段长钳制 ≤15s 且 overlay 归一不写穿用户设置（D-28/D-69）；client 非 Worker 错误自动 recover 重启（D-26）；下载源诚实（无 MS 源不伪造 ms 字段，D-24）。→ `docs/decisions.md` 按号查 + `docs/archive/` 各档
 - **字体与渲染**（D-17）：默认全盘内嵌思源三字体（系统字体仅锦上添花，禁依赖）；行级字体键空串 = 级联跟随 `subtitle_font_family`；改字体键 → 立即 `fonts::apply_fonts` + 防抖落盘；渲染侧禁 `FontFamily::Name` 臆造，一律经 `fonts::font_family_for`（G-12）。→ `docs/archive/font-system.md`
 - **窗口透明**：字幕窗/悬浮窗的逐像素透明在当前栈**不可达**（wgpu HWND 仅 Opaque）——半透明走整窗 alpha、圆角走 `SetWindowRgn`，禁改 LWA_COLORKEY 抠色（±1 抖动）。→ 机制与对策 = `docs/gotchas.md` G-34；裁定 = D-36。
 
